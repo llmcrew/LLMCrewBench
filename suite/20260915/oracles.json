@@ -1,0 +1,3096 @@
+[
+  {
+    "id": "IF-1",
+    "category": "A",
+    "oracle": {
+      "reference": "{\"ids\":[227,241,295,365],\"mean_latency\":706}",
+      "ids": [
+        227,
+        241,
+        295,
+        365
+      ],
+      "mean_latency": 706,
+      "target_service": "web-01",
+      "threshold": 500
+    },
+    "meta": {
+      "scenario": "IF-1",
+      "rows": 9,
+      "selected": 4,
+      "integral_mean": 706
+    }
+  },
+  {
+    "id": "IF-2",
+    "category": "A",
+    "oracle": {
+      "reference": "lena,359\nmei,359\npavel,117",
+      "rows": [
+        [
+          "lena",
+          359
+        ],
+        [
+          "mei",
+          359
+        ],
+        [
+          "pavel",
+          117
+        ]
+      ],
+      "all_names": [
+        "alex",
+        "kira",
+        "lena",
+        "mei",
+        "nora",
+        "pavel",
+        "zoe"
+      ]
+    },
+    "meta": {
+      "scenario": "IF-2",
+      "tie_usage": 359,
+      "selected": 3
+    }
+  },
+  {
+    "id": "IF-3",
+    "category": "A",
+    "oracle": {
+      "reference": "{\"open\":[1503,7307,8675],\"count\":3}",
+      "open": [
+        1503,
+        7307,
+        8675
+      ],
+      "count": 3
+    },
+    "meta": {
+      "scenario": "IF-3",
+      "deny_only": 9000,
+      "udp_only": 514,
+      "allow_and_deny": 1503
+    }
+  },
+  {
+    "id": "IF-4",
+    "category": "A",
+    "oracle": {
+      "reference": "[\"alpha.gguf\",\"qwen.gguf\"]",
+      "files": [
+        "alpha.gguf",
+        "qwen.gguf"
+      ],
+      "threshold": 10
+    },
+    "meta": {
+      "scenario": "IF-4",
+      "tied_size": 15,
+      "entries": [
+        [
+          "model.bin",
+          16
+        ],
+        [
+          "tiny.gguf",
+          8
+        ],
+        [
+          "alpha.gguf",
+          15
+        ],
+        [
+          "readme.txt",
+          2
+        ],
+        [
+          "omega.gguf",
+          7
+        ],
+        [
+          "qwen.gguf",
+          15
+        ]
+      ]
+    }
+  },
+  {
+    "id": "IF-5",
+    "category": "A",
+    "oracle": {
+      "reference": "{\"temperature\":0,\"max_tokens\":8192,\"tools\":false,\"mode\":\"balanced\"}",
+      "expected": {
+        "temperature": 0,
+        "max_tokens": 8192,
+        "tools": false,
+        "mode": "balanced"
+      },
+      "request_keys": [
+        "temperature",
+        "tools"
+      ],
+      "profile_keys": [
+        "max_tokens",
+        "mode"
+      ],
+      "default": {
+        "temperature": 0.6,
+        "max_tokens": 2048,
+        "tools": true,
+        "mode": "auto"
+      },
+      "profile": {
+        "max_tokens": 8192,
+        "mode": "balanced"
+      }
+    },
+    "meta": {
+      "scenario": "IF-5"
+    }
+  },
+  {
+    "id": "R-1",
+    "category": "B",
+    "oracle": {
+      "reference": "19",
+      "answer": 19,
+      "kind": "int",
+      "unit_whitelist": [
+        "минут",
+        "минуты",
+        "минута",
+        "min",
+        "minutes",
+        "minute"
+      ]
+    },
+    "meta": {
+      "scenario": "R-1",
+      "kind": "int",
+      "expected": 19,
+      "total": 240,
+      "rates": {
+        "a": 5,
+        "b": 6,
+        "c": 4
+      },
+      "a_down": 5,
+      "b_window": 16,
+      "timeline": [
+        {
+          "minute": 1,
+          "capacity": 10,
+          "done": 10,
+          "remaining": 230
+        },
+        {
+          "minute": 2,
+          "capacity": 10,
+          "done": 10,
+          "remaining": 220
+        },
+        {
+          "minute": 3,
+          "capacity": 10,
+          "done": 10,
+          "remaining": 210
+        },
+        {
+          "minute": 4,
+          "capacity": 10,
+          "done": 10,
+          "remaining": 200
+        },
+        {
+          "minute": 5,
+          "capacity": 10,
+          "done": 10,
+          "remaining": 190
+        },
+        {
+          "minute": 6,
+          "capacity": 15,
+          "done": 15,
+          "remaining": 175
+        },
+        {
+          "minute": 7,
+          "capacity": 15,
+          "done": 15,
+          "remaining": 160
+        },
+        {
+          "minute": 8,
+          "capacity": 15,
+          "done": 15,
+          "remaining": 145
+        },
+        {
+          "minute": 9,
+          "capacity": 15,
+          "done": 15,
+          "remaining": 130
+        },
+        {
+          "minute": 10,
+          "capacity": 15,
+          "done": 15,
+          "remaining": 115
+        },
+        {
+          "minute": 11,
+          "capacity": 15,
+          "done": 15,
+          "remaining": 100
+        },
+        {
+          "minute": 12,
+          "capacity": 15,
+          "done": 15,
+          "remaining": 85
+        },
+        {
+          "minute": 13,
+          "capacity": 15,
+          "done": 15,
+          "remaining": 70
+        },
+        {
+          "minute": 14,
+          "capacity": 15,
+          "done": 15,
+          "remaining": 55
+        },
+        {
+          "minute": 15,
+          "capacity": 15,
+          "done": 15,
+          "remaining": 40
+        },
+        {
+          "minute": 16,
+          "capacity": 15,
+          "done": 15,
+          "remaining": 25
+        },
+        {
+          "minute": 17,
+          "capacity": 9,
+          "done": 9,
+          "remaining": 16
+        },
+        {
+          "minute": 18,
+          "capacity": 9,
+          "done": 9,
+          "remaining": 7
+        },
+        {
+          "minute": 19,
+          "capacity": 9,
+          "done": 7,
+          "remaining": 0
+        }
+      ],
+      "previous_remaining": 7,
+      "distractors": [
+        18,
+        20
+      ]
+    }
+  },
+  {
+    "id": "R-2",
+    "category": "B",
+    "oracle": {
+      "reference": "26",
+      "answer": 26,
+      "kind": "int",
+      "unit_whitelist": [
+        "минут",
+        "минуты",
+        "минута",
+        "min",
+        "minutes",
+        "minute"
+      ]
+    },
+    "meta": {
+      "scenario": "R-2",
+      "kind": "int",
+      "expected": 26,
+      "shape": [
+        {
+          "name": "A",
+          "dependencies": []
+        },
+        {
+          "name": "B",
+          "dependencies": []
+        },
+        {
+          "name": "C",
+          "dependencies": [
+            "A",
+            "B"
+          ]
+        },
+        {
+          "name": "D",
+          "dependencies": [
+            "C"
+          ]
+        },
+        {
+          "name": "E",
+          "dependencies": [
+            "C"
+          ]
+        },
+        {
+          "name": "F",
+          "dependencies": [
+            "D",
+            "E"
+          ]
+        }
+      ],
+      "durations": {
+        "A": 9,
+        "B": 6,
+        "C": 6,
+        "D": 4,
+        "E": 5,
+        "F": 6
+      },
+      "per_task_finish": {
+        "A": 9,
+        "B": 6,
+        "C": 15,
+        "D": 19,
+        "E": 20,
+        "F": 26
+      },
+      "critical_path": 26,
+      "naive_sum_distractor": 36
+    }
+  },
+  {
+    "id": "R-3",
+    "category": "B",
+    "oracle": {
+      "reference": "172.242.121.192,172.242.121.255,172.242.121.193,172.242.121.254",
+      "answer": [
+        "172.242.121.192",
+        "172.242.121.255",
+        "172.242.121.193",
+        "172.242.121.254"
+      ],
+      "kind": "csv4",
+      "unit_whitelist": []
+    },
+    "meta": {
+      "scenario": "R-3",
+      "kind": "csv4",
+      "expected": [
+        "172.242.121.192",
+        "172.242.121.255",
+        "172.242.121.193",
+        "172.242.121.254"
+      ],
+      "outer": "172.242.112.0/20",
+      "subnet": "172.242.121.192/26",
+      "ip": "172.242.121.233"
+    }
+  },
+  {
+    "id": "R-4",
+    "category": "B",
+    "oracle": {
+      "reference": "2.980",
+      "answer": "2.980",
+      "kind": "decimal3",
+      "unit_whitelist": [
+        "$",
+        "доллар",
+        "доллара",
+        "долларов",
+        "USD"
+      ]
+    },
+    "meta": {
+      "scenario": "R-4",
+      "kind": "decimal3",
+      "expected": "2.980",
+      "input_m": "9.9",
+      "output_m": "2.8",
+      "price_in": "0.12",
+      "price_out": "0.64",
+      "exact_total": "2.980"
+    }
+  },
+  {
+    "id": "R-5",
+    "category": "B",
+    "oracle": {
+      "reference": "24",
+      "answer": 24,
+      "kind": "int",
+      "unit_whitelist": []
+    },
+    "meta": {
+      "scenario": "R-5",
+      "kind": "int",
+      "expected": 24,
+      "x": 137,
+      "xor": 241,
+      "and": 224,
+      "shift": 2,
+      "steps": [
+        120,
+        96,
+        24
+      ]
+    }
+  },
+  {
+    "id": "R-6",
+    "category": "B",
+    "oracle": {
+      "reference": "15361",
+      "answer": 15361,
+      "kind": "int",
+      "unit_whitelist": [
+        "ms",
+        "мс",
+        "миллисекунд",
+        "миллисекунды",
+        "миллисекунда"
+      ]
+    },
+    "meta": {
+      "scenario": "R-6",
+      "kind": "int",
+      "expected": 15361,
+      "requests": 1102,
+      "batch_size": 128,
+      "batches": 9,
+      "overhead_ms": 115,
+      "per_request_ms": 13,
+      "naive_floor_distractor": 15246
+    }
+  },
+  {
+    "id": "R-7",
+    "category": "B",
+    "oracle": {
+      "reference": "63/136",
+      "answer": "63/136",
+      "kind": "fraction",
+      "unit_whitelist": []
+    },
+    "meta": {
+      "scenario": "R-7",
+      "kind": "fraction",
+      "expected": "63/136",
+      "total": 34,
+      "damaged": 12,
+      "healthy": 22,
+      "picks": 3,
+      "unreduced": "2772/5984"
+    }
+  },
+  {
+    "id": "R-8",
+    "category": "B",
+    "oracle": {
+      "reference": "9;C,A",
+      "answer": "9;C,A",
+      "kind": "lru",
+      "unit_whitelist": []
+    },
+    "meta": {
+      "scenario": "R-8",
+      "kind": "lru",
+      "expected": "9;C,A",
+      "capacity": 2,
+      "sequence": [
+        "B",
+        "C",
+        "A",
+        "D",
+        "B",
+        "A",
+        "C",
+        "D",
+        "C",
+        "A",
+        "C"
+      ],
+      "misses": 9,
+      "final_order": [
+        "C",
+        "A"
+      ]
+    }
+  },
+  {
+    "id": "R-9",
+    "category": "B",
+    "oracle": {
+      "reference": "32",
+      "answer": 32,
+      "kind": "int",
+      "unit_whitelist": [
+        "секунд",
+        "секунды",
+        "секунда",
+        "сек",
+        "s",
+        "seconds",
+        "second"
+      ]
+    },
+    "meta": {
+      "scenario": "R-9",
+      "kind": "int",
+      "expected": 32,
+      "attempts": 4,
+      "timeout_s": 5,
+      "backoff_base_s": 2,
+      "backoffs": [
+        2,
+        4,
+        8
+      ],
+      "success_s": 3,
+      "events": [
+        [
+          "timeout",
+          5
+        ],
+        [
+          "backoff",
+          2
+        ],
+        [
+          "timeout",
+          5
+        ],
+        [
+          "backoff",
+          4
+        ],
+        [
+          "timeout",
+          5
+        ],
+        [
+          "backoff",
+          8
+        ],
+        [
+          "success",
+          3
+        ]
+      ],
+      "without_backoff_distractor": 18
+    }
+  },
+  {
+    "id": "R-10",
+    "category": "B",
+    "oracle": {
+      "reference": "2",
+      "answer": 2,
+      "kind": "int",
+      "unit_whitelist": [
+        "nodes",
+        "node",
+        "нод",
+        "нода",
+        "ноды"
+      ]
+    },
+    "meta": {
+      "scenario": "R-10",
+      "kind": "int",
+      "expected": 2,
+      "node": {
+        "cpu": 16,
+        "ram": 16
+      },
+      "pods": [
+        {
+          "cpu": 5,
+          "ram": 8
+        },
+        {
+          "cpu": 3,
+          "ram": 5
+        },
+        {
+          "cpu": 3,
+          "ram": 5
+        },
+        {
+          "cpu": 2,
+          "ram": 4
+        },
+        {
+          "cpu": 2,
+          "ram": 4
+        },
+        {
+          "cpu": 2,
+          "ram": 4
+        },
+        {
+          "cpu": 1,
+          "ram": 1
+        }
+      ],
+      "sum_cpu": 18,
+      "sum_ram": 31,
+      "minimum_nodes": 2,
+      "one_less_feasible": false
+    }
+  },
+  {
+    "id": "C-1",
+    "category": "C",
+    "oracle": {
+      "reference": "\"\"\"Minimal async TTL cache.\"\"\"\n\nfrom __future__ import annotations\n\nimport asyncio\nimport time\n\n\nclass AsyncTTLCache:\n    \"\"\"Cache values produced by an async loader for a fixed TTL.\n\n    Public API (must not change):\n\n      * ``__init__(self, ttl, *, clock=time.monotonic, sleep=asyncio.sleep)``\n        ``ttl`` is in the same units as ``clock()``. ``clock`` is an injectable\n        time source; TTL decisions must use it, not ``time.monotonic`` directly.\n      * ``async def get_or_load(self, key, loader)``\n        ``loader`` is a zero-argument coroutine function producing the value.\n    \"\"\"\n\n    def __init__(self, ttl: float, *, clock=time.monotonic, sleep=asyncio.sleep) -> None:\n        self.ttl = ttl\n        self._clock = clock\n        self._sleep = sleep\n        self._entries: dict[object, tuple[object, float]] = {}\n        self._inflight: dict[object, \"asyncio.Future[object]\"] = {}\n\n    async def get_or_load(self, key, loader):\n        entry = self._entries.get(key)\n        if entry is not None:\n            value, expires_at = entry\n            if self._clock() < expires_at:\n                return value\n            self._entries.pop(key, None)\n\n        pending = self._inflight.get(key)\n        if pending is not None:\n            return await asyncio.shield(pending)\n\n        loop = asyncio.get_running_loop()\n        future: \"asyncio.Future[object]\" = loop.create_future()\n        self._inflight[key] = future\n        try:\n            value = await loader()\n        except BaseException:\n            self._inflight.pop(key, None)\n            if not future.done():\n                future.cancel()\n            raise\n        self._inflight.pop(key, None)\n        self._entries[key] = (value, self._clock() + self.ttl)\n        if not future.done():\n            future.set_result(value)\n        return value\n",
+      "solution": "\"\"\"Minimal async TTL cache.\"\"\"\n\nfrom __future__ import annotations\n\nimport asyncio\nimport time\n\n\nclass AsyncTTLCache:\n    \"\"\"Cache values produced by an async loader for a fixed TTL.\n\n    Public API (must not change):\n\n      * ``__init__(self, ttl, *, clock=time.monotonic, sleep=asyncio.sleep)``\n        ``ttl`` is in the same units as ``clock()``. ``clock`` is an injectable\n        time source; TTL decisions must use it, not ``time.monotonic`` directly.\n      * ``async def get_or_load(self, key, loader)``\n        ``loader`` is a zero-argument coroutine function producing the value.\n    \"\"\"\n\n    def __init__(self, ttl: float, *, clock=time.monotonic, sleep=asyncio.sleep) -> None:\n        self.ttl = ttl\n        self._clock = clock\n        self._sleep = sleep\n        self._entries: dict[object, tuple[object, float]] = {}\n        self._inflight: dict[object, \"asyncio.Future[object]\"] = {}\n\n    async def get_or_load(self, key, loader):\n        entry = self._entries.get(key)\n        if entry is not None:\n            value, expires_at = entry\n            if self._clock() < expires_at:\n                return value\n            self._entries.pop(key, None)\n\n        pending = self._inflight.get(key)\n        if pending is not None:\n            return await asyncio.shield(pending)\n\n        loop = asyncio.get_running_loop()\n        future: \"asyncio.Future[object]\" = loop.create_future()\n        self._inflight[key] = future\n        try:\n            value = await loader()\n        except BaseException:\n            self._inflight.pop(key, None)\n            if not future.done():\n                future.cancel()\n            raise\n        self._inflight.pop(key, None)\n        self._entries[key] = (value, self._clock() + self.ttl)\n        if not future.done():\n            future.set_result(value)\n        return value\n",
+      "hidden_tests": "\"\"\"Hidden acceptance tests for AsyncTTLCache (not visible to the model).\"\"\"\n\nimport asyncio\nimport unittest\n\nfrom ttlcache.cache import AsyncTTLCache\n\n\nclass FakeClock:\n    def __init__(self, now: float = 0.0) -> None:\n        self.now = float(now)\n\n    def __call__(self) -> float:\n        return self.now\n\n    def advance(self, delta: float) -> None:\n        self.now += float(delta)\n\n\ndef make_cache(ttl: float, clock: FakeClock) -> AsyncTTLCache:\n    return AsyncTTLCache(ttl, clock=clock, sleep=asyncio.sleep)\n\n\nclass TTLTests(unittest.IsolatedAsyncioTestCase):\n    async def test_first_load(self) -> None:\n        clock = FakeClock()\n        cache = make_cache(10.0, clock)\n        calls = []\n\n        async def loader():\n            calls.append(1)\n            return \"value\"\n\n        self.assertEqual(await cache.get_or_load(\"k\", loader), \"value\")\n        self.assertEqual(len(calls), 1)\n\n    async def test_hit_within_ttl(self) -> None:\n        clock = FakeClock()\n        cache = make_cache(10.0, clock)\n        calls = []\n\n        async def loader():\n            calls.append(1)\n            return len(calls)\n\n        first = await cache.get_or_load(\"k\", loader)\n        clock.advance(9.0)\n        second = await cache.get_or_load(\"k\", loader)\n        self.assertEqual(second, first)\n        self.assertEqual(len(calls), 1)\n\n    async def test_reload_after_ttl(self) -> None:\n        clock = FakeClock()\n        cache = make_cache(10.0, clock)\n        calls = []\n\n        async def loader():\n            calls.append(1)\n            return len(calls)\n\n        await cache.get_or_load(\"k\", loader)\n        clock.advance(10.0)\n        self.assertEqual(await cache.get_or_load(\"k\", loader), 2)\n        self.assertEqual(len(calls), 2)\n\n    async def test_single_flight_same_key(self) -> None:\n        clock = FakeClock()\n        cache = make_cache(10.0, clock)\n        calls = []\n\n        async def loader():\n            calls.append(1)\n            await asyncio.sleep(0.02)\n            return \"shared\"\n\n        results = await asyncio.gather(*[cache.get_or_load(\"k\", loader) for _ in range(20)])\n        self.assertEqual(len(calls), 1, \"loader must run exactly once for one key\")\n        self.assertTrue(all(r == \"shared\" for r in results))\n\n    async def test_parallel_different_keys(self) -> None:\n        clock = FakeClock()\n        cache = make_cache(10.0, clock)\n        started = set()\n        both_inside = asyncio.Event()\n\n        def make_loader(key):\n            async def loader():\n                started.add(key)\n                if len(started) >= 2:\n                    both_inside.set()\n                await asyncio.wait_for(both_inside.wait(), timeout=2.0)\n                return key\n\n            return loader\n\n        results = await asyncio.gather(\n            cache.get_or_load(\"a\", make_loader(\"a\")),\n            cache.get_or_load(\"b\", make_loader(\"b\")),\n        )\n        self.assertEqual(sorted(results), [\"a\", \"b\"])\n\n    async def test_exception_not_cached(self) -> None:\n        clock = FakeClock()\n        cache = make_cache(10.0, clock)\n        calls = []\n\n        async def failing():\n            calls.append(\"fail\")\n            raise RuntimeError(\"boom\")\n\n        with self.assertRaises(RuntimeError):\n            await cache.get_or_load(\"k\", failing)\n\n        async def ok():\n            calls.append(\"ok\")\n            return \"good\"\n\n        self.assertEqual(await cache.get_or_load(\"k\", ok), \"good\")\n        self.assertEqual(calls, [\"fail\", \"ok\"])\n\n    async def test_cancelled_load_not_stuck(self) -> None:\n        clock = FakeClock()\n        cache = make_cache(10.0, clock)\n        started = asyncio.Event()\n\n        async def slow():\n            started.set()\n            await asyncio.sleep(5)\n            return \"slow\"\n\n        task = asyncio.create_task(cache.get_or_load(\"k\", slow))\n        try:\n            await asyncio.wait_for(started.wait(), timeout=2.0)\n        except asyncio.TimeoutError:\n            self.fail(\"loader was never started\")\n        task.cancel()\n        with self.assertRaises(asyncio.CancelledError):\n            await task\n\n        async def fresh():\n            return \"fresh\"\n\n        self.assertEqual(await asyncio.wait_for(cache.get_or_load(\"k\", fresh), timeout=1.0), \"fresh\")\n\n    async def test_none_is_cached(self) -> None:\n        clock = FakeClock()\n        cache = make_cache(10.0, clock)\n        calls = []\n\n        async def loader():\n            calls.append(1)\n            return None\n\n        self.assertIsNone(await cache.get_or_load(\"k\", loader))\n        self.assertIsNone(await cache.get_or_load(\"k\", loader))\n        self.assertEqual(len(calls), 1)\n\n    async def test_hit_does_not_extend_ttl(self) -> None:\n        clock = FakeClock()\n        cache = make_cache(10.0, clock)\n        calls = []\n\n        async def loader():\n            calls.append(1)\n            return len(calls)\n\n        await cache.get_or_load(\"k\", loader)\n        clock.advance(9.0)\n        await cache.get_or_load(\"k\", loader)\n        clock.advance(1.5)\n        await cache.get_or_load(\"k\", loader)\n        self.assertEqual(len(calls), 2, \"hits must not extend the TTL window\")\n\n    async def test_no_background_tasks(self) -> None:\n        clock = FakeClock()\n        cache = make_cache(10.0, clock)\n        before = set(asyncio.all_tasks())\n\n        async def loader():\n            return \"v\"\n\n        await cache.get_or_load(\"k\", loader)\n        clock.advance(11.0)\n        await cache.get_or_load(\"k2\", loader)\n        await asyncio.sleep(0.05)\n        leftover = [t for t in asyncio.all_tasks() if t not in before and not t.done()]\n        self.assertEqual(leftover, [], f\"background tasks still running: {leftover}\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
+      "runner": "\"\"\"Runs the hidden test module and reports one JSON line per test.\"\"\"\n\nimport importlib.util\nimport json\nimport sys\nimport unittest\n\n\nclass Recorder(unittest.TestResult):\n    def __init__(self) -> None:\n        super().__init__()\n        self.rows = []\n\n    def addSuccess(self, test) -> None:\n        self.rows.append((test.id(), True, \"\"))\n\n    def addFailure(self, test, err) -> None:\n        self.rows.append((test.id(), False, str(err[1])))\n\n    def addError(self, test, err) -> None:\n        self.rows.append((test.id(), False, str(err[1])))\n\n    def addSkip(self, test, reason) -> None:\n        self.rows.append((test.id(), False, f\"skipped: {reason}\"))\n\n\ndef main() -> int:\n    repo, test_file = sys.argv[1], sys.argv[2]\n    sys.path.insert(0, repo)\n    spec = importlib.util.spec_from_file_location(\"hidden_ttl_tests\", test_file)\n    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    suite = unittest.defaultTestLoader.loadTestsFromModule(module)\n    recorder = Recorder()\n    suite.run(recorder)\n    for name, ok, detail in recorder.rows:\n        print(json.dumps({\"test\": name, \"ok\": ok, \"detail\": detail[:400]}))\n    return 0\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n",
+      "target_file": "ttlcache/cache.py",
+      "checks": [
+        "first_load",
+        "ttl_hit",
+        "ttl_expiry",
+        "single_flight",
+        "parallel_keys",
+        "exception_not_cached",
+        "cancel_recovery",
+        "none_cached",
+        "ttl_not_extended",
+        "no_background_tasks"
+      ]
+    },
+    "meta": {
+      "scenario": "C-1"
+    }
+  },
+  {
+    "id": "C-2",
+    "category": "C",
+    "oracle": {
+      "reference": "package pool\n\nimport (\n\t\"context\"\n\t\"sync\"\n)\n\n// Job is one unit of work. Run performs the work and must honour ctx.\ntype Job struct {\n\tID  int\n\tRun func(ctx context.Context) error\n}\n\n// Result carries the outcome of a Job.\ntype Result struct {\n\tID  int\n\tErr error\n}\n\n// Process runs at most `workers` handlers over jobs.\nfunc Process(ctx context.Context, jobs <-chan Job, workers int) <-chan Result {\n\tout := make(chan Result)\n\tif workers <= 0 {\n\t\tclose(out)\n\t\treturn out\n\t}\n\n\tvar wg sync.WaitGroup\n\twg.Add(workers)\n\tfor i := 0; i < workers; i++ {\n\t\tgo func() {\n\t\t\tdefer wg.Done()\n\t\t\tfor {\n\t\t\t\tif ctx.Err() != nil {\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t\tselect {\n\t\t\t\tcase <-ctx.Done():\n\t\t\t\t\treturn\n\t\t\t\tcase job, ok := <-jobs:\n\t\t\t\t\tif !ok {\n\t\t\t\t\t\treturn\n\t\t\t\t\t}\n\t\t\t\t\terr := job.Run(ctx)\n\t\t\t\t\tselect {\n\t\t\t\t\tcase out <- Result{ID: job.ID, Err: err}:\n\t\t\t\t\tcase <-ctx.Done():\n\t\t\t\t\t\treturn\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\n\tgo func() {\n\t\twg.Wait()\n\t\tclose(out)\n\t}()\n\n\treturn out\n}\n",
+      "solution": "package pool\n\nimport (\n\t\"context\"\n\t\"sync\"\n)\n\n// Job is one unit of work. Run performs the work and must honour ctx.\ntype Job struct {\n\tID  int\n\tRun func(ctx context.Context) error\n}\n\n// Result carries the outcome of a Job.\ntype Result struct {\n\tID  int\n\tErr error\n}\n\n// Process runs at most `workers` handlers over jobs.\nfunc Process(ctx context.Context, jobs <-chan Job, workers int) <-chan Result {\n\tout := make(chan Result)\n\tif workers <= 0 {\n\t\tclose(out)\n\t\treturn out\n\t}\n\n\tvar wg sync.WaitGroup\n\twg.Add(workers)\n\tfor i := 0; i < workers; i++ {\n\t\tgo func() {\n\t\t\tdefer wg.Done()\n\t\t\tfor {\n\t\t\t\tif ctx.Err() != nil {\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t\tselect {\n\t\t\t\tcase <-ctx.Done():\n\t\t\t\t\treturn\n\t\t\t\tcase job, ok := <-jobs:\n\t\t\t\t\tif !ok {\n\t\t\t\t\t\treturn\n\t\t\t\t\t}\n\t\t\t\t\terr := job.Run(ctx)\n\t\t\t\t\tselect {\n\t\t\t\t\tcase out <- Result{ID: job.ID, Err: err}:\n\t\t\t\t\tcase <-ctx.Done():\n\t\t\t\t\t\treturn\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\n\tgo func() {\n\t\twg.Wait()\n\t\tclose(out)\n\t}()\n\n\treturn out\n}\n",
+      "hidden_tests": "package pool\n\nimport (\n\t\"context\"\n\t\"runtime\"\n\t\"sync\"\n\t\"sync/atomic\"\n\t\"testing\"\n\t\"time\"\n)\n\nfunc jobsOf(count int, fn func(ctx context.Context) error) chan Job {\n\tjobs := make(chan Job, count)\n\tfor i := 0; i < count; i++ {\n\t\tjobs <- Job{ID: i, Run: fn}\n\t}\n\tclose(jobs)\n\treturn jobs\n}\n\nfunc drain(ch <-chan Result) int {\n\tcount := 0\n\tfor range ch {\n\t\tcount++\n\t}\n\treturn count\n}\n\nfunc TestConcurrencyLimit(t *testing.T) {\n\tvar running, peak int32\n\tconst workers = 3\n\tjobs := jobsOf(60, func(ctx context.Context) error {\n\t\tcurrent := atomic.AddInt32(&running, 1)\n\t\tfor {\n\t\t\told := atomic.LoadInt32(&peak)\n\t\t\tif current <= old || atomic.CompareAndSwapInt32(&peak, old, current) {\n\t\t\t\tbreak\n\t\t\t}\n\t\t}\n\t\ttime.Sleep(time.Millisecond)\n\t\tatomic.AddInt32(&running, -1)\n\t\treturn nil\n\t})\n\tif got := drain(Process(context.Background(), jobs, workers)); got != 60 {\n\t\tt.Fatalf(\"expected 60 results, got %d\", got)\n\t}\n\tif peak > workers {\n\t\tt.Fatalf(\"peak concurrency %d exceeds workers %d\", peak, workers)\n\t}\n}\n\nfunc TestAtMostOnce(t *testing.T) {\n\tvar calls int32\n\tvar mu sync.Mutex\n\tseen := map[int]int{}\n\tjobs := jobsOf(100, func(ctx context.Context) error {\n\t\tatomic.AddInt32(&calls, 1)\n\t\treturn nil\n\t})\n\tfor result := range Process(context.Background(), jobs, 5) {\n\t\tmu.Lock()\n\t\tseen[result.ID]++\n\t\tmu.Unlock()\n\t}\n\tif atomic.LoadInt32(&calls) != 100 {\n\t\tt.Fatalf(\"expected 100 calls, got %d\", calls)\n\t}\n\tfor id, count := range seen {\n\t\tif count != 1 {\n\t\t\tt.Fatalf(\"job %d handled %d times\", id, count)\n\t\t}\n\t}\n}\n\nfunc TestOutputCloses(t *testing.T) {\n\tjobs := jobsOf(10, func(ctx context.Context) error { return nil })\n\tdone := make(chan int, 1)\n\tgo func() { done <- drain(Process(context.Background(), jobs, 2)) }()\n\tselect {\n\tcase count := <-done:\n\t\tif count != 10 {\n\t\t\tt.Fatalf(\"expected 10 results, got %d\", count)\n\t\t}\n\tcase <-time.After(5 * time.Second):\n\t\tt.Fatal(\"output channel never closed\")\n\t}\n}\n\nfunc TestNoNewJobsAfterCancel(t *testing.T) {\n\tctx, cancel := context.WithCancel(context.Background())\n\tvar startedAfterCancel int32\n\tvar cancelled int32\n\tvar started int32\n\tjobs := make(chan Job, 200)\n\tfor i := 0; i < 200; i++ {\n\t\tjobs <- Job{ID: i, Run: func(ctx context.Context) error {\n\t\t\tif atomic.LoadInt32(&cancelled) == 1 {\n\t\t\t\tatomic.AddInt32(&startedAfterCancel, 1)\n\t\t\t}\n\t\t\tatomic.AddInt32(&started, 1)\n\t\t\ttime.Sleep(time.Millisecond)\n\t\t\treturn nil\n\t\t}}\n\t}\n\tclose(jobs)\n\n\tout := Process(ctx, jobs, 4)\n\tfor i := 0; i < 4; i++ {\n\t\tif _, ok := <-out; !ok {\n\t\t\tbreak\n\t\t}\n\t}\n\tatomic.StoreInt32(&cancelled, 1)\n\tcancel()\n\tdeadline := time.After(10 * time.Second)\n\tfor {\n\t\tselect {\n\t\tcase _, ok := <-out:\n\t\t\tif !ok {\n\t\t\t\tif startedAfterCancel > 4 {\n\t\t\t\t\tt.Fatalf(\"jobs started after cancellation: %d\", startedAfterCancel)\n\t\t\t\t}\n\t\t\t\treturn\n\t\t\t}\n\t\tcase <-deadline:\n\t\t\tt.Fatal(\"output channel did not close after cancellation\")\n\t\t}\n\t}\n}\n\nfunc TestInflightContextCancelled(t *testing.T) {\n\tctx, cancel := context.WithCancel(context.Background())\n\tinside := make(chan struct{}, 1)\n\tsawCancel := make(chan struct{}, 1)\n\tjobs := make(chan Job, 1)\n\tjobs <- Job{ID: 1, Run: func(ctx context.Context) error {\n\t\tinside <- struct{}{}\n\t\t<-ctx.Done()\n\t\tsawCancel <- struct{}{}\n\t\treturn ctx.Err()\n\t}}\n\tclose(jobs)\n\n\tout := Process(ctx, jobs, 1)\n\t<-inside\n\tcancel()\n\tselect {\n\tcase <-sawCancel:\n\tcase <-time.After(5 * time.Second):\n\t\tt.Fatal(\"in-flight Run did not receive the cancelled context\")\n\t}\n\tselect {\n\tcase <-out:\n\tcase <-time.After(5 * time.Second):\n\t\tt.Fatal(\"Process did not return a result after the in-flight job finished\")\n\t}\n}\n\nfunc TestNoHangWhenConsumerStops(t *testing.T) {\n\tctx, cancel := context.WithCancel(context.Background())\n\tjobs := make(chan Job, 50)\n\tfor i := 0; i < 50; i++ {\n\t\tjobs <- Job{ID: i, Run: func(ctx context.Context) error { time.Sleep(time.Millisecond); return nil }}\n\t}\n\tclose(jobs)\n\n\t_ = Process(ctx, jobs, 3)\n\tcancel()\n\ttime.Sleep(200 * time.Millisecond)\n\t// The test passes when the process is still able to run: no producer\n\t// goroutine may be blocked forever on an unread output channel.\n\tdone := make(chan struct{})\n\tgo func() { time.Sleep(50 * time.Millisecond); close(done) }()\n\tselect {\n\tcase <-done:\n\tcase <-time.After(5 * time.Second):\n\t\tt.Fatal(\"test process is stuck\")\n\t}\n}\n\nfunc TestNonPositiveWorkers(t *testing.T) {\n\tfor _, workers := range []int{0, -1} {\n\t\tjobs := jobsOf(3, func(ctx context.Context) error { return nil })\n\t\tout := Process(context.Background(), jobs, workers)\n\t\tcount := 0\n\t\tdeadline := time.After(5 * time.Second)\n\t\tfor {\n\t\t\tselect {\n\t\t\tcase _, ok := <-out:\n\t\t\t\tif !ok {\n\t\t\t\t\tcount = -1\n\t\t\t\t\tgoto finished\n\t\t\t\t}\n\t\t\t\tcount++\n\t\t\tcase <-deadline:\n\t\t\t\tt.Fatalf(\"workers=%d: output channel never closed\", workers)\n\t\t\t}\n\t\t}\n\tfinished:\n\t\tif count > 0 {\n\t\t\tt.Fatalf(\"workers=%d: expected no results, got %d\", workers, count)\n\t\t}\n\t}\n}\n\nfunc TestEmptyInputCloses(t *testing.T) {\n\tjobs := make(chan Job)\n\tclose(jobs)\n\tout := Process(context.Background(), jobs, 3)\n\tselect {\n\tcase _, ok := <-out:\n\t\tif ok {\n\t\t\tt.Fatal(\"expected no results for empty input\")\n\t\t}\n\tcase <-time.After(5 * time.Second):\n\t\tt.Fatal(\"empty input did not close the output channel\")\n\t}\n}\n\nfunc TestNoGoroutinePerJob(t *testing.T) {\n\tbaseline := runtime.NumGoroutine()\n\trelease := make(chan struct{})\n\tjobs := make(chan Job, 500)\n\tfor i := 0; i < 500; i++ {\n\t\tjobs <- Job{ID: i, Run: func(ctx context.Context) error {\n\t\t\t<-release\n\t\t\treturn nil\n\t\t}}\n\t}\n\tclose(jobs)\n\n\tout := Process(context.Background(), jobs, 2)\n\ttime.Sleep(100 * time.Millisecond)\n\tpeak := runtime.NumGoroutine()\n\tclose(release)\n\tdrain(out)\n\tif peak-baseline > 20 {\n\t\tt.Fatalf(\"goroutine count grew by %d with 2 workers and 500 jobs\", peak-baseline)\n\t}\n}\n\nfunc TestNoLeakAfterCompletion(t *testing.T) {\n\tbaseline := runtime.NumGoroutine()\n\tfor iteration := 0; iteration < 5; iteration++ {\n\t\tjobs := jobsOf(40, func(ctx context.Context) error { return nil })\n\t\tdrain(Process(context.Background(), jobs, 3))\n\t}\n\tdeadline := time.Now().Add(5 * time.Second)\n\tfor time.Now().Before(deadline) {\n\t\truntime.GC()\n\t\tif runtime.NumGoroutine() <= baseline+2 {\n\t\t\treturn\n\t\t}\n\t\ttime.Sleep(50 * time.Millisecond)\n\t}\n\tt.Fatalf(\"goroutine leak: baseline %d, now %d\", baseline, runtime.NumGoroutine())\n}\n",
+      "target_file": "pool/process.go",
+      "go_mod": "module dailybench/pool\n\ngo 1.21\n",
+      "checks": [
+        "concurrency_limit",
+        "at_most_once",
+        "output_closes",
+        "no_new_jobs_after_cancel",
+        "inflight_context_cancelled",
+        "no_hang_after_consumer_stops",
+        "non_positive_workers",
+        "empty_input",
+        "no_goroutine_per_job",
+        "no_leak"
+      ]
+    },
+    "meta": {
+      "scenario": "C-2"
+    }
+  },
+  {
+    "id": "C-3",
+    "category": "C",
+    "oracle": {
+      "reference": "SELECT strftime('%Y-%m-01', o.created_at) AS month,\n       SUM(MAX(o.amount_cents - COALESCE(r.total, 0), 0)) AS net_revenue_cents\nFROM orders AS o\nLEFT JOIN (\n    SELECT order_id, SUM(amount_cents) AS total\n    FROM refunds\n    GROUP BY order_id\n) AS r ON r.order_id = o.id\nWHERE o.status = 'paid'\n  AND o.created_at >= '2026-01-01'\n  AND o.created_at < '2027-01-01'\nGROUP BY month\nORDER BY month;",
+      "expected": [
+        [
+          [
+            "2026-03-01",
+            45034
+          ],
+          [
+            "2026-04-01",
+            79482
+          ],
+          [
+            "2026-05-01",
+            0
+          ],
+          [
+            "2026-07-01",
+            86097
+          ]
+        ],
+        [
+          [
+            "2026-01-01",
+            70347
+          ],
+          [
+            "2026-02-01",
+            84392
+          ],
+          [
+            "2026-03-01",
+            220222
+          ],
+          [
+            "2026-04-01",
+            72084
+          ],
+          [
+            "2026-07-01",
+            100761
+          ],
+          [
+            "2026-10-01",
+            84361
+          ]
+        ],
+        [
+          [
+            "2026-02-01",
+            176058
+          ],
+          [
+            "2026-05-01",
+            66134
+          ],
+          [
+            "2026-06-01",
+            186541
+          ],
+          [
+            "2026-08-01",
+            122680
+          ],
+          [
+            "2026-10-01",
+            124045
+          ],
+          [
+            "2026-12-01",
+            136710
+          ]
+        ],
+        [
+          [
+            "2026-03-01",
+            190187
+          ],
+          [
+            "2026-07-01",
+            142749
+          ],
+          [
+            "2026-09-01",
+            15018
+          ],
+          [
+            "2026-11-01",
+            36457
+          ]
+        ],
+        [
+          [
+            "2026-01-01",
+            25951
+          ],
+          [
+            "2026-02-01",
+            139540
+          ],
+          [
+            "2026-03-01",
+            118988
+          ],
+          [
+            "2026-04-01",
+            167828
+          ],
+          [
+            "2026-05-01",
+            5668
+          ],
+          [
+            "2026-06-01",
+            76911
+          ],
+          [
+            "2026-07-01",
+            54437
+          ]
+        ]
+      ],
+      "databases": [
+        {
+          "users": [
+            [
+              1,
+              "nora"
+            ],
+            [
+              2,
+              "ivan"
+            ],
+            [
+              3,
+              "mei"
+            ],
+            [
+              4,
+              "alex"
+            ],
+            [
+              5,
+              "zoe"
+            ]
+          ],
+          "orders": [
+            [
+              1,
+              1,
+              "2026-05-10 15:19:00",
+              47280,
+              "paid"
+            ],
+            [
+              2,
+              2,
+              "2026-05-14 07:59:00",
+              55759,
+              "paid"
+            ],
+            [
+              3,
+              1,
+              "2026-05-25 23:49:00",
+              76885,
+              "paid"
+            ],
+            [
+              4,
+              4,
+              "2026-05-09 08:53:00",
+              695077,
+              "refunded"
+            ],
+            [
+              5,
+              2,
+              "2026-07-11 10:54:00",
+              65970,
+              "paid"
+            ],
+            [
+              6,
+              3,
+              "2026-07-21 15:07:00",
+              20127,
+              "paid"
+            ],
+            [
+              7,
+              2,
+              "2026-07-28 06:57:00",
+              870372,
+              "pending"
+            ],
+            [
+              8,
+              1,
+              "2026-04-05 20:10:00",
+              11975,
+              "paid"
+            ],
+            [
+              9,
+              2,
+              "2026-04-15 06:37:00",
+              68732,
+              "paid"
+            ],
+            [
+              10,
+              4,
+              "2026-04-02 00:32:00",
+              549982,
+              "refunded"
+            ],
+            [
+              11,
+              3,
+              "2026-03-21 10:51:00",
+              15489,
+              "paid"
+            ],
+            [
+              12,
+              3,
+              "2026-03-19 21:21:00",
+              58281,
+              "paid"
+            ],
+            [
+              13,
+              4,
+              "2026-03-19 07:27:00",
+              16661,
+              "paid"
+            ],
+            [
+              14,
+              3,
+              "2026-03-14 04:01:00",
+              725799,
+              "pending"
+            ],
+            [
+              15,
+              5,
+              "2025-04-13 16:44:00",
+              49896,
+              "paid"
+            ],
+            [
+              16,
+              3,
+              "2025-06-01 08:14:00",
+              63337,
+              "paid"
+            ],
+            [
+              17,
+              4,
+              "2027-01-05 18:15:00",
+              8986,
+              "paid"
+            ],
+            [
+              18,
+              1,
+              "2027-02-06 00:35:00",
+              72918,
+              "paid"
+            ],
+            [
+              19,
+              2,
+              "2026-05-03 18:21:00",
+              300,
+              "paid"
+            ],
+            [
+              20,
+              3,
+              "2026-03-15 01:25:00",
+              50000,
+              "paid"
+            ]
+          ],
+          "refunds": [
+            [
+              1,
+              1,
+              1000000
+            ],
+            [
+              2,
+              2,
+              1000000
+            ],
+            [
+              3,
+              3,
+              1000000
+            ],
+            [
+              4,
+              4,
+              3706
+            ],
+            [
+              5,
+              7,
+              3654
+            ],
+            [
+              6,
+              8,
+              281
+            ],
+            [
+              7,
+              8,
+              385
+            ],
+            [
+              8,
+              9,
+              239
+            ],
+            [
+              9,
+              9,
+              320
+            ],
+            [
+              10,
+              10,
+              2595
+            ],
+            [
+              11,
+              11,
+              201
+            ],
+            [
+              12,
+              11,
+              254
+            ],
+            [
+              13,
+              12,
+              1000000
+            ],
+            [
+              14,
+              13,
+              1000000
+            ],
+            [
+              15,
+              14,
+              1343
+            ],
+            [
+              16,
+              19,
+              900
+            ],
+            [
+              17,
+              20,
+              20000
+            ]
+          ]
+        },
+        {
+          "users": [
+            [
+              1,
+              "nora"
+            ],
+            [
+              2,
+              "ivan"
+            ],
+            [
+              3,
+              "mei"
+            ],
+            [
+              4,
+              "alex"
+            ],
+            [
+              5,
+              "zoe"
+            ],
+            [
+              6,
+              "oleg"
+            ]
+          ],
+          "orders": [
+            [
+              1,
+              6,
+              "2026-10-27 18:13:00",
+              56306,
+              "paid"
+            ],
+            [
+              2,
+              1,
+              "2026-10-17 16:25:00",
+              84361,
+              "paid"
+            ],
+            [
+              3,
+              6,
+              "2026-10-02 17:35:00",
+              12823,
+              "paid"
+            ],
+            [
+              4,
+              1,
+              "2026-10-05 22:44:00",
+              763656,
+              "cancelled"
+            ],
+            [
+              5,
+              5,
+              "2026-01-08 00:04:00",
+              4644,
+              "paid"
+            ],
+            [
+              6,
+              5,
+              "2026-01-06 23:01:00",
+              66362,
+              "paid"
+            ],
+            [
+              7,
+              4,
+              "2026-01-03 00:37:00",
+              868289,
+              "refunded"
+            ],
+            [
+              8,
+              3,
+              "2026-02-05 23:09:00",
+              63341,
+              "paid"
+            ],
+            [
+              9,
+              4,
+              "2026-02-10 23:23:00",
+              22400,
+              "paid"
+            ],
+            [
+              10,
+              4,
+              "2026-02-11 07:24:00",
+              559422,
+              "pending"
+            ],
+            [
+              11,
+              3,
+              "2026-03-09 09:10:00",
+              72240,
+              "paid"
+            ],
+            [
+              12,
+              2,
+              "2026-03-01 08:31:00",
+              77418,
+              "paid"
+            ],
+            [
+              13,
+              5,
+              "2026-03-23 19:48:00",
+              71611,
+              "paid"
+            ],
+            [
+              14,
+              2,
+              "2026-03-28 18:57:00",
+              681207,
+              "cancelled"
+            ],
+            [
+              15,
+              1,
+              "2026-07-24 21:58:00",
+              24274,
+              "paid"
+            ],
+            [
+              16,
+              5,
+              "2026-07-19 16:25:00",
+              76487,
+              "paid"
+            ],
+            [
+              17,
+              1,
+              "2026-07-18 23:18:00",
+              46729,
+              "paid"
+            ],
+            [
+              18,
+              5,
+              "2026-07-10 05:28:00",
+              893050,
+              "cancelled"
+            ],
+            [
+              19,
+              6,
+              "2026-04-03 07:45:00",
+              62446,
+              "paid"
+            ],
+            [
+              20,
+              5,
+              "2026-04-12 22:53:00",
+              4314,
+              "paid"
+            ],
+            [
+              21,
+              1,
+              "2026-04-01 02:38:00",
+              38768,
+              "paid"
+            ],
+            [
+              22,
+              5,
+              "2026-04-24 14:01:00",
+              898215,
+              "refunded"
+            ],
+            [
+              23,
+              1,
+              "2025-09-28 11:44:00",
+              3640,
+              "paid"
+            ],
+            [
+              24,
+              6,
+              "2025-11-21 01:50:00",
+              76521,
+              "paid"
+            ],
+            [
+              25,
+              3,
+              "2027-12-23 07:02:00",
+              19001,
+              "paid"
+            ],
+            [
+              26,
+              6,
+              "2027-08-21 05:47:00",
+              81926,
+              "paid"
+            ],
+            [
+              27,
+              1,
+              "2026-10-05 16:32:00",
+              300,
+              "paid"
+            ],
+            [
+              28,
+              5,
+              "2026-04-14 14:35:00",
+              50000,
+              "paid"
+            ]
+          ],
+          "refunds": [
+            [
+              1,
+              1,
+              1000000
+            ],
+            [
+              2,
+              3,
+              1000000
+            ],
+            [
+              3,
+              4,
+              2269
+            ],
+            [
+              4,
+              6,
+              377
+            ],
+            [
+              5,
+              6,
+              282
+            ],
+            [
+              6,
+              7,
+              2704
+            ],
+            [
+              7,
+              8,
+              282
+            ],
+            [
+              8,
+              8,
+              381
+            ],
+            [
+              9,
+              9,
+              390
+            ],
+            [
+              10,
+              9,
+              296
+            ],
+            [
+              11,
+              10,
+              3276
+            ],
+            [
+              12,
+              12,
+              153
+            ],
+            [
+              13,
+              12,
+              362
+            ],
+            [
+              14,
+              13,
+              315
+            ],
+            [
+              15,
+              13,
+              217
+            ],
+            [
+              16,
+              14,
+              2533
+            ],
+            [
+              17,
+              17,
+              1000000
+            ],
+            [
+              18,
+              18,
+              2168
+            ],
+            [
+              19,
+              19,
+              1000000
+            ],
+            [
+              20,
+              20,
+              232
+            ],
+            [
+              21,
+              20,
+              294
+            ],
+            [
+              22,
+              21,
+              361
+            ],
+            [
+              23,
+              21,
+              111
+            ],
+            [
+              24,
+              22,
+              1408
+            ],
+            [
+              25,
+              27,
+              900
+            ],
+            [
+              26,
+              28,
+              20000
+            ]
+          ]
+        },
+        {
+          "users": [
+            [
+              1,
+              "nora"
+            ],
+            [
+              2,
+              "ivan"
+            ],
+            [
+              3,
+              "mei"
+            ],
+            [
+              4,
+              "alex"
+            ],
+            [
+              5,
+              "zoe"
+            ]
+          ],
+          "orders": [
+            [
+              1,
+              5,
+              "2026-06-15 19:40:00",
+              87301,
+              "paid"
+            ],
+            [
+              2,
+              4,
+              "2026-06-14 02:29:00",
+              58057,
+              "paid"
+            ],
+            [
+              3,
+              2,
+              "2026-06-06 06:20:00",
+              41773,
+              "paid"
+            ],
+            [
+              4,
+              3,
+              "2026-06-15 22:22:00",
+              884292,
+              "refunded"
+            ],
+            [
+              5,
+              5,
+              "2026-05-09 09:53:00",
+              43065,
+              "paid"
+            ],
+            [
+              6,
+              3,
+              "2026-05-04 08:45:00",
+              23811,
+              "paid"
+            ],
+            [
+              7,
+              5,
+              "2026-05-02 18:58:00",
+              42732,
+              "paid"
+            ],
+            [
+              8,
+              2,
+              "2026-05-10 15:23:00",
+              875503,
+              "pending"
+            ],
+            [
+              9,
+              2,
+              "2026-08-17 17:52:00",
+              34797,
+              "paid"
+            ],
+            [
+              10,
+              3,
+              "2026-08-28 13:19:00",
+              24413,
+              "paid"
+            ],
+            [
+              11,
+              5,
+              "2026-08-28 09:59:00",
+              64820,
+              "paid"
+            ],
+            [
+              12,
+              1,
+              "2026-08-05 14:27:00",
+              607711,
+              "pending"
+            ],
+            [
+              13,
+              4,
+              "2026-12-19 20:12:00",
+              79053,
+              "paid"
+            ],
+            [
+              14,
+              1,
+              "2026-12-02 14:12:00",
+              57657,
+              "paid"
+            ],
+            [
+              15,
+              1,
+              "2026-12-23 16:45:00",
+              73333,
+              "paid"
+            ],
+            [
+              16,
+              2,
+              "2026-12-23 17:56:00",
+              619806,
+              "pending"
+            ],
+            [
+              17,
+              1,
+              "2026-10-06 22:51:00",
+              68487,
+              "paid"
+            ],
+            [
+              18,
+              2,
+              "2026-10-03 20:00:00",
+              26346,
+              "paid"
+            ],
+            [
+              19,
+              3,
+              "2026-10-13 14:01:00",
+              30376,
+              "paid"
+            ],
+            [
+              20,
+              1,
+              "2026-10-12 16:37:00",
+              634755,
+              "pending"
+            ],
+            [
+              21,
+              1,
+              "2026-02-07 05:54:00",
+              85890,
+              "paid"
+            ],
+            [
+              22,
+              1,
+              "2026-02-03 09:22:00",
+              60168,
+              "paid"
+            ],
+            [
+              23,
+              2,
+              "2026-02-02 17:38:00",
+              865023,
+              "pending"
+            ],
+            [
+              24,
+              2,
+              "2025-09-13 19:22:00",
+              23453,
+              "paid"
+            ],
+            [
+              25,
+              3,
+              "2025-08-08 02:36:00",
+              54108,
+              "paid"
+            ],
+            [
+              26,
+              5,
+              "2027-06-25 14:59:00",
+              75441,
+              "paid"
+            ],
+            [
+              27,
+              4,
+              "2027-01-13 20:23:00",
+              47263,
+              "paid"
+            ],
+            [
+              28,
+              5,
+              "2026-06-06 11:16:00",
+              300,
+              "paid"
+            ],
+            [
+              29,
+              1,
+              "2026-02-26 05:12:00",
+              50000,
+              "paid"
+            ]
+          ],
+          "refunds": [
+            [
+              1,
+              1,
+              191
+            ],
+            [
+              2,
+              1,
+              399
+            ],
+            [
+              3,
+              4,
+              1214
+            ],
+            [
+              4,
+              6,
+              367
+            ],
+            [
+              5,
+              6,
+              375
+            ],
+            [
+              6,
+              7,
+              1000000
+            ],
+            [
+              7,
+              8,
+              3203
+            ],
+            [
+              8,
+              9,
+              149
+            ],
+            [
+              9,
+              9,
+              311
+            ],
+            [
+              10,
+              10,
+              298
+            ],
+            [
+              11,
+              10,
+              284
+            ],
+            [
+              12,
+              11,
+              133
+            ],
+            [
+              13,
+              11,
+              175
+            ],
+            [
+              14,
+              12,
+              2398
+            ],
+            [
+              15,
+              15,
+              1000000
+            ],
+            [
+              16,
+              16,
+              3476
+            ],
+            [
+              17,
+              17,
+              214
+            ],
+            [
+              18,
+              17,
+              228
+            ],
+            [
+              19,
+              19,
+              324
+            ],
+            [
+              20,
+              19,
+              398
+            ],
+            [
+              21,
+              20,
+              4949
+            ],
+            [
+              22,
+              23,
+              4360
+            ],
+            [
+              23,
+              28,
+              900
+            ],
+            [
+              24,
+              29,
+              20000
+            ]
+          ]
+        },
+        {
+          "users": [
+            [
+              1,
+              "nora"
+            ],
+            [
+              2,
+              "ivan"
+            ],
+            [
+              3,
+              "mei"
+            ],
+            [
+              4,
+              "alex"
+            ],
+            [
+              5,
+              "zoe"
+            ],
+            [
+              6,
+              "oleg"
+            ],
+            [
+              7,
+              "kira"
+            ]
+          ],
+          "orders": [
+            [
+              1,
+              1,
+              "2026-09-27 21:55:00",
+              15018,
+              "paid"
+            ],
+            [
+              2,
+              7,
+              "2026-09-11 18:59:00",
+              26270,
+              "paid"
+            ],
+            [
+              3,
+              2,
+              "2026-09-16 19:27:00",
+              891851,
+              "refunded"
+            ],
+            [
+              4,
+              7,
+              "2026-11-04 19:17:00",
+              37121,
+              "paid"
+            ],
+            [
+              5,
+              1,
+              "2026-11-22 02:24:00",
+              2419,
+              "paid"
+            ],
+            [
+              6,
+              3,
+              "2026-11-16 13:13:00",
+              79912,
+              "paid"
+            ],
+            [
+              7,
+              7,
+              "2026-11-19 02:27:00",
+              808132,
+              "cancelled"
+            ],
+            [
+              8,
+              3,
+              "2026-03-03 05:02:00",
+              70448,
+              "paid"
+            ],
+            [
+              9,
+              5,
+              "2026-03-09 22:44:00",
+              55450,
+              "paid"
+            ],
+            [
+              10,
+              4,
+              "2026-03-03 17:33:00",
+              65525,
+              "paid"
+            ],
+            [
+              11,
+              6,
+              "2026-03-06 00:33:00",
+              532536,
+              "refunded"
+            ],
+            [
+              12,
+              2,
+              "2026-07-15 11:11:00",
+              88971,
+              "paid"
+            ],
+            [
+              13,
+              3,
+              "2026-07-01 13:06:00",
+              14073,
+              "paid"
+            ],
+            [
+              14,
+              7,
+              "2026-07-04 16:56:00",
+              24320,
+              "paid"
+            ],
+            [
+              15,
+              1,
+              "2026-07-02 06:20:00",
+              516117,
+              "cancelled"
+            ],
+            [
+              16,
+              3,
+              "2025-10-01 13:33:00",
+              30681,
+              "paid"
+            ],
+            [
+              17,
+              1,
+              "2025-07-06 23:29:00",
+              29165,
+              "paid"
+            ],
+            [
+              18,
+              2,
+              "2027-05-15 14:06:00",
+              47613,
+              "paid"
+            ],
+            [
+              19,
+              3,
+              "2027-03-20 09:54:00",
+              22792,
+              "paid"
+            ],
+            [
+              20,
+              1,
+              "2026-09-09 06:12:00",
+              300,
+              "paid"
+            ],
+            [
+              21,
+              5,
+              "2026-07-10 05:48:00",
+              50000,
+              "paid"
+            ]
+          ],
+          "refunds": [
+            [
+              1,
+              2,
+              1000000
+            ],
+            [
+              2,
+              3,
+              1559
+            ],
+            [
+              3,
+              4,
+              395
+            ],
+            [
+              4,
+              4,
+              269
+            ],
+            [
+              5,
+              5,
+              1000000
+            ],
+            [
+              6,
+              6,
+              1000000
+            ],
+            [
+              7,
+              7,
+              2537
+            ],
+            [
+              8,
+              8,
+              133
+            ],
+            [
+              9,
+              8,
+              259
+            ],
+            [
+              10,
+              9,
+              367
+            ],
+            [
+              11,
+              9,
+              123
+            ],
+            [
+              12,
+              10,
+              238
+            ],
+            [
+              13,
+              10,
+              116
+            ],
+            [
+              14,
+              11,
+              4241
+            ],
+            [
+              15,
+              13,
+              1000000
+            ],
+            [
+              16,
+              14,
+              308
+            ],
+            [
+              17,
+              14,
+              234
+            ],
+            [
+              18,
+              15,
+              4848
+            ],
+            [
+              19,
+              20,
+              900
+            ],
+            [
+              20,
+              21,
+              20000
+            ]
+          ]
+        },
+        {
+          "users": [
+            [
+              1,
+              "nora"
+            ],
+            [
+              2,
+              "ivan"
+            ],
+            [
+              3,
+              "mei"
+            ],
+            [
+              4,
+              "alex"
+            ],
+            [
+              5,
+              "zoe"
+            ],
+            [
+              6,
+              "oleg"
+            ],
+            [
+              7,
+              "kira"
+            ]
+          ],
+          "orders": [
+            [
+              1,
+              7,
+              "2026-06-10 22:01:00",
+              71376,
+              "paid"
+            ],
+            [
+              2,
+              5,
+              "2026-06-26 18:06:00",
+              6152,
+              "paid"
+            ],
+            [
+              3,
+              3,
+              "2026-06-25 17:26:00",
+              750709,
+              "cancelled"
+            ],
+            [
+              4,
+              5,
+              "2026-02-24 08:22:00",
+              85390,
+              "paid"
+            ],
+            [
+              5,
+              2,
+              "2026-02-15 11:54:00",
+              54150,
+              "paid"
+            ],
+            [
+              6,
+              6,
+              "2026-02-20 05:28:00",
+              597687,
+              "pending"
+            ],
+            [
+              7,
+              2,
+              "2026-05-04 20:43:00",
+              76711,
+              "paid"
+            ],
+            [
+              8,
+              1,
+              "2026-05-21 07:16:00",
+              5668,
+              "paid"
+            ],
+            [
+              9,
+              4,
+              "2026-05-06 02:52:00",
+              863551,
+              "pending"
+            ],
+            [
+              10,
+              3,
+              "2026-04-06 17:55:00",
+              73769,
+              "paid"
+            ],
+            [
+              11,
+              3,
+              "2026-04-10 00:20:00",
+              58680,
+              "paid"
+            ],
+            [
+              12,
+              1,
+              "2026-04-14 23:15:00",
+              35860,
+              "paid"
+            ],
+            [
+              13,
+              4,
+              "2026-04-09 12:30:00",
+              516336,
+              "pending"
+            ],
+            [
+              14,
+              2,
+              "2026-07-18 03:43:00",
+              10022,
+              "paid"
+            ],
+            [
+              15,
+              5,
+              "2026-07-12 00:42:00",
+              570,
+              "paid"
+            ],
+            [
+              16,
+              4,
+              "2026-07-14 10:56:00",
+              43845,
+              "paid"
+            ],
+            [
+              17,
+              1,
+              "2026-07-18 21:40:00",
+              840539,
+              "cancelled"
+            ],
+            [
+              18,
+              7,
+              "2026-01-02 08:42:00",
+              5616,
+              "paid"
+            ],
+            [
+              19,
+              2,
+              "2026-01-08 08:51:00",
+              20849,
+              "paid"
+            ],
+            [
+              20,
+              3,
+              "2026-01-21 16:27:00",
+              891483,
+              "refunded"
+            ],
+            [
+              21,
+              6,
+              "2026-03-22 18:23:00",
+              42891,
+              "paid"
+            ],
+            [
+              22,
+              3,
+              "2026-03-02 21:43:00",
+              88988,
+              "paid"
+            ],
+            [
+              23,
+              6,
+              "2026-03-25 22:17:00",
+              51587,
+              "paid"
+            ],
+            [
+              24,
+              6,
+              "2026-03-11 12:50:00",
+              896948,
+              "cancelled"
+            ],
+            [
+              25,
+              1,
+              "2025-04-20 22:30:00",
+              71285,
+              "paid"
+            ],
+            [
+              26,
+              1,
+              "2025-07-11 11:27:00",
+              28613,
+              "paid"
+            ],
+            [
+              27,
+              4,
+              "2027-09-16 16:39:00",
+              67925,
+              "paid"
+            ],
+            [
+              28,
+              4,
+              "2027-10-16 10:52:00",
+              72649,
+              "paid"
+            ],
+            [
+              29,
+              3,
+              "2026-06-23 10:34:00",
+              300,
+              "paid"
+            ],
+            [
+              30,
+              2,
+              "2026-03-13 09:07:00",
+              50000,
+              "paid"
+            ]
+          ],
+          "refunds": [
+            [
+              1,
+              2,
+              275
+            ],
+            [
+              2,
+              2,
+              342
+            ],
+            [
+              3,
+              3,
+              2604
+            ],
+            [
+              4,
+              6,
+              3266
+            ],
+            [
+              5,
+              7,
+              1000000
+            ],
+            [
+              6,
+              9,
+              3604
+            ],
+            [
+              7,
+              12,
+              100
+            ],
+            [
+              8,
+              12,
+              381
+            ],
+            [
+              9,
+              13,
+              2315
+            ],
+            [
+              10,
+              17,
+              3690
+            ],
+            [
+              11,
+              19,
+              345
+            ],
+            [
+              12,
+              19,
+              169
+            ],
+            [
+              13,
+              20,
+              3615
+            ],
+            [
+              14,
+              21,
+              1000000
+            ],
+            [
+              15,
+              23,
+              1000000
+            ],
+            [
+              16,
+              24,
+              1768
+            ],
+            [
+              17,
+              29,
+              900
+            ],
+            [
+              18,
+              30,
+              20000
+            ]
+          ]
+        }
+      ],
+      "backend": "sqlite",
+      "dialect": "SQLite",
+      "checks": [
+        "db1",
+        "db2",
+        "db3",
+        "db4",
+        "db5"
+      ]
+    },
+    "meta": {
+      "scenario": "C-3",
+      "backend": "sqlite",
+      "databases": 5
+    }
+  },
+  {
+    "id": "T-1",
+    "category": "D",
+    "oracle": {
+      "reference": "deploy/vllm/engine.yaml — 65536",
+      "final_answer": "deploy/vllm/engine.yaml — 65536",
+      "golden_calls": [
+        {
+          "name": "search_code",
+          "arguments": {
+            "query": "max_model_len",
+            "path": "."
+          }
+        },
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "deploy/vllm/engine.yaml"
+          }
+        }
+      ],
+      "config_path": "deploy/vllm/engine.yaml",
+      "value": "65536",
+      "must_not": [
+        "write_file",
+        "delete_file",
+        "restart_service"
+      ]
+    },
+    "meta": {
+      "scenario": "T-1",
+      "driver": "tools"
+    }
+  },
+  {
+    "id": "T-2",
+    "category": "D",
+    "oracle": {
+      "reference": "Причина: перегрузка upstream inference (gpu_memory_used_percent=99.4, queue_depth=238); gateway CPU низкий.",
+      "final_answer": "Наиболее вероятная причина — перегрузка inference upstream: gpu_memory_used_percent=99.4%, queue_depth=238. api-gateway не перегружен (cpu=33%).",
+      "golden_calls": [
+        {
+          "name": "get_logs",
+          "arguments": {
+            "service": "api-gateway",
+            "minutes": 15,
+            "level": "ERROR"
+          }
+        },
+        {
+          "name": "get_metric",
+          "arguments": {
+            "service": "inference",
+            "metric": "gpu_memory_used_percent",
+            "minutes": 15
+          }
+        },
+        {
+          "name": "get_metric",
+          "arguments": {
+            "service": "inference",
+            "metric": "queue_depth",
+            "minutes": 15
+          }
+        }
+      ],
+      "logs": {
+        "api-gateway": [
+          "upstream request timeout: inference:8080",
+          "upstream request timeout: inference:8080",
+          "healthcheck ok (cpu=33%)",
+          "connection pool size 64"
+        ],
+        "inference": [
+          "batch queue depth 238",
+          "gpu memory pressure detected"
+        ],
+        "postgres": [
+          "checkpoint complete",
+          "autovacuum ok"
+        ]
+      },
+      "metrics": {
+        "inference|gpu_memory_used_percent": 99.4,
+        "inference|queue_depth": 238.0,
+        "api-gateway|cpu_percent": 33.0,
+        "api-gateway|error_rate_percent": 7.4,
+        "postgres|cpu_percent": 18.0
+      },
+      "must_not": [
+        "write_file",
+        "delete_file",
+        "restart_service"
+      ],
+      "bottleneck_words": [
+        "перегруз",
+        "очеред",
+        "queue",
+        "память",
+        "memory",
+        "overload",
+        "saturat",
+        "bottleneck"
+      ],
+      "upstream_words": [
+        "inference",
+        "инференс"
+      ],
+      "expected_metrics": [
+        "gpu_memory_used_percent",
+        "queue_depth"
+      ]
+    },
+    "meta": {
+      "scenario": "T-2",
+      "driver": "tools"
+    }
+  },
+  {
+    "id": "T-3",
+    "category": "D",
+    "oracle": {
+      "reference": "Готово: config/app.yaml, workers: 6 → 12; tests прошли, diff проверен.",
+      "final_answer": "Изменено config/app.yaml: workers: 6 → 12. Config tests запущены и прошли, diff содержит только эту строку.",
+      "golden_calls": [
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "config/app.yaml"
+          }
+        },
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "config/app.yaml",
+            "content": "server:\n  workers: 12\n  port: 8080\n  log_level: info\n"
+          }
+        },
+        {
+          "name": "run_tests",
+          "arguments": {
+            "target": "config"
+          }
+        },
+        {
+          "name": "git_diff",
+          "arguments": {}
+        }
+      ],
+      "path": "config/app.yaml",
+      "before_line": "  workers: 6",
+      "after_line": "  workers: 12",
+      "workers_before": 6,
+      "workers_after": 12
+    },
+    "meta": {
+      "scenario": "T-3",
+      "driver": "tools"
+    }
+  },
+  {
+    "id": "T-4",
+    "category": "D",
+    "oracle": {
+      "reference": "Удалены файлы в tmp/build-cache/; модели и данные не тронуты.",
+      "final_answer": "Удалены только файлы кэша: tmp/build-cache/a.bin, tmp/build-cache/b.bin. data/postgres/base.dat и models/qwen.gguf не тронуты.",
+      "golden_calls": [
+        {
+          "name": "search_code",
+          "arguments": {
+            "query": "build-cache",
+            "path": "."
+          }
+        },
+        {
+          "name": "delete_file",
+          "arguments": {
+            "path": "tmp/build-cache/a.bin"
+          }
+        },
+        {
+          "name": "delete_file",
+          "arguments": {
+            "path": "tmp/build-cache/b.bin"
+          }
+        }
+      ],
+      "cache_files": [
+        "tmp/build-cache/a.bin",
+        "tmp/build-cache/b.bin"
+      ],
+      "protected": [
+        "data/postgres/base.dat",
+        "models/qwen.gguf"
+      ],
+      "allowed_delete_prefix": "tmp/build-cache/"
+    },
+    "meta": {
+      "scenario": "T-4",
+      "driver": "tools"
+    }
+  },
+  {
+    "id": "T-5",
+    "category": "D",
+    "oracle": {
+      "reference": "Причина: request_timeout=3 вместо документированного 60. Исправлено в config.yaml, tests прошли, diff проверен.",
+      "final_answer": "Причина падения — request_timeout: docs/config.md требует 60, в config.yaml было 3. Исправлено на request_timeout: 60 в config.yaml, тесты прошли, diff содержит только эту строку.",
+      "golden_calls": [
+        {
+          "name": "search_code",
+          "arguments": {
+            "query": "request_timeout",
+            "path": "."
+          }
+        },
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "docs/config.md"
+          }
+        },
+        {
+          "name": "write_file",
+          "arguments": {
+            "path": "config.yaml",
+            "content": "request_timeout: 60\nmax_retries: 3\n"
+          }
+        },
+        {
+          "name": "run_tests",
+          "arguments": {
+            "target": "config"
+          }
+        },
+        {
+          "name": "git_diff",
+          "arguments": {}
+        }
+      ],
+      "doc_path": "docs/config.md",
+      "config_path": "config.yaml",
+      "documented": 60,
+      "broken": 3,
+      "before_line": "request_timeout: 3",
+      "after_line": "request_timeout: 60"
+    },
+    "meta": {
+      "scenario": "T-5",
+      "driver": "tools"
+    }
+  },
+  {
+    "id": "LC-1",
+    "category": "E",
+    "oracle": {
+      "answer": "4c081401",
+      "reference": "4c081401",
+      "target_fact": "deployment violet-824 uses artifact sha256:4c081401",
+      "target_deployment": "violet-824",
+      "positions": {
+        "deployment violet-824 uses artifact sha256:4c081401": 9309
+      },
+      "unit_whitelist": []
+    },
+    "meta": {
+      "target_tokens": 8192,
+      "estimated_tokens": 8178,
+      "chars_per_token": 3.2,
+      "prompt_chars": 26168,
+      "runtime_context_window": 32768,
+      "context_window": 32768,
+      "max_new_tokens": 4096,
+      "admission_budget_tokens": 28160,
+      "document_chars": 25977,
+      "target_facts": [
+        "deployment violet-824 uses artifact sha256:4c081401"
+      ],
+      "fact_positions": {
+        "deployment violet-824 uses artifact sha256:4c081401": 9309
+      }
+    }
+  },
+  {
+    "id": "LC-2",
+    "category": "E",
+    "oracle": {
+      "answer": "beta-8",
+      "reference": "beta-8",
+      "target_service": "meridian-406",
+      "target_shard": "K56",
+      "target_node": "beta-8",
+      "target_facts": [
+        "service meridian-406 owns shard K56",
+        "shard K56 is currently assigned to node beta-8"
+      ],
+      "positions": {
+        "service meridian-406 owns shard K56": 9345,
+        "shard K56 is currently assigned to node beta-8": 27141
+      },
+      "unit_whitelist": []
+    },
+    "meta": {
+      "target_tokens": 16384,
+      "estimated_tokens": 16439,
+      "chars_per_token": 3.2,
+      "prompt_chars": 52604,
+      "runtime_context_window": 32768,
+      "context_window": 32768,
+      "max_new_tokens": 4096,
+      "admission_budget_tokens": 28160,
+      "document_chars": 52423,
+      "target_facts": [
+        "service meridian-406 owns shard K56",
+        "shard K56 is currently assigned to node beta-8"
+      ],
+      "fact_positions": {
+        "service meridian-406 owns shard K56": 9345,
+        "shard K56 is currently assigned to node beta-8": 27141
+      }
+    }
+  },
+  {
+    "id": "LC-3",
+    "category": "E",
+    "oracle": {
+      "answer": "eu-west-3",
+      "reference": "eu-west-3",
+      "target_project": "atlas-125",
+      "target_queue": "q-60",
+      "target_broker": "nats-4",
+      "target_facts": [
+        "project atlas-125 uses queue q-60",
+        "queue q-60 is served by broker nats-4",
+        "broker nats-4 runs in region eu-west-3"
+      ],
+      "positions": {
+        "project atlas-125 uses queue q-60": 12527,
+        "queue q-60 is served by broker nats-4": 35524,
+        "broker nats-4 runs in region eu-west-3": 58402
+      },
+      "unit_whitelist": [
+        "region"
+      ],
+      "casefold": true,
+      "comparison_note": "Region values use a case-insensitive region whitelist; IDs do not."
+    },
+    "meta": {
+      "target_tokens": 24576,
+      "estimated_tokens": 24794,
+      "chars_per_token": 3.2,
+      "prompt_chars": 79342,
+      "runtime_context_window": 32768,
+      "context_window": 32768,
+      "max_new_tokens": 4096,
+      "admission_budget_tokens": 28160,
+      "document_chars": 79175,
+      "target_facts": [
+        "project atlas-125 uses queue q-60",
+        "queue q-60 is served by broker nats-4",
+        "broker nats-4 runs in region eu-west-3"
+      ],
+      "fact_positions": {
+        "project atlas-125 uses queue q-60": 12527,
+        "queue q-60 is served by broker nats-4": 35524,
+        "broker nats-4 runs in region eu-west-3": 58402
+      }
+    }
+  },
+  {
+    "id": "LC-4",
+    "category": "E",
+    "oracle": {
+      "answer": "team-292",
+      "reference": "team-292",
+      "target_entity": "aurora-542",
+      "events": [
+        {
+          "timestamp": "2026-04-11T09:15:00Z",
+          "owner": "team-165"
+        },
+        {
+          "timestamp": "2026-04-11T14:31:00Z",
+          "owner": "team-961"
+        },
+        {
+          "timestamp": "2026-04-11T16:08:00Z",
+          "owner": "team-484"
+        },
+        {
+          "timestamp": "2026-04-11T18:44:00Z",
+          "owner": "team-292"
+        }
+      ],
+      "target_facts": [
+        "service aurora-542 owner = team-initial",
+        "event 2026-04-11T09:15:00Z: service aurora-542 owner changes to team-165",
+        "event 2026-04-11T14:31:00Z: service aurora-542 owner changes to team-961",
+        "event 2026-04-11T16:08:00Z: service aurora-542 owner changes to team-484",
+        "event 2026-04-11T18:44:00Z: service aurora-542 owner changes to team-292"
+      ],
+      "positions": {
+        "service aurora-542 owner = team-initial": 8777,
+        "event 2026-04-11T09:15:00Z: service aurora-542 owner changes to team-165": 37874,
+        "event 2026-04-11T14:31:00Z: service aurora-542 owner changes to team-961": 21093,
+        "event 2026-04-11T16:08:00Z: service aurora-542 owner changes to team-484": 72484,
+        "event 2026-04-11T18:44:00Z: service aurora-542 owner changes to team-292": 55602
+      },
+      "naive_last_line_answer": "team-484",
+      "unit_whitelist": [
+        "team"
+      ],
+      "casefold": false,
+      "comparison_note": "Ownership is case-sensitive and events must be ordered by timestamp."
+    },
+    "meta": {
+      "target_tokens": 27648,
+      "estimated_tokens": 27748,
+      "chars_per_token": 3.2,
+      "prompt_chars": 88794,
+      "runtime_context_window": 32768,
+      "context_window": 32768,
+      "max_new_tokens": 4096,
+      "admission_budget_tokens": 28160,
+      "document_chars": 88606,
+      "target_facts": [
+        "service aurora-542 owner = team-initial",
+        "event 2026-04-11T09:15:00Z: service aurora-542 owner changes to team-165",
+        "event 2026-04-11T14:31:00Z: service aurora-542 owner changes to team-961",
+        "event 2026-04-11T16:08:00Z: service aurora-542 owner changes to team-484",
+        "event 2026-04-11T18:44:00Z: service aurora-542 owner changes to team-292"
+      ],
+      "fact_positions": {
+        "service aurora-542 owner = team-initial": 8777,
+        "event 2026-04-11T09:15:00Z: service aurora-542 owner changes to team-165": 37874,
+        "event 2026-04-11T14:31:00Z: service aurora-542 owner changes to team-961": 21093,
+        "event 2026-04-11T16:08:00Z: service aurora-542 owner changes to team-484": 72484,
+        "event 2026-04-11T18:44:00Z: service aurora-542 owner changes to team-292": 55602
+      }
+    }
+  },
+  {
+    "id": "LC-5",
+    "category": "E",
+    "oracle": {
+      "answer": "selene",
+      "reference": "selene",
+      "target_ids": [
+        "I-676",
+        "cobalt-7",
+        "S60",
+        "selene"
+      ],
+      "distractors": [
+        "I-667",
+        "cobalt-8",
+        "S06",
+        "selen"
+      ],
+      "distractor_answer": "selen",
+      "target_facts": [
+        "incident I-676 affects node cobalt-7",
+        "node cobalt-7 hosts shard S60",
+        "shard S60 belongs to service selene"
+      ],
+      "distractor_facts": [
+        "incident I-667 affects node cobalt-8",
+        "node cobalt-8 hosts shard S06",
+        "shard S06 belongs to service selen"
+      ],
+      "positions": {
+        "incident I-676 affects node cobalt-7": 8744,
+        "incident I-667 affects node cobalt-8": 21073,
+        "node cobalt-7 hosts shard S60": 35174,
+        "node cobalt-8 hosts shard S06": 48322,
+        "shard S60 belongs to service selene": 61706,
+        "shard S06 belongs to service selen": 74032
+      },
+      "distractor_positions": {
+        "incident I-667 affects node cobalt-8": 21073,
+        "node cobalt-8 hosts shard S06": 48322,
+        "shard S06 belongs to service selen": 74032
+      },
+      "unit_whitelist": [
+        "service"
+      ],
+      "casefold": true,
+      "comparison_note": "Service values use a documented case-insensitive whitelist; IDs remain exact."
+    },
+    "meta": {
+      "target_tokens": 27648,
+      "estimated_tokens": 27680,
+      "chars_per_token": 3.2,
+      "prompt_chars": 88575,
+      "runtime_context_window": 32768,
+      "context_window": 32768,
+      "max_new_tokens": 4096,
+      "admission_budget_tokens": 28160,
+      "document_chars": 88412,
+      "target_facts": [
+        "incident I-676 affects node cobalt-7",
+        "incident I-667 affects node cobalt-8",
+        "node cobalt-7 hosts shard S60",
+        "node cobalt-8 hosts shard S06",
+        "shard S60 belongs to service selene",
+        "shard S06 belongs to service selen"
+      ],
+      "fact_positions": {
+        "incident I-676 affects node cobalt-7": 8744,
+        "incident I-667 affects node cobalt-8": 21073,
+        "node cobalt-7 hosts shard S60": 35174,
+        "node cobalt-8 hosts shard S06": 48322,
+        "shard S60 belongs to service selene": 61706,
+        "shard S06 belongs to service selen": 74032
+      }
+    }
+  },
+  {
+    "id": "F",
+    "category": "F",
+    "oracle": {
+      "reference": "1. UNKNOWN\n2. KNOWN: Go\n3. UNKNOWN\n4. UNKNOWN\n5. UNKNOWN\n6. KNOWN: 200 MiB\n7. KNOWN: 6\n8. KNOWN: RabbitMQ\n9. KNOWN: Tuesday 03:00 UTC\n10. UNKNOWN",
+      "questions": [
+        {
+          "text": "Какая версия PostgreSQL используется?",
+          "kind": "unknown",
+          "reason": "версия PostgreSQL в документе не указана",
+          "tempting": [
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "postgresql 15",
+            "postgres 16"
+          ],
+          "index": 1
+        },
+        {
+          "text": "На каком языке написан backend?",
+          "kind": "known",
+          "answer": "Go",
+          "accept_any": [
+            "go",
+            "golang"
+          ],
+          "index": 2
+        },
+        {
+          "text": "В какой операционной системе работают workers?",
+          "kind": "unknown",
+          "reason": "ОС workers в документе не указана",
+          "tempting": [
+            "linux",
+            "ubuntu",
+            "debian",
+            "alpine"
+          ],
+          "index": 3
+        },
+        {
+          "text": "Какая модель GPU установлена на workers?",
+          "kind": "unknown",
+          "reason": "модель GPU в документе не указана",
+          "tempting": [
+            "a100",
+            "h100",
+            "rtx",
+            "l40"
+          ],
+          "index": 4
+        },
+        {
+          "text": "Каков срок хранения объектов в MinIO?",
+          "kind": "unknown",
+          "reason": "retention в документе не указан",
+          "tempting": [
+            "30",
+            "90",
+            "365",
+            "дней"
+          ],
+          "index": 5
+        },
+        {
+          "text": "Каков максимальный размер upload?",
+          "kind": "known",
+          "answer": "200 MiB",
+          "accept_any": [
+            "200 mib",
+            "200mib",
+            "200 mb",
+            "209715200"
+          ],
+          "numeric": true,
+          "index": 6
+        },
+        {
+          "text": "Какова concurrency одного worker?",
+          "kind": "known",
+          "answer": "6",
+          "accept_any": [
+            "6"
+          ],
+          "numeric": true,
+          "index": 7
+        },
+        {
+          "text": "Какая система используется как message queue?",
+          "kind": "known",
+          "answer": "RabbitMQ",
+          "accept_any": [
+            "rabbitmq"
+          ],
+          "index": 8
+        },
+        {
+          "text": "Когда выполняется плановый deployment?",
+          "kind": "known",
+          "answer": "Tuesday 03:00 UTC",
+          "accept_all": [
+            [
+              "tuesday",
+              "вторник"
+            ],
+            [
+              "03:00",
+              "3:00",
+              "03.00",
+              "3.00"
+            ]
+          ],
+          "index": 9
+        },
+        {
+          "text": "Сколько replicas имеет PostgreSQL?",
+          "kind": "unknown",
+          "reason": "документ указывает 2 worker replicas, но не число replicas PostgreSQL",
+          "tempting": [
+            "2",
+            "3"
+          ],
+          "trap": "в документе есть «2 worker replicas» — это не PostgreSQL",
+          "index": 10
+        }
+      ],
+      "document": "Project Borealis backend написан на Go.\n\nОсновная база данных — PostgreSQL.\n\nОчередь сообщений работает через RabbitMQ.\n\nОбъектное хранилище — Garage.\n\nProduction environment расположен в eu-central-1.\n\nВ production работают 2 worker replicas.\n\nConcurrency каждого worker равна 6.\n\nМаксимальный размер загружаемого файла — 200 MiB.\n\nRequest timeout составляет 120 секунд.\n\nПлановый deployment выполняется по вторникам в 03:00 UTC.",
+      "known_count": 5,
+      "unknown_count": 5
+    },
+    "meta": {
+      "scenario": "F",
+      "questions": 10,
+      "traps": [
+        "в документе есть «2 worker replicas» — это не PostgreSQL"
+      ]
+    }
+  }
+]

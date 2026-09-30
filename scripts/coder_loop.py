@@ -1,0 +1,311 @@
+"""Drive the coding harness in a loop until its tests pass.
+
+The harness (`little-coder`, a build of `pi`) is a coding agent, not a code
+generator: it reads, edits and (only for files that do not exist yet) writes.
+Left alone it explores instead of acting, hits its per-turn output ceiling and
+drops the tool call. The loop below keeps it on a short leash:
+
+* one project directory, one instruction file, one test command;
+* the harness gets no shell — the driver runs the tests, so exploration has no
+  tool to happen in and every round is bounded by a real pass/fail signal;
+* the failing test output is fed back verbatim as the next round's brief;
+* rounds are capped, and every round's raw event log stays on disk.
+
+    python scripts/coder_loop.py --project ../manga-reader \\
+        --instruction runs/_coder/STAGE1.md \\
+        --test "python -m pytest tests/test_naming.py -q" --rounds 6
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import tempfile
+import threading
+import subprocess
+import sys
+import urllib.request
+import time
+from pathlib import Path
+
+HARNESS = Path.home() / ".bun" / "bin" / "little-coder.exe"
+BASE_URL = "http://127.0.0.1:8888"
+SYSTEM = (
+    "Ты пишешь код в текущей папке. Действуй инструментами сразу, без планов и рассуждений. "
+    "Один вызов инструмента содержит ПОЛНОЕ содержимое файла: заглушки и заготовки "
+    "(«placeholder», «TODO», «pass», многоточие) запрещены — пиши реализацию целиком. "
+    "Существующий файл меняй только через edit (write для него откажет); write — для нового файла."
+)
+
+
+def run_harness(project: Path, model: str, instruction: str, tools: str, log: Path,
+                repeat_limit: int = 4, round_timeout: float = 1800.0) -> int:
+    """Run one harness round, cutting it short when it stops making progress.
+
+    A weak agent can degenerate into repeating one tool call — 57 identical
+    ``write`` attempts were observed in a single round, each refused, each
+    costing a full model turn. Watching the event stream for repeats (and for a
+    round wall clock) turns that into a bounded failure instead of a lost hour.
+    """
+    env = dict(os.environ)
+    env["LLAMA_BASE_URL"] = BASE_URL
+    command = [
+        str(HARNESS), "-p", "--mode", "json",
+        "--provider", "llamacpp", "--model", model,
+        "--approve", "--tools", tools,
+        "--append-system-prompt", SYSTEM,
+        instruction,
+    ]
+    log.parent.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    # The harness streams one JSON event per token while it generates: unfiltered
+    # that is ~60 MB per minute (557 MB in eight minutes was measured). Dropping
+    # the token-delta events keeps every fact the driver uses and the file small.
+    with log.open("w", encoding="utf-8") as handle:
+        child = subprocess.Popen(
+            command, cwd=str(project), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=env, text=True, encoding="utf-8", errors="replace", bufsize=1,
+        )
+
+        def pump() -> None:
+            assert child.stdout is not None
+            for line in child.stdout:
+                if '"message_update"' in line or '"message_start"' in line:
+                    continue
+                handle.write(line)
+
+        reader = threading.Thread(target=pump, daemon=True)
+        reader.start()
+        while child.poll() is None:
+            time.sleep(2.0)
+            if time.time() - started > round_timeout:
+                child.terminate()
+                break
+            repeats = _repeat_counts(log)
+            if repeats and max(repeats.values()) > repeat_limit:
+                child.terminate()
+                break
+        try:
+            child.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            child.kill()
+        reader.join(timeout=10)
+    return child.returncode if child.returncode is not None else -1
+
+
+def _repeat_counts(log: Path) -> dict[str, int]:
+    """How many times each identical tool call appears in the round so far."""
+    counts: dict[str, int] = {}
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return counts
+    for line in text.splitlines():
+        if '"tool_execution_start"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        key = f"{event.get('toolName')}:{json.dumps(event.get('args'), sort_keys=True, ensure_ascii=False)}"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def summarise_round(log: Path) -> dict:
+    """What the harness actually did, read from its event stream."""
+    edits, writes, truncations, refusals = 0, 0, 0, 0
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        kind = event.get("type")
+        if kind == "tool_execution_start":
+            name = event.get("toolName")
+            edits += name == "edit"
+            writes += name == "write"
+        elif kind == "tool_execution_end":
+            text = " ".join(part.get("text", "") for part in ((event.get("result") or {}).get("content") or []))
+            if "output token limit" in text:
+                truncations += 1
+            if "refused" in text.lower():
+                refusals += 1
+    return {"edits": edits, "writes": writes, "truncations": truncations, "refusals": refusals}
+
+
+def loaded_model() -> dict:
+    """What the server actually has loaded: the id alone does not name the quant.
+
+    Every GGUF variant of a repository is served under the same model id, so a
+    run log cannot tell which weights produced the code. Recording the variant
+    and the window per round makes the attribution a fact instead of a
+    reconstruction from the order of commands.
+    """
+    try:
+        with urllib.request.urlopen(f"{BASE_URL}/v1/models", timeout=10) as response:
+            data = json.loads(response.read().decode())
+        with urllib.request.urlopen(f"{BASE_URL}/props", timeout=10) as response:
+            props = json.loads(response.read().decode())
+    except Exception as exc:
+        return {"error": str(exc)[:120]}
+    row = next((m for m in data.get("data", []) if m.get("loaded")), {})
+    return {
+        "id": row.get("id"),
+        "quant": row.get("quant"),
+        "context_length": row.get("context_length"),
+        "n_ctx": ((props.get("default_generation_settings") or {}).get("n_ctx")),
+        "build": props.get("build_info"),
+    }
+
+
+def run_tests(project: Path, command: str) -> tuple[bool, str]:
+    process = subprocess.run(
+        command, cwd=str(project), shell=True, capture_output=True,
+        text=True, encoding="utf-8", errors="replace", timeout=900,
+    )
+    output = (process.stdout or "") + (process.stderr or "")
+    return process.returncode == 0, output
+
+
+def snapshot(project: Path, keep: Path) -> None:
+    """Copy the project so a destructive round can be undone."""
+    if keep.exists():
+        shutil.rmtree(keep)
+    shutil.copytree(project, keep, ignore=shutil.ignore_patterns(
+        "__pycache__", ".pytest_cache", "*.pyc", ".git"))
+
+
+def restore(keep: Path, project: Path) -> None:
+    """Put the snapshot back by OVERWRITING — never by deleting first.
+
+    The earlier version cleared the project and then copied the snapshot in; an
+    interrupt between those two steps (or a kill during a round) silently
+    destroyed files that were not in the snapshot. Copy-back is now additive:
+    files that came from the snapshot are written over their current versions,
+    and anything the round created beyond that list is removed explicitly.
+    """
+    keep_files = {p.relative_to(keep).as_posix() for p in keep.rglob("*") if p.is_file()}
+    for path in sorted(keep.rglob("*")):
+        if path.is_file():
+            target = project / path.relative_to(keep)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+    for path in sorted(project.rglob("*"), reverse=True):
+        rel = path.relative_to(project).as_posix()
+        if any(part in ("__pycache__", ".pytest_cache") for part in path.parts):
+            continue
+        if path.is_dir():
+            if not any(path.iterdir()):
+                path.rmdir()
+        elif rel not in keep_files:
+            # A file the round invented and the snapshot never had.
+            path.unlink(missing_ok=True)
+
+
+def score_of(output: str) -> int:
+    """How many tests passed — used to keep the best round, not the last one."""
+    match = re.search(r"(\d+) passed", output)
+    return int(match.group(1)) if match else 0
+
+
+def failure_digest(output: str, limit: int = 20) -> str:
+    """The shortest honest brief: failing assertions, without the noise."""
+    lines = [line.rstrip() for line in output.splitlines()]
+    keep = [line for line in lines if re.search(r"(Error|error|assert|FAILED|E  )", line)]
+    tail = keep[-limit:] if keep else lines[-limit:]
+    return "\n".join(tail)[:4000]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Прогонять harness до зелёных тестов")
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--instruction", required=True, help="файл с постановкой")
+    parser.add_argument("--test", required=True, help="команда тестов")
+    parser.add_argument("--model", default="unsloth/Qwen3.8-27B-GGUF")
+    parser.add_argument("--tools", default="read,edit,write")
+    parser.add_argument("--rounds", type=int, default=6)
+    parser.add_argument("--log-dir", default="runs/_coder")
+    parser.add_argument("--fresh", default="", help="файл, который перед прогоном удаляется (чтобы write был законен)")
+    parser.add_argument("--gate", default="", help="команда проверки синтаксиса/импорта; провал = откат раунда")
+    parser.add_argument("--keep-best", action="store_true", default=True,
+                        help="в конце оставить версию с наибольшим числом прошедших тестов")
+    args = parser.parse_args()
+
+    project = Path(args.project).resolve()
+    instruction_base = Path(args.instruction).read_text(encoding="utf-8")
+    log_dir = Path(args.log_dir)
+    history: list[dict] = []
+    best = -1
+    best_snapshot = Path(tempfile.mkdtemp(prefix="coder-best-"))
+
+    for round_index in range(1, args.rounds + 1):
+        if round_index == 1:
+            brief = instruction_base
+        else:
+            previous = history[-1]
+            brief = (
+                f"{instruction_base}\n\n---\n"
+                f"Прошлый прогон не прошёл тесты. Вывод тестов:\n\n```\n{previous['digest']}\n```\n\n"
+                "Исправь ровно то, на что указывает этот вывод. Тесты не менять."
+            )
+        log = log_dir / f"{Path(args.instruction).stem}-round{round_index}.log"
+        served = loaded_model()
+        work = Path(tempfile.mkdtemp(prefix="coder-loop-"))
+        good = work / "good"
+        snapshot(project, good)
+        if args.fresh and round_index == 1:
+            target = project / args.fresh
+            if target.is_file():
+                # Keep a copy inside the snapshot instead of moving the file
+                # away: a rename is invisible to the snapshot and would make the
+                # original unrecoverable if the round goes wrong.
+                backup = good / f"{target.name}.prev"
+                shutil.copy2(target, backup)
+                target.unlink()
+        started = time.time()
+        code = run_harness(project, args.model, brief, args.tools, log)
+        gate_ok, gate_output = (True, "")
+        if args.gate:
+            gate_ok, gate_output = run_tests(project, args.gate)
+        passed, output = run_tests(project, args.test) if gate_ok else (False, gate_output)
+        if not gate_ok:
+            # A round that broke the file is worse than no round: undo it and say why.
+            restore(good, project)
+            output = "Проверка синтаксиса/импорта не прошла:\n" + gate_output
+        best = max(best, score_of(output))
+        stats = summarise_round(log)
+        history.append({"round": round_index, "exit": code, "seconds": round(time.time() - started, 1),
+                        "passed": passed, "served_model": served,
+                        "digest": failure_digest(output), **stats})
+        if not passed and score_of(output) >= best and args.keep_best:
+            snapshot(project, best_snapshot)
+        print(
+            f"раунд {round_index}: тесты {'ЗЕЛЁНЫЕ' if passed else 'красные'} | "
+            f"модель {served.get('id')} ({served.get('quant')}, окно {served.get('n_ctx')}) | "
+            f"edit={stats['edits']} write={stats['writes']} обрезаний={stats['truncations']} "
+            f"отказов={stats['refusals']} | {round(time.time() - started)} с",
+            flush=True,
+        )
+        (log_dir / f"{Path(args.instruction).stem}-summary.json").write_text(
+            json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        if passed:
+            print("\nГотово: тесты зелёные.", flush=True)
+            return 0
+
+    if args.keep_best and best > 0:
+        restore(best_snapshot, project)
+        print(f"\nНе сошлось, но восстановлена лучшая версия ({best} прошедших тестов).", file=sys.stderr)
+    print(f"\nНе сошлось за {args.rounds} раундов. Последний вывод:\n{history[-1]['digest'][:1200]}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
