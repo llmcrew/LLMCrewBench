@@ -12,11 +12,16 @@ import random
 
 MASK = (1 << 64) - 1
 
+#: Signed 64-bit ceiling. vLLM validates ``seed`` as a signed int64 and rejects
+#: a plain 64-bit value, so the derived seed is folded into that range: the
+#: stream stays deterministic, it just never overflows the wire format.
+SEED_MAX = (1 << 63) - 1
+
 
 def derived_seed(master_seed: int, *parts: str) -> int:
     """Stable 64-bit seed from the master seed and any task labels."""
     payload = "|".join([str(master_seed), *parts]).encode("utf-8")
-    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % (SEED_MAX + 1)
 
 
 def task_rng(master_seed: int, *parts: str) -> random.Random:

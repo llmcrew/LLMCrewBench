@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Spring Mass Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Configuration & State ---
+        const K = 10.07;
+        const M = 1.0;
+        const C = 0.27;
+        
+        let state = {
+            x: 1.21,
+            v: 1.32,
+            steps: 0,
+            t: 0.0
+        };
+
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+        // Background color isn't specified, default black is fine or match ground? 
+        // Usually default is fine unless specified.
+
+        // Camera
+        const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+        camera.position.set(0.0, 3.5, 15.0);
+        camera.lookAt(0.0, 0.2, 0.0);
+
+        // Renderer
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 2.0);
+        directionalLight.position.set(8.0, 14.0, 10.0);
+        scene.add(directionalLight);
+
+        // --- Objects ---
+
+        // 1. Ground
+        const groundGeo = new THREE.PlaneGeometry(60, 60);
+        const groundMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = -0.3;
+        ground.name = 'ground';
+        scene.add(ground);
+
+        // 2. Wall
+        const wallGeo = new THREE.BoxGeometry(0.8, 3.2, 3.2);
+        const wallMat = new THREE.MeshStandardMaterial({ color: 0x8a93a6 });
+        const wall = new THREE.Mesh(wallGeo, wallMat);
+        wall.position.set(-7, 0.9, 0);
+        wall.name = 'wall';
+        scene.add(wall);
+
+        // 3. Mass
+        const massGeo = new THREE.BoxGeometry(1.2, 1.2, 1.2);
+        const massMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+        const mass = new THREE.Mesh(massGeo, massMat);
+        mass.position.set(state.x, 0.3, 0);
+        mass.name = 'mass';
+        scene.add(mass);
+
+        // 4. Spring
+        // Cylinder connects (-6.6, 0.3, 0) to mass center (x, 0.3, 0)
+        // Default Cylinder is along Y axis. We need it along X axis.
+        const springRadius = 0.09;
+        const springHeight = 1.0; // Base height, will scale
+        const springGeo = new THREE.CylinderGeometry(springRadius, springRadius, springHeight, 16);
+        springGeo.rotateZ(Math.PI / 2); // Rotate to align with X axis
+        
+        const springMat = new THREE.MeshStandardMaterial({ color: 0xd8dde6 });
+        const spring = new THREE.Mesh(springGeo, springMat);
+        spring.name = 'spring';
+        scene.add(spring);
+
+        // Helper to update spring geometry/transform
+        function updateSpring() {
+            const anchorX = -6.6;
+            const currentX = state.x;
+            
+            // Length is distance between anchor and mass center
+            const length = currentX - anchorX;
+            
+            // Position is midpoint
+            const midX = (anchorX + currentX) / 2;
+            
+            spring.position.set(midX, 0.3, 0);
+            
+            // Scale Y to match length (since we rotated cylinder to lie on X, its local Y is now along world X? 
+            // Wait: Default Cylinder is Y-up. Rotate Z by 90 deg -> Y axis becomes X axis.
+            // So scaling Y scales the length along X.
+            spring.scale.set(1, length, 1);
+        }
+
+        // Initial update
+        updateSpring();
+
+        // --- Simulation Logic ---
+
+        window.__step = function(dt) {
+            // Semi-implicit Euler
+            // 1. Update velocity
+            // v += (-k/m * x - c*v) * dt
+            const acceleration = (-K / M * state.x - C * state.v);
+            state.v += acceleration * dt;
+
+            // 2. Update position
+            // x += v * dt
+            state.x += state.v * dt;
+
+            state.steps++;
+            state.t += dt;
+
+            // Update Visuals
+            mass.position.x = state.x;
+            updateSpring();
+        };
+
+        window.__probe = function() {
+            return {
+                steps: state.steps,
+                t: Number(state.t.toFixed(4)),
+                objects: ['ground', 'wall', 'mass', 'spring'],
+                camera: [0, 3.5, 15],
+                x: Number(state.x.toFixed(4)),
+                v: Number(state.v.toFixed(4)),
+                k: K,
+                m: M
+            };
+        };
+
+        // --- Initial Render ---
+        renderer.render(scene, camera);
+        window.__ready = true;
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-2 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

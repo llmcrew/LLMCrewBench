@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>автобусная остановка в неоне</title>
+<style>
+html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+canvas { display: block; width: 800px; height: 600px; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+if (THREE.ColorManagement) THREE.ColorManagement.enabled = false;
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+if (THREE.LinearSRGBColorSpace !== undefined) renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+else if (THREE.LinearEncoding !== undefined) renderer.outputEncoding = THREE.LinearEncoding;
+if (THREE.NoToneMapping !== undefined) renderer.toneMapping = THREE.NoToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1c1236);
+
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 100);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
+
+const ASPECT = 800 / 600;
+
+function visibleHeight(z) {
+  const d = 4 - z;
+  return 2 * d * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+}
+function visibleWidth(z) {
+  return visibleHeight(z) * ASPECT;
+}
+function uvToWorld(u, v, z) {
+  const vh = visibleHeight(z);
+  const vw = visibleWidth(z);
+  return new THREE.Vector3((u - 0.5) * vw, (0.5 - v) * vh, z);
+}
+function makePlane(w, h, color, opts = {}) {
+  const mat = new THREE.MeshBasicMaterial({
+    color: color,
+    transparent: !!opts.transparent,
+    opacity: opts.opacity === undefined ? 1 : opts.opacity,
+    depthWrite: opts.depthWrite === undefined ? true : opts.depthWrite,
+    side: THREE.FrontSide
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+  if (opts.renderOrder !== undefined) mesh.renderOrder = opts.renderOrder;
+  return mesh;
+}
+
+const night = makePlane(220, 160, 0x1c1236);
+night.position.copy(uvToWorld(0.5, 0.5, -45));
+night.name = 'night';
+scene.add(night);
+
+const floor = makePlane(1.6 * visibleWidth(-8), 0.44 * visibleHeight(-8), 0x1c1236);
+floor.position.copy(uvToWorld(0.5, 0.82, -8));
+floor.name = 'floor';
+scene.add(floor);
+
+const canopy = makePlane(1.5 * visibleWidth(-5), 0.16 * visibleHeight(-5), 0x1c1236);
+canopy.position.copy(uvToWorld(0.5, 0.08, -5));
+canopy.name = 'canopy';
+scene.add(canopy);
+
+const glassGroup = new THREE.Group();
+glassGroup.name = 'glass';
+
+const street = makePlane(0.62 * visibleWidth(-5.05), 0.30 * visibleHeight(-5.05), 0xa8c8dc);
+street.position.copy(uvToWorld(0.5, 0.45, -5.05));
+glassGroup.add(street);
+
+const glass = makePlane(0.62 * visibleWidth(-5), 0.44 * visibleHeight(-5), 0xa8c8dc, {
+  transparent: true,
+  opacity: 0.32,
+  depthWrite: false,
+  renderOrder: 10
+});
+glass.position.copy(uvToWorld(0.5, 0.38, -5));
+glassGroup.add(glass);
+
+scene.add(glassGroup);
+
+const postGroup = new THREE.Group();
+postGroup.name = 'post';
+function makePost(u) {
+  const p = makePlane(0.02 * visibleWidth(-4.98), 0.46 * visibleHeight(-4.98), 0x1c1236);
+  p.position.copy(uvToWorld(u, 0.39, -4.98));
+  return p;
+}
+postGroup.add(makePost(0.19), makePost(0.81));
+scene.add(postGroup);
+
+const boardZ = -4.95;
+const boardW = 0.22 * visibleWidth(boardZ);
+const boardH = 0.14 * visibleHeight(boardZ);
+const board = new THREE.Group();
+board.name = 'board';
+board.position.copy(uvToWorld(0.32, 0.30, boardZ));
+
+const boardBase = makePlane(boardW, boardH, 0x22d3c5);
+board.add(boardBase);
+
+const stripeH = 0.010 * visibleHeight(boardZ);
+const stripeW = boardW * 0.92;
+const spacing = boardH / 5;
+const stripes = [];
+for (let i = 0; i < 5; i++) {
+  const s = makePlane(stripeW, stripeH, 0x1c1236);
+  s.position.z = 0.001;
+  board.add(s);
+  stripes.push(s);
+}
+
+const headerH = 0.015 * visibleHeight(boardZ);
+const header = makePlane(boardW * 0.92, headerH, 0x1c1236);
+header.position.set(0, boardH / 2 - headerH / 2, 0.002);
+board.add(header);
+
+scene.add(board);
+
+const lampGroup = new THREE.Group();
+lampGroup.name = 'lamp';
+
+const lampW = 0.13 * visibleWidth(-4.95);
+const lampH = 0.06 * visibleHeight(-4.95);
+
+const lampBase = makePlane(lampW, lampH, 0xffa83c);
+lampBase.position.copy(uvToWorld(0.62, 0.14, -4.96));
+lampGroup.add(lampBase);
+
+const lampCore = makePlane(lampW, lampH, 0xffa83c, {
+  transparent: true,
+  opacity: 0.9,
+  depthWrite: false,
+  renderOrder: 11
+});
+lampCore.position.copy(uvToWorld(0.62, 0.14, -4.95));
+lampGroup.add(lampCore);
+
+const halo = makePlane(0.20 * visibleWidth(-4.90), 0.10 * visibleHeight(-4.90), 0xffa83c, {
+  transparent: true,
+  opacity: 0.35,
+  depthWrite: false,
+  renderOrder: 12
+});
+halo.position.copy(uvToWorld(0.62, 0.14, -4.90));
+lampGroup.add(halo);
+
+scene.add(lampGroup);
+
+const neon = makePlane(0.30 * visibleWidth(-5.02), 0.06 * visibleHeight(-5.02), 0xff4d9d);
+neon.position.copy(uvToWorld(0.58, 0.24, -5.02));
+neon.name = 'neon';
+scene.add(neon);
+
+const bench = makePlane(0.30 * visibleWidth(-6.5), 0.05 * visibleHeight(-6.5), 0x1c1236);
+bench.position.copy(uvToWorld(0.5, 0.66, -6.5));
+bench.name = 'bench';
+scene.add(bench);
+
+const puddleGroup = new THREE.Group();
+puddleGroup.name = 'puddle';
+const puddleW = 0.18 * visibleWidth(-7.9);
+const puddleH = 0.04 * visibleHeight(-7.9);
+for (let i = 0; i < 3; i++) {
+  const u = 0.30 + 0.20 * i;
+
+  const base = makePlane(puddleW, puddleH, 0xff4d9d);
+  base.position.copy(uvToWorld(u, 0.90, -7.99));
+  puddleGroup.add(base);
+
+  const p = makePlane(puddleW, puddleH, 0xff4d9d, {
+    transparent: true,
+    opacity: 0.35,
+    depthWrite: false,
+    renderOrder: 13
+  });
+  p.position.copy(uvToWorld(u, 0.90, -7.9));
+  puddleGroup.add(p);
+}
+scene.add(puddleGroup);
+
+let lcg = 140149n;
+function rnd() {
+  lcg = (lcg * 1103515245n + 12345n) % 2147483648n;
+  return Number(lcg) / 2147483648;
+}
+
+const N = 56;
+const dropU = new Float32Array(N);
+const dropV = new Float32Array(N);
+for (let i = 0; i < N; i++) {
+  dropU[i] = 0.19 + rnd() * 0.62;
+  dropV[i] = 0.16 + rnd() * 0.44;
+}
+
+function makePoints(z) {
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(N * 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({
+    color: 0xa8c8dc,
+    size: 6,
+    sizeAttenuation: false,
+    depthWrite: true
+  });
+  return new THREE.Points(geo, mat);
+}
+
+const drops = makePoints(-4.9);
+drops.name = 'drops';
+scene.add(drops);
+
+const rain = makePoints(-12);
+rain.name = 'rain';
+scene.add(rain);
+
+let t = 0;
+const DROP_SPEED = 1.90;
+const RAIN_SPEED = DROP_SPEED * 2 / 3;
+
+function updateDrops(points, z, speed) {
+  const vh = visibleHeight(z);
+  const vw = visibleWidth(z);
+  const topY = (0.5 - 0.16) * vh;
+  const bottomY = (0.5 - 0.60) * vh;
+  const range = topY - bottomY;
+  const pos = points.geometry.attributes.position.array;
+
+  for (let i = 0; i < N; i++) {
+    const u = dropU[i];
+    const v0 = dropV[i];
+    const y0 = (0.5 - v0) * vh;
+    const offset = topY - y0;
+    const shift = (offset + speed * t) % range;
+    const y = topY - ((shift + range) % range);
+
+    pos[i * 3] = (u - 0.5) * vw;
+    pos[i * 3 + 1] = y;
+    pos[i * 3 + 2] = z;
+  }
+
+  points.geometry.attributes.position.needsUpdate = true;
+}
+
+function boardPhase() {
+  return (t * 0.37) % 1;
+}
+
+function updateBoard() {
+  const phase = boardPhase();
+  const offset = (phase * spacing) % spacing;
+  const m = boardH - stripeH;
+
+  for (let i = 0; i < 5; i++) {
+    const y = -boardH / 2 + stripeH / 2 + (((i * spacing + offset) % m) + m) % m;
+    stripes[i].position.y = y;
+  }
+
+  header.visible = Math.sin(t * 2.7) > 0;
+  return phase;
+}
+
+function updateCamera() {
+  camera.position.x = 0.034 * Math.sin(t * 0.71);
+}
+
+function round4(x) {
+  return Math.round(x * 10000) / 10000;
+}
+
+window.__probe = function () {
+  return {
+    t: round4(t),
+    objects: scene.children.map(o => o.name).filter(Boolean),
+    board_phase: round4(boardPhase())
+  };
+};
+
+window.__step = function (dt) {
+  t += Number(dt) || 0;
+
+  updateDrops(drops, -4.9, DROP_SPEED);
+  updateDrops(rain, -12, RAIN_SPEED);
+  updateBoard();
+  updateCamera();
+
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+updateDrops(drops, -4.9, DROP_SPEED);
+updateDrops(rain, -12, RAIN_SPEED);
+updateBoard();
+updateCamera();
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-24 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Жидкий металл и стекло</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Конфигурация ---
+        const WIDTH = 800;
+        const HEIGHT = 600;
+        
+        // --- Сцена и Рендерер ---
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.Fog(0x0a0714, 14, 45);
+
+        const camera = new THREE.PerspectiveCamera(45, WIDTH / HEIGHT, 0.1, 100);
+        // Камера сзади (отрицательный Z), чтобы Тор (z=-0.6) был ближе к камере, чем Сфера (z=0.6)
+        camera.position.set(0, 0, -4.5);
+        camera.rotation.y = Math.PI; // Смотрим в сторону +Z
+        camera.updateProjectionMatrix();
+
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(WIDTH, HEIGHT, false);
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0;
+        document.body.appendChild(renderer.domElement);
+
+        // --- Текстура Окружения (DataTexture 8x64) ---
+        // Градиент: #0a0714 (низ) -> #0d1b2e -> #1b4a5e -> #8fd3ff (верх)
+        const width = 8;
+        const height = 64;
+        const data = new Uint8Array(width * height * 3);
+        
+        const colorBottom = new THREE.Color(0x0a0714);
+        const colorMid1 = new THREE.Color(0x0d1b2e);
+        const colorMid2 = new THREE.Color(0x1b4a5e);
+        const colorTop = new THREE.Color(0x8fd3ff);
+
+        for (let y = 0; y < height; y++) {
+            const v = y / (height - 1); // 0.0 to 1.0
+            let color;
+            
+            // Простая интерполяция по сегментам для соответствия описанию
+            if (v < 0.33) {
+                // 0.0 -> 0.33: Bottom -> Mid1
+                const t = v / 0.33;
+                color = colorBottom.clone().lerp(colorMid1, t);
+            } else if (v < 0.66) {
+                // 0.33 -> 0.66: Mid1 -> Mid2
+                const t = (v - 0.33) / 0.33;
+                color = colorMid1.clone().lerp(colorMid2, t);
+            } else {
+                // 0.66 -> 1.0: Mid2 -> Top
+                const t = (v - 0.66) / 0.34;
+                color = colorMid2.clone().lerp(colorTop, t);
+            }
+
+            for (let x = 0; x < width; x++) {
+                const index = (y * width + x) * 3;
+                data[index] = Math.floor(color.r * 255);
+                data[index + 1] = Math.floor(color.g * 255);
+                data[index + 2] = Math.floor(color.b * 255);
+            }
+        }
+
+        const envTexture = new THREE.DataTexture(data, width, height, THREE.RGBFormat);
+        envTexture.colorSpace = THREE.SRGBColorSpace;
+        envTexture.mapping = THREE.EquirectangularReflectionMapping;
+        envTexture.needsUpdate = true;
+        scene.environment = envTexture;
+
+        // --- Фон (Плоскость) ---
+        // Градиент: снизу #0a0714 вверх до #4d7fa8
+        const bgWidth = 40;
+        const bgHeight = 40;
+        const bgData = new Uint8Array(bgWidth * bgHeight * 3);
+        const bgColorBottom = new THREE.Color(0x0a0714);
+        const bgColorTop = new THREE.Color(0x4d7fa8);
+
+        for (let y = 0; y < bgHeight; y++) {
+            const v = y / (bgHeight - 1);
+            const color = bgColorBottom.clone().lerp(bgColorTop, v);
+            for (let x = 0; x < bgWidth; x++) {
+                const index = (y * bgWidth + x) * 3;
+                bgData[index] = Math.floor(color.r * 255);
+                bgData[index + 1] = Math.floor(color.g * 255);
+                bgData[index + 2] = Math.floor(color.b * 255);
+            }
+        }
+        const bgTexture = new THREE.DataTexture(bgData, bgWidth, bgHeight, THREE.RGBFormat);
+        bgTexture.colorSpace = THREE.SRGBColorSpace;
+        bgTexture.needsUpdate = true;
+        // Поворачиваем текстуру, чтобы градиент был вертикальным на плоскости, стоящей в Z
+        bgTexture.center.set(0.5, 0.5);
+        bgTexture.rotation = Math.PI / 2; 
+
+        const bgGeo = new THREE.PlaneGeometry(40, 40);
+        const bgMat = new THREE.MeshBasicMaterial({ map: bgTexture, side: THREE.DoubleSide });
+        const background = new THREE.Mesh(bgGeo, bgMat);
+        background.position.z = -6;
+        scene.add(background);
+
+        // --- Пол ---
+        const floorGeo = new THREE.PlaneGeometry(40, 40);
+        const floorMat = new THREE.MeshPhysicalMaterial({
+            color: 0x121a2e,
+            metalness: 0.85,
+            roughness: 0.30
+        });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = -1.20;
+        scene.add(floor);
+
+        // --- Сфера ---
+        const sphereGeo = new THREE.SphereGeometry(0.8, 48, 32);
+        const sphereMat = new THREE.MeshPhysicalMaterial({
+            color: 0x33d1c6,
+            metalness: 1.0,
+            roughness: 0.18,
+            clearcoat: 0.6,
+            envMapIntensity: 3.0
+        });
+        const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+        sphere.name = 'sphere';
+        sphere.position.set(0, 0.40, 0.60);
+        scene.add(sphere);
+
+        // --- Тор ---
+        const torusGeo = new THREE.TorusGeometry(0.80, 0.28, 16, 64);
+        const torusMat = new THREE.MeshPhysicalMaterial({
+            color: 0xe0733c,
+            metalness: 0.15,
+            roughness: 0.06,
+            clearcoat: 1.0
+        });
+        const torus = new THREE.Mesh(torusGeo, torusMat);
+        torus.name = 'torus';
+        torus.position.set(-1.45, -0.25, -0.6);
+        scene.add(torus);
+
+        // --- Свет ---
+        // DirectionalLight
+        const dirLight = new THREE.DirectionalLight(0xffffff, 4.0);
+        dirLight.position.set(2.0, 4.0, 3.0);
+        scene.add(dirLight);
+
+        // PointLight (Искра)
+        const sparkLight = new THREE.PointLight(0xf2f6fb, 120, 25);
+        sparkLight.position.set(0.6, 2.6, 2.2);
+        scene.add(sparkLight);
+
+        // Orbiting PointLights
+        const orbitLight1 = new THREE.PointLight(0x33d1c6, 45, 25);
+        const orbitLight2 = new THREE.PointLight(0xe0733c, 45, 25);
+        scene.add(orbitLight1);
+        scene.add(orbitLight2);
+
+        // AmbientLight
+        const ambLight = new THREE.AmbientLight(0x223044, 0.3);
+        scene.add(ambLight);
+
+        // --- Анимация и API ---
+        let t = 0;
+
+        function updateLights(time) {
+            const angle = 0.900 * time + 0.052;
+            const x = 3.2 * Math.cos(angle);
+            const z = 3.2 * Math.sin(angle) + 2.0;
+            
+            orbitLight1.position.set(x, 0, z);
+            orbitLight2.position.set(x, 0, z);
+        }
+
+        window.__step = function(dt) {
+            t += dt;
+            
+            // Вращение сферы
+            sphere.rotation.y += 1.100 * dt;
+            sphere.rotation.x += 0.4 * dt;
+            
+            // Вращение тора
+            torus.rotation.y += 0.7 * dt;
+
+            // Обновление света
+            updateLights(t);
+
+            renderer.render(scene, camera);
+        };
+
+        window.__probe = function() {
+            return {
+                t: parseFloat(t.toFixed(4)),
+                objects: ['sphere', 'torus', 'floor', 'background'],
+                angle: parseFloat(sphere.rotation.y.toFixed(4)),
+                light: {
+                    x: parseFloat(sparkLight.position.x.toFixed(4)),
+                    y: parseFloat(sparkLight.position.y.toFixed(4)),
+                    z: parseFloat(sparkLight.position.z.toFixed(4))
+                }
+            };
+        };
+
+        // Initial Render
+        renderer.render(scene, camera);
+        window.__ready = true;
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-11 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

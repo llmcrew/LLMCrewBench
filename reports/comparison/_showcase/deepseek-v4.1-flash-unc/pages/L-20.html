@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Оранжерея на станции под метеорным дождём</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; }
+  canvas { display: block; width: 800px; height: 600px; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ================= deterministic LCG ================= */
+let lcg = 160488;
+function rnd() {
+  lcg = (lcg * 1103515245 + 12345) % 2147483648;
+  return lcg / 2147483648;
+}
+
+/* ================= renderer / scene / camera ================= */
+const W = 800, H = 600;
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x123038);
+
+const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 500);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
+
+/* ================= frame-space helper ================= */
+const TAN = Math.tan(50 * Math.PI / 360);
+const ASPECT = W / H;
+function uvToWorld(u, v, z) {
+  const d = 4 - z;
+  const h = 2 * d * TAN;
+  const w = h * ASPECT;
+  return { x: (u - 0.5) * w, y: (0.5 - v) * h, w, h };
+}
+
+/* ================= palette ================= */
+const C_GLASS = 0x123038;
+const C_LEAF  = 0x7fd054;
+const C_LAMP  = 0xffc06a;
+const C_COLD  = 0xa8c8dc;
+const C_FLOOR = 0x0e242b;
+const C_RIB   = 0x0a1a20;
+
+/* ================= dome back panel ================= */
+{
+  const d = uvToWorld(0.5, 0.31, -14.8);
+  const g = new THREE.PlaneGeometry(0.71 * d.w, 0.72 * d.h);
+  const m = new THREE.MeshBasicMaterial({
+    color: C_GLASS, transparent: true, opacity: 0.85, depthWrite: false
+  });
+  const mesh = new THREE.Mesh(g, m);
+  mesh.position.set(d.x, d.y, -14.8);
+  mesh.name = 'dome_back';
+  mesh.renderOrder = 1;
+  scene.add(mesh);
+}
+
+/* ================= dome side panels ================= */
+for (const [u, s] of [[0.16, 1], [0.84, -1]]) {
+  const d = uvToWorld(u, 0.31, -12);
+  const g = new THREE.PlaneGeometry(0.30 * d.w, 0.72 * d.h);
+  const m = new THREE.MeshBasicMaterial({
+    color: C_GLASS, transparent: true, opacity: 0.85,
+    depthWrite: false, side: THREE.DoubleSide
+  });
+  const mesh = new THREE.Mesh(g, m);
+  mesh.position.set(d.x, d.y, -12);
+  mesh.rotation.y = s * 0.6;
+  mesh.name = 'dome_side';
+  mesh.renderOrder = 1;
+  scene.add(mesh);
+}
+
+/* ================= floor + warm edge ================= */
+{
+  const d = uvToWorld(0.5, 0.62, -8);
+  const g = new THREE.PlaneGeometry(60, 9);
+  const m = new THREE.MeshBasicMaterial({ color: C_FLOOR });
+  const mesh = new THREE.Mesh(g, m);
+  mesh.position.set(0, d.y - 4.5, -8);
+  mesh.name = 'floor';
+  scene.add(mesh);
+}
+{
+  const d = uvToWorld(0.5, 0.62, -8);
+  const g = new THREE.PlaneGeometry(60, 0.20);
+  const m = new THREE.MeshBasicMaterial({ color: C_LAMP });
+  const mesh = new THREE.Mesh(g, m);
+  mesh.position.set(0, d.y - 0.10, -7.97);
+  mesh.name = 'floor_edge';
+  scene.add(mesh);
+}
+
+/* ================= dome ribs ================= */
+for (let i = 0; i < 4; i++) {
+  const u = 0.25 + i * 0.1667;
+  const d = uvToWorld(u, 0.31, -14.5);
+  const g = new THREE.PlaneGeometry(0.012 * d.w, 0.85 * d.h);
+  const m = new THREE.MeshBasicMaterial({
+    color: C_RIB, transparent: true, opacity: 0.9, depthWrite: false
+  });
+  const mesh = new THREE.Mesh(g, m);
+  mesh.position.set(d.x, d.y, -14.5);
+  mesh.rotation.z = 0.22;
+  mesh.name = 'rib';
+  mesh.renderOrder = 6;
+  scene.add(mesh);
+}
+
+/* ================= soft lamps under the dome ================= */
+for (let i = 0; i < 5; i++) {
+  const u = 0.28 + i * 0.11;
+  const d = uvToWorld(u, 0.1, -14.5);
+  const g = new THREE.PlaneGeometry(0.09 * d.w, 0.07 * d.h);
+  const m = new THREE.MeshBasicMaterial({
+    color: C_LAMP, transparent: true, opacity: 0.75, depthWrite: false
+  });
+  const mesh = new THREE.Mesh(g, m);
+  mesh.position.set(d.x, d.y, -14.5);
+  mesh.name = 'lamp';
+  mesh.renderOrder = 6;
+  scene.add(mesh);
+}
+
+/* ================= warm highlights on the glass ================= */
+for (let i = 0; i < 10; i++) {
+  const u = 0.20 + (i % 5) * 0.15;
+  const v = 0.30 + Math.floor(i / 5) * 0.16;
+  const d = uvToWorld(u, v, -14.6);
+  const g = new THREE.PlaneGeometry(0.06 * d.w, 0.05 * d.h);
+  const m = new THREE.MeshBasicMaterial({
+    color: C_LAMP, transparent: true, opacity: 0.5, depthWrite: false
+  });
+  const mesh = new THREE.Mesh(g, m);
+  mesh.position.set(d.x, d.y, -14.6);
+  mesh.name = 'glow';
+  mesh.renderOrder = 6;
+  scene.add(mesh);
+}
+
+/* ================= plants ================= */
+const plantDefs = [
+  { u: 0.12, z: -4.0, vb: 0.82, vt: 0.37 },
+  { u: 0.30, z: -5.5, vb: 0.80, vt: 0.45 },
+  { u: 0.68, z: -7.0, vb: 0.78, vt: 0.30 },
+  { u: 0.86, z: -8.5, vb: 0.76, vt: 0.38 }
+];
+for (const p of plantDefs) {
+  const db = uvToWorld(p.u, p.vb, p.z);
+  const dt = uvToWorld(p.u, p.vt, p.z);
+  const hgt = db.y - dt.y;
+  const r = 0.018 * db.w;
+
+  const g = new THREE.CylinderGeometry(r * 0.8, r, hgt, 8);
+  const m = new THREE.MeshBasicMaterial({ color: C_GLASS });
+  const trunk = new THREE.Mesh(g, m);
+  trunk.position.set(db.x, (db.y + dt.y) / 2, p.z);
+  trunk.name = 'plant';
+  scene.add(trunk);
+
+  const lw = 0.085 * db.w;
+  const lh = 0.075 * db.h;
+  for (let i = 0; i < 3; i++) {
+    const tt = 0.45 + i * 0.25;
+    const y = db.y - hgt * tt;
+    const xo = (i % 2 === 0 ? -1 : 1) * 0.045 * db.w;
+    const lg = new THREE.PlaneGeometry(lw, lh);
+    const lm = new THREE.MeshBasicMaterial({ color: C_LEAF, side: THREE.DoubleSide });
+    const leaf = new THREE.Mesh(lg, lm);
+    leaf.position.set(db.x + xo, y, p.z + 0.06);
+    leaf.rotation.z = (i % 2 === 0 ? 0.55 : -0.55);
+    leaf.name = 'leaf';
+    scene.add(leaf);
+  }
+}
+
+/* ================= meteors (outside, additive-looking streaks) ================= */
+const METEOR_COUNT = 26;
+const METEOR_TRAIL = 8;
+const METEOR_Z = -22;
+const meteorData = [];
+const meteorPos = new Float32Array(METEOR_COUNT * METEOR_TRAIL * 3);
+
+for (let i = 0; i < METEOR_COUNT; i++) {
+  const u = (i + rnd() * 0.8) / METEOR_COUNT;
+  const v = rnd() * 0.5;
+  const d = uvToWorld(u, v, METEOR_Z);
+  const sp = 6 + rnd() * 3;
+  const dir = rnd() < 0.5 ? -1 : 1;
+  meteorData.push({ x: d.x, y: d.y, vx: dir * sp * 0.45, vy: -sp });
+}
+
+const meteorGeo = new THREE.BufferGeometry();
+meteorGeo.setAttribute('position', new THREE.BufferAttribute(meteorPos, 3));
+const meteorMat = new THREE.PointsMaterial({
+  color: C_COLD, size: 5, sizeAttenuation: false,
+  transparent: true, opacity: 1, depthTest: true, depthWrite: false
+});
+const meteors = new THREE.Points(meteorGeo, meteorMat);
+meteors.name = 'meteor';
+meteors.renderOrder = 5;
+scene.add(meteors);
+
+/* ================= drops on the glass ================= */
+const DROP_COUNT = 64;
+const DROP_Z = -13.5;
+const dropData = [];
+const dropPos = new Float32Array(DROP_COUNT * 3);
+
+for (let i = 0; i < DROP_COUNT; i++) {
+  const u = rnd();
+  const v = 0.02 + rnd() * 0.48;
+  const d = uvToWorld(u, v, DROP_Z);
+  dropData.push({ x: d.x, y: d.y });
+}
+
+const dropGeo = new THREE.BufferGeometry();
+dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPos, 3));
+const dropMat = new THREE.PointsMaterial({
+  color: C_COLD, size: 5, sizeAttenuation: false,
+  transparent: true, opacity: 1, depthTest: true, depthWrite: false
+});
+const drops = new THREE.Points(dropGeo, dropMat);
+drops.name = 'drops';
+drops.renderOrder = 10;
+scene.add(drops);
+
+/* ================= animation ================= */
+let t = 0;
+
+function updateCamera() {
+  const cz = Math.max(1.0, 4 - 2.32 * t);
+  const cx = 0.6 * Math.sin(t * 2.0);
+  camera.position.set(cx, 0, cz);
+  camera.lookAt(0, 0, -1);
+}
+
+function updateMeteors(dt) {
+  const arr = meteorGeo.attributes.position.array;
+  for (let i = 0; i < METEOR_COUNT; i++) {
+    const m = meteorData[i];
+    m.x += m.vx * dt;
+    m.y += m.vy * dt;
+    if (m.y < 0.0) { m.y = 12.0; m.x = (rnd() - 0.5) * 34; }
+    if (m.x < -17) m.x += 34;
+    if (m.x > 17) m.x -= 34;
+    for (let k = 0; k < METEOR_TRAIL; k++) {
+      const idx = (i * METEOR_TRAIL + k) * 3;
+      arr[idx]     = m.x - m.vx * 0.03 * k;
+      arr[idx + 1] = m.y - m.vy * 0.03 * k;
+      arr[idx + 2] = METEOR_Z;
+    }
+  }
+  meteorGeo.attributes.position.needsUpdate = true;
+}
+
+function updateDrops(dt) {
+  const arr = dropGeo.attributes.position.array;
+  for (let i = 0; i < DROP_COUNT; i++) {
+    const d = dropData[i];
+    d.y -= 2.0 * dt;
+    if (d.y < 0) d.y = 7.8;
+    arr[i * 3]     = d.x;
+    arr[i * 3 + 1] = d.y;
+    arr[i * 3 + 2] = DROP_Z;
+  }
+  dropGeo.attributes.position.needsUpdate = true;
+}
+
+function probe() {
+  const names = [];
+  scene.traverse(o => { if (o.name) names.push(o.name); });
+  return {
+    t: +t.toFixed(4),
+    objects: names,
+    meteor: [+meteorData[0].x.toFixed(4), +meteorData[0].y.toFixed(4)],
+    camera: [+camera.position.x.toFixed(4), +camera.position.z.toFixed(4)]
+  };
+}
+
+function step(dt) {
+  t += dt;
+  updateCamera();
+  updateMeteors(dt);
+  updateDrops(dt);
+  renderer.render(scene, camera);
+  return probe();
+}
+
+window.__step = step;
+window.__probe = probe;
+
+/* ================= first frame ================= */
+updateCamera();
+updateMeteors(0);
+updateDrops(0);
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-20 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

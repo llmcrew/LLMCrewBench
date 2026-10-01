@@ -24,13 +24,18 @@ def _transcript(task: core.TaskInstance, reply: str) -> core.Transcript:
     )
 
 
+def _by_id(seed: int, task_id: str) -> core.TaskInstance:
+    return next(task for task in _tasks(seed) if task.id == task_id)
+
+
 def test_ids_points_and_registry() -> None:
     tasks = _tasks(20260915)
     assert [task.id for task in tasks] == list(reasoning.IDS)
-    assert sum(task.max_points for task in tasks) == 20.0
+    assert len(tasks) == 15
+    assert sum(task.max_points for task in tasks) == 15.0
     module = core.REGISTRY["B"]
     assert module.expected_ids == reasoning.IDS
-    assert module.points == 20.0
+    assert module.points == 15.0
 
 
 def test_generation_is_deterministic_but_seeded() -> None:
@@ -47,13 +52,13 @@ def test_generation_is_deterministic_but_seeded() -> None:
     )
 
 
-def test_every_canonical_reference_scores_two() -> None:
+def test_every_canonical_reference_scores_one() -> None:
     for task in _tasks(20260915):
         score = reasoning.evaluate(task, _transcript(task, task.oracle["reference"]))
-        assert score.earned == 2.0
-        assert score.possible == 2.0
+        assert score.earned == 1.0
+        assert score.possible == 1.0
         assert len(score.checks) == 1
-        assert score.checks[0].points == 2.0
+        assert score.checks[0].points == 1.0
 
 
 def test_empty_unknown_multiline_and_extra_text_score_zero() -> None:
@@ -76,7 +81,7 @@ def test_reasoning_specific_traps() -> None:
         for task in _tasks(seed)
         if task.id == "R-7" and task.meta["unreduced"] != task.oracle["reference"]
     )
-    assert reasoning.evaluate(r7, _transcript(r7, r7.meta["unreduced"])).earned == 2.0
+    assert reasoning.evaluate(r7, _transcript(r7, r7.meta["unreduced"])).earned == 1.0
     numerator, denominator = r7.meta["unreduced"].split("/")
     assert reasoning.evaluate(r7, _transcript(r7, f"{int(numerator) + 1}/{denominator}")).earned == 0.0
 
@@ -102,6 +107,47 @@ def test_reasoning_specific_traps() -> None:
     floor_answer = r6.meta["naive_floor_distractor"]
     assert floor_answer != r6.oracle["answer"]
     assert reasoning.evaluate(r6, _transcript(r6, str(floor_answer))).earned == 0.0
+
+
+def test_new_scenario_traps() -> None:
+    # R-11: the naive answer reports the window's end, not its start.
+    r11 = _by_id(20260915, "R-11")
+    assert r11.meta["naive_window_end"] != r11.oracle["answer"]
+    assert reasoning.evaluate(r11, _transcript(r11, r11.oracle["reference"])).earned == 1.0
+    assert reasoning.evaluate(r11, _transcript(r11, str(r11.meta["naive_window_end"]))).earned == 0.0
+
+    # R-12: applying B's standard UTC+1 instead of the post-switch UTC+2.
+    r12 = _by_id(20260915, "R-12")
+    assert r12.meta["naive_standard_offset"] != r12.oracle["reference"]
+    assert reasoning.evaluate(r12, _transcript(r12, r12.oracle["reference"])).earned == 1.0
+    assert reasoning.evaluate(r12, _transcript(r12, r12.meta["naive_standard_offset"])).earned == 0.0
+
+    # R-13: both the unreduced and the reduced fraction are valid, while the
+    # marginal probability or a changed numerator are rejected.
+    r13 = next(
+        task
+        for seed in range(200)
+        for task in _tasks(seed)
+        if task.id == "R-13" and task.meta["unreduced"] != task.meta["reduced"]
+    )
+    assert reasoning.evaluate(r13, _transcript(r13, r13.meta["unreduced"])).earned == 1.0
+    assert reasoning.evaluate(r13, _transcript(r13, r13.meta["reduced"])).earned == 1.0
+    assert reasoning.evaluate(r13, _transcript(r13, r13.meta["naive_marginal"])).earned == 0.0
+    numerator, denominator = r13.meta["unreduced"].split("/")
+    assert reasoning.evaluate(r13, _transcript(r13, f"{int(numerator) + 1}/{denominator}")).earned == 0.0
+
+    # R-14: the plausible greedy list schedule is strictly worse than the exact
+    # minimum, which takes the release times into account.
+    r14 = _by_id(20260915, "R-14")
+    assert r14.meta["naive_greedy"] > r14.oracle["answer"]
+    assert reasoning.evaluate(r14, _transcript(r14, r14.oracle["reference"])).earned == 1.0
+    assert reasoning.evaluate(r14, _transcript(r14, str(r14.meta["naive_greedy"]))).earned == 0.0
+
+    # R-15: a different but still valid topological order must not pass.
+    r15 = _by_id(20260915, "R-15")
+    assert r15.meta["naive_fifo"] != r15.oracle["reference"]
+    assert reasoning.evaluate(r15, _transcript(r15, r15.oracle["reference"])).earned == 1.0
+    assert reasoning.evaluate(r15, _transcript(r15, r15.meta["naive_fifo"])).earned == 0.0
 
 
 def test_packing_oracle_proves_minimum() -> None:

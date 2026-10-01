@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>2-link planar manipulator — IK</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #10141a; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ---------- параметры ---------- */
+const L1 = 2.56;
+const L2 = 2.09;
+const TX = 1.11;
+const TY = 2.08;
+
+/* ---------- рендерер ---------- */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+/* ---------- сцена и камера ---------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x10141a);
+
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+camera.position.set(1.6, 2.0, 9.5);
+camera.lookAt(1.6, 2.0, 0.0);
+
+/* ---------- свет ---------- */
+scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
+dirLight.position.set(5.0, 9.0, 8.0);
+scene.add(dirLight);
+
+/* ---------- основание ---------- */
+const base = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.4, 0.4, 0.3, 32),
+  new THREE.MeshStandardMaterial({ color: 0x8899aa })
+);
+base.name = 'base';
+base.position.set(0, 0.15, 0);
+scene.add(base);
+
+/* ---------- материалы звеньев ---------- */
+const linkMat = new THREE.MeshStandardMaterial({ color: 0xcfd8e3 });
+
+/* ---------- звено 1 ---------- */
+const arm1 = new THREE.Group();
+arm1.name = 'arm1';
+arm1.position.set(0, 0, 0);
+arm1.rotation.z = 0;
+scene.add(arm1);
+
+const link1 = new THREE.Mesh(new THREE.BoxGeometry(L1, 0.3, 0.3), linkMat);
+link1.position.set(L1 / 2, 0, 0);
+arm1.add(link1);
+
+/* ---------- звено 2 (вложено в arm1) ---------- */
+const arm2 = new THREE.Group();
+arm2.name = 'arm2';
+arm2.position.set(L1, 0, 0);
+arm2.rotation.z = 0;
+arm1.add(arm2);
+
+const link2 = new THREE.Mesh(new THREE.BoxGeometry(L2, 0.3, 0.3), linkMat);
+link2.position.set(L2 / 2, 0, 0);
+arm2.add(link2);
+
+/* ---------- схват ---------- */
+const effector = new THREE.Mesh(
+  new THREE.SphereGeometry(0.2, 24, 16),
+  new THREE.MeshStandardMaterial({ color: 0x44ddaa })
+);
+effector.name = 'effector';
+effector.position.set(L2, 0, 0);
+arm2.add(effector);
+
+/* ---------- цель ---------- */
+const target = new THREE.Mesh(
+  new THREE.SphereGeometry(0.3, 32, 24),
+  new THREE.MeshStandardMaterial({ color: 0xff8a3d })
+);
+target.name = 'target';
+target.position.set(TX, TY, -0.2);
+scene.add(target);
+
+/* ---------- состояние ---------- */
+let steps = 0;
+let t = 0;
+let theta1 = 0;
+let theta2 = 0;
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const r4 = (v) => Math.round(v * 1e4) / 1e4;
+
+/* ---------- проба ---------- */
+const _wp = new THREE.Vector3();
+
+function probe() {
+  scene.updateMatrixWorld(true);
+  effector.getWorldPosition(_wp);
+  const objects = [];
+  for (const child of scene.children) {
+    if (child.name) objects.push(child.name);
+  }
+  return {
+    steps: steps,
+    t: r4(t),
+    objects: objects,
+    angles: [r4(theta1), r4(theta2)],
+    effector: [r4(_wp.x), r4(_wp.y)],
+    target: [r4(TX), r4(TY)]
+  };
+}
+
+/* ---------- шаг симуляции: только здесь решается ОК ---------- */
+window.__step = function (dt) {
+  const x = TX;
+  const y = TY;
+
+  const c2 = (x * x + y * y - L1 * L1 - L2 * L2) / (2 * L1 * L2);
+  theta2 = -Math.acos(clamp(c2, -1, 1));           // локоть вверх
+  theta1 = Math.atan2(y, x) -
+           Math.atan2(L2 * Math.sin(theta2), L1 + L2 * Math.cos(theta2));
+
+  arm1.rotation.z = theta1;
+  arm2.rotation.z = theta2;
+
+  steps += 1;
+  t += dt;
+
+  scene.updateMatrixWorld(true);
+  renderer.render(scene, camera);
+
+  return probe();
+};
+
+window.__probe = probe;
+
+/* ---------- первая отрисовка ---------- */
+scene.updateMatrixWorld(true);
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · K-19 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

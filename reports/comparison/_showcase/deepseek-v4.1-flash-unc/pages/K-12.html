@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Heat diffusion on a plate</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ------------------------------------------------------------------ */
+/*  Simulation state                                                   */
+/* ------------------------------------------------------------------ */
+const N = 32;
+const CELLS = N * N;
+const T = new Float64Array(CELLS);   // row-major, index = i*32 + j
+T[8 * N + 8] = 1000;                 // single hot spot
+
+/* ------------------------------------------------------------------ */
+/*  Scene                                                              */
+/* ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 500);
+camera.position.set(0.0, 40.0, 40.0);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.6);
+dirLight.position.set(12.0, 40.0, 16.0);
+scene.add(dirLight);
+
+/* ------------------------------------------------------------------ */
+/*  Plate: one InstancedMesh with 1024 columns                         */
+/* ------------------------------------------------------------------ */
+const geometry = new THREE.BoxGeometry(0.92, 1.0, 0.92);
+const material = new THREE.MeshLambertMaterial({ color: 0xffffff });
+const plate = new THREE.InstancedMesh(geometry, material, CELLS);
+plate.name = 'plate';
+plate.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(plate);
+
+const dummy = new THREE.Object3D();
+const COLOR_LOW = new THREE.Color(0x14306b);
+const COLOR_HIGH = new THREE.Color(0xff5a1e);
+const tmpColor = new THREE.Color();
+
+function paint() {
+  let max = 0;
+  for (let k = 0; k < CELLS; k++) if (T[k] > max) max = T[k];
+  const inv = max > 0 ? 1 / max : 0;
+
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const idx = i * N + j;
+      const t = T[idx] * inv;                 // normalized temperature
+      const h = 0.05 + 3 * t;                 // column height
+
+      dummy.position.set(j - 15.5, h / 2, i - 15.5);
+      dummy.scale.set(1, h, 1);
+      dummy.rotation.set(0, 0, 0);
+      dummy.updateMatrix();
+      plate.setMatrixAt(idx, dummy.matrix);
+
+      tmpColor.copy(COLOR_LOW).lerp(COLOR_HIGH, t);
+      plate.setColorAt(idx, tmpColor);
+    }
+  }
+  plate.instanceMatrix.needsUpdate = true;
+  if (plate.instanceColor) plate.instanceColor.needsUpdate = true;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Explicit in-place diffusion step                                   */
+/* ------------------------------------------------------------------ */
+const A = 0.2;
+
+function step() {
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const idx = i * N + j;
+      const c = T[idx];
+      const up = (i > 0) ? T[(i - 1) * N + j] : c;
+      const dn = (i < N - 1) ? T[(i + 1) * N + j] : c;
+      const lf = (j > 0) ? T[i * N + (j - 1)] : c;
+      const rt = (j < N - 1) ? T[i * N + (j + 1)] : c;
+      T[idx] = c + A * (up + dn + lf + rt - 4 * c);
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  State reporting                                                    */
+/* ------------------------------------------------------------------ */
+const r4 = (x) => Number(x.toFixed(4));
+
+function stateObject() {
+  let sum = 0;
+  let max = 0;
+  for (let k = 0; k < CELLS; k++) {
+    const v = T[k];
+    sum += v;
+    if (v > max) max = v;
+  }
+  return {
+    grid: 32,
+    mean: r4(sum / CELLS),
+    max: r4(max),
+    samples: [
+      r4(T[8 * N + 8]),
+      r4(T[16 * N + 16]),
+      r4(T[24 * N + 8])
+    ]
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Public API                                                         */
+/* ------------------------------------------------------------------ */
+window.__step = function (dt) {
+  step();                 // dt does not influence the scheme: one call = one step
+  return stateObject();   // advances only, draws nothing
+};
+
+window.__probe = function () {
+  paint();
+  renderer.render(scene, camera);
+  return stateObject();
+};
+
+/* ------------------------------------------------------------------ */
+/*  First frame                                                        */
+/* ------------------------------------------------------------------ */
+paint();
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · K-12 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

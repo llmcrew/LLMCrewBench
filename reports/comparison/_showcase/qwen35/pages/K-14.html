@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Game of Life 24x24</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+    const THREE = window.THREE;
+
+    // --- Configuration ---
+    const GRID_SIZE = 24;
+    const SEED_INIT = 1741694328;
+    
+    // --- State ---
+    let seed = SEED_INIT;
+    let grid = []; // 2D array [i][j] -> 0 or 1
+    let generation = 0;
+
+    // --- LCG ---
+    function nextRandom() {
+        seed = (seed * 1664525 + 1013904223) % 4294967296;
+        return seed / 4294967296;
+    }
+
+    // --- Three.js Setup ---
+    const scene = new THREE.Scene();
+    
+    // Camera: PerspectiveCamera(50, 800/600, 0.1, 500) at [0, 34, 23] looking at (0,0,0)
+    const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 500);
+    camera.position.set(0.0, 34.0, 23.0);
+    camera.lookAt(0, 0, 0);
+
+    // Renderer: preserveDrawingBuffer: true, pixelRatio: 1, size: 800x600
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    document.body.appendChild(renderer.domElement);
+
+    // Lights
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+    directionalLight.position.set(10.0, 28.0, 14.0);
+    scene.add(directionalLight);
+
+    // Grid Initialization
+    // Initialize empty grid
+    for (let i = 0; i < GRID_SIZE; i++) {
+        grid[i] = new Array(GRID_SIZE).fill(0);
+    }
+
+    // Fill grid based on LCG
+    // Loop i = 0..23, j = 0..23
+    for (let i = 0; i < GRID_SIZE; i++) {
+        for (let j = 0; j < GRID_SIZE; j++) {
+            if (nextRandom() < 0.3) {
+                grid[i][j] = 1;
+            }
+        }
+    }
+
+    // InstancedMesh Setup
+    // Geometry: BoxGeometry(0.92, 0.4, 0.92)
+    const geometry = new THREE.BoxGeometry(0.92, 0.4, 0.92);
+    const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
+    const mesh = new THREE.InstancedMesh(geometry, material, GRID_SIZE * GRID_SIZE);
+    mesh.name = 'life';
+
+    const dummy = new THREE.Object3D();
+    const colorAlive = new THREE.Color(0xffa726);
+    const colorDead = new THREE.Color(0x1a2432);
+
+    // Set positions for all instances
+    // Cell (i, j) at (j - 11.5, 0.2, i - 11.5)
+    for (let i = 0; i < GRID_SIZE; i++) {
+        for (let j = 0; j < GRID_SIZE; j++) {
+            dummy.position.set(j - 11.5, 0.2, i - 11.5);
+            dummy.updateMatrix();
+            mesh.setMatrixAt(i * GRID_SIZE + j, dummy.matrix);
+        }
+    }
+    scene.add(mesh);
+
+    // --- Simulation Logic ---
+
+    window.__step = function(dt) {
+        // Create new grid for next generation
+        const newGrid = new Array(GRID_SIZE).fill(0).map(() => new Array(GRID_SIZE).fill(0));
+
+        for (let i = 0; i < GRID_SIZE; i++) {
+            for (let j = 0; j < GRID_SIZE; j++) {
+                let neighbors = 0;
+                // Check 8 neighbors
+                for (let di = -1; di <= 1; di++) {
+                    for (let dj = -1; dj <= 1; dj++) {
+                        if (di === 0 && dj === 0) continue;
+                        
+                        const ni = i + di;
+                        const nj = j + dj;
+
+                        // Boundary check (no wrapping)
+                        if (ni >= 0 && ni < GRID_SIZE && nj >= 0 && nj < GRID_SIZE) {
+                            neighbors += grid[ni][nj];
+                        }
+                    }
+                }
+
+                const isAlive = grid[i][j] === 1;
+
+                // Rules B3/S23
+                if (isAlive) {
+                    // Survives with 2 or 3 neighbors
+                    if (neighbors === 2 || neighbors === 3) {
+                        newGrid[i][j] = 1;
+                    } else {
+                        newGrid[i][j] = 0;
+                    }
+                } else {
+                    // Born with exactly 3 neighbors
+                    if (neighbors === 3) {
+                        newGrid[i][j] = 1;
+                    } else {
+                        newGrid[i][j] = 0;
+                    }
+                }
+            }
+        }
+
+        grid = newGrid;
+        generation++;
+    };
+
+    window.__probe = function() {
+        let totalAlive = 0;
+        const rowsStats = [0, 0, 0]; // Row 0, Row 11, Row 23
+
+        for (let i = 0; i < GRID_SIZE; i++) {
+            for (let j = 0; j < GRID_SIZE; j++) {
+                const isAlive = grid[i][j] === 1;
+                const index = i * GRID_SIZE + j;
+
+                if (isAlive) {
+                    totalAlive++;
+                    mesh.setColorAt(index, colorAlive);
+                    
+                    if (i === 0) rowsStats[0]++;
+                    if (i === 11) rowsStats[1]++;
+                    if (i === 23) rowsStats[2]++;
+                } else {
+                    mesh.setColorAt(index, colorDead);
+                }
+            }
+        }
+
+        mesh.instanceColor.needsUpdate = true;
+        
+        renderer.render(scene, camera);
+
+        return {
+            alive: totalAlive,
+            generation: generation,
+            rows: rowsStats
+        };
+    };
+
+    // Initial Render
+    window.__probe();
+    window.__ready = true;
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-14 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

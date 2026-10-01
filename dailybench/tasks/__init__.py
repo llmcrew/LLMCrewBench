@@ -15,6 +15,12 @@ MODULES: tuple[str, ...] = (
     "tools",
     "longctx",
     "hallucination",
+    "structured",
+    "dialogue",
+    "retrieval",
+    "review",
+    "visual",
+    "art",
 )
 
 _loaded = False

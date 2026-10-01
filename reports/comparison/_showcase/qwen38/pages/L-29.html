@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Orbital Station — Departure</title>
+<style>
+  html,body{margin:0;padding:0;background:#000;overflow:hidden;height:100%;}
+  canvas{display:block;width:100vw;height:100vh;}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ---------- deterministic LCG ---------- */
+let lcg = 364651;
+function rnd(){ lcg = (lcg * 1103515245 + 12345) % 2147483648; return lcg / 2147483648; }
+
+/* ---------- renderer ---------- */
+const renderer = new THREE.WebGLRenderer({preserveDrawingBuffer:true, antialias:true});
+renderer.setPixelRatio(1);
+renderer.setSize(1920,1080,false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x02030a);
+
+const camera = new THREE.PerspectiveCamera(52, 1920/1080, 0.01, 400);
+
+/* ---------- lights ---------- */
+const sun = new THREE.DirectionalLight(0xfff2e0, 1.15);
+sun.position.set(8, 6, 10);
+scene.add(sun);
+scene.add(new THREE.AmbientLight(0x223044, 0.55));
+const earthGlow = new THREE.PointLight(0xff8a4c, 0.9, 60, 2.0);
+earthGlow.position.set(0.4,-2.6,-18);
+scene.add(earthGlow);
+
+/* ---------- EARTH (custom shader) ---------- */
+const earthUniforms = {
+  uTime:{value:0},
+  uFissure:{value:0.0}
+};
+const earthMat = new THREE.ShaderMaterial({
+  uniforms: earthUniforms,
+  vertexShader:`
+    varying vec3 vPos;
+    varying vec3 vN;
+    void main(){
+      vPos = position;
+      vN = normalize(normalMatrix * normal);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+    }`,
+  fragmentShader:`
+    precision highp float;
+    varying vec3 vPos;
+    varying vec3 vN;
+    uniform float uTime;
+    uniform float uFissure;
+
+    float hash(vec3 p){
+      p = fract(p*0.3183099 + 0.1);
+      p *= 17.0;
+      return fract(p.x*p.y*p.z*(p.x+p.y+p.z));
+    }
+    float noise(vec3 x){
+      vec3 i = floor(x);
+      vec3 f = fract(x);
+      f = f*f*(3.0-2.0*f);
+      return mix(
+        mix(mix(hash(i+vec3(0,0,0)),hash(i+vec3(1,0,0)),f.x),
+            mix(hash(i+vec3(0,1,0)),hash(i+vec3(1,1,0)),f.x),f.y),
+        mix(mix(hash(i+vec3(0,0,1)),hash(i+vec3(1,0,1)),f.x),
+            mix(hash(i+vec3(0,1,1)),hash(i+vec3(1,1,1)),f.x),f.y),f.z);
+    }
+    float fbm(vec3 p){
+      float a=0.5, s=0.0;
+      for(int i=0;i<5;i++){ s+=a*noise(p); p*=2.02; a*=0.5; }
+      return s;
+    }
+
+    void main(){
+      vec3 p = normalize(vPos);
+      float n = fbm(p*3.0 + vec3(0.0, uTime*0.02, 0.0));
+      float storm = fbm(p*6.0 + vec3(uTime*0.05, 0.0, uTime*0.03));
+
+      // base: dark ocean / scorched land
+      vec3 ocean = vec3(0.05,0.09,0.16);
+      vec3 land  = vec3(0.16,0.13,0.10);
+      float landMask = smoothstep(0.45,0.62,n);
+      vec3 col = mix(ocean, land, landMask);
+
+      // ash / storm clouds (grey)
+      float ash = smoothstep(0.55,0.85,storm);
+      col = mix(col, vec3(0.30,0.28,0.27), ash*0.7);
+
+      // glowing fissures
+      float f = fbm(p*4.5 + vec3(1.7,0.3,2.1));
+      float fissure = smoothstep(0.62,0.72,f) * (1.0 - ash*0.5);
+      float pulse = 0.6 + 0.4*sin(uTime*1.6 + f*12.0);
+      vec3 fissCol = vec3(1.0, 0.541, 0.298); // #ff8a4c
+      col = mix(col, fissCol, fissure * uFissure * pulse);
+      col += fissCol * fissure * uFissure * pulse * 0.6;
+
+      // simple lambert shading
+      float light = clamp(dot(vN, normalize(vec3(0.5,0.4,0.7))),0.0,1.0);
+      col *= (0.25 + 0.95*light);
+
+      gl_FragColor = vec4(col,1.0);
+    }`
+});
+const earth = new THREE.Mesh(new THREE.SphereGeometry(3.6, 64, 64), earthMat);
+earth.name = 'earth';
+earth.position.set(0.4,-2.6,-22);
+scene.add(earth);
+
+/* ---------- ATMOSPHERE ---------- */
+const atmoMat = new THREE.ShaderMaterial({
+  side: THREE.BackSide,
+  transparent:true,
+  depthWrite:false,
+  uniforms:{},
+  vertexShader:`
+    varying vec3 vN;
+    void main(){ vN = normalize(normalMatrix*normal);
+      gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader:`
+    varying vec3 vN;
+    void main(){
+      float rim = pow(1.0 - abs(vN.z), 2.2);
+      vec3 c = vec3(0.369,0.624,0.878); // #5e9fe0
+      gl_FragColor = vec4(c, rim*0.55);
+    }`
+});
+const atmosphere = new THREE.Mesh(new THREE.SphereGeometry(3.95, 48, 48), atmoMat);
+atmosphere.name = 'atmosphere';
+atmosphere.position.copy(earth.position);
+scene.add(atmosphere);
+
+/* ---------- BROKEN MOON ---------- */
+const moonMat = new THREE.MeshStandardMaterial({color:0x9a97a8, roughness:0.95, metalness:0.0});
+const moon_broken = new THREE.Group();
+moon_broken.name = 'moon_broken';
+const moonCore = new THREE.Mesh(new THREE.SphereGeometry(0.9, 40, 40), moonMat);
+moon_broken.add(moonCore);
+// cut-out: dark sphere biting the edge
+const cutMat = new THREE.MeshStandardMaterial({color:0x1a1820, roughness:1.0, metalness:0.0});
+const cut = new THREE.Mesh(new THREE.SphereGeometry(0.55, 32, 32), cutMat);
+cut.position.set(0.55, 0.25, 0.35);
+moon_broken.add(cut);
+// jagged rim shards
+for(let i=0;i<7;i++){
+  const s = new THREE.Mesh(new THREE.TetrahedronGeometry(0.12 + rnd()*0.12), moonMat);
+  const a = rnd()*Math.PI*2;
+  s.position.set(0.55*Math.cos(a), 0.25 + (rnd()-0.5)*0.5, 0.35*Math.sin(a));
+  s.rotation.set(rnd()*3, rnd()*3, rnd()*3);
+  moon_broken.add(s);
+}
+moon_broken.position.set(-2.6, 2.2, -34);
+scene.add(moon_broken);
+
+/* ---------- STATION ---------- */
+const station = new THREE.Group();
+station.name = 'station';
+station.position.set(0, 0.2, 3.6);
+
+const hullMat = new THREE.MeshStandardMaterial({color:0xb9c2cf, roughness:0.45, metalness:0.7});
+const darkMat = new THREE.MeshStandardMaterial({color:0x3a4150, roughness:0.6, metalness:0.5});
+
+// main hull
+const hull = new THREE.Mesh(new THREE.CylinderGeometry(0.16,0.16,0.9,24), hullMat);
+hull.rotation.x = Math.PI/2;
+station.add(hull);
+
+// forward module
+const fwd = new THREE.Mesh(new THREE.SphereGeometry(0.18,24,24), hullMat);
+fwd.position.z = 0.5;
+station.add(fwd);
+
+// aft cone (nozzle)
+const nozzle = new THREE.Mesh(new THREE.ConeGeometry(0.16,0.3,24), darkMat);
+nozzle.rotation.x = -Math.PI/2;
+nozzle.position.z = -0.55;
+station.add(nozzle);
+
+// solar panels
+const panelMat = new THREE.MeshStandardMaterial({color:0x1b2a4a, roughness:0.3, metalness:0.6, side:THREE.DoubleSide});
+for(const sx of [-1,1]){
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(0.7,0.02,0.34), panelMat);
+  panel.position.set(sx*0.55, 0, 0.05);
+  station.add(panel);
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.3,0.02,0.02), darkMat);
+  arm.position.set(sx*0.3, 0, 0.05);
+  station.add(arm);
+}
+// top antenna
+const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.01,0.01,0.3,8), darkMat);
+ant.position.set(0,0.22,0.1);
+station.add(ant);
+
+// three engine_glow spots at the rear
+const glowMat = new THREE.MeshBasicMaterial({color:0x8fd8ff, transparent:true, opacity:0.95, blending:THREE.AdditiveBlending, depthWrite:false});
+const engineGlows = [];
+for(let i=0;i<3;i++){
+  const g = new THREE.Mesh(new THREE.SphereGeometry(0.05,16,16), glowMat.clone());
+  const a = i/3*Math.PI*2;
+  g.position.set(Math.cos(a)*0.09, Math.sin(a)*0.09, -0.72);
+  g.name = 'engine_glow';
+  station.add(g);
+  engineGlows.push(g);
+}
+scene.add(station);
+
+/* ---------- DUST RING (140 points around station) ---------- */
+const dustCount = 140;
+const dustPos = new Float32Array(dustCount*3);
+const dustBase = [];
+for(let i=0;i<dustCount;i++){
+  const a = rnd()*Math.PI*2;
+  const r = 0.5 + rnd()*1.4;
+  const y = (rnd()-0.5)*0.5;
+  dustBase.push({a, r, y, sp: 0.2 + rnd()*0.5});
+  dustPos[i*3]   = Math.cos(a)*r;
+  dustPos[i*3+1] = y;
+  dustPos[i*3+2] = Math.sin(a)*r;
+}
+const dustGeo = new THREE.BufferGeometry();
+dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos,3));
+const dustMat = new THREE.PointsMaterial({color:0xc8d4e4, size:0.03, transparent:true, opacity:0.85, blending:THREE.AdditiveBlending, depthWrite:false});
+const dust_ring = new THREE.Points(dustGeo, dustMat);
+dust_ring.name = 'dust_ring';
+dust_ring.position.copy(station.position);
+scene.add(dust_ring);
+
+/* ---------- DEBRIS BELT (60 points between station and earth) ---------- */
+const debCount = 60;
+const debPos = new Float32Array(debCount*3);
+const debBase = [];
+const dirSE = new THREE.Vector3().subVectors(new THREE.Vector3(0,0.2,3.6), new THREE.Vector3(0.4,-2.6,-22)).normalize();
+for(let i=0;i<debCount;i++){
+  const t = 0.15 + rnd()*0.7;
+  const p = new THREE.Vector3(0.4,-2.6,-22).addScaledVector(dirSE, t*26);
+  p.x += (rnd()-0.5)*3.0;
+  p.y += (rnd()-0.5)*3.0;
+  p.z += (rnd()-0.5)*3.0;
+  debBase.push({p, sp:0.05+rnd()*0.15, ph:rnd()*6.28});
+  debPos[i*3]=p.x; debPos[i*3+1]=p.y; debPos[i*3+2]=p.z;
+}
+const debGeo = new THREE.BufferGeometry();
+debGeo.setAttribute('position', new THREE.BufferAttribute(debPos,3));
+const debMat = new THREE.PointsMaterial({color:0x8a8f9c, size:0.05, transparent:true, opacity:0.9});
+const debris_belt = new THREE.Points(debGeo, debMat);
+debris_belt.name = 'debris_belt';
+scene.add(debris_belt);
+
+/* ---------- STARS (2600) ---------- */
+const starCount = 2600;
+const starPos = new Float32Array(starCount*3);
+for(let i=0;i<starCount;i++){
+  const u = rnd(), v = rnd();
+  const th = u*Math.PI*2, ph = Math.acos(2*v-1);
+  const R = 120 + rnd()*80;
+  starPos[i*3]   = R*Math.sin(ph)*Math.cos(th);
+  starPos[i*3+1] = R*Math.cos(ph);
+  starPos[i*3+2] = R*Math.sin(ph)*Math.sin(th);
+}
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos,3));
+const starMat = new THREE.PointsMaterial({color:0xffffff, size:0.35, sizeAttenuation:true, transparent:true, opacity:0.9});
+const stars = new THREE.Points(starGeo, starMat);
+stars.name = 'stars';
+scene.add(stars);
+
+/* ---------- camera path ---------- */
+const camStart = new THREE.Vector3(0.26, 0.25, 2.2);
+const camEnd   = new THREE.Vector3(-1.30, 0.42, 14);
+const CAM_DUR = 5.66;
+
+/* ---------- state ---------- */
+let t = 0;
+const stationBase = new THREE.Vector3(0, 0.2, 3.6);
+const earthPos = new THREE.Vector3(0.4,-2.6,-22);
+const awayDir = new THREE.Vector3().subVectors(stationBase, earthPos).normalize();
+
+function update(){
+  // station drifts away from earth
+  const drift = t * 0.35;
+  station.position.copy(stationBase).addScaledVector(awayDir, drift);
+  dust_ring.position.copy(station.position);
+
+  // engine glow flicker (deterministic)
+  for(let i=0;i<engineGlows.length;i++){
+    const s = 0.8 + 0.35*Math.sin(t*8.0 + i*2.1);
+    engineGlows[i].scale.setScalar(s);
+    engineGlows[i].material.opacity = 0.7 + 0.3*Math.sin(t*10.0 + i);
+  }
+
+  // dust ring rotation + pull
+  const dp = dustGeo.attributes.position.array;
+  for(let i=0;i<dustCount;i++){
+    const b = dustBase[i];
+    const a = b.a + t*b.sp;
+    const r = b.r + 0.05*Math.sin(t*1.5 + i);
+    dp[i*3]   = Math.cos(a)*r;
+    dp[i*3+1] = b.y + 0.03*Math.sin(t*2.0 + i);
+    dp[i*3+2] = Math.sin(a)*r;
+  }
+  dustGeo.attributes.position.needsUpdate = true;
+
+  // debris slow drift
+  const db = debGeo.attributes.position.array;
+  for(let i=0;i<debCount;i++){
+    const b = debBase[i];
+    db[i*3]   = b.p.x + Math.sin(t*b.sp + b.ph)*0.3;
+    db[i*3+1] = b.p.y + Math.cos(t*b.sp + b.ph)*0.3;
+    db[i*3+2] = b.p.z + Math.sin(t*b.sp*0.7 + b.ph)*0.3;
+  }
+  debGeo.attributes.position.needsUpdate = true;
+
+  // earth fissures ramp up
+  earthUniforms.uTime.value = t;
+  earthUniforms.uFissure.value = Math.min(1.0, 0.35 + t*0.12);
+  earth.rotation.y = t*0.02;
+  atmosphere.position.copy(earth.position);
+
+  // moon slow tumble
+  moon_broken.rotation.y = t*0.03;
+
+  // camera path
+  let k = t / CAM_DUR;
+  if(k < 0) k = 0; if(k > 1) k = 1;
+  const e = k*k*(3-2*k); // smoothstep
+  camera.position.lerpVectors(camStart, camEnd, e);
+  camera.lookAt(station.position);
+}
+
+function render(){
+  update();
+  renderer.render(scene, camera);
+}
+
+/* ---------- API ---------- */
+window.__step = function(dt){
+  t += dt;
+  render();
+  return window.__probe();
+};
+
+window.__probe = function(){
+  const dist = station.position.distanceTo(earthPos);
+  return {
+    t: Math.round(t*10000)/10000,
+    objects: ['earth','atmosphere','moon_broken','dust_ring','station','debris_belt','stars'],
+    camera: [
+      Math.round(camera.position.x*10000)/10000,
+      Math.round(camera.position.y*10000)/10000,
+      Math.round(camera.position.z*10000)/10000
+    ],
+    distance: Math.round(dist*10000)/10000
+  };
+};
+
+/* first frame = scene start */
+render();
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-29 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

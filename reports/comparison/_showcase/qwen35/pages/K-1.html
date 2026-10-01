@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Ballistics Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Configuration ---
+        const CONFIG = {
+            gravity: -3.71,
+            groundSize: 60,
+            projectileRadius: 0.35,
+            stopY: -40,
+            camera: {
+                pos: new THREE.Vector3(0.0, 7.0, 16.0),
+                lookAt: new THREE.Vector3(0.0, 3.5, 0.0),
+                fov: 50,
+                aspect: 800 / 600,
+                near: 0.1,
+                far: 200
+            },
+            lights: {
+                ambient: { color: 0xffffff, intensity: 0.35 },
+                directional: { color: 0xffffff, intensity: 2.2, pos: new THREE.Vector3(6.0, 12.0, 8.0) }
+            },
+            materials: {
+                ground: 0x2b3a4a,
+                projectile: 0xff8a3d
+            },
+            projectiles: [
+                { id: 'projectile-0', x: -4.0, y: 0.25, vx: 0.8, vy: 4.95 },
+                { id: 'projectile-1', x: 0.0, y: 0.25, vx: 1.02, vy: 5.33 },
+                { id: 'projectile-2', x: 4.0, y: 0.25, vx: 1.24, vy: 5.71 }
+            ]
+        };
+
+        // --- State ---
+        const state = {
+            steps: 0,
+            t: 0,
+            projectiles: [] // Will hold runtime state { id, x, y, vx, vy, mesh, stopped }
+        };
+
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+        
+        // Camera
+        const camera = new THREE.PerspectiveCamera(
+            CONFIG.camera.fov,
+            CONFIG.camera.aspect,
+            CONFIG.camera.near,
+            CONFIG.camera.far
+        );
+        camera.position.copy(CONFIG.camera.pos);
+        camera.lookAt(CONFIG.camera.lookAt);
+
+        // Renderer
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(CONFIG.lights.ambient.color, CONFIG.lights.ambient.intensity);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(CONFIG.lights.directional.color, CONFIG.lights.directional.intensity);
+        dirLight.position.copy(CONFIG.lights.directional.pos);
+        scene.add(dirLight);
+
+        // Ground
+        const groundGeo = new THREE.PlaneGeometry(CONFIG.groundSize, CONFIG.groundSize);
+        const groundMat = new THREE.MeshStandardMaterial({ color: CONFIG.materials.ground });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.name = 'ground';
+        scene.add(ground);
+
+        // Projectiles
+        const projGeo = new THREE.SphereGeometry(CONFIG.projectileRadius, 32, 32);
+        const projMat = new THREE.MeshStandardMaterial({ color: CONFIG.materials.projectile });
+
+        CONFIG.projectiles.forEach((p, index) => {
+            const mesh = new THREE.Mesh(projGeo, projMat);
+            mesh.name = p.id;
+            mesh.position.set(p.x, p.y, 0);
+            scene.add(mesh);
+
+            state.projectiles.push({
+                id: p.id,
+                x: p.x,
+                y: p.y,
+                vx: p.vx,
+                vy: p.vy,
+                mesh: mesh,
+                stopped: false
+            });
+        });
+
+        // --- Simulation Logic ---
+
+        window.__step = function(dt) {
+            state.steps++;
+            state.t += dt;
+
+            state.projectiles.forEach(p => {
+                if (!p.stopped) {
+                    // Semi-implicit Euler
+                    // 1. Update velocity
+                    p.vy += CONFIG.gravity * dt;
+                    
+                    // 2. Update position
+                    p.y += p.vy * dt;
+                    p.x += p.vx * dt;
+
+                    // 3. Check stop condition
+                    if (p.y < CONFIG.stopY) {
+                        p.y = CONFIG.stopY;
+                        p.stopped = true;
+                    }
+
+                    // Update Mesh
+                    p.mesh.position.set(p.x, p.y, 0);
+                }
+            });
+
+            renderer.render(scene, camera);
+        };
+
+        // --- Probe Logic ---
+
+        window.__probe = function() {
+            const format = (num) => parseFloat(num.toFixed(4));
+
+            const projData = state.projectiles.map(p => ({
+                x: format(p.x),
+                y: format(p.y),
+                vy: format(p.vy)
+            }));
+
+            // Collect object names
+            const objectNames = ['ground', 'projectile-0', 'projectile-1', 'projectile-2'];
+            // Add any others if present (though prompt implies specific set)
+            scene.traverse(obj => {
+                if (obj.name && !objectNames.includes(obj.name)) {
+                    objectNames.push(obj.name);
+                }
+            });
+
+            return {
+                steps: state.steps,
+                t: format(state.t),
+                objects: objectNames,
+                camera: [
+                    format(camera.position.x),
+                    format(camera.position.y),
+                    format(camera.position.z)
+                ],
+                projectiles: projData
+            };
+        };
+
+        // --- Initialization ---
+        // Initial render
+        renderer.render(scene, camera);
+        window.__ready = true;
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-1 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Tram Scene</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+    const THREE = window.THREE;
+
+    // --- LCG Implementation ---
+    let lcg_state = 488641;
+    function rnd() {
+        lcg_state = (lcg_state * 1103515245 + 12345) % 2147483648;
+        return lcg_state / 2147483648;
+    }
+
+    // --- Constants & Config ---
+    const COLORS = {
+        night: 0x1a1230,
+        neon: 0x12c7d4,
+        warm: 0xffa63c,
+        drop: 0xa8c8dc
+    };
+
+    const CONFIG = {
+        width: 800,
+        height: 600,
+        cameraZ: 4,
+        glassZ: -4,
+        blobsZ: -14,
+        dropsZ: -3.9,
+        glowZ: -3.8,
+        mullionZ: -3.95
+    };
+
+    // --- Scene Setup ---
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, CONFIG.width / CONFIG.height, 0.1, 100);
+    camera.position.set(0, 0, CONFIG.cameraZ);
+    camera.lookAt(0, 0, -1);
+
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: false });
+    renderer.setSize(CONFIG.width, CONFIG.height, false);
+    renderer.setPixelRatio(1);
+    document.body.appendChild(renderer.domElement);
+
+    // --- Objects Storage ---
+    const objects = {
+        night: null,
+        cabin_top: null,
+        cabin_low: null,
+        mullions: [],
+        glass: null,
+        blobs: [],
+        rail: null,
+        glow_top: null,
+        glow_low: null,
+        drops: []
+    };
+
+    // --- Geometry Creation Helpers ---
+
+    function createPlane(w, h, color, z, opacity = 1.0, transparent = false, additive = false) {
+        const geo = new THREE.PlaneGeometry(w, h);
+        const mat = new THREE.MeshBasicMaterial({
+            color: color,
+            transparent: transparent,
+            opacity: opacity,
+            side: THREE.DoubleSide,
+            depthWrite: !transparent,
+            blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.z = z;
+        return mesh;
+    }
+
+    function createDropTexture() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 32;
+        canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+        const grad = ctx.createRadialGradient(16, 16, 0, 16,16, 16);
+        grad.addColorStop(0, 'rgba(168, 200, 220, 1)'); // #a8c8dc
+        grad.addColorStop(1, 'rgba(168, 200, 220, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0,0,32,32);
+        const tex = new THREE.CanvasTexture(canvas);
+        return tex;
+    }
+
+    const dropTexture = createDropTexture();
+
+    // --- Build Scene ---
+
+    // 1. Night Background (z = -45)
+    objects.night = createPlane(100, 100, COLORS.night, -45);
+    scene.add(objects.night);
+
+    // 2. Cabin Interior (Top & Bottom/Sides)
+    // Top: 0..10% height. Viewport height is roughly determined by camera FOV and distance.
+    // At z=4, looking at z=-1, FOV 60. 
+    // Visible height at z=0 (approx cabin plane) is 2 * 4 * tan(30deg) ≈ 4.62 units.
+    // 10% of 600px is 60px. 
+    // Let's approximate cabin geometry in screen space or world space.
+    // To ensure exact composition, we place planes close to camera.
+    
+    // Cabin Top (0..10% height) -> y > ~2.0 in world coords roughly? 
+    // Let's use a large plane covering top.
+    objects.cabin_top = createPlane(20, 5, COLORS.night, 0); 
+    objects.cabin_top.position.y = 2.5; // Top area
+    scene.add(objects.cabin_top);
+
+    // Cabin Low (72% down) -> y < ~ -1.5
+    objects.cabin_low = createPlane(20, 10, COLORS.night, 0);
+    objects.cabin_low.position.y = -3.0; // Bottom area
+    scene.add(objects.cabin_low);
+
+    // Side walls (0.09 width each side)
+    const sideWall = createPlane(2, 20, COLORS.night, 0);
+    const leftWall = sideWall.clone();
+    leftWall.position.x = -4.5; // Left edge
+    const rightWall = sideWall.clone();
+    rightWall.position.x = 4.5; // Right edge
+    scene.add(leftWall, rightWall);
+
+    // 3. Mullions (Vertical bars, u=0.31, u=0.65)
+    // Width 0.012 of frame. Frame width ~ 9 units (approx). 0.012 * 9 ≈ 0.1
+    const mullionGeo = new THREE.PlaneGeometry(0.15, 10);
+    const mullionMat = new THREE.MeshBasicMaterial({ color: COLORS.night });
+    
+    const m1 = new THREE.Mesh(mullionGeo, mullionMat);
+    m1.position.set(-1.5, 0, CONFIG.mullionZ); // Approx u=0.31
+    const m2 = new THREE.Mesh(mullionGeo, mullionMat);
+    m2.position.set(1.5, 0, CONFIG.mullionZ); // Approx u=0.65
+    scene.add(m1, m2);
+    objects.mullions = [m1, m2];
+
+    // 4. Glass (78% x 62%, z = -4, opacity 0.30)
+    // 78% of 800px = 624px. 62% of 600px = 372px.
+    // Aspect ratio ~ 1.67.
+    // World units: Width ~ 8, Height ~ 4.8
+    objects.glass = createPlane(8, 4.8, 0xffffff, CONFIG.glassZ, 0.30, true);
+    scene.add(objects.glass);
+
+    // 5. Blobs (22 neon spots, z = -14)
+    const blobGeo = new THREE.PlaneGeometry(0.5, 0.5); // Size 7..13px approx 0.4..0.8 units
+    const blobMat = new THREE.MeshBasicMaterial({ 
+        color: COLORS.neon, 
+        transparent: true, 
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+    });
+
+    for (let i = 0; i < 22; i++) {
+        const mesh = new THREE.Mesh(blobGeo, blobMat);
+        mesh.position.z = CONFIG.blobsZ;
+        // Random start pos
+        mesh.position.x = (rnd() - 0.5) * 15;
+        mesh.position.y = (rnd() - 0.5) * 4;
+        // Random scale
+        const s = 0.4 + rnd() * 0.4;
+        mesh.scale.set(s, s, 1);
+        // Speed
+        mesh.userData = {
+            speed: 2 + rnd() * 2,
+            baseY: mesh.position.y
+        };
+        scene.add(mesh);
+        objects.blobs.push(mesh);
+    }
+
+    // 6. Rail (Horizontal reflection, v=0.58, height 0.02)
+    // v=0.58 is slightly below center.
+    objects.rail = createPlane(10, 0.3, COLORS.neon, CONFIG.glassZ, 0.4, true, true);
+    objects.rail.position.y = -0.5;
+    scene.add(objects.rail);
+
+    // 7. Glows (Warm)
+    // glow_top: 0.70x0.05, v=0.17 (Top)
+    objects.glow_top = createPlane(6, 0.4, COLORS.warm, CONFIG.glowZ, 0.6, true, true);
+    objects.glow_top.position.y = 1.8;
+    scene.add(objects.glow_top);
+
+    // glow_low: 0.62x0.04, v=0.66 (Bottom)
+    objects.glow_low = createPlane(5, 0.3, COLORS.warm, CONFIG.glowZ, 0.6, true, true);
+    objects.glow_low.position.y = -1.5;
+    scene.add(objects.glow_low);
+
+    // 8. Drops (60 drops, z = -3.9)
+    const dropMat = new THREE.SpriteMaterial({ 
+        map: dropTexture, 
+        color: COLORS.drop, 
+        transparent: true, 
+        opacity: 0.8,
+        depthWrite: false
+    });
+
+    for (let i = 0; i < 60; i++) {
+        const sprite = new THREE.Sprite(dropMat);
+        sprite.position.z = CONFIG.dropsZ;
+        sprite.position.x = (rnd() - 0.5) * 7; // Within window width
+        sprite.position.y = (rnd() - 0.5) * 4; // Within window height
+        sprite.scale.set(0.15, 0.25, 1); // Aspect ratio for drop
+        sprite.userData = {
+            speed: 1.56,
+            offset: rnd() * 100 // For LCG variation if needed, but prompt says LCG for init
+        };
+        scene.add(sprite);
+        objects.drops.push(sprite);
+    }
+
+    // --- Animation State ---
+    let time = 0;
+
+    window.__step = function(dt) {
+        time += dt;
+
+        // Camera wobble
+        camera.position.x = Math.sin(time * 1.5) * 0.045;
+
+        // Move Blobs
+        objects.blobs.forEach(b => {
+            b.position.x += b.userData.speed * dt;
+            if (b.position.x > 8) b.position.x = -8;
+        });
+
+        // Move Drops
+        objects.drops.forEach(d => {
+            d.position.y -= d.userData.speed * dt;
+            if (d.position.y < -2.5) {
+                d.position.y = 2.5;
+                d.position.x = (rnd() - 0.5) * 7; // Reset X with LCG
+            }
+        });
+
+        renderer.render(scene, camera);
+        return window.__probe();
+    };
+
+    window.__probe = function() {
+        const firstBlob = objects.blobs[0];
+        return {
+            t: time.toFixed(4),
+            objects: Object.keys(objects),
+            blob: [
+                parseFloat(firstBlob.position.x.toFixed(4)),
+                parseFloat(firstBlob.position.y.toFixed(4))
+            ]
+        };
+    };
+
+    window.__ready = true;
+    
+    // Initial render
+    renderer.render(scene, camera);
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-19 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

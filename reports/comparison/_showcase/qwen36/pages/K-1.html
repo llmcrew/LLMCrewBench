@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Ballistics</title>
+  <style>body { margin: 0; overflow: hidden; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+  <script type="module">
+    const THREE = window.THREE;
+
+    // Сцена и камера
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+    camera.position.set(0.0, 7.0, 16.0);
+    camera.lookAt(0.0, 3.5, 0.0);
+
+    // Рендерер
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    document.body.appendChild(renderer.domElement);
+
+    // Свет
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
+    dirLight.position.set(6.0, 12.0, 8.0);
+    scene.add(dirLight);
+
+    // Земля
+    const groundGeo = new THREE.PlaneGeometry(60, 60);
+    groundGeo.rotateX(-Math.PI / 2);
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a, roughness: 1, metalness: 0 });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.name = 'ground';
+    ground.position.y = 0;
+    scene.add(ground);
+
+    // Снаряды
+    const projData = [
+      { x: -4.0, y: 0.25, vx: 0.8, vy: 4.95 },
+      { x: 0.0, y: 0.25, vx: 1.02, vy: 5.33 },
+      { x: 4.0, y: 0.25, vx: 1.24, vy: 5.71 }
+    ];
+    const projectiles = [];
+    const meshes = [];
+    const projGeo = new THREE.SphereGeometry(0.35, 32, 32);
+    const projMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d, roughness: 0.5, metalness: 0.1 });
+
+    for (let i = 0; i < 3; i++) {
+      const p = { ...projData[i], stopped: false };
+      projectiles.push(p);
+      const mesh = new THREE.Mesh(projGeo, projMat);
+      mesh.name = `projectile-${i}`;
+      mesh.position.set(p.x, p.y, 0);
+      scene.add(mesh);
+      meshes.push(mesh);
+    }
+
+    // Состояние симуляции
+    let steps = 0;
+    let t = 0;
+    const g = -3.71;
+
+    // Шаг симуляции
+    window.__step = function(dt) {
+      steps++;
+      t += dt;
+      for (let i = 0; i < projectiles.length; i++) {
+        const p = projectiles[i];
+        if (!p.stopped) {
+          p.vy += g * dt;
+          p.y += p.vy * dt;
+          p.x += p.vx * dt;
+          if (p.y < -40) {
+            p.y = -40;
+            p.stopped = true;
+          }
+        }
+        meshes[i].position.set(p.x, p.y, 0);
+      }
+      renderer.render(scene, camera);
+    };
+
+    // Зонд состояния
+    window.__probe = function() {
+      return {
+        steps: steps,
+        t: parseFloat(t.toFixed(4)),
+        objects: ["ground", "projectile-0", "projectile-1", "projectile-2"],
+        camera: [0.0, 7.0, 16.0],
+        projectiles: projectiles.map(p => ({
+          x: parseFloat(p.x.toFixed(4)),
+          y: parseFloat(p.y.toFixed(4)),
+          vy: parseFloat(p.vy.toFixed(4))
+        }))
+      };
+    };
+
+    // Первая отрисовка
+    renderer.render(scene, camera);
+    window.__ready = true;
+  </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · K-1 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+*{margin:0;padding:0}
+body{display:flex;justify-content:center;align-items:center;height:100vh;background:#111}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const N = 24;
+const TOTAL = N * N;
+
+// --- LCG ---
+let seed = 1741694328;
+function next() {
+  seed = (seed * 1664525 + 1013904223) % 4294967296;
+  return seed / 4294967296;
+}
+
+// --- Initial grid ---
+let grid = new Uint8Array(TOTAL);
+for (let i = 0; i < N; i++) {
+  for (let j = 0; j < N; j++) {
+    grid[i * N + j] = next() < 0.3 ? 1 : 0;
+  }
+}
+let generation = 0;
+
+// --- Scene ---
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 500);
+camera.position.set(0.0, 34.0, 23.0);
+camera.lookAt(0, 0, 0);
+
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambientLight);
+
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+dirLight.position.set(10.0, 28.0, 14.0);
+scene.add(dirLight);
+
+// --- InstancedMesh ---
+const geometry = new THREE.BoxGeometry(0.92, 0.4, 0.92);
+const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
+const mesh = new THREE.InstancedMesh(geometry, material, TOTAL);
+mesh.name = 'life';
+
+const dummy = new THREE.Object3D();
+const colAlive = new THREE.Color(0xffa726);
+const colDead = new THREE.Color(0x1a2432);
+
+function updateInstances() {
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const idx = i * N + j;
+      dummy.position.set(j - 11.5, 0.2, i - 11.5);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(idx, dummy.matrix);
+      mesh.setColorAt(idx, grid[idx] ? colAlive : colDead);
+    }
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+}
+
+updateInstances();
+scene.add(mesh);
+
+// --- Renderer ---
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+// --- Step (one generation, no render) ---
+function step(dt) {
+  const ng = new Uint8Array(TOTAL);
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      let nb = 0;
+      for (let di = -1; di <= 1; di++) {
+        for (let dj = -1; dj <= 1; dj++) {
+          if (di === 0 && dj === 0) continue;
+          const ni = i + di, nj = j + dj;
+          if (ni >= 0 && ni < N && nj >= 0 && nj < N) {
+            nb += grid[ni * N + nj];
+          }
+        }
+      }
+      if (grid[i * N + j]) {
+        ng[i * N + j] = (nb === 2 || nb === 3) ? 1 : 0;
+      } else {
+        ng[i * N + j] = (nb === 3) ? 1 : 0;
+      }
+    }
+  }
+  grid = ng;
+  generation++;
+  return grid;
+}
+
+// --- Probe (recalc colors, render, return state) ---
+function probe() {
+  updateInstances();
+  renderer.render(scene, camera);
+
+  let alive = 0;
+  let r0 = 0, r11 = 0, r23 = 0;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      if (grid[i * N + j]) {
+        alive++;
+        if (i === 0) r0++;
+        else if (i === 11) r11++;
+        else if (i === 23) r23++;
+      }
+    }
+  }
+  return {
+    alive: alive,
+    generation: generation,
+    rows: [r0, r11, r23]
+  };
+}
+
+// --- First render & ready ---
+renderer.render(scene, camera);
+window.__ready = true;
+window.__step = step;
+window.__probe = probe;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · K-14 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Robot Repairman in Rain</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+    const THREE = window.THREE;
+
+    // --- Configuration & Constants ---
+    const WIDTH = 800;
+    const HEIGHT = 600;
+    const SEED = 238931;
+    
+    // Colors
+    const C_BG = 0x1b1a2a;      // Asphalt, walls, night
+    const C_SIGN = 0xff2f7a;    // Neon, puddles
+    const C_SPARK = 0xffd94a;   // Sparks, lamp
+    const C_RAIN = 0xa8c8dc;    // Rain, eye, wet
+    
+    // LCG Implementation
+    let lcg_state = SEED;
+    function rnd() {
+        lcg_state = (lcg_state * 1103515245 + 12345) % 2147483648;
+        return lcg_state / 2147483648;
+    }
+
+    // Scene Globals
+    let scene, camera, renderer;
+    let time = 0;
+    let objects = [];
+    
+    // Dynamic Objects
+    let signMesh, robotGroup, rainPoints, sparkPoints;
+    let rainData = []; // {x, y, z, speed}
+    let sparkData = []; // {x, y, z, vx, vy, vz}
+    
+    // Camera Logic
+    let cameraZ = 4.0;
+    const CAMERA_SPEED = 1.06;
+    const CAMERA_MIN_Z = 0.8;
+
+    // Helper: Map screen UV (0..1, 0..1 top-left) to World Coordinates at specific Z
+    function uvToWorld(u, v, z) {
+        // Camera FOV 50 degrees
+        const fov = 50 * (Math.PI / 180);
+        const aspect = WIDTH / HEIGHT;
+        
+        // Distance from camera to plane
+        const dist = camera.position.z - z;
+        
+        // Visible height at that distance
+        const visibleHeight = 2 * Math.tan(fov / 2) * dist;
+        const visibleWidth = visibleHeight * aspect;
+        
+        // Center of screen is (0,0) in world X,Y usually, but camera looks at -Z.
+        // u=0 is left, u=1 is right. v=0 is top, v=1 is bottom.
+        const x = (u - 0.5) * visibleWidth;
+        const y = (0.5 - v) * visibleHeight; // Invert V because Y is up in Three.js
+        
+        return new THREE.Vector3(x, y, z);
+    }
+
+    function init() {
+        // Renderer
+        renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(WIDTH, HEIGHT, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Scene
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(C_BG);
+        // Fog to blend night/wall
+        scene.fog = new THREE.FogExp2(C_BG, 0.02);
+
+        // Camera
+        camera = new THREE.PerspectiveCamera(50, WIDTH / HEIGHT, 0.1, 100);
+        camera.position.set(0, 0, 4);
+        camera.lookAt(0, 0, -1);
+
+        // --- Geometry Creation ---
+
+        // 1. Night/Wall/Floor
+        // Night (z = -45)
+        const nightGeo = new THREE.PlaneGeometry(200, 200);
+        const nightMat = new THREE.MeshBasicMaterial({ color: C_BG });
+        const night = new THREE.Mesh(nightGeo, nightMat);
+        night.position.z = -45;
+        scene.add(night);
+        objects.push('night');
+
+        // Wall (z = -16)
+        const wallGeo = new THREE.PlaneGeometry(100, 100);
+        const wallMat = new THREE.MeshBasicMaterial({ color: C_BG });
+        const wall = new THREE.Mesh(wallGeo, wallMat);
+        wall.position.z = -16;
+        scene.add(wall);
+        objects.push('wall');
+
+        // Floor (z = -8, color #14121f per spec, but palette requires #1b1a2a coverage. 
+        // Spec says "floor (color #14121f)... all colors #1b1a2a". 
+        // I will use #1b1a2a to ensure palette compliance, slightly darker for depth if needed via lighting, 
+        // but basic material is flat. Let's stick to #1b1a2a for the main floor plane to hit the 30% requirement safely.)
+        const floorGeo = new THREE.PlaneGeometry(100, 100);
+        const floorMat = new THREE.MeshBasicMaterial({ color: C_BG });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = -2; // Lower than camera to be "floor"
+        floor.position.z = -8;
+        scene.add(floor);
+        objects.push('floor');
+
+        // 2. Sign (u=0.28, v=0.16, z=-16 approx to be on wall)
+        // Size: 30% x 12% of frame.
+        // We need to calculate world size at z=-16.
+        const signZ = -16;
+        const signPos = uvToWorld(0.28, 0.16, signZ);
+        const signW = 0.30 * (2 * Math.tan(camera.fov/2 * Math.PI/180) * (camera.position.z - signZ) * (WIDTH/HEIGHT));
+        const signH = 0.12 * (2 * Math.tan(camera.fov/2 * Math.PI/180) * (camera.position.z - signZ));
+        
+        const signGeo = new THREE.PlaneGeometry(signW, signH);
+        const signMat = new THREE.MeshBasicMaterial({ color: C_SIGN });
+        signMesh = new THREE.Mesh(signGeo, signMat);
+        signMesh.position.copy(signPos);
+        signMesh.position.z = signZ; // Ensure it's on the wall plane
+        scene.add(signMesh);
+        objects.push('sign');
+
+        // 3. Robot (u=0.44, v=0.66)
+        // Robot is on asphalt. Asphalt is at z=-8 (from spec).
+        const robotZ = -8;
+        const robotPos = uvToWorld(0.44, 0.66, robotZ);
+        
+        robotGroup = new THREE.Group();
+        robotGroup.position.copy(robotPos);
+        robotGroup.position.z = robotZ;
+        
+        // Robot Dimensions relative to frame width at z=-8
+        const frameW_at_robot = 2 * Math.tan(camera.fov/2 * Math.PI/180) * (camera.position.z - robotZ) * (WIDTH/HEIGHT);
+        const robotTotalW = 0.20 * frameW_at_robot;
+        const robotTotalH = robotTotalW * 1.5; // Approx aspect ratio
+        
+        const partW = robotTotalW * 0.4;
+        const bodyH = robotTotalH * 0.55;
+        const headH = robotTotalH * 0.30;
+        const legH = robotTotalH * 0.35;
+        const armH = robotTotalH * 0.45;
+
+        // Materials
+        const matBody = new THREE.MeshBasicMaterial({ color: C_BG });
+        const matEye = new THREE.MeshBasicMaterial({ color: C_RAIN });
+        const matLamp = new THREE.MeshBasicMaterial({ color: C_SPARK });
+
+        // Body
+        const bodyGeo = new THREE.BoxGeometry(partW * 1.2, bodyH, partW * 0.8);
+        const body = new THREE.Mesh(bodyGeo, matBody);
+        body.position.y = legH + bodyH/2;
+        robotGroup.add(body);
+
+        // Head
+        const headGeo = new THREE.BoxGeometry(partW, headH, partW * 0.8);
+        const head = new THREE.Mesh(headGeo, matBody);
+        head.position.y = legH + bodyH + headH/2;
+        robotGroup.add(head);
+
+        // Eye
+        const eyeGeo = new THREE.BoxGeometry(partW * 0.12, partW * 0.12, 0.1);
+        const eye = new THREE.Mesh(eyeGeo, matEye);
+        eye.position.set(0, legH + bodyH + headH/2, partW * 0.41);
+        robotGroup.add(eye);
+
+        // Legs (2)
+        const legGeo = new THREE.BoxGeometry(partW * 0.4, legH, partW * 0.4);
+        const legL = new THREE.Mesh(legGeo, matBody);
+        legL.position.set(-partW * 0.3, legH/2, 0);
+        robotGroup.add(legL);
+        const legR = new THREE.Mesh(legGeo, matBody);
+        legR.position.set(partW * 0.3, legH/2, 0);
+        robotGroup.add(legR);
+
+        // Arms (2)
+        const armGeo = new THREE.BoxGeometry(partW * 0.3, armH, partW * 0.3);
+        const armL = new THREE.Mesh(armGeo, matBody);
+        armL.position.set(-partW * 0.7, legH + bodyH - armH/2, 0);
+        armL.rotation.z = 0.5;
+        robotGroup.add(armL);
+        
+        const armR = new THREE.Mesh(armGeo, matBody);
+        armR.position.set(partW * 0.7, legH + bodyH - armH/2, 0);
+        armR.rotation.z = -0.5;
+        robotGroup.add(armR);
+
+        // Lamp on shoulder (Right shoulder based on "arm" context, let's put on Right arm top)
+        const lampGeo = new THREE.SphereGeometry(partW * 0.15, 8, 8);
+        const lamp = new THREE.Mesh(lampGeo, matLamp);
+        lamp.position.set(partW * 0.7, legH + bodyH - armH/2 + armH/2, 0);
+        robotGroup.add(lamp);
+
+        scene.add(robotGroup);
+        objects.push('robot');
+
+        // 4. Wet Strip (v = 0.945)
+        const wetZ = -8;
+        const wetPos = uvToWorld(0.5, 0.945, wetZ);
+        const wetW = 0.96 * frameW_at_robot; // Approx width at bottom
+        const wetH = 0.06 * (2 * Math.tan(camera.fov/2 * Math.PI/180) * (camera.position.z - wetZ));
+        
+        const wetGeo = new THREE.PlaneGeometry(wetW, wetH);
+        const wetMat = new THREE.MeshBasicMaterial({ color: C_RAIN, transparent: true, opacity: 0.3 });
+        const wetMesh = new THREE.Mesh(wetGeo, wetMat);
+        wetMesh.position.copy(wetPos);
+        wetMesh.position.z = wetZ + 0.01; // Slightly above floor
+        wetMesh.rotation.x = -Math.PI / 2;
+        scene.add(wetMesh);
+        objects.push('wet');
+
+        // 5. Puddles (3 puddles, v=0.88, color #ff2f7a, opacity 0.4)
+        const puddleZ = -8;
+        const puddlePos = uvToWorld(0.5, 0.88, puddleZ);
+        const puddleW = 0.20 * frameW_at_robot;
+        const puddleH = 0.05 * (2 * Math.tan(camera.fov/2 * Math.PI/180) * (camera.position.z - puddleZ));
+        
+        const puddleGeo = new THREE.PlaneGeometry(puddleW, puddleH);
+        const puddleMat = new THREE.MeshBasicMaterial({ color: C_SIGN, transparent: true, opacity: 0.4 });
+        
+        const p1 = new THREE.Mesh(puddleGeo, puddleMat);
+        p1.position.copy(puddlePos);
+        p1.position.x -= puddleW * 0.8;
+        p1.position.z = puddleZ + 0.02;
+        p1.rotation.x = -Math.PI / 2;
+        scene.add(p1);
+
+        const p2 = new THREE.Mesh(puddleGeo, puddleMat);
+        p2.position.copy(puddlePos);
+        p2.position.z = puddleZ + 0.02;
+        p2.rotation.x = -Math.PI / 2;
+        scene.add(p2);
+
+        const p3 = new THREE.Mesh(puddleGeo, puddleMat);
+        p3.position.copy(puddlePos);
+        p3.position.x += puddleW * 0.8;
+        p3.position.z = puddleZ + 0.02;
+        p3.rotation.x = -Math.PI / 2;
+        scene.add(p3);
+        
+        objects.push('puddle');
+
+        // 6. Rain (54 drops, z = -3.9, size 8px, speed 1.93)
+        // 8px in world units at z=-3.9
+        const rainZ = -3.9;
+        const distRain = camera.position.z - rainZ;
+        const pxToWorld = (2 * Math.tan(camera.fov/2 * Math.PI/180) * distRain) / HEIGHT;
+        const rainSize = 8 * pxToWorld;
+        
+        const rainGeo = new THREE.BufferGeometry();
+        const rainPositions = new Float32Array(54 * 3);
+        
+        for(let i=0; i<54; i++) {
+            // Random start positions within view frustum at z=-3.9
+            // We use LCG for determinism
+            const rx = (rnd() - 0.5) * 2 * Math.tan(camera.fov/2 * Math.PI/180) * distRain * (WIDTH/HEIGHT);
+            const ry = (rnd() - 0.5) * 2 * Math.tan(camera.fov/2 * Math.PI/180) * distRain;
+            
+            rainPositions[i*3] = rx;
+            rainPositions[i*3+1] = ry;
+            rainPositions[i*3+2] = rainZ;
+            
+            rainData.push({
+                x: rx,
+                y: ry,
+                z: rainZ,
+                speed: 1.93,
+                offset: rnd() * 10 // Phase offset
+            });
+        }
+        rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3));
+        const rainMat = new THREE.PointsMaterial({ color: C_RAIN, size: rainSize, sizeAttenuation: false });
+        rainPoints = new THREE.Points(rainGeo, rainMat);
+        scene.add(rainPoints);
+        objects.push('drops');
+
+        // 7. Sparks (22 sparks, z = -6, size 6px, speed 3..4.5, additive)
+        // Sparks start at robot shoulder (Right arm top approx)
+        const sparkZ = -6;
+        const distSpark = camera.position.z - sparkZ;
+        const sparkPxToWorld = (2 * Math.tan(camera.fov/2 * Math.PI/180) * distSpark) / HEIGHT;
+        const sparkSize = 6 * sparkPxToWorld;
+        
+        const sparkGeo = new THREE.BufferGeometry();
+        const sparkPositions = new Float32Array(22 * 3);
+        
+        // Robot shoulder world pos approx
+        const shoulderWorld = new THREE.Vector3();
+        robotGroup.children.find(c => c === armR).getWorldPosition(shoulderWorld);
+        // Adjust for camera movement later, but initial pos is fixed relative to robot
+        
+        for(let i=0; i<22; i++) {
+            // Start near shoulder
+            const sx = shoulderWorld.x + (rnd() - 0.5) * 0.5;
+            const sy = shoulderWorld.y + (rnd() - 0.5) * 0.5;
+            const sz = sparkZ;
+            
+            sparkPositions[i*3] = sx;
+            sparkPositions[i*3+1] = sy;
+            sparkPositions[i*3+2] = sz;
+            
+            // Speed 3..4.5
+            const speed = 3.0 + rnd() * 1.5;
+            // Direction: Down and slightly random X
+            const vx = (rnd() - 0.5) * 2.0;
+            const vy = -speed; 
+            const vz = 0; // Mostly 2D in screen space relative to robot
+            
+            sparkData.push({
+                x: sx, y: sy, z: sz,
+                vx: vx, vy: vy, vz: vz,
+                life: rnd() * 2.0 // Reset timer
+            });
+        }
+        sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPositions, 3));
+        const sparkMat = new THREE.PointsMaterial({ 
+            color: C_SPARK, 
+            size: sparkSize, 
+            sizeAttenuation: false,
+            blending: THREE.AdditiveBlending,
+            transparent: true,
+            opacity: 0.8
+        });
+        sparkPoints = new THREE.Points(sparkGeo, sparkMat);
+        scene.add(sparkPoints);
+        objects.push('sparks');
+
+        // Initial Render
+        renderer.render(scene, camera);
+        window.__ready = true;
+    }
+
+    window.__step = function(dt) {
+        time += dt;
+        
+        // 1. Camera Movement
+        if (cameraZ > CAMERA_MIN_Z) {
+            cameraZ -= CAMERA_SPEED * dt;
+            if (cameraZ < CAMERA_MIN_Z) cameraZ = CAMERA_MIN_Z;
+            camera.position.z = cameraZ;
+        }
+        
+        // Re-calculate frustum dimensions for particle resets if camera moved significantly
+        const distRain = camera.position.z - (-3.9);
+        const viewH_rain = 2 * Math.tan(camera.fov/2 * Math.PI/180) * distRain;
+        const viewW_rain = viewH_rain * (WIDTH/HEIGHT);
+        
+        const distSpark = camera.position.z - (-6);
+        const viewH_spark = 2 * Math.tan(camera.fov/2 * Math.PI/180) * distSpark;
+        const viewW_spark = viewH_spark * (WIDTH/HEIGHT);
+
+        // 2. Sign Blink (1.4s period)
+        const blink = Math.sin(time * Math.PI * 2 / 1.4);
+        signMesh.material.opacity = 0.5 + 0.5 * blink; // Simple blink
+        // Actually spec says "color #ff2f7a, with blinking". 
+        // Let's toggle visibility or intensity. BasicMaterial color doesn't blink easily without changing hex.
+        // Let's change intensity via a dummy light or just opacity if transparent.
+        // Spec doesn't say transparent. Let's assume it pulses brightness.
+        // Since it's BasicMaterial, we can't easily pulse without changing color hex.
+        // Let's change the color hex slightly or use a point light.
+        // Simpler: Change material color intensity.
+        const intensity = 0.5 + 0.5 * Math.sin(time * Math.PI * 2 / 1.4);
+        // Interpolate color roughly
+        // Base #ff2f7a. Darker when off.
+        // Let's just toggle visible for sharp blink or opacity.
+        // "миганием (раз в 1.4 с)" -> Blinking.
+        signMesh.visible = (Math.floor(time / 0.7) % 2 === 0);
+
+
+        // 3. Update Rain
+        const rainPosAttr = rainPoints.geometry.attributes.position;
+        for(let i=0; i<54; i++) {
+            const data = rainData[i];
+            data.y -= data.speed * dt;
+            
+            // Reset if below view
+            if (data.y < -viewH_rain / 2) {
+                data.y = viewH_rain / 2;
+                data.x = (rnd() - 0.5) * viewW_rain;
+            }
+            
+            rainPosAttr.setXYZ(i, data.x, data.y, data.z);
+        }
+        rainPosAttr.needsUpdate = true;
+
+        // 4. Update Sparks
+        // Need current robot shoulder position for reset origin
+        // Since robot moves with camera (it's in world space, camera moves), 
+        // we need to calculate where the robot IS in world space.
+        // Robot was placed at uvToWorld(0.44, 0.66, -8) at t=0.
+        // But camera moved. The robot stays at fixed world Z=-8.
+        // So its screen position changes.
+        // However, sparks are defined relative to robot shoulder.
+        // Let's get current world pos of robot shoulder.
+        const shoulderWorld = new THREE.Vector3();
+        // Find armR again
+        const armR = robotGroup.children.find(c => c.geometry && c.geometry.type === 'BoxGeometry' && c.position.x > 0 && c.rotation.z < 0);
+        if(armR) {
+            armR.getWorldPosition(shoulderWorld);
+        } else {
+            shoulderWorld.set(0,0,-6); // Fallback
+        }
+
+        const sparkPosAttr = sparkPoints.geometry.attributes.position;
+        for(let i=0; i<22; i++) {
+            const data = sparkData[i];
+            
+            // Move
+            data.x += data.vx * dt;
+            data.y += data.vy * dt;
+            data.life -= dt;
+            
+            // Curve downwards (gravity effect on X? "заворачиваются")
+            data.x += Math.sin(time * 5 + i) * 0.1 * dt; 
+
+            // Reset if life < 0 or out of bounds
+            if (data.life < 0 || data.y < shoulderWorld.y - 2) {
+                data.life = 1.0 + rnd();
+                data.x = shoulderWorld.x + (rnd() - 0.5) * 0.5;
+                data.y = shoulderWorld.y + (rnd() - 0.5) * 0.5;
+                data.z = -6;
+                const speed = 3.0 + rnd() * 1.5;
+                data.vx = (rnd() - 0.5) * 2.0;
+                data.vy = -speed;
+            }
+            
+            sparkPosAttr.setXYZ(i, data.x, data.y, data.z);
+        }
+        sparkPosAttr.needsUpdate = true;
+
+        renderer.render(scene, camera);
+    };
+
+    window.__probe = function() {
+        // Get first spark pos
+        const sparkAttr = sparkPoints.geometry.attributes.position;
+        const s0 = [sparkAttr.getX(0), sparkAttr.getY(0)];
+        
+        return {
+            t: parseFloat(time.toFixed(4)),
+            objects: objects,
+            spark: s0,
+            camera: [parseFloat(camera.position.x.toFixed(4)), parseFloat(camera.position.z.toFixed(4))]
+        };
+    };
+
+    // Start
+    init();
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-22 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

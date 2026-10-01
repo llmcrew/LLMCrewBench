@@ -17,7 +17,7 @@ from ..config import RunConfig
 
 CHARS_PER_TOKEN = 3.2
 _CATEGORY = "E"
-_POINTS = 3.0
+_POINTS = 2.0
 
 
 def _hex(rng: random.Random, n: int = 8) -> str:
@@ -147,6 +147,21 @@ def _targeted_records(
         "target_facts": list(target_facts),
         "fact_positions": {fact: document.find(fact) for fact in target_facts},
     }
+def _target(cfg: RunConfig, legacy: int, share: float) -> int:
+    """Document size as a share of this run's window, in legacy tokens.
+
+    With the 32K window the shares reproduce the original 8K/16K/24K/27K ladder
+    exactly, so a run against a 32K server keeps its published meaning; a run
+    against a 120K server (or a model that admits 1M) scales the whole ladder up
+    and the scenarios keep their bites of the context instead of shrinking to a
+    tenth of it.
+    """
+    window = int(getattr(cfg, "context_window", 32768) or 32768)
+    if window <= 32768:
+        return legacy
+    return int(round(window * share))
+
+
 def _base_meta(cfg: RunConfig, target_tokens: int, estimated_tokens: int, prompt_chars: int) -> dict[str, Any]:
     runtime_window = int(getattr(cfg, "n_ctx", getattr(cfg, "context_window", 32768)))
     configured_window = int(getattr(cfg, "context_window", runtime_window))
@@ -196,8 +211,8 @@ def _lc1(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     artifact = _hex(rng)
     fact = f"deployment {deployment} uses artifact sha256:{artifact}"
     question = f"Какой artifact использует deployment {deployment}? Ответь только значением sha256."
-    prompt, sizing = _targeted_records(rng, 8192, "deployment", [fact], [rng.choice((0.17, 0.36, 0.58, 0.77, 0.91))], question, [fact], ratio=_ratio(cfg, "LC-1"))
-    meta = _base_meta(cfg, 8192, sizing["estimated_tokens"], sizing["prompt_chars"])
+    prompt, sizing = _targeted_records(rng, _target(cfg, 8192, 0.25), "deployment", [fact], [rng.choice((0.17, 0.36, 0.58, 0.77, 0.91))], question, [fact], ratio=_ratio(cfg, "LC-1"))
+    meta = _base_meta(cfg, _target(cfg, 8192, 0.25), sizing["estimated_tokens"], sizing["prompt_chars"])
     meta.update({k: sizing[k] for k in ("document_chars", "target_facts", "fact_positions")})
     return _task("LC-1", prompt, {"answer": artifact, "reference": artifact,
                           "accept_any": [f"sha256:{artifact}", f"SHA256:{artifact}", f"sha256: {artifact}"], "target_fact": fact, "target_deployment": deployment, "positions": sizing["fact_positions"]}, meta)
@@ -210,8 +225,8 @@ def _lc2(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     link1 = f"service {service} owns shard {shard}"
     link2 = f"shard {shard} is currently assigned to node {node}"
     question = f"Какой node обслуживает shard service {service}? Только именем node."
-    prompt, sizing = _targeted_records(rng, 16384, "service", [link1, link2], [0.18, 0.52], question, [link1, link2], ratio=_ratio(cfg, "LC-2"))
-    meta = _base_meta(cfg, 16384, sizing["estimated_tokens"], sizing["prompt_chars"])
+    prompt, sizing = _targeted_records(rng, _target(cfg, 16384, 0.50), "service", [link1, link2], [0.18, 0.52], question, [link1, link2], ratio=_ratio(cfg, "LC-2"))
+    meta = _base_meta(cfg, _target(cfg, 16384, 0.50), sizing["estimated_tokens"], sizing["prompt_chars"])
     meta.update({k: sizing[k] for k in ("document_chars", "target_facts", "fact_positions")})
     return _task("LC-2", prompt, {"answer": node, "reference": node, "accept_any": [f"node {node}"], "target_service": service, "target_shard": shard, "target_node": node, "target_facts": [link1, link2], "positions": sizing["fact_positions"]}, meta)
 
@@ -225,8 +240,8 @@ def _lc3(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     link2 = f"queue {queue} is served by broker {broker}"
     link3 = f"broker {broker} runs in region {region}"
     question = f"Region брокера очереди project {project}? Только region."
-    prompt, sizing = _targeted_records(rng, 24576, "project", [link1, link2, link3], [0.16, 0.45, 0.74], question, [link1, link2, link3], ratio=_ratio(cfg, "LC-3"))
-    meta = _base_meta(cfg, 24576, sizing["estimated_tokens"], sizing["prompt_chars"])
+    prompt, sizing = _targeted_records(rng, _target(cfg, 24576, 0.75), "project", [link1, link2, link3], [0.16, 0.45, 0.74], question, [link1, link2, link3], ratio=_ratio(cfg, "LC-3"))
+    meta = _base_meta(cfg, _target(cfg, 24576, 0.75), sizing["estimated_tokens"], sizing["prompt_chars"])
     meta.update({k: sizing[k] for k in ("document_chars", "target_facts", "fact_positions")})
     return _task(
         "LC-3",
@@ -269,7 +284,7 @@ def _lc4(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     # unique target fact, while all four events are needed to compute state.
     prompt, sizing = _targeted_records(
         rng,
-        27648,
+        _target(cfg, 27648, 0.84),
         "event",
         [initial, *shuffled],
         [0.10, 0.24, 0.43, 0.63, 0.82],
@@ -284,7 +299,7 @@ def _lc4(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     final_answer = events[-1][1]
     assert naive_last != final_answer
     assert len(event_lines) >= 3 and len(set(event_lines)) == len(event_lines)
-    meta = _base_meta(cfg, 27648, sizing["estimated_tokens"], sizing["prompt_chars"])
+    meta = _base_meta(cfg, _target(cfg, 27648, 0.84), sizing["estimated_tokens"], sizing["prompt_chars"])
     meta.update({k: sizing[k] for k in ("document_chars", "target_facts", "fact_positions")})
     return _task(
         "LC-4",
@@ -337,8 +352,8 @@ def _lc5(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     # the question.  Keep their links in distinct quarters of the document.
     question = f"Какой service затронут {target_incident}? Только именем service."
     all_special = [target_links[0], distractor_links[0], target_links[1], distractor_links[1], target_links[2], distractor_links[2]]
-    prompt, sizing = _targeted_records(rng, 27648, "incident", all_special, [0.10, 0.24, 0.40, 0.55, 0.70, 0.84], question, all_special, ratio=_ratio(cfg, "LC-5"))
-    meta = _base_meta(cfg, 27648, sizing["estimated_tokens"], sizing["prompt_chars"])
+    prompt, sizing = _targeted_records(rng, _target(cfg, 27648, 0.84), "incident", all_special, [0.10, 0.24, 0.40, 0.55, 0.70, 0.84], question, all_special, ratio=_ratio(cfg, "LC-5"))
+    meta = _base_meta(cfg, _target(cfg, 27648, 0.84), sizing["estimated_tokens"], sizing["prompt_chars"])
     meta.update({k: sizing[k] for k in ("document_chars", "target_facts", "fact_positions")})
     return _task(
         "LC-5",
@@ -455,7 +470,7 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 core.register(
     key="E",
     title="Long context",
-    points=15.0,
+    points=10.0,
     generate=generate,
     evaluate=evaluate,
     expected_ids=("LC-1", "LC-2", "LC-3", "LC-4", "LC-5"),

@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Neon Noodle Shop in Rain</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ================= deterministic LCG ================= */
+let lcg = 23268;
+function rnd() {
+  lcg = (lcg * 1103515245 + 12345) % 2147483648;
+  return lcg / 2147483648;
+}
+
+/* ================= renderer / camera ================= */
+const W = 800, H = 600;
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 400);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
+
+const TAN = Math.tan(50 * Math.PI / 360);
+const ASPECT = W / H;
+
+function uvToWorld(u, v, z) {
+  const d = 4 - z;
+  const h = 2 * d * TAN;
+  const w = h * ASPECT;
+  return { x: (u - 0.5) * w, y: (0.5 - v) * h, w, h };
+}
+
+const objectNames = [];
+
+function addPlane(name, u, v, wf, hf, z, color, opts) {
+  opts = opts || {};
+  const p = uvToWorld(u, v, z);
+  const geo = new THREE.PlaneGeometry(wf * p.w, hf * p.h);
+  const opacity = (opts.opacity !== undefined) ? opts.opacity : 1;
+  const mat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(color),
+    transparent: true,
+    opacity: opacity,
+    depthWrite: (opts.depthWrite !== undefined) ? opts.depthWrite : (opacity >= 1),
+    blending: opts.additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+    side: THREE.DoubleSide
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(p.x, p.y, z);
+  m.name = name;
+  scene.add(m);
+  objectNames.push(name);
+  return m;
+}
+
+/* ================= background ================= */
+addPlane('sky',  0.5, 0.5, 3.0, 3.0, -45, 0x1e1145);
+addPlane('wall', 0.5, 0.5, 1.8, 1.8, -12, 0x1e1145);
+addPlane('floor', 0.5, 0.81, 1.0, 0.38, -8.0, 0x1e1145);
+
+/* ================= kiosk ================= */
+addPlane('kiosk_edge', 0.24, 0.47, 0.215, 0.215, -7.92, 0x3a2a6e);
+addPlane('kiosk',      0.24, 0.47, 0.200, 0.200, -7.90, 0x1e1145);
+addPlane('kiosk_base', 0.24, 0.595, 0.200, 0.055, -7.88, 0x1e1145);
+addPlane('counter',    0.24, 0.62, 0.260, 0.050, -7.70, 0xffb347);
+
+/* ================= board (cyan sign over the counter) ================= */
+addPlane('board', 0.37, 0.40, 0.19, 0.10, -7.80, 0x12c7d4);
+for (let i = 0; i < 4; i++) {
+  addPlane('board_line_' + i, 0.37, 0.360 + i * 0.025, 0.17, 0.008, -7.78, 0x0a4a55);
+}
+
+/* ================= vertical neon sign (right) ================= */
+const sign = addPlane('sign', 0.86, 0.26, 0.06, 0.28, -7.50, 0x12c7d4);
+addPlane('sign_glow', 0.86, 0.26, 0.11, 0.34, -7.55, 0x12c7d4,
+         { opacity: 0.22, additive: true, depthWrite: false });
+
+/* ================= holo panels (left) ================= */
+const holoA = addPlane('holo_a', 0.14, 0.30, 0.08, 0.14, -7.50, 0xff5fa8,
+                       { opacity: 0.75, depthWrite: false });
+const holoB = addPlane('holo_b', 0.14, 0.32, 0.08, 0.14, -7.45, 0xff5fa8,
+                       { opacity: 0.75, depthWrite: false });
+
+const holoScans = [];
+for (let i = 0; i < 6; i++) {
+  const panel = i < 3 ? 0 : 1;
+  const v0 = panel === 0 ? 0.23 : 0.25;
+  const v1 = panel === 0 ? 0.37 : 0.39;
+  const y0 = uvToWorld(0.14, v0, -7.44).y;
+  const y1 = uvToWorld(0.14, v1, -7.44).y;
+  const m = addPlane('holo_scan_' + i, 0.14, v0, 0.075, 0.008, -7.44, 0xffe0f0,
+                     { opacity: 0.6, depthWrite: false });
+  holoScans.push({ mesh: m, y0: y0, y1: y1, phase: i * 0.16 });
+}
+
+/* ================= warm lamps ================= */
+const lampU = [0.18, 0.26, 0.34];
+for (let i = 0; i < 3; i++) {
+  addPlane('lamp_glow_' + i, lampU[i], 0.12, 0.11, 0.11, -7.45, 0xffb347,
+           { opacity: 0.25, additive: true, depthWrite: false });
+  addPlane('lamp_' + i, lampU[i], 0.12, 0.06, 0.06, -7.40, 0xffb347);
+}
+
+/* ================= puddles on the asphalt ================= */
+const puddleU = [0.20, 0.40, 0.60, 0.78];
+for (let i = 0; i < 4; i++) {
+  addPlane('puddle_' + i, puddleU[i], 0.82, 0.16, 0.05, -7.60, 0xa8c8dc,
+           { opacity: 0.95, depthWrite: false });
+}
+
+const puddleRings = [];
+for (let i = 0; i < 4; i++) {
+  for (let j = 0; j < 2; j++) {
+    const m = addPlane('puddle_ring_' + i + '_' + j, puddleU[i], 0.82, 0.018, 0.05,
+                       -7.55, 0xd0e8f4, { opacity: 0.5, depthWrite: false });
+    puddleRings.push({ mesh: m, u0: puddleU[i], phase: j * 0.5 + i * 0.13 });
+  }
+}
+
+/* ================= wet reflections on the asphalt ================= */
+const reflU = [0.18, 0.24, 0.30, 0.37, 0.86];
+for (let i = 0; i < reflU.length; i++) {
+  addPlane('refl_' + i, reflU[i], 0.72, 0.025, 0.20, -7.65, 0xa8c8dc,
+           { opacity: 0.45, depthWrite: false });
+}
+
+/* ================= steam columns ================= */
+const steamCols = [];
+for (let i = 0; i < 3; i++) {
+  const m = addPlane('steam_' + i, 0.20 + i * 0.04, 0.42, 0.06, 0.36, -7.30, 0xffb347,
+                     { opacity: 0.4, depthWrite: false });
+  steamCols.push(m);
+}
+
+/* ================= wet glass in front of the camera ================= */
+addPlane('glass', 0.5, 0.5, 0.80, 0.80, -4.0, 0xa8c8dc,
+         { opacity: 0.06, depthWrite: false });
+for (let i = 0; i < 12; i++) {
+  const u = 0.10 + rnd() * 0.80;
+  addPlane('glass_streak_' + i, u, 0.5, 0.005, 0.80, -3.98, 0xa8c8dc,
+           { opacity: 0.10, depthWrite: false });
+}
+
+/* ================= drops in front of the glass ================= */
+const DROP_N = 64;
+const drops = [];
+const dropPos = new Float32Array(DROP_N * 3);
+for (let i = 0; i < DROP_N; i++) {
+  const x = -4.5 + rnd() * 9.0;
+  const y = -3.3 + rnd() * 6.6;
+  drops.push({ x: x, y: y });
+  dropPos[i * 3]     = x;
+  dropPos[i * 3 + 1] = y;
+  dropPos[i * 3 + 2] = 0;
+}
+const dropGeo = new THREE.BufferGeometry();
+dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPos, 3));
+const dropMat = new THREE.PointsMaterial({
+  color: 0xa8c8dc, size: 6, sizeAttenuation: false,
+  transparent: true, opacity: 0.95, depthWrite: false
+});
+const dropPoints = new THREE.Points(dropGeo, dropMat);
+dropPoints.position.z = -3.9;
+dropPoints.name = 'drops';
+scene.add(dropPoints);
+objectNames.push('drops');
+
+/* ================= rain streaks behind the glass ================= */
+const rainState = drops.map(function (d) { return { x: d.x, y: d.y }; });
+const rainMeshes = [];
+for (let i = 0; i < DROP_N; i++) {
+  const geo = new THREE.PlaneGeometry(0.05, 0.45);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xa8c8dc, transparent: true, opacity: 0.30, depthWrite: false
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(rainState[i].x, rainState[i].y, -11.9);
+  m.name = 'rain_' + i;
+  scene.add(m);
+  rainMeshes.push(m);
+  objectNames.push('rain_' + i);
+}
+
+/* ================= animation state ================= */
+let t = 0;
+let steamOpacity = 0.35;
+
+function updateSteam() {
+  steamOpacity = 0.35 + 0.25 * Math.sin(2 * Math.PI * 0.77 * t);
+  const o = Math.max(0.02, steamOpacity);
+  for (let i = 0; i < steamCols.length; i++) {
+    steamCols[i].material.opacity = o;
+  }
+}
+
+function updateSign() {
+  const s = Math.sin(2 * Math.PI * 0.8 * t);
+  sign.material.opacity = (s >= 0) ? 1.0 : 0.45;
+}
+
+function updateHolo() {
+  for (let i = 0; i < holoScans.length; i++) {
+    const s = holoScans[i];
+    const ph = (t * 0.40 + s.phase) % 1;
+    s.mesh.position.y = s.y0 + (s.y1 - s.y0) * ph;
+    s.mesh.material.opacity = Math.max(0.05, 0.75 * (1 - Math.abs(ph - 0.5) * 1.2));
+  }
+}
+
+function updatePuddles() {
+  for (let i = 0; i < puddleRings.length; i++) {
+    const r = puddleRings[i];
+    const ph = (t * 0.5 + r.phase) % 1;
+    const u = r.u0 - 0.08 + 0.16 * ph;
+    r.mesh.position.x = uvToWorld(u, 0.82, -7.55).x;
+    r.mesh.material.opacity = 0.6 * Math.sin(Math.PI * ph);
+  }
+}
+
+/* ================= probe ================= */
+window.__probe = function () {
+  return {
+    t: +t.toFixed(4),
+    objects: objectNames.slice(),
+    drops: [+drops[0].x.toFixed(4), +drops[0].y.toFixed(4)],
+    steam: +steamOpacity.toFixed(4)
+  };
+};
+
+/* ================= step ================= */
+window.__step = function (dt) {
+  t += dt;
+
+  for (let i = 0; i < DROP_N; i++) {
+    const d = drops[i];
+    d.y -= 2.10 * dt;
+    if (d.y < -3.3) d.y += 6.6;
+    dropPos[i * 3 + 1] = d.y;
+
+    const r = rainState[i];
+    r.y -= 1.40 * dt;
+    if (r.y < -3.3) r.y += 6.6;
+    rainMeshes[i].position.y = r.y;
+  }
+  dropGeo.attributes.position.needsUpdate = true;
+
+  updateSteam();
+  updateSign();
+  updateHolo();
+  updatePuddles();
+
+  camera.position.x = 0.057 * Math.sin(2 * Math.PI * 0.25 * t);
+
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+/* ================= first frame ================= */
+updateSteam();
+updateSign();
+updateHolo();
+updatePuddles();
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-18 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

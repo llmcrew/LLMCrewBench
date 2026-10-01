@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Sunset Sea</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Configuration & Constants ---
+const WIDTH = 800;
+const HEIGHT = 600;
+const FOV = 45;
+const ASPECT = WIDTH / HEIGHT;
+const DISTANCE = 12;
+
+// Colors
+const COLOR_NIGHT_SKY = new THREE.Color('#1b2a4a');
+const COLOR_HORIZON = new THREE.Color('#ff7a3d');
+const COLOR_SUN = new THREE.Color('#ffd08a');
+const COLOR_DEEP_SEA = new THREE.Color('#20283a');
+
+// Dimensions Calculation
+const tanHalfFov = Math.tan(THREE.MathUtils.degToRad(FOV) / 2);
+const visibleHalfHeight = DISTANCE * tanHalfFov;
+const visibleFullHeight = visibleHalfHeight * 2;
+const visibleFullWidth = visibleFullHeight * ASPECT;
+const visibleHalfWidth = visibleFullWidth / 2;
+
+// Horizon Positioning
+// Sky Height: 5.169, Sea Height: 4.772. Total: 9.941 (matches visibleFullHeight ~9.9411)
+// Sky is top 52%, Sea is bottom 48%.
+// Camera Y = 0.2. LookAt Y = 0.2. Center of screen is World Y = 0.2.
+// To have Sky (52%) above and Sea (48%) below, the horizon must be slightly below center.
+// Center is 50%. Horizon is at 48% from bottom.
+// Offset from center in World Units: (0.48 - 0.50) * visibleFullHeight = -0.02 * 9.9411 = -0.1988.
+// Horizon World Y = Camera LookAt Y + Offset = 0.2 - 0.1988 = 0.0012.
+// Let's calculate precisely based on the provided heights.
+const SKY_HEIGHT_UNITS = 5.169;
+const SEA_HEIGHT_UNITS = 4.772;
+const TOTAL_HEIGHT_UNITS = SKY_HEIGHT_UNITS + SEA_HEIGHT_UNITS;
+
+// Top of the view frustum at Z = -12
+const viewTopY = 0.2 + visibleHalfHeight;
+const viewBottomY = 0.2 - visibleHalfHeight;
+
+// Sky Plane: Top aligns with viewTopY
+const skyTopY = viewTopY;
+const skyCenterY = skyTopY - (SKY_HEIGHT_UNITS / 2);
+const horizonY = skyTopY - SKY_HEIGHT_UNITS;
+
+// Sea Plane: Top aligns with horizonY
+const seaCenterY = horizonY - (SEA_HEIGHT_UNITS / 2);
+
+// Sun Initial Position
+// Frame coords: x=0.41 (width), y=0.70 (height from bottom)
+// Convert to World Units at Z = -12
+const sunStartFrameX = 0.41;
+const sunStartFrameY = 0.70;
+
+const sunStartWorldX = -visibleHalfWidth + (sunStartFrameX * visibleFullWidth);
+const sunStartWorldY = viewBottomY + (sunStartFrameY * visibleFullHeight);
+
+const sunRadiusUnits = 0.075 * visibleFullHeight;
+const sunScaleY = 0.55;
+const sunSpeedFrameUnits = 0.040; // per second
+const sunSpeedWorldUnits = sunSpeedFrameUnits * visibleFullHeight;
+
+// Ripple Config
+const RIPPLE_STEP_FRAME = 0.024;
+const RIPPLE_PHASE = 0.386;
+const RIPPLE_FREQ = 1.0 / RIPPLE_STEP_FRAME;
+
+// --- Scene Setup ---
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 200);
+camera.position.set(0, 0.2, 0);
+camera.lookAt(0, 0.2, -1);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(WIDTH, HEIGHT, false);
+document.body.appendChild(renderer.domElement);
+
+// --- Materials ---
+
+// Sky Shader
+const skyUniforms = {
+    colorTop: { value: COLOR_NIGHT_SKY },
+    colorHorizon: { value: COLOR_HORIZON }
+};
+const skyMaterial = new THREE.ShaderMaterial({
+    uniforms: skyUniforms,
+    vertexShader: `
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    `,
+    fragmentShader: `
+        uniform vec3 colorTop;
+        uniform vec3 colorHorizon;
+        varying vec2 vUv;
+        void main() {
+            // vUv.y goes from 0 (bottom/horizon) to 1 (top) for the sky plane
+            vec3 color = mix(colorHorizon, colorTop, vUv.y);
+            gl_FragColor = vec4(color, 1.0);
+        }
+    `
+});
+
+// Sea Shader
+const seaUniforms = {
+    colorHorizon: { value: COLOR_HORIZON },
+    colorDeep: { value: COLOR_DEEP_SEA }
+};
+const seaMaterial = new THREE.ShaderMaterial({
+    uniforms: seaUniforms,
+    vertexShader: `
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    `,
+    fragmentShader: `
+        uniform vec3 colorHorizon;
+        uniform vec3 colorDeep;
+        varying vec2 vUv;
+        void main() {
+            // Gradient
+            vec3 baseColor = mix(colorDeep, colorHorizon, vUv.y);
+            
+            // Ripples: horizontal bands
+            // Step 0.024 frame height -> frequency ~41.66
+            float ripple = sin(vUv.y * ${RIPPLE_FREQ.toFixed(4)} + ${RIPPLE_PHASE.toFixed(4)});
+            // Normalize ripple to add brightness (0 to 1 range roughly)
+            float brightness = smoothstep(-0.5, 0.5, ripple); 
+            // Add subtle brightness to bands
+            vec3 finalColor = baseColor + (brightness * 0.15); 
+            
+            gl_FragColor = vec4(finalColor, 1.0);
+        }
+    `
+});
+
+const sunMaterial = new THREE.MeshBasicMaterial({ color: COLOR_SUN });
+const sunRefMaterial = new THREE.MeshBasicMaterial({ color: COLOR_SUN });
+
+// --- Objects ---
+
+// Sky Plane
+const skyGeo = new THREE.PlaneGeometry(visibleFullWidth, SKY_HEIGHT_UNITS);
+const sky = new THREE.Mesh(skyGeo, skyMaterial);
+sky.name = 'sky';
+sky.position.set(0, skyCenterY, -DISTANCE);
+scene.add(sky);
+
+// Sea Plane
+const seaGeo = new THREE.PlaneGeometry(visibleFullWidth, SEA_HEIGHT_UNITS);
+const sea = new THREE.Mesh(seaGeo, seaMaterial);
+sea.name = 'sea';
+sea.position.set(0, seaCenterY, -DISTANCE);
+scene.add(sea);
+
+// Sun
+const sunGeo = new THREE.CircleGeometry(sunRadiusUnits, 32);
+const sun = new THREE.Mesh(sunGeo, sunMaterial);
+sun.name = 'sun';
+sun.scale.set(1, sunScaleY, 1);
+sun.position.set(sunStartWorldX, sunStartWorldY, -DISTANCE + 0.1); // Slightly in front of sky
+scene.add(sun);
+
+// Sun Reflection
+const sunRef = new THREE.Mesh(sunGeo, sunRefMaterial);
+sunRef.name = 'sun_reflection';
+sunRef.scale.set(1, 2.5, 1);
+// Initial position calculated in step 0
+scene.add(sunRef);
+
+// --- Animation State ---
+let t = 0;
+let sunCurrentY = sunStartWorldY;
+const sunX = sunStartWorldX;
+
+function updateReflection() {
+    // Mirror relative to horizonY
+    const distToHorizon = sunCurrentY - horizonY;
+    const refY = horizonY - distToHorizon;
+    sunRef.position.set(sunX, refY, -DISTANCE + 0.1);
+}
+
+// Initialize reflection position
+updateReflection();
+
+// --- API ---
+
+window.__step = function(dt) {
+    t += dt;
+    
+    // Move sun down
+    const deltaY = sunSpeedWorldUnits * dt;
+    sunCurrentY -= deltaY;
+    
+    // Stop at horizon
+    if (sunCurrentY < horizonY) {
+        sunCurrentY = horizonY;
+    }
+    
+    sun.position.y = sunCurrentY;
+    updateReflection();
+    
+    return window.__probe();
+};
+
+window.__probe = function() {
+    return {
+        t: parseFloat(t.toFixed(4)),
+        objects: ['sky', 'sea', 'sun', 'sun_reflection'],
+        sun: [parseFloat(sun.position.x.toFixed(4)), parseFloat(sun.position.y.toFixed(4))]
+    };
+};
+
+// --- Initial Render ---
+renderer.render(scene, camera);
+window.__ready = true;
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-1 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

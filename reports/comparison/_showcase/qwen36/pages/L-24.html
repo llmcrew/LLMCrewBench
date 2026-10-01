@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <style>body { margin: 0; overflow: hidden; background: #000; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// LCG Determinism
+let lcg = 140149;
+function rnd() {
+  lcg = (lcg * 1103515245 + 12345) % 2147483648;
+  return lcg / 2147483648;
+}
+
+// Scene & Camera
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 100);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
+
+// Renderer
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+// Helpers
+function frameToWorld(u, v, z) {
+  const ndcX = 2 * u - 1;
+  const ndcY = 1 - 2 * v;
+  const vec = new THREE.Vector3(ndcX, ndcY, 0.5);
+  vec.unproject(camera);
+  const dir = vec.sub(camera.position).normalize();
+  const dist = (camera.position.z - z) / dir.z;
+  return camera.position.clone().add(dir.multiplyScalar(dist));
+}
+
+function getWorldSizeAt(z, w, h) {
+  const p1 = frameToWorld(0, 0, z);
+  const p2 = frameToWorld(w, 0, z);
+  const p3 = frameToWorld(0, h, z);
+  return { x: Math.abs(p2.x - p1.x), y: Math.abs(p3.y - p1.y) };
+}
+
+// Colors
+const C_NIGHT = 0x1c1236;
+const C_BOARD = 0x22d3c5;
+const C_LAMP = 0xffa83c;
+const C_NEON = 0xff4d9d;
+const C_DROPS = 0xa8c8dc;
+
+// Object tracking
+const objects = [];
+const objectNames = [];
+
+function addMesh(name, geo, mat, pos, scale) {
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(pos);
+  if (scale) mesh.scale.set(scale.x, scale.y, 1);
+  scene.add(mesh);
+  objects.push(mesh);
+  objectNames.push(name);
+  return mesh;
+}
+
+// 1. night
+const nightSize = getWorldSizeAt(-45, 1, 1);
+addMesh('night', new THREE.PlaneGeometry(nightSize.x * 1.5, nightSize.y * 1.5), new THREE.MeshBasicMaterial({ color: C_NIGHT }), frameToWorld(0.5, 0.5, -45));
+
+// 2. floor
+const floorSize = getWorldSizeAt(-8, 1, 0.38);
+addMesh('floor', new THREE.PlaneGeometry(floorSize.x, floorSize.y), new THREE.MeshBasicMaterial({ color: C_NIGHT }), frameToWorld(0.5, 0.81, -8));
+
+// 3. canopy
+const canopySize = getWorldSizeAt(-5, 1, 0.16);
+addMesh('canopy', new THREE.PlaneGeometry(canopySize.x, canopySize.y), new THREE.MeshBasicMaterial({ color: C_NIGHT }), frameToWorld(0.5, 0.08, -5));
+
+// 4. glass
+const glassSize = getWorldSizeAt(-5, 0.62, 0.44);
+const glassMat = new THREE.MeshBasicMaterial({ color: 0x0a0a1a, transparent: true, opacity: 0.32 });
+addMesh('glass', new THREE.PlaneGeometry(glassSize.x, glassSize.y), glassMat, frameToWorld(0.5, 0.38, -5));
+
+// 5. posts
+const postSize = getWorldSizeAt(-5, 0.02, 0.44);
+const postMat = new THREE.MeshBasicMaterial({ color: C_NIGHT });
+addMesh('post_l', new THREE.BoxGeometry(postSize.x, postSize.y, 0.1), postMat, frameToWorld(0.19, 0.38, -5));
+addMesh('post_r', new THREE.BoxGeometry(postSize.x, postSize.y, 0.1), postMat, frameToWorld(0.81, 0.38, -5));
+
+// 6. board
+const boardSize = getWorldSizeAt(-4.8, 0.22, 0.14);
+const boardCanvas = document.createElement('canvas');
+boardCanvas.width = 256; boardCanvas.height = 128;
+const boardCtx = boardCanvas.getContext('2d');
+const boardTex = new THREE.CanvasTexture(boardCanvas);
+boardTex.minFilter = THREE.LinearFilter;
+const boardMat = new THREE.MeshBasicMaterial({ map: boardTex, transparent: true });
+addMesh('board', new THREE.PlaneGeometry(boardSize.x, boardSize.y), boardMat, frameToWorld(0.32, 0.30, -4.8));
+
+// 7. lamp
+const lampSize = getWorldSizeAt(-4.8, 0.13, 0.06);
+const lampMat = new THREE.MeshBasicMaterial({ color: C_LAMP, transparent: true, opacity: 0.9 });
+addMesh('lamp', new THREE.PlaneGeometry(lampSize.x, lampSize.y), lampMat, frameToWorld(0.62, 0.14, -4.8));
+const haloSize = getWorldSizeAt(-4.8, 0.20, 0.10);
+const haloMat = new THREE.MeshBasicMaterial({ color: C_LAMP, transparent: true, opacity: 0.3, blending: THREE.AdditiveBlending });
+addMesh('lamp_halo', new THREE.PlaneGeometry(haloSize.x, haloSize.y), haloMat, frameToWorld(0.62, 0.14, -4.8));
+
+// 8. neon
+const neonSize = getWorldSizeAt(-5.2, 0.30, 0.06);
+const neonMat = new THREE.MeshBasicMaterial({ color: C_NEON });
+addMesh('neon', new THREE.PlaneGeometry(neonSize.x, neonSize.y), neonMat, frameToWorld(0.58, 0.24, -5.2));
+
+// 9. bench
+const benchSize = getWorldSizeAt(-7.9, 0.30, 0.05);
+addMesh('bench', new THREE.BoxGeometry(benchSize.x, benchSize.y, 0.1), new THREE.MeshBasicMaterial({ color: C_NIGHT }), frameToWorld(0.5, 0.66, -7.9));
+
+// 10. puddles
+const puddleSize = getWorldSizeAt(-7.9, 0.18, 0.04);
+const puddleMat = new THREE.MeshBasicMaterial({ color: C_NEON, transparent: true, opacity: 0.35 });
+[0.25, 0.5, 0.75].forEach(u => {
+  addMesh('puddle', new THREE.PlaneGeometry(puddleSize.x, puddleSize.y), puddleMat, frameToWorld(u, 0.90, -7.9));
+});
+
+// 11. drops
+const dropCount = 56;
+const dropGeo = new THREE.BufferGeometry();
+const dropPosArr = new Float32Array(dropCount * 3);
+dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPosArr, 3));
+const dropPoints = new THREE.Points(dropGeo, new THREE.PointsMaterial({ color: C_DROPS, size: 0.06, sizeAttenuation: false }));
+scene.add(dropPoints);
+objects.push(dropPoints);
+objectNames.push('drops');
+
+const dropWorldPos = [];
+for (let i = 0; i < dropCount; i++) {
+  const u = 0.19 + rnd() * 0.62;
+  const v = 0.16 + rnd() * 0.44;
+  dropWorldPos.push(frameToWorld(u, v, -4.9));
+}
+
+// 12. rain
+const rainGeo = new THREE.BufferGeometry();
+const rainPosArr = new Float32Array(dropCount * 3);
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPosArr, 3));
+const rainPoints = new THREE.Points(rainGeo, new THREE.PointsMaterial({ color: C_DROPS, size: 0.06, sizeAttenuation: false }));
+scene.add(rainPoints);
+objects.push(rainPoints);
+objectNames.push('rain');
+
+const rainWorldPos = [];
+for (let i = 0; i < dropCount; i++) {
+  const u = 0.19 + rnd() * 0.62;
+  const v = 0.16 + rnd() * 0.44;
+  rainWorldPos.push(frameToWorld(u, v, -12));
+}
+
+// State
+let t = 0;
+let board_phase = 0;
+window.__ready = false;
+
+// Update functions
+function updateBoard() {
+  boardCtx.fillStyle = '#22d3c5';
+  boardCtx.fillRect(0, 0, 256, 128);
+  const headerBlink = Math.sin(t * 3) > 0;
+  boardCtx.fillStyle = headerBlink ? '#ffffff' : '#1c1236';
+  boardCtx.fillRect(0, 0, 256, 20);
+  boardCtx.fillStyle = headerBlink ? '#1c1236' : '#ffffff';
+  boardCtx.font = 'bold 14px monospace';
+  boardCtx.fillText('РАСПИСАНИЕ', 10, 15);
+  for (let i = 0; i < 5; i++) {
+    const y = 30 + i * 20;
+    const offset = (board_phase * 256 + i * 50) % 256;
+    boardCtx.fillStyle = '#1c1236';
+    boardCtx.fillRect(offset, y, 100, 12);
+    boardCtx.fillRect(offset - 100, y, 100, 12);
+  }
+  boardTex.needsUpdate = true;
+}
+
+function updateDrops(dt) {
+  const posAttr = dropGeo.attributes.position;
+  for (let i = 0; i < dropCount; i++) {
+    dropWorldPos[i].y -= 1.90 * dt;
+    if (dropWorldPos[i].y < frameToWorld(0.5, 0.16, -4.9).y) {
+      dropWorldPos[i].y = frameToWorld(0.5, 0.60, -4.9).y;
+    }
+    posAttr.array[i * 3] = dropWorldPos[i].x;
+    posAttr.array[i * 3 + 1] = dropWorldPos[i].y;
+    posAttr.array[i * 3 + 2] = dropWorldPos[i].z;
+  }
+  posAttr.needsUpdate = true;
+
+  const rainAttr = rainGeo.attributes.position;
+  for (let i = 0; i < dropCount; i++) {
+    rainWorldPos[i].y -= (1.90 / 3) * dt;
+    if (rainWorldPos[i].y < frameToWorld(0.5, 0.16, -12).y) {
+      rainWorldPos[i].y = frameToWorld(0.5, 0.60, -12).y;
+    }
+    rainAttr.array[i * 3] = rainWorldPos[i].x;
+    rainAttr.array[i * 3 + 1] = rainWorldPos[i].y;
+    rainAttr.array[i * 3 + 2] = rainWorldPos[i].z;
+  }
+  rainAttr.needsUpdate = true;
+}
+
+// API
+window.__step = function(dt) {
+  t += dt;
+  board_phase = (board_phase + dt * 0.5) % 1.0;
+  updateBoard();
+  updateDrops(dt);
+  camera.position.x = Math.sin(t * 1.0) * 0.034;
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+window.__probe = function() {
+  return {
+    t: t.toFixed(4),
+    objects: objectNames,
+    board_phase: board_phase.toFixed(4)
+  };
+};
+
+// Initial render
+window.__step(0);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-24 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

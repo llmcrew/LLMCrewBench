@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>String oscillation</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ------------------------------------------------------------------ */
+/*  Параметры                                                          */
+/* ------------------------------------------------------------------ */
+const N      = 64;
+const A      = 0.8;
+const CENTER = 18;
+const SIGMA  = 7.0;
+const C2     = 0.25;
+
+/* ------------------------------------------------------------------ */
+/*  Состояние струны                                                   */
+/* ------------------------------------------------------------------ */
+let u     = new Float64Array(N);
+let uPrev = new Float64Array(N);
+
+for (let i = 0; i < N; i++) {
+  u[i] = A * Math.exp(-Math.pow((i - CENTER) / SIGMA, 2));
+}
+u[0] = 0;
+u[N - 1] = 0;
+uPrev.set(u);            // начальная скорость нулевая
+
+/* ------------------------------------------------------------------ */
+/*  Сцена                                                              */
+/* ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0e1a);
+
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 500);
+camera.position.set(0.0, 0.0, 60.0);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.6);
+dirLight.position.set(0.0, 20.0, 40.0);
+scene.add(dirLight);
+
+/* --- струна: 64 сферы одним InstancedMesh --- */
+const sphereGeo = new THREE.SphereGeometry(0.55, 16, 12);
+const sphereMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff, roughness: 0.45, metalness: 0.1
+});
+const stringMesh = new THREE.InstancedMesh(sphereGeo, sphereMat, N);
+stringMesh.name = 'string';
+stringMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+stringMesh.frustumCulled = false;
+scene.add(stringMesh);
+
+/* --- линия профиля --- */
+const lineGeo = new THREE.BufferGeometry();
+const linePositions = new Float32Array(N * 3);
+lineGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+const stringLine = new THREE.Line(
+  lineGeo,
+  new THREE.LineBasicMaterial({ color: 0xffd27f })
+);
+stringLine.frustumCulled = false;
+scene.add(stringLine);
+
+/* ------------------------------------------------------------------ */
+/*  Вспомогательные объекты для обновления                             */
+/* ------------------------------------------------------------------ */
+const COLOR_LOW  = new THREE.Color(0x1d3f7a);
+const COLOR_HIGH = new THREE.Color(0xffd27f);
+const tmpColor   = new THREE.Color();
+const dummy      = new THREE.Object3D();
+
+function updateScene() {
+  for (let i = 0; i < N; i++) {
+    const x = (i - 31.5) * 0.7;
+    const y = u[i] * 4.5;
+
+    dummy.position.set(x, y, 0);
+    dummy.updateMatrix();
+    stringMesh.setMatrixAt(i, dummy.matrix);
+
+    linePositions[i * 3]     = x;
+    linePositions[i * 3 + 1] = y;
+    linePositions[i * 3 + 2] = 0;
+
+    const t = Math.min(1, Math.abs(u[i]) / A);
+    tmpColor.copy(COLOR_LOW).lerp(COLOR_HIGH, t);
+    stringMesh.setColorAt(i, tmpColor);
+  }
+
+  stringMesh.instanceMatrix.needsUpdate = true;
+  if (stringMesh.instanceColor) stringMesh.instanceColor.needsUpdate = true;
+
+  lineGeo.attributes.position.needsUpdate = true;
+  lineGeo.computeBoundingSphere();
+}
+
+/* ------------------------------------------------------------------ */
+/*  Физика                                                             */
+/* ------------------------------------------------------------------ */
+function stepOnce() {
+  const next = new Float64Array(N);
+  for (let i = 1; i <= 62; i++) {
+    next[i] = 2 * u[i] - uPrev[i] + C2 * (u[i - 1] - 2 * u[i] + u[i + 1]);
+  }
+  next[0] = 0;
+  next[N - 1] = 0;
+
+  uPrev = u;
+  u = next;
+}
+
+function computeEnergy() {
+  let e = 0;
+  for (let i = 1; i <= 62; i++) {
+    const dv = u[i] - uPrev[i];
+    const ds = u[i + 1] - u[i];
+    e += 0.5 * dv * dv + 0.5 * C2 * ds * ds;
+  }
+  return e;
+}
+
+const r4 = (x) => Number(x.toFixed(4));
+
+function stateSnapshot() {
+  return {
+    samples: [r4(u[16]), r4(u[32]), r4(u[48])],
+    energy: r4(computeEnergy())
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Публичный API                                                      */
+/* ------------------------------------------------------------------ */
+window.__step = function (dt) {
+  stepOnce();
+  return stateSnapshot();
+};
+
+window.__probe = function () {
+  updateScene();
+  renderer.render(scene, camera);
+  return stateSnapshot();
+};
+
+/* ------------------------------------------------------------------ */
+/*  Первая отрисовка                                                   */
+/* ------------------------------------------------------------------ */
+updateScene();
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · K-15 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

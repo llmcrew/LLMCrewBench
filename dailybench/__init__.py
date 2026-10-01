@@ -1,13 +1,15 @@
-"""LLMCrew DailyBench-16 — generated, programmatically scored local-LLM suite.
+"""LLMCrew DailyBench — generated, programmatically scored local-LLM suite.
 
-See ``LLMCrew-DailyBench-16-v0.1.md`` for the specification this package
-implements.
+Ten categories, 100 points, one deterministic suite per seed; every point comes
+from an observable result (a parsed answer, a file, a hidden test, a tool log),
+never from a judge model. See ``README.md`` for the full description.
 
 Quick start::
 
-    python -m dailybench selfcheck            # no GPU needed
-    python -m dailybench run --base-url http://127.0.0.1:1234/v1 --model qwen3.8-27b
-    python -m dailybench report runs/<run-dir>
+    make setup                                 # .venv + pytest (uv)
+    make selfcheck                             # no GPU needed
+    python -m dailybench bench --config qwen3.8-27b-ud-q3-k-xl --speed
+    python -m dailybench report runs/qwen3.8-27b-ud-q3-k-xl
 """
 
 from .config import DEFAULT_SEED, RunConfig
@@ -43,4 +45,4 @@ __all__ = [
     "registered_categories",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Mandelbrot Fractal</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Configuration ---
+        const WIDTH = 800;
+        const HEIGHT = 600;
+        const MAX_ITERATIONS = 160;
+        const ESCAPE_RADIUS = 2.0;
+        const LOG_MAX_ITER = Math.log(161.0); // log(160 + 1)
+
+        // Colors (RGB 0..1)
+        const C_DARK = new THREE.Color(0x1b1240);
+        const C_TEAL = new THREE.Color(0x18b7ac);
+        const C_LIME = new THREE.Color(0xb8f24a);
+        const C_PINK = new THREE.Color(0xff5f7e);
+
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+        
+        // OrthographicCamera(-1, 1, 1, -1, 0, 1) as requested
+        const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+        
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(WIDTH, HEIGHT, false);
+        document.body.appendChild(renderer.domElement);
+
+        // --- Shader Material ---
+        const vertexShader = `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position = vec4(position, 1.0);
+            }
+        `;
+
+        const fragmentShader = `
+            uniform float uZoom;
+            uniform vec2 uCenter;
+            varying vec2 vUv;
+
+            void main() {
+                // Viewport mapping
+                // Half-height = 1.2 / uZoom
+                // Width is 4/3 of height
+                float aspect = 4.0 / 3.0;
+                float halfHeight = 1.2 / uZoom;
+                float halfWidth = halfHeight * aspect;
+
+                // Map UV (0..1) to complex plane centered at uCenter
+                vec2 p = (vUv - 0.5) * 2.0; // -1..1
+                vec2 c = uCenter + vec2(p.x * halfWidth, p.y * halfHeight);
+
+                // Mandelbrot Iteration
+                vec2 z = vec2(0.0);
+                float iter = 0.0;
+                float maxIter = 160.0;
+                float escapeRadius = 2.0;
+                float escapeRadiusSq = escapeRadius * escapeRadius;
+
+                for (float i = 0.0; i < 160.0; i++) {
+                    // z = z*z + c
+                    // (x+yi)^2 = x^2 - y^2 + 2xyi
+                    float x = (z.x * z.x - z.y * z.y) + c.x;
+                    float y = (2.0 * z.x * z.y) + c.y;
+                    z = vec2(x, y);
+
+                    if (dot(z, z) > escapeRadiusSq) {
+                        iter = i;
+                        break;
+                    }
+                    iter = i + 1.0; 
+                }
+
+                // Normalization t
+                float t;
+                if (iter >= maxIter) {
+                    t = 1.0;
+                } else {
+                    // Smooth coloring adjustment could go here, but prompt specifies:
+                    // t = log(iterations + 1) / log(161)
+                    t = log(iter + 1.0) / 161.0; // Wait, log(161) is constant denominator
+                    // Correction: prompt says "log(161)" literally as the denominator base? 
+                    // "t = log(итераций + 1) / log(161)" usually implies natural log or log10, ratio is same.
+                    // In GLSL log() is natural log.
+                    t = log(iter + 1.0) / log(161.0);
+                }
+
+                // Coloring
+                vec3 color = vec3(0.0);
+
+                // Base color #1b1240
+                vec3 colDark = vec3(0.1059, 0.0706, 0.2510);
+                vec3 colTeal = vec3(0.0941, 0.7176, 0.6745);
+                vec3 colLime = vec3(0.7216, 0.9490, 0.2902);
+                vec3 colPink = vec3(1.0000, 0.3725, 0.4941);
+
+                // t = 0 -> #1b1240
+                color = colDark;
+
+                // transition to #18b7ac in t = 0.30..0.40
+                float mix1 = smoothstep(0.30, 0.40, t);
+                color = mix(color, colTeal, mix1);
+
+                // transition to dark #1b1240 back in t = 0.55..0.62
+                float mix2 = smoothstep(0.55, 0.62, t);
+                color = mix(color, colDark, mix2);
+
+                // transition to #b8f24a in t = 0.70..0.76
+                float mix3 = smoothstep(0.70, 0.76, t);
+                color = mix(color, colLime, mix3);
+
+                // transition to #ff5f7e in t = 0.90..0.96
+                float mix4 = smoothstep(0.90, 0.96, t);
+                color = mix(color, colPink, mix4);
+
+                // inside set (t = 1.0) -> #ff5f7e
+                // Since mix4 goes to 1.0 at t=0.96, t=1.0 is already colPink.
+                // But explicitly ensuring t=1.0 is colPink:
+                if (t >= 1.0) {
+                    color = colPink;
+                }
+
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `;
+
+        const material = new THREE.ShaderMaterial({
+            vertexShader,
+            fragmentShader,
+            uniforms: {
+                uZoom: { value: 1.5 },
+                uCenter: { value: new THREE.Vector2(-0.6, 0.0) }
+            }
+        });
+
+        const geometry = new THREE.PlaneGeometry(2, 2);
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.name = "MandelbrotPlane";
+        scene.add(mesh);
+
+        // --- Animation State ---
+        let currentTime = 0.0;
+        let isReady = false;
+
+        function updateZoom() {
+            // uZoom = 1.500 * exp(0.350 * t)
+            const zoom = 1.5 * Math.exp(0.35 * currentTime);
+            material.uniforms.uZoom.value = zoom;
+            return zoom;
+        }
+
+        function render() {
+            renderer.render(scene, camera);
+            if (!isReady) {
+                isReady = true;
+                window.__ready = true;
+            }
+        }
+
+        // --- API ---
+        window.__step = function(dt) {
+            currentTime += dt;
+            updateZoom();
+            render();
+            return window.__probe();
+        };
+
+        window.__probe = function() {
+            const zoom = material.uniforms.uZoom.value;
+            return {
+                t: parseFloat(currentTime.toFixed(4)),
+                objects: [mesh.name],
+                zoom: parseFloat(zoom.toFixed(4))
+            };
+        };
+
+        // Initial Render
+        updateZoom();
+        render();
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-10 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

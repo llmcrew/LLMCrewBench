@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Flow field particles</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const W = 800, H = 600;
+
+/* ---------- renderer ---------- */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+document.body.appendChild(renderer.domElement);
+
+/* ---------- scene / camera ---------- */
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 200);
+camera.position.set(4.0, 3.0, 18.0);
+camera.lookAt(4.0, 3.0, 0.0);
+
+/* ---------- backdrop ---------- */
+const backdrop = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshBasicMaterial({ color: 0x22303f })
+);
+backdrop.position.set(0, 0, -2);
+backdrop.name = 'backdrop';
+scene.add(backdrop);
+
+/* ---------- particles (single InstancedMesh, 36 spheres r=0.3) ---------- */
+const N = 36;
+const particles = new THREE.InstancedMesh(
+  new THREE.SphereGeometry(0.3, 16, 12),
+  new THREE.MeshStandardMaterial({ color: 0xffa64d, roughness: 0.45, metalness: 0.0 }),
+  N
+);
+particles.name = 'particles';
+particles.frustumCulled = false;
+scene.add(particles);
+
+/* ---------- lights ---------- */
+const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+ambient.name = 'ambient';
+scene.add(ambient);
+
+const directional = new THREE.DirectionalLight(0xffffff, 1.8);
+directional.position.set(6.0, 10.0, 10.0);
+directional.name = 'directional';
+scene.add(directional);
+
+/* ---------- LCG initial positions ---------- */
+let s = 2070952145;
+function nextU() {
+  s = (1664525 * s + 1013904223) % 4294967296;
+  return s / 4294967296;
+}
+
+const px = new Float64Array(N);
+const py = new Float64Array(N);
+for (let i = 0; i < N; i++) {
+  px[i] = 8.0 * nextU();
+  py[i] = 6.0 * nextU();
+}
+
+/* ---------- velocity field ---------- */
+const A = 1.5;
+const B = 1.5;
+const vx = (x, y) => A * Math.sin(Math.PI * y / 6.0);
+const vy = (x, y) => B * Math.cos(Math.PI * x / 8.0);
+
+/* ---------- instance sync ---------- */
+const dummy = new THREE.Object3D();
+function syncInstances() {
+  for (let i = 0; i < N; i++) {
+    dummy.position.set(px[i], py[i], 0);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(1, 1, 1);
+    dummy.updateMatrix();
+    particles.setMatrixAt(i, dummy.matrix);
+  }
+  particles.instanceMatrix.needsUpdate = true;
+}
+
+/* ---------- state / probe ---------- */
+let steps = 0;
+const r4 = (v) => Math.round(v * 10000) / 10000;
+
+window.__probe = function () {
+  return {
+    steps: steps,
+    field: { A: A, B: B },
+    particles: Array.from({ length: N }, (_, i) => ({ x: r4(px[i]), y: r4(py[i]) })),
+    camera: [r4(camera.position.x), r4(camera.position.y), r4(camera.position.z)],
+    objects: scene.children.map((o) => o.name)
+  };
+};
+
+/* ---------- stepping ---------- */
+window.__step = function (dt) {
+  for (let i = 0; i < N; i++) {
+    const x = px[i];
+    const y = py[i];
+    const u = vx(x, y);
+    const v = vy(x, y);
+    px[i] = x + u * dt;
+    py[i] = y + v * dt;
+  }
+  steps++;
+  syncInstances();
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+/* ---------- first frame ---------- */
+syncInstances();
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · K-11 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Neon Noodle Shop</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Configuration & Constants ---
+const WIDTH = 800;
+const HEIGHT = 600;
+const SEED = 23268;
+const COLORS = {
+    bg: 0x1e1145,
+    cyan: 0x12c7d4,
+    orange: 0xffb347,
+    pink: 0xff5fa8,
+    glass: 0xa8c8dc
+};
+
+// --- State & LCG ---
+let lcg = SEED;
+function rnd() {
+    lcg = (lcg * 1103515245 + 12345) % 2147483648;
+    return lcg / 2147483648;
+}
+
+let time = 0;
+let cameraX = 0;
+let steamOpacity = 0.5;
+let holoPhase = 0;
+let puddlePhase = 0;
+
+// --- Scene Setup ---
+const scene = new THREE.Scene();
+// Camera setup to match coordinate system logic
+// We want to map u,v (0..1) to screen. 
+// Let's use a PerspectiveCamera but calculate positions based on a virtual screen plane at z=0 relative to camera lookAt?
+// Camera is at (0,0,4), looking at (0,0,-1). 
+// Let's set FOV such that calculations are manageable. 
+// If we assume a standard view, we can project u,v to world coords at specific Z.
+// Let's use Orthographic for simplicity of "u,v fractions" but the prompt implies depth (z=-45 vs z=-4).
+// Actually, mixing them is hard. Let's use Perspective and a helper to convert u,v,z to Vector3.
+// Camera at (0,0,4). LookAt (0,0,-1). Up (0,1,0).
+// FOV 60 degrees vertical.
+const fov = 60;
+const aspect = WIDTH / HEIGHT;
+const camera = new THREE.PerspectiveCamera(fov, aspect, 0.1, 1000);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
+
+// Helper to convert u,v (0..1, 0=top, 1=bottom) and z to World Vector3
+function getPos(u, v, z) {
+    const dist = 4 - z; // Distance from camera plane (z=4) to object plane (z)
+    // Height of view at distance 'dist'
+    const vFOV = THREE.MathUtils.degToRad(fov);
+    const viewHeight = 2 * dist * Math.tan(vFOV / 2);
+    const viewWidth = viewHeight * aspect;
+    
+    // u: 0->left, 1->right. x: -width/2 -> +width/2
+    const x = (u - 0.5) * viewWidth;
+    // v: 0->top, 1->bottom. y: +height/2 -> -height/2
+    const y = (0.5 - v) * viewHeight;
+    
+    return new THREE.Vector3(x, y, z);
+}
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: false });
+renderer.setSize(WIDTH, HEIGHT, false);
+renderer.setPixelRatio(1);
+document.body.appendChild(renderer.domElement);
+
+// --- Materials ---
+const matBg = new THREE.MeshBasicMaterial({ color: COLORS.bg });
+const matCyan = new THREE.MeshBasicMaterial({ color: COLORS.cyan });
+const matOrange = new THREE.MeshBasicMaterial({ color: COLORS.orange });
+const matPink = new THREE.MeshBasicMaterial({ color: COLORS.pink });
+const matGlass = new THREE.MeshBasicMaterial({ color: COLORS.glass, transparent: true, opacity: 0.3 });
+const matDrop = new THREE.MeshBasicMaterial({ color: COLORS.glass, transparent: true, opacity: 0.8 });
+const matSteam = new THREE.MeshBasicMaterial({ color: COLORS.orange, transparent: true, opacity: 0.5 });
+const matPuddle = new THREE.MeshBasicMaterial({ color: COLORS.glass, transparent: true, opacity: 0.6 });
+
+// --- Objects ---
+const objects = [];
+
+// 1. Sky (z = -45)
+const skyGeo = new THREE.PlaneGeometry(200, 200);
+const sky = new THREE.Mesh(skyGeo, matBg);
+sky.position.set(0, 0, -45);
+scene.add(sky);
+objects.push('sky');
+
+// 2. Wall (z = -12)
+// "Wall of the house behind the kiosk". Covers most of the view.
+const wallGeo = new THREE.PlaneGeometry(100, 100);
+const wall = new THREE.Mesh(wallGeo, matBg);
+wall.position.set(0, 0, -12);
+scene.add(wall);
+objects.push('wall');
+
+// 3. Floor (z = -8, from v=0.62 down)
+// We need a plane that starts at v=0.62 and goes down.
+// Calculate world Y for v=0.62 at z=-8.
+const floorTopY = getPos(0, 0.62, -8).y;
+// Make it large enough to cover bottom
+const floorGeo = new THREE.PlaneGeometry(100, 100);
+const floor = new THREE.Mesh(floorGeo, matBg);
+// Position center such that top edge is at floorTopY
+// PlaneGeometry is centered. So we shift Y down by half height.
+// But we don't know exact height needed. Let's make it huge and position carefully.
+// Actually, simpler: Position at some Y, scale Y.
+// Let's place center at (floorTopY - 50) and scale Y to 100.
+floor.position.set(0, floorTopY - 50, -8);
+floor.scale.y = 2; // Extend further down
+scene.add(floor);
+objects.push('floor');
+
+// 4. Kiosk Body (u=0.24, v=0.47, 0.20x0.20)
+// This is a box.
+const kioskW = 0.20; 
+const kioskH = 0.20;
+// We need to approximate size in world units at z=-12 (assuming kiosk is near wall)
+// Let's assume kiosk is at z=-12.
+const kioskPos = getPos(0.24, 0.47, -12);
+// Calculate width/height in world units at z=-12
+const distKiosk = 4 - (-12);
+const vFOV = THREE.MathUtils.degToRad(fov);
+const viewH_K = 2 * distKiosk * Math.tan(vFOV / 2);
+const viewW_K = viewH_K * aspect;
+const kioskWorldW = kioskW * viewW_K;
+const kioskWorldH = kioskH * viewH_K;
+
+const kioskGeo = new THREE.BoxGeometry(kioskWorldW, kioskWorldH, 1);
+const kiosk = new THREE.Mesh(kioskGeo, matBg);
+kiosk.position.copy(kioskPos);
+scene.add(kiosk);
+objects.push('kiosk');
+
+// 5. Kiosk Counter (u=0.24, v=0.62, 0.26x0.05)
+// Attached to kiosk or separate? Prompt says "counter 0.26x0.05 at v=0.62".
+// Likely protruding or just a strip.
+const counterW = 0.26;
+const counterH = 0.05;
+const counterPos = getPos(0.24, 0.62, -12); // Same Z as kiosk body roughly
+const counterWorldW = counterW * viewW_K;
+const counterWorldH = counterH * viewH_K;
+const counterGeo = new THREE.BoxGeometry(counterWorldW, counterWorldH, 1.5); // Stick out a bit
+const counter = new THREE.Mesh(counterGeo, matOrange);
+counter.position.copy(counterPos);
+scene.add(counter);
+objects.push('counter');
+
+// 6. Board (Sign above counter) (u=0.37, v=0.40, w=0.19)
+// Color #12c7d4. Hieroglyphs (stripes).
+const boardW = 0.19;
+const boardH = 0.08; // Estimate height
+const boardPos = getPos(0.37, 0.40, -12);
+const boardWorldW = boardW * viewW_K;
+const boardWorldH = boardH * viewH_K;
+const boardGeo = new THREE.PlaneGeometry(boardWorldW, boardWorldH);
+const board = new THREE.Mesh(boardGeo, matCyan);
+board.position.copy(boardPos);
+scene.add(board);
+objects.push('board');
+
+// Add hieroglyphs (stripes) to board
+const stripeGeo = new THREE.PlaneGeometry(boardWorldW * 0.8, boardWorldH * 0.05);
+for(let i=0; i<4; i++) {
+    const stripe = new THREE.Mesh(stripeGeo, matBg); // Dark stripes on cyan
+    stripe.position.set(0, (i-1.5)*boardWorldH*0.2, 0.01);
+    board.add(stripe);
+}
+
+// 7. Vertical Sign (Right) (u=0.12, v=0.26, 0.06x0.28)
+// Wait, u=0.12 is Left side (0 is left). Prompt says "Right". 
+// Re-reading: "vertical neon sign right: 6% by 28% frame, u=0.12".
+// 0.12 is definitely left. 0.88 would be right. 
+// Maybe the prompt implies u is from right? Or maybe I should trust coordinates over text "right".
+// "u=0.12" is explicit. I will follow coordinates.
+// Actually, looking at "holo panels left ... u=0.14". If sign is at 0.12 and holo at 0.14, they are close.
+// Maybe "right" means right side of the kiosk? Or maybe the prompt has a typo.
+// I will follow the coordinate u=0.12 strictly.
+const vSignW = 0.06;
+const vSignH = 0.28;
+const vSignPos = getPos(0.12, 0.26, -12);
+const vSignWorldW = vSignW * viewW_K;
+const vSignWorldH = vSignH * viewH_K;
+const vSignGeo = new THREE.PlaneGeometry(vSignWorldW, vSignWorldH);
+const vSign = new THREE.Mesh(vSignGeo, matCyan);
+vSign.position.copy(vSignPos);
+scene.add(vSign);
+objects.push('sign');
+
+// 8. Holo Panels (Left) (8%x14%, u=0.14, v=0.30 and 0.32)
+const holoW = 0.08;
+const holoH = 0.14;
+const holo1Pos = getPos(0.14, 0.30, -12);
+const holo2Pos = getPos(0.14, 0.32, -12);
+const holoWorldW = holoW * viewW_K;
+const holoWorldH = holoH * viewH_K;
+const holoGeo = new THREE.PlaneGeometry(holoWorldW, holoWorldH);
+const holo1 = new THREE.Mesh(holoGeo, matPink);
+holo1.position.copy(holo1Pos);
+scene.add(holo1);
+const holo2 = new THREE.Mesh(holoGeo, matPink);
+holo2.position.copy(holo2Pos);
+scene.add(holo2);
+objects.push('holo1', 'holo2');
+
+// Scanlines on holo
+const scanGeo = new THREE.PlaneGeometry(holoWorldW, holoWorldH * 0.05);
+const scan1 = new THREE.Mesh(scanGeo, matBg);
+scan1.position.y = 0;
+holo1.add(scan1);
+const scan2 = new THREE.Mesh(scanGeo, matBg);
+scan2.position.y = 0;
+holo2.add(scan2);
+
+// 9. Lamps (3 warm lamps) (u=0.18/0.26/0.34, v=0.12)
+const lampGeo = new THREE.SphereGeometry(0.5, 16, 16); // Size needs scaling
+// Scale radius based on view
+const lampR = 0.02 * viewW_K; 
+const lampMat = new THREE.MeshBasicMaterial({ color: COLORS.orange });
+const lampUs = [0.18, 0.26, 0.34];
+lampUs.forEach(u => {
+    const p = getPos(u, 0.12, -12);
+    const lamp = new THREE.Mesh(lampGeo, lampMat);
+    lamp.position.copy(p);
+    lamp.scale.set(lampR, lampR, lampR);
+    scene.add(lamp);
+    objects.push('lamp');
+});
+
+// 10. Puddles (4 spots on asphalt) (0.16x0.05, u=0.20/0.40/0.60/0.78, v=0.82)
+const puddleW = 0.16;
+const puddleH = 0.05;
+const puddleUs = [0.20, 0.40, 0.60, 0.78];
+const puddleGeo = new THREE.PlaneGeometry(puddleW * viewW_K, puddleH * viewH_K);
+puddleUs.forEach(u => {
+    const p = getPos(u, 0.82, -8); // On floor z=-8
+    const puddle = new THREE.Mesh(puddleGeo, matPuddle);
+    puddle.position.copy(p);
+    puddle.rotation.x = -Math.PI / 2; // Lie flat
+    scene.add(puddle);
+    objects.push('puddle');
+});
+
+// 11. Glass (Wet glass before camera) (z=-4, 0.80x0.80)
+// Camera is at z=4. Glass at z=-4. Distance = 8.
+const glassW = 0.80;
+const glassH = 0.80;
+const distGlass = 4 - (-4);
+const viewH_G = 2 * distGlass * Math.tan(vFOV / 2);
+const viewW_G = viewH_G * aspect;
+const glassGeo = new THREE.PlaneGeometry(glassW * viewW_G, glassH * viewH_G);
+const glass = new THREE.Mesh(glassGeo, matGlass);
+glass.position.set(0, 0, -4);
+scene.add(glass);
+objects.push('glass');
+
+// 12. Drops (64 drops BEFORE glass, z=-3.9)
+// Color #a8c8dc, size 6px.
+// We need to convert 6px to world units at z=-3.9.
+const distDrop = 4 - (-3.9);
+const viewH_D = 2 * distDrop * Math.tan(vFOV / 2);
+const pxToWorld = viewH_D / HEIGHT;
+const dropSize = 6 * pxToWorld;
+
+const dropGeo = new THREE.PlaneGeometry(dropSize, dropSize * 3); // Elongated
+const dropsMesh = new THREE.InstancedMesh(dropGeo, matDrop, 64);
+const dropData = [];
+for(let i=0; i<64; i++) {
+    const x = (rnd() - 0.5) * viewW_G * 0.9;
+    const y = (rnd() - 0.5) * viewH_G * 0.9;
+    const z = -3.9;
+    const speed = 2.10;
+    dropData.push({ x, y, z, speed, offset: rnd() * 10 });
+    
+    const dummy = new THREE.Object3D();
+    dummy.position.set(x, y, z);
+    dummy.updateMatrix();
+    dropsMesh.setMatrixAt(i, dummy.matrix);
+}
+scene.add(dropsMesh);
+objects.push('drops');
+
+// 13. Rain (Streams behind glass, z=-12)
+// Same points, 1/3 speed.
+const rainGeo = new THREE.BufferGeometry();
+const rainCount = 200;
+const rainPos = new Float32Array(rainCount * 3);
+const rainData = [];
+for(let i=0; i<rainCount; i++) {
+    const x = (rnd() - 0.5) * 20; // Wide area
+    const y = (rnd() - 0.5) * 20;
+    const z = -12;
+    const speed = 2.10 / 3;
+    rainData.push({ x, y, z, speed, offset: rnd() * 10 });
+    rainPos[i*3] = x;
+    rainPos[i*3+1] = y;
+    rainPos[i*3+2] = z;
+}
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+const rainMat = new THREE.PointsMaterial({ color: COLORS.glass, size: 0.1, transparent: true, opacity: 0.5 });
+const rainPoints = new THREE.Points(rainGeo, rainMat);
+scene.add(rainPoints);
+objects.push('rain');
+
+// 14. Steam (3 columns above counter) (u=0.20/0.24/0.28, v=0.40)
+const steamGeo = new THREE.PlaneGeometry(1, 3);
+const steamUs = [0.20, 0.24, 0.28];
+const steams = [];
+steamUs.forEach(u => {
+    const p = getPos(u, 0.40, -12);
+    const steam = new THREE.Mesh(steamGeo, matSteam);
+    steam.position.copy(p);
+    // Shift up so bottom is at counter level
+    steam.position.y += 1.5; 
+    scene.add(steam);
+    steams.push(steam);
+    objects.push('steam');
+});
+
+// --- Animation Logic ---
+
+window.__step = function(dt) {
+    time += dt;
+    
+    // Camera sway
+    // x oscillates 0.057 each side, freq 0.25
+    cameraX = Math.sin(time * 0.25 * 2 * Math.PI) * 0.057;
+    camera.position.x = cameraX;
+    camera.lookAt(0, 0, -1);
+
+    // Drops movement
+    // Fall down (y decreases) at 2.10 units/s. Wrap around.
+    // Note: In our coord system, Y is up. Falling means Y decreases.
+    // But wait, prompt says "fall down". In screen space v increases downwards.
+    // In 3D world Y, down is negative.
+    // Speed 2.10 units/s.
+    const dropDummy = new THREE.Object3D();
+    for(let i=0; i<64; i++) {
+        const d = dropData[i];
+        d.y -= d.speed * dt;
+        // Wrap: if too low, go to top
+        if (d.y < -viewH_G/2) {
+            d.y = viewH_G/2;
+            d.x = (rnd() - 0.5) * viewW_G * 0.9;
+        }
+        dropDummy.position.set(d.x, d.y, d.z);
+        dropDummy.updateMatrix();
+        dropsMesh.setMatrixAt(i, dropDummy.matrix);
+    }
+    dropsMesh.instanceMatrix.needsUpdate = true;
+
+    // Rain movement
+    const positions = rainPoints.geometry.attributes.position.array;
+    for(let i=0; i<rainCount; i++) {
+        const r = rainData[i];
+        r.y -= r.speed * dt;
+        if (r.y < -10) {
+            r.y = 10;
+            r.x = (rnd() - 0.5) * 20;
+        }
+        positions[i*3+1] = r.y;
+        positions[i*3] = r.x;
+    }
+    rainPoints.geometry.attributes.position.needsUpdate = true;
+
+    // Steam opacity
+    // Oscillates freq 0.77
+    const steamVal = (Math.sin(time * 0.77 * 2 * Math.PI) + 1) / 2; // 0..1
+    steamOpacity = 0.3 + steamVal * 0.4; // Range 0.3 to 0.7
+    steams.forEach(s => s.material.opacity = steamOpacity);
+
+    // Holo scanlines
+    holoPhase = (holoPhase + dt * 2) % 1;
+    scan1.position.y = (holoPhase - 0.5) * holoWorldH;
+    scan2.position.y = ((holoPhase + 0.5) % 1 - 0.5) * holoWorldH;
+
+    // Puddles ripples
+    puddlePhase = (puddlePhase + dt) % 1;
+    
+    return window.__probe();
+};
+
+window.__probe = function() {
+    return {
+        t: time.toFixed(4),
+        objects: objects,
+        drops: [dropData[0].x, dropData[0].y],
+        steam: steamOpacity.toFixed(4)
+    };
+};
+
+// Initial Render
+renderer.render(scene, camera);
+window.__ready = true;
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-18 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

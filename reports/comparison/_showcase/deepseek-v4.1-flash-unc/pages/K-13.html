@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Forest fire — 40x40</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ---------- константы схемы ---------- */
+const W = 40, H = 40;
+const EMPTY = 0, TREE = 1, BURNING = 2, BURNED = 3;
+
+/* ---------- детерминированный ЛКГ ---------- */
+let seed = 1920875681;
+function next() {
+  seed = (seed * 1664525 + 1013904223) % 4294967296;
+  return seed / 4294967296;
+}
+
+/* ---------- начальное состояние ---------- */
+const state = new Uint8Array(W * H);
+for (let i = 0; i < H; i++) {
+  for (let j = 0; j < W; j++) {
+    const v = next();                       // ровно один вызов на клетку
+    state[i * W + j] = (v < 0.7) ? TREE : EMPTY;
+  }
+}
+state[20 * W + 20] = BURNING;               // очаг
+let steps = 0;
+
+/* ---------- сцена ---------- */
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 500);
+camera.position.set(0.0, 50.0, 46.0);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+dirLight.position.set(16.0, 46.0, 18.0);
+scene.add(dirLight);
+
+/* ---------- лес одним InstancedMesh ---------- */
+const geometry = new THREE.BoxGeometry(0.9, 0.6, 0.9);
+const material = new THREE.MeshLambertMaterial({ color: 0xffffff });
+const forest = new THREE.InstancedMesh(geometry, material, W * H);
+forest.name = 'forest';
+
+const dummy = new THREE.Object3D();
+for (let i = 0; i < H; i++) {
+  for (let j = 0; j < W; j++) {
+    dummy.position.set(j - 19.5, 0.3, i - 19.5);
+    dummy.updateMatrix();
+    forest.setMatrixAt(i * W + j, dummy.matrix);
+  }
+}
+forest.instanceMatrix.needsUpdate = true;
+scene.add(forest);
+
+/* ---------- цвета состояний ---------- */
+const COLORS = [
+  new THREE.Color(0x0f1620), // пусто
+  new THREE.Color(0x2f8f46), // дерево
+  new THREE.Color(0xff5a1e), // огонь
+  new THREE.Color(0x4a3a2a)  // выгоревшее
+];
+
+function updateColors() {
+  for (let k = 0; k < W * H; k++) {
+    forest.setColorAt(k, COLORS[state[k]]);
+  }
+  forest.instanceColor.needsUpdate = true;
+}
+
+/* ---------- подсчёт состояний ---------- */
+function counts() {
+  let trees = 0, burning = 0, burned = 0;
+  for (let k = 0; k < W * H; k++) {
+    const s = state[k];
+    if (s === TREE) trees++;
+    else if (s === BURNING) burning++;
+    else if (s === BURNED) burned++;
+  }
+  return { trees, burning, burned, steps };
+}
+
+/* ---------- один шаг симуляции ---------- */
+function step() {
+  const old = state.slice();
+  const ns = state.slice();
+
+  for (let i = 0; i < H; i++) {
+    for (let j = 0; j < W; j++) {
+      const k = i * W + j;
+      const s = old[k];
+
+      if (s === BURNING) {
+        ns[k] = BURNED;
+      } else if (s === TREE) {
+        let fire = false;
+        for (let di = -1; di <= 1 && !fire; di++) {
+          for (let dj = -1; dj <= 1; dj++) {
+            if (di === 0 && dj === 0) continue;
+            const ni = i + di, nj = j + dj;
+            if (ni < 0 || ni >= H || nj < 0 || nj >= W) continue;
+            if (old[ni * W + nj] === BURNING) { fire = true; break; }
+          }
+        }
+        if (fire) ns[k] = BURNING;
+      }
+      // EMPTY и BURNED не меняются
+    }
+  }
+
+  state.set(ns);
+  steps++;
+}
+
+/* ---------- внешний API ---------- */
+window.__step = function (dt) {
+  step();                 // dt на схему не влияет: один вызов = один шаг
+  return counts();
+};
+
+window.__probe = function () {
+  updateColors();                       // 1) пересчёт цветов
+  renderer.render(scene, camera);       // 2) отрисовка кадра
+  return counts();                      // 3) только потом поля
+};
+
+/* ---------- первая отрисовка ---------- */
+updateColors();
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · K-13 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

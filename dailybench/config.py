@@ -18,19 +18,41 @@ NEUTRAL_SYSTEM = (
 )
 
 
+def _env(name: str) -> str:
+    """Local override: endpoints and keys never live in a tracked file."""
+    return os.environ.get(name, "").strip()
+
+
 @dataclass
 class RunConfig:
+    #: Filled from the environment in :meth:`__post_init__` when left empty.
+    #: Endpoints and keys must never require editing a tracked file.
+    _ENV_DEFAULTS = {
+        "base_url": ("DAILYBENCH_BASE_URL", "http://127.0.0.1:1234/v1"),
+        "model": ("DAILYBENCH_MODEL", "local-model"),
+        "api_key": ("DAILYBENCH_API_KEY", "not-needed"),
+    }
+
     # --- endpoint ---------------------------------------------------------- #
-    base_url: str = "http://127.0.0.1:1234/v1"
-    model: str = "local-model"
-    api_key: str = os.environ.get("DAILYBENCH_API_KEY", "not-needed")
+    #: A clone points these at its own server with env vars; the tracked defaults
+    #: are therefore loopback and a placeholder, never a machine path. ``None``
+    #: means "read the environment", so exporting a key works even in a process
+    #: that imported this module earlier.
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = None
 
     # --- decoding budgets (identical for every model) ---------------------- #
     temperature: float = 0.0
     top_p: float = 1.0
     max_new_tokens: int = 4096
     """Answer budget per response, thinking included. Applies to every model."""
-    max_new_tokens_by_category: dict[str, int] = field(default_factory=lambda: {"C": 8192})
+    #: Artefact categories (a whole file, a frame) need room for the artefact
+    #: *plus* thinking: a reasoning model on a visual task spends 4-8K on thinking
+    #: before it writes 5K of HTML, so the small default truncates the answer.
+    max_new_tokens_by_category: dict[str, int] = field(
+        default_factory=lambda: {"C": 12288, "K": 16384, "L": 16384}
+    )
     """Per-category override of the answer budget.
 
     A category that must *produce an artefact* (a whole source file, a SQL
@@ -38,6 +60,9 @@ class RunConfig:
     a single value do not. The budgets are identical for every model, so the
     comparison stays fair while a thinking model is not starved of the answer.
     """
+    unbounded_budget: bool = True
+    """Answer limit = what fits in the window (see :meth:`budget_for`)."""
+
     max_total_tokens: int = 16384
     max_tool_calls: int = 12
     context_window: int = 32768
@@ -95,9 +120,35 @@ class RunConfig:
     # --- output ------------------------------------------------------------ #
     out_dir: Path = field(default_factory=lambda: Path("runs") / "run")
 
-    def budget_for(self, category: str) -> int:
-        """Answer budget for one category (identical for every model)."""
-        return int(self.max_new_tokens_by_category.get(category, self.max_new_tokens))
+    def __post_init__(self) -> None:
+        """Resolve local overrides: env wins, the tracked default is a fallback."""
+        for field_name, (env_name, fallback) in self._ENV_DEFAULTS.items():
+            if not getattr(self, field_name):
+                setattr(self, field_name, _env(env_name) or fallback)
+
+    #: Space kept between prompt + answer and the declared window, so a request
+    #: is never rejected for exceeding the context by a handful of tokens.
+    context_reserve: int = 512
+
+    def budget_for(self, category: str, prompt_tokens: int | None = None) -> int:
+        """Answer budget for one task.
+
+        Two regimes, identical for every model:
+
+        * ``unbounded_budget`` — the window itself is the limit: as many tokens
+          as fit after the prompt. The model is not cut off by a laboratory
+          ceiling, only by physics, and what it spent is documented instead of
+          being silently truncated;
+        * otherwise, the per-category table (the old behaviour), kept so a
+          published run stays comparable.
+        """
+        if not self.unbounded_budget:
+            return int(self.max_new_tokens_by_category.get(category, self.max_new_tokens))
+        window = int(self.context_window or 0)
+        if window <= 0:
+            return int(self.max_new_tokens_by_category.get(category, self.max_new_tokens))
+        prompt = int(prompt_tokens or 0)
+        return max(256, window - prompt - int(self.context_reserve))
 
     def to_json(self) -> str:
         data = asdict(self)

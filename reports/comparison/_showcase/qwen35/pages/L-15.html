@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Flow Field</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #0b1424; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Configuration ---
+        const PARTICLE_COUNT = 1500;
+        const WIDTH = 800;
+        const HEIGHT = 600;
+        const BG_COLOR = 0x0b1424;
+        
+        // --- Camera ---
+        // OrthographicCamera(-4/3, 4/3, 1, -1, 0.1, 10)
+        const left = -4/3;
+        const right = 4/3;
+        const top = 1;
+        const bottom = -1;
+        
+        const camera = new THREE.OrthographicCamera(left, right, top, bottom, 0.1, 10);
+        camera.position.set(0, 0, 2);
+        camera.lookAt(0, 0, 0);
+
+        // --- Renderer ---
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(WIDTH, HEIGHT, false);
+        renderer.setClearColor(BG_COLOR);
+        document.body.appendChild(renderer.domElement);
+
+        // --- Scene ---
+        const scene = new THREE.Scene();
+
+        // --- Particles ---
+        const geometry = new THREE.PlaneGeometry(1, 1);
+        const material = new THREE.MeshBasicMaterial({ 
+            color: 0xffffff, 
+            side: THREE.DoubleSide,
+            transparent: true,
+            opacity: 1.0
+        });
+        
+        const mesh = new THREE.InstancedMesh(geometry, material, PARTICLE_COUNT);
+        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(PARTICLE_COUNT * 3), 3);
+        scene.add(mesh);
+        mesh.name = "particleMesh";
+
+        // --- State ---
+        let time = 0;
+        const dummy = new THREE.Object3D();
+        const color = new THREE.Color();
+        
+        // --- LCG ---
+        let lcgSeed = 765555113;
+        const MOD = 4294967296; // 2^32
+        const A = 1664525;
+        const C = 1013904223;
+
+        function nextSeed() {
+            lcgSeed = (A * lcgSeed + C) % MOD;
+            return lcgSeed;
+        }
+
+        function respawnParticle(index) {
+            // Consume seed for X
+            let s1 = nextSeed();
+            let x = (s1 / MOD * 2 - 1) * (4/3);
+            
+            // Consume seed for Y
+            let s2 = nextSeed();
+            let y = (s2 / MOD * 2 - 1);
+            
+            particles[index].x = x;
+            particles[index].y = y;
+            particles[index].age = 0;
+        }
+
+        const particles = new Array(PARTICLE_COUNT).fill(null).map(() => ({ x: 0, y: 0, age: 0 }));
+        
+        // Initialize
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            respawnParticle(i);
+        }
+
+        // --- Physics ---
+        const waves = [
+            { a: 0.50, k: 1.40, m: 0.90, w: 0.70, p: 0.987 + 0 * 2.1 },
+            { a: 0.35, k: 0.80, m: -1.70, w: 1.10, p: 0.987 + 1 * 2.1 }
+        ];
+
+        function getVelocity(x, y, t) {
+            let vx = 0;
+            let vy = 0;
+            for (let i = 0; i < waves.length; i++) {
+                const w = waves[i];
+                const phase = w.k * x + w.m * y - w.w * t + w.p;
+                const cosVal = Math.cos(phase);
+                // v = (dpsi/dy, -dpsi/dx) = (a*m*cos, -a*k*cos)
+                vx += w.a * w.m * cosVal;
+                vy += -w.a * w.k * cosVal;
+            }
+            return { vx, vy };
+        }
+
+        // --- Colors ---
+        const C_CYAN = new THREE.Color(0x28d7e8);
+        const C_PINK = new THREE.Color(0xe8399b);
+        const C_YELLOW = new THREE.Color(0xf2c53d);
+
+        function getColorForAngle(angle) {
+            const deg = angle * (180 / Math.PI);
+            if (deg < -60) return C_CYAN;
+            if (deg < 60) return C_PINK;
+            return C_YELLOW;
+        }
+
+        // --- API ---
+        window.__step = function(dt) {
+            time += dt;
+            
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const p = particles[i];
+                
+                // Get Velocity at current pos
+                const v = getVelocity(p.x, p.y, time);
+                
+                // Update Position: step = v * 0.18 * dt
+                p.x += v.vx * 0.18 * dt;
+                p.y += v.vy * 0.18 * dt;
+
+                // Update Age
+                p.age += dt / 2.6;
+
+                // Check Bounds & Age
+                const outOfBounds = (p.x < left || p.x > right || p.y < bottom || p.y > top);
+                
+                if (p.age >= 1 || outOfBounds) {
+                    respawnParticle(i);
+                    // Get velocity for new position to set rotation/color
+                    const vNew = getVelocity(p.x, p.y, time);
+                    v.vx = vNew.vx;
+                    v.vy = vNew.vy;
+                }
+
+                // Visuals
+                const length = 0.090 + (0.040 - 0.090) * p.age;
+                const angle = Math.atan2(v.vy, v.vx);
+                const brightness = 1.0 + (0.25 - 1.0) * p.age;
+                
+                const baseColor = getColorForAngle(angle);
+                color.copy(baseColor).multiplyScalar(brightness);
+
+                dummy.position.set(p.x, p.y, 0);
+                dummy.rotation.set(0, 0, angle);
+                dummy.scale.set(0.010, length, 1);
+                dummy.updateMatrix();
+                
+                mesh.setMatrixAt(i, dummy.matrix);
+                mesh.setColorAt(i, color);
+            }
+
+            mesh.instanceMatrix.needsUpdate = true;
+            mesh.instanceColor.needsUpdate = true;
+
+            renderer.render(scene, camera);
+            
+            if (!window.__ready) {
+                window.__ready = true;
+            }
+
+            return window.__probe();
+        };
+
+        window.__probe = function() {
+            // Calculate average speed for probe
+            let sumSpeed = 0;
+            for(let i=0; i<PARTICLE_COUNT; i++) {
+                const v = getVelocity(particles[i].x, particles[i].y, time);
+                sumSpeed += Math.sqrt(v.vx*v.vx + v.vy*v.vy);
+            }
+            const avgSpeed = sumSpeed / PARTICLE_COUNT;
+            
+            const particleData = [];
+            for (let i = 0; i < 8; i++) {
+                const p = particles[i];
+                // Fractions: x in [-4/3, 4/3] -> [0, 1], y in [-1, 1] -> [0, 1]
+                const fx = (p.x - left) / (right - left);
+                const fy = (p.y - bottom) / (top - bottom);
+                particleData.push([parseFloat(fx.toFixed(4)), parseFloat(fy.toFixed(4))]);
+            }
+
+            return {
+                t: parseFloat(time.toFixed(4)),
+                objects: [mesh.name],
+                particles: particleData,
+                speed: parseFloat(avgSpeed.toFixed(4))
+            };
+        };
+        
+        // Initial setup complete
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-15 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

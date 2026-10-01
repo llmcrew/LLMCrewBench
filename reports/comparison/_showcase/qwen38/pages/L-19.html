@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Трамвай сквозь дождливый город</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; width: 800px; height: 600px; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const W = 1;
+const H = 0.75;
+
+let lcg = 488641;
+function rnd() {
+  lcg = (Math.imul(lcg, 1103515245) + 12345) >>> 0;
+  return lcg / 2147483648;
+}
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: false, alpha: false });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+renderer.domElement.style.width = '800px';
+renderer.domElement.style.height = '600px';
+document.body.appendChild(renderer.domElement);
+
+if (THREE.ColorManagement !== undefined) THREE.ColorManagement.enabled = true;
+if (THREE.SRGBColorSpace !== undefined) renderer.outputColorSpace = THREE.SRGBColorSpace;
+else if (THREE.sRGBEncoding !== undefined) renderer.outputEncoding = THREE.sRGBEncoding;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1230);
+
+const camera = new THREE.OrthographicCamera(-0.5, 0.5, 0.375, -0.375, 0.1, 100);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
+
+function setCenter(obj, u, v, z) {
+  obj.position.set((u - 0.5) * W, (0.5 - v) * H, z);
+}
+
+const darkMat = new THREE.MeshBasicMaterial({ color: 0x1a1230 });
+
+const night = new THREE.Mesh(new THREE.PlaneGeometry(3, 2.25), darkMat.clone());
+night.name = 'night';
+night.position.set(0, 0, -45);
+scene.add(night);
+
+const cabin_top = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.075), darkMat.clone());
+cabin_top.name = 'cabin_top';
+setCenter(cabin_top, 0.5, 0.05, -3.8);
+scene.add(cabin_top);
+
+const cabin_low = new THREE.Group();
+cabin_low.name = 'cabin_low';
+const cabinBottom = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.21), darkMat.clone());
+setCenter(cabinBottom, 0.5, 0.86, -3.8);
+const cabinLeft = new THREE.Mesh(new THREE.PlaneGeometry(0.09, 0.75), darkMat.clone());
+setCenter(cabinLeft, 0.045, 0.5, -3.8);
+const cabinRight = new THREE.Mesh(new THREE.PlaneGeometry(0.09, 0.75), darkMat.clone());
+setCenter(cabinRight, 0.955, 0.5, -3.8);
+cabin_low.add(cabinBottom, cabinLeft, cabinRight);
+scene.add(cabin_low);
+
+const mullion = new THREE.Group();
+mullion.name = 'mullion';
+const mullionMat = darkMat.clone();
+const mullion1 = new THREE.Mesh(new THREE.PlaneGeometry(0.012, 0.465), mullionMat);
+setCenter(mullion1, 0.31, 0.41, -3.95);
+const mullion2 = new THREE.Mesh(new THREE.PlaneGeometry(0.012, 0.465), mullionMat);
+setCenter(mullion2, 0.65, 0.41, -3.95);
+mullion.add(mullion1, mullion2);
+scene.add(mullion);
+
+const glassMat = new THREE.MeshBasicMaterial({
+  color: 0x1a1230,
+  transparent: true,
+  opacity: 0.30,
+  depthWrite: false
+});
+const glass = new THREE.Mesh(new THREE.PlaneGeometry(0.78, 0.465), glassMat);
+glass.name = 'glass';
+setCenter(glass, 0.5, 0.41, -4);
+glass.renderOrder = 1;
+scene.add(glass);
+
+const blobs = new THREE.Group();
+blobs.name = 'blobs';
+const blobMat = new THREE.MeshBasicMaterial({
+  color: 0x12c7d4,
+  transparent: true,
+  opacity: 1,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+const blobData = [];
+
+for (let i = 0; i < 22; i++) {
+  const col = i % 11;
+  const row = Math.floor(i / 11);
+  const cellW = 0.76 / 11;
+  const cellH = 0.44 / 2;
+
+  const u = 0.12 + (col + 0.5 + (rnd() - 0.5) * 0.6) * cellW;
+  const v = 0.24 + (row + 0.5 + (rnd() - 0.5) * 0.6) * cellH;
+  const radius = (7 + 6 * rnd()) / 800;
+  const speed = 2 + 2 * rnd();
+
+  const x0 = (u - 0.5) * W;
+  const y0 = (0.5 - v) * H;
+
+  const mesh = new THREE.Mesh(new THREE.CircleGeometry(radius, 16), blobMat);
+  mesh.position.set(x0, y0, -14);
+  mesh.renderOrder = 2;
+  blobs.add(mesh);
+
+  blobData.push({ mesh, x0, y0, speed });
+}
+scene.add(blobs);
+
+const railMat = new THREE.MeshBasicMaterial({
+  color: 0x12c7d4,
+  transparent: true,
+  opacity: 0.4,
+  depthWrite: false
+});
+const rail = new THREE.Mesh(new THREE.PlaneGeometry(0.78, 0.015), railMat);
+rail.name = 'rail';
+setCenter(rail, 0.5, 0.58, -3.96);
+rail.renderOrder = 3;
+scene.add(rail);
+
+const glowTopMat = new THREE.MeshBasicMaterial({
+  color: 0xffa63c,
+  transparent: true,
+  opacity: 0.95,
+  depthWrite: false
+});
+const glow_top = new THREE.Mesh(new THREE.PlaneGeometry(0.70, 0.0375), glowTopMat);
+glow_top.name = 'glow_top';
+setCenter(glow_top, 0.5, 0.17, -3.96);
+glow_top.renderOrder = 4;
+scene.add(glow_top);
+
+const glowLowMat = new THREE.MeshBasicMaterial({
+  color: 0xffa63c,
+  transparent: true,
+  opacity: 0.18,
+  depthWrite: false
+});
+const glow_low = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.03), glowLowMat);
+glow_low.name = 'glow_low';
+setCenter(glow_low, 0.5, 0.66, -3.96);
+glow_low.renderOrder = 4;
+scene.add(glow_low);
+
+const drops = new THREE.Group();
+drops.name = 'drops';
+const dropMat = new THREE.MeshBasicMaterial({ color: 0xa8c8dc });
+const dropData = [];
+
+const dropRadius = 6 / 800;
+const vMin = 0.21;
+const vMax = 0.71;
+const yMax = (0.5 - vMin) * H;
+const yMin = (0.5 - vMax) * H;
+const yRange = yMax - yMin;
+
+for (let i = 0; i < 60; i++) {
+  const col = i % 10;
+  const row = Math.floor(i / 10);
+  const cellW = 0.76 / 10;
+  const cellH = 0.48 / 6;
+
+  const u = 0.12 + (col + 0.5 + (rnd() - 0.5) * 0.6) * cellW;
+  const v = 0.22 + (row + 0.5 + (rnd() - 0.5) * 0.6) * cellH;
+
+  const x = (u - 0.5) * W;
+  let y = (0.5 - v) * H;
+  if (y > yMax) y = yMax;
+  if (y < yMin) y = yMin;
+
+  const mesh = new THREE.Mesh(new THREE.CircleGeometry(dropRadius, 16), dropMat);
+  mesh.position.set(x, y, -3.9);
+  drops.add(mesh);
+
+  dropData.push({ mesh, x, y0: y });
+}
+scene.add(drops);
+
+let t = 0;
+const camFreq = 0.613;
+const blobRange = 0.78;
+const blobHalf = 0.39;
+
+function wrapBlobX(x) {
+  let val = (x + blobHalf) % blobRange;
+  if (val < 0) val += blobRange;
+  return val - blobHalf;
+}
+
+function update() {
+  camera.position.x = 0.045 * Math.sin(t * camFreq);
+
+  for (const b of blobData) {
+    b.mesh.position.x = wrapBlobX(b.x0 + b.speed * t);
+    b.mesh.position.y = b.y0;
+  }
+
+  for (const d of dropData) {
+    let offset = (d.y0 - yMin + 1.56 * t) % yRange;
+    if (offset < 0) offset += yRange;
+    d.mesh.position.x = d.x;
+    d.mesh.position.y = yMax - offset;
+  }
+
+  renderer.render(scene, camera);
+}
+
+function probe() {
+  const b = blobData[0];
+  const u = (b.mesh.position.x - camera.position.x) / W + 0.5;
+  const v = 0.5 - b.mesh.position.y / H;
+
+  return {
+    t: Number(t.toFixed(4)),
+    objects: scene.children.map(o => o.name),
+    blob: [Number(u.toFixed(4)), Number(v.toFixed(4))]
+  };
+}
+
+window.__probe = probe;
+window.__step = function (dt) {
+  t += dt;
+  update();
+  return probe();
+};
+
+update();
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-19 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+*{margin:0;padding:0}
+body{background:#000;display:flex;justify-content:center;align-items:center;height:100vh}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+let lcg = 160488;
+function rnd(){lcg=(lcg*1103515245+12345)%2147483648;return lcg/2147483648;}
+
+const renderer = new THREE.WebGLRenderer({preserveDrawingBuffer:true});
+renderer.setPixelRatio(1);
+renderer.setSize(800,600,false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x123038);
+
+const FOV=50, ASPECT=800/600;
+const camera = new THREE.PerspectiveCamera(FOV,ASPECT,0.1,200);
+camera.position.set(0,0,4);
+camera.lookAt(0,0,-1);
+
+const C_DARK=0x123038, C_GREEN=0x7fd054, C_WARM=0xffc06a, C_COLD=0xa8c8dc;
+const TAN= Math.tan(FOV*0.5*Math.PI/180);
+
+function fw(u,v,z){
+  const d=4-z, hh=d*TAN, hw=hh*ASPECT;
+  return{x:(u-0.5)*2*hw, y:(0.5-v)*2*hh, z};
+}
+
+// Dome back: z=-14.8, 71%x72% frame, v=0.31
+{
+  const d=18.8, hh=d*TAN, hw=hh*ASPECT;
+  const w=0.71*2*hw, h=0.72*2*hh;
+  const c=fw(0.5,0.31,-14.8);
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),
+    new THREE.MeshBasicMaterial({color:C_DARK,transparent:true,opacity:0.85,side:THREE.DoubleSide}));
+  m.name='dome_back'; m.position.set(c.x,c.y,-14.8); scene.add(m);
+}
+
+// Side panels: u=0.16, u=0.84, z=-12, rot ±0.6
+{
+  const d=16, hh=d*TAN, hw=hh*ASPECT;
+  const w=0.30*2*hw, h=0.72*2*hh;
+  const mat=new THREE.MeshBasicMaterial({color:C_DARK,transparent:true,opacity:0.85,side:THREE.DoubleSide});
+  const cl=fw(0.16,0.31,-12);
+  const sl=new THREE.Mesh(new THREE.PlaneGeometry(w,h),mat);
+  sl.name='dome_side_l'; sl.position.set(cl.x,cl.y,-12); sl.rotation.y=0.6; scene.add(sl);
+  const cr=fw(0.84,0.31,-12);
+  const sr=new THREE.Mesh(new THREE.PlaneGeometry(w,h),mat);
+  sr.name='dome_side_r'; sr.position.set(cr.x,cr.y,-12); sr.rotation.y=-0.6; scene.add(sr);
+}
+
+// Floor: horizontal plane, top edge at v=0.62 at z=-8
+{
+  const d=12, hh=d*TAN;
+  const yFloor=(0.5-0.62)*2*hh;
+  const floor=new THREE.Mesh(new THREE.PlaneGeometry(60,50),
+    new THREE.MeshBasicMaterial({color:C_DARK,side:THREE.DoubleSide}));
+  floor.name='floor'; floor.position.set(0,yFloor,-20); floor.rotation.x=-Math.PI/2; scene.add(floor);
+
+  // Warm edge strip
+  const edgeH=0.015*2*hh;
+  const edge=new THREE.Mesh(new THREE.PlaneGeometry(60,edgeH),
+    new THREE.MeshBasicMaterial({color:C_WARM,side:THREE.DoubleSide}));
+  edge.name='floor_edge'; edge.position.set(0,yFloor+edgeH*0.5,-8.01); edge.rotation.x=-Math.PI/2; scene.add(edge);
+}
+
+// Ribs: 4 diagonal strips, 0.012 width
+for(let i=0;i<4;i++){
+  const d=18.8, hh=d*TAN, hw=hh*ASPECT;
+  const w=0.012*2*hw, h=0.72*2*hh;
+  const u=0.25+i*0.17;
+  const c=fw(u,0.31,-14.7);
+  const rib=new THREE.Mesh(new THREE.PlaneGeometry(w,h),
+    new THREE.MeshBasicMaterial({color:0x081820,side:THREE.DoubleSide}));
+  rib.name='rib_'+i; rib.position.set(c.x,c.y,-14.7); rib.rotation.z=(i-1.5)*0.15; scene.add(rib);
+}
+
+// Lamps: 5, u=0.28..0.72, v=0.1, 0.09x0.07 frame, opacity 0.75
+for(let i=0;i<5;i++){
+  const u=0.28+i*(0.72-0.28)/4;
+  const z=-10, d=4-z, hh=d*TAN, hw=hh*ASPECT;
+  const w=0.09*2*hw, h=0.07*2*hh;
+  const c=fw(u,0.1,z);
+  const lamp=new THREE.Mesh(new THREE.PlaneGeometry(w,h),
+    new THREE.MeshBasicMaterial({color:C_WARM,transparent:true,opacity:0.75,side:THREE.DoubleSide}));
+  lamp.name='lamp_'+i; lamp.position.set(c.x,c.y,z); scene.add(lamp);
+}
+
+// Plants: 4, u=0.12/0.30/0.68/0.86, z=-4..-9, h=0.30..0.55
+const pCfg=[{u:0.12,z:-4,h:0.30},{u:0.30,z:-6,h:0.40},{u:0.68,z:-7,h:0.47},{u:0.86,z:-9,h:0.55}];
+for(let i=0;i<4;i++){
+  const{u,z,h}=pCfg[i];
+  const d=4-z, hh=d*TAN, hw=hh*ASPECT;
+  const x=(u-0.5)*2*hw;
+  const baseY=(0.5-0.68)*2*hh;
+  const pH=h*2*hh;
+
+  const stem=new THREE.Mesh(new THREE.CylinderGeometry(0.008*2*hw,0.012*2*hw,pH,8),
+    new THREE.MeshBasicMaterial({color:C_DARK}));
+  stem.name='plant_stem_'+i; stem.position.set(x,baseY+pH/2,z); scene.add(stem);
+
+  for(let j=0;j<3;j++){
+    const lw=0.14*2*hw, lh=0.09*2*hh;
+    const leaf=new THREE.Mesh(new THREE.PlaneGeometry(lw,lh),
+      new THREE.MeshBasicMaterial({color:C_GREEN,side:THREE.DoubleSide}));
+    leaf.name='plant_leaf_'+i+'_'+j;
+    const ly=baseY+pH*(0.35+j*0.25);
+    const lx=x+(j-1)*0.05*2*hw;
+    leaf.position.set(lx,ly,z);
+    leaf.rotation.z=(j-1)*0.5;
+    scene.add(leaf);
+  }
+}
+
+// Meteors: 26, z=-22, additive, 5px, #a8c8dc, speed 6..9
+const mData=[];
+for(let i=0;i<26;i++){
+  mData.push({x:(rnd()-0.5)*30, y:(rnd()-0.5)*20+5, sp:6+rnd()*3, ang:(rnd()-0.5)*0.6});
+}
+const mGeo=new THREE.BufferGeometry();
+const mArr=new Float32Array(26*3);
+for(let i=0;i<26;i++){mArr[i*3]=mData[i].x;mArr[i*3+1]=mData[i].y;mArr[i*3+2]=-22;}
+mGeo.setAttribute('position',new THREE.BufferAttribute(mArr,3));
+const meteors=new THREE.Points(mGeo,new THREE.PointsMaterial({
+  color:C_COLD,size:5,sizeAttenuation:false,blending:THREE.AdditiveBlending,transparent:true,depthWrite:false}));
+meteors.name='meteor'; scene.add(meteors);
+
+// Drops: 64, z=-13.5, 5px, speed 2.0
+const dData=[];
+for(let i=0;i<64;i++){
+  dData.push({x:(rnd()-0.5)*20, y:(rnd()-0.5)*15+3});
+}
+const dGeo=new THREE.BufferGeometry();
+const dArr=new Float32Array(64*3);
+for(let i=0;i<64;i++){dArr[i*3]=dData[i].x;dArr[i*3+1]=dData[i].y;dArr[i*3+2]=-13.5;}
+dGeo.setAttribute('position',new THREE.BufferAttribute(dArr,3));
+const drops=new THREE.Points(dGeo,new THREE.PointsMaterial({
+  color:C_COLD,size:5,sizeAttenuation:false,transparent:true,depthWrite:false}));
+drops.name='drops'; scene.add(drops);
+
+// State
+let t=0, camZ=4, camX=0;
+
+renderer.render(scene,camera);
+window.__ready=true;
+
+window.__step=function(dt){
+  t+=dt;
+  camZ-=2.32*dt;
+  if(camZ<1.0)camZ=1.0;
+  camX=0.6*Math.sin(t*0.8);
+  camera.position.set(camX,0,camZ);
+  camera.lookAt(camX,0,camZ-1);
+
+  const mp=mGeo.attributes.position.array;
+  for(let i=0;i<26;i++){
+    const m=mData[i];
+    m.y-=m.sp*Math.cos(m.ang)*dt;
+    m.x+=m.sp*Math.sin(m.ang)*dt;
+    if(m.y<-10)m.y+=25;
+    if(m.x>15)m.x-=30;
+    if(m.x<-15)m.x+=30;
+    mp[i*3]=m.x; mp[i*3+1]=m.y;
+  }
+  mGeo.attributes.position.needsUpdate=true;
+
+  const dp=dGeo.attributes.position.array;
+  for(let i=0;i<64;i++){
+    dData[i].y-=2.0*dt;
+    if(dData[i].y<-5)dData[i].y+=15;
+    dp[i*3]=dData[i].x; dp[i*3+1]=dData[i].y;
+  }
+  dGeo.attributes.position.needsUpdate=true;
+
+  renderer.render(scene,camera);
+  return window.__probe();
+};
+
+window.__probe=function(){
+  const mp=mGeo.attributes.position.array;
+  const objects=scene.children.map(c=>c.name).filter(n=>n);
+  return{
+    t:Math.round(t*10000)/10000,
+    objects,
+    meteor:[Math.round(mp[0]*10000)/10000, Math.round(mp[1]*10000)/10000],
+    camera:[Math.round(camX*10000)/10000, Math.round(camZ*10000)/10000]
+  };
+};
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-20 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

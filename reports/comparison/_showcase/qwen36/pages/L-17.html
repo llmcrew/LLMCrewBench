@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <style>body { margin: 0; background: #000; overflow: hidden; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+  <script type="module">
+    const THREE = window.THREE;
+
+    // Deterministic LCG
+    let lcgState = 232350;
+    function lcg() {
+      lcgState = (lcgState * 1103515245 + 12345) % 2147483648;
+      return lcgState / 2147483648;
+    }
+
+    // Scene & Camera
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -100, 100);
+    camera.position.set(0, 0, 4);
+    camera.lookAt(0, 0, -1);
+
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    document.body.appendChild(renderer.domElement);
+
+    // Palette
+    const COL_WALL = new THREE.Color('#2e1636');
+    const COL_LAMP = new THREE.Color('#ffa83c');
+    const COL_PLANT = new THREE.Color('#7bbf6a');
+    const COL_CITY_WIN = new THREE.Color('#7fe3e0');
+    const COL_RAIN = new THREE.Color('#a8c8dc');
+
+    const objects = [];
+
+    // wall_top: 0..11% высоты (верхняя полоса)
+    const wallTop = new THREE.Mesh(new THREE.PlaneGeometry(2, 0.11), new THREE.MeshBasicMaterial({ color: COL_WALL }));
+    wallTop.position.set(0, 0.945, -5.5); wallTop.name = 'wall_top'; scene.add(wallTop); objects.push(wallTop);
+
+    // wall_bottom / пол: 45..100% высоты
+    const wallBot = new THREE.Mesh(new THREE.PlaneGeometry(2, 0.55), new THREE.MeshBasicMaterial({ color: COL_WALL }));
+    wallBot.position.set(0, 0.725, -5.5); wallBot.name = 'wall_bottom'; scene.add(wallBot); objects.push(wallBot);
+
+    // windowsill: тёплая полоса под окном
+    const sill = new THREE.Mesh(new THREE.PlaneGeometry(2, 0.04), new THREE.MeshBasicMaterial({ color: COL_LAMP }));
+    sill.position.set(0, 0.43, -5.2); sill.name = 'windowsill'; scene.add(sill); objects.push(sill);
+
+    // glass: окно 11%..45% высоты, 78% ширины, z=-6.0, opacity 0.35
+    const glass = new THREE.Mesh(new THREE.PlaneGeometry(1.56, 0.34), new THREE.MeshBasicMaterial({ color: COL_WALL, transparent: true, opacity: 0.35 }));
+    glass.position.set(0, 0.28, -6.0); glass.name = 'glass'; scene.add(glass); objects.push(glass);
+
+    // city: z=-20, полосы 0.20..0.45
+    const city = new THREE.Mesh(new THREE.PlaneGeometry(1.56, 0.25), new THREE.MeshBasicMaterial({ color: new THREE.Color('#1a0b2e') }));
+    city.position.set(0, 0.325, -20); city.name = 'city'; scene.add(city); objects.push(city);
+
+    // city windows: 26 аддитивных квадратов 0.012x0.012
+    const cityWinGeo = new THREE.PlaneGeometry(0.012, 0.012);
+    const cityWinMat = new THREE.MeshBasicMaterial({ color: COL_CITY_WIN, blending: THREE.AdditiveBlending });
+    for (let i = 0; i < 26; i++) {
+      const w = new THREE.Mesh(cityWinGeo, cityWinMat);
+      w.position.set((lcg() * 2 - 1) * 0.7, 0.20 + lcg() * 0.25, -19.9);
+      w.name = 'city_win_' + i; scene.add(w); objects.push(w);
+    }
+
+    // rain: 64 аддитивных точек z=-12, размер ~5px (0.05 в мировых координатах)
+    const rainGeo = new THREE.PlaneGeometry(0.05, 0.05);
+    const rainMat = new THREE.MeshBasicMaterial({ color: COL_RAIN, blending: THREE.AdditiveBlending });
+    const rainPoints = [];
+    for (let i = 0; i < 64; i++) {
+      const p = new THREE.Mesh(rainGeo, rainMat);
+      p.position.set((lcg() * 2 - 1), 1.0 - lcg() * 2, -12);
+      p.name = 'rain_' + i; scene.add(p); rainPoints.push(p); objects.push(p);
+    }
+
+    // plant: u=0.16, v=0.72, 3 листа, горшок
+    const plantGroup = new THREE.Group();
+    plantGroup.position.set((0.16 * 2 - 1), (0.72 * 2 - 1), -5.0);
+    const leafSizes = [[0.15, 0.25], [0.12, 0.20], [0.10, 0.18]];
+    leafSizes.forEach((s, i) => {
+      const leaf = new THREE.Mesh(new THREE.PlaneGeometry(s[0], s[1]), new THREE.MeshBasicMaterial({ color: COL_PLANT }));
+      leaf.position.set(0, i * 0.15, i * 0.05);
+      leaf.rotation.z = (i - 1) * 0.3;
+      leaf.name = 'leaf_' + i; plantGroup.add(leaf); objects.push(leaf);
+    });
+    const pot = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.15), new THREE.MeshBasicMaterial({ color: COL_WALL }));
+    pot.position.set(0, -0.18, 0); pot.name = 'pot'; plantGroup.add(pot); objects.push(pot);
+    scene.add(plantGroup); objects.push(plantGroup);
+
+    // desk: u=0.73, v=0.72, монитор 14% ширины, тёплое пятно
+    const deskGroup = new THREE.Group();
+    deskGroup.position.set((0.73 * 2 - 1), (0.72 * 2 - 1), -5.0);
+    const mon = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.2), new THREE.MeshBasicMaterial({ color: COL_CITY_WIN }));
+    mon.position.set(0, 0.1, 0); mon.name = 'monitor'; deskGroup.add(mon); objects.push(mon);
+    const spot = new THREE.Mesh(new THREE.PlaneGeometry(0.15, 0.1), new THREE.MeshBasicMaterial({ color: COL_LAMP }));
+    spot.position.set(0, -0.05, 0); spot.name = 'warm_spot'; deskGroup.add(spot); objects.push(spot);
+    scene.add(deskGroup); objects.push(deskGroup);
+
+    // lamp: u=0.25, v=0.06
+    const lamp = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.05), new THREE.MeshBasicMaterial({ color: COL_LAMP }));
+    lamp.position.set((0.25 * 2 - 1), (0.06 * 2 - 1), -5.0); lamp.name = 'lamp'; scene.add(lamp); objects.push(lamp);
+
+    let t = 0;
+
+    window.__step = function(dt) {
+      t += dt;
+      // Camera move
+      camera.position.z = 4 - 1.64 * t;
+      if (camera.position.z < -3.6) camera.position.z = -3.6;
+
+      // Rain animation
+      for (let p of rainPoints) {
+        p.position.y -= 2.4 * dt;
+        p.position.x += Math.cos(p.position.y * 2.5) * 0.8 * dt;
+        if (p.position.y < -1.2) {
+          p.position.y = 1.2;
+          p.position.x = (lcg() * 2 - 1);
+        }
+      }
+
+      renderer.render(scene, camera);
+      return window.__probe();
+    };
+
+    window.__probe = function() {
+      return {
+        t: parseFloat(t.toFixed(4)),
+        objects: objects.map(o => o.name),
+        camera: [0, parseFloat(camera.position.z.toFixed(4))]
+      };
+    };
+
+    // Initial render & ready flag
+    window.__step(0);
+    window.__ready = true;
+  </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-17 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

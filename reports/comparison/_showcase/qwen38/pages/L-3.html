@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+*{margin:0;padding:0}
+body{background:#0a0a24;display:flex;justify-content:center;align-items:center;min-height:100vh}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const H = 6.627;
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+renderer.setClearColor(0x0a0a24, 1);
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 100);
+camera.position.set(0, 0, 8);
+camera.lookAt(0, 0, 0);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a24);
+
+const wheel = new THREE.Group();
+wheel.name = 'wheel';
+scene.add(wheel);
+
+// Core disc
+const coreGeo = new THREE.CircleGeometry(0.06 * H, 64);
+const coreMat = new THREE.MeshBasicMaterial({ color: 0xffd257, side: THREE.DoubleSide });
+const core = new THREE.Mesh(coreGeo, coreMat);
+core.name = 'core';
+wheel.add(core);
+
+// Core ring
+const crGeo = new THREE.TorusGeometry(0.06 * H, 0.005 * H, 16, 64);
+const crMat = new THREE.MeshBasicMaterial({ color: 0xffd257, side: THREE.DoubleSide });
+const coreRing = new THREE.Mesh(crGeo, crMat);
+coreRing.name = 'coreRing';
+wheel.add(coreRing);
+
+// Main petals group
+const petals = new THREE.Group();
+petals.name = 'petals';
+wheel.add(petals);
+
+const pW = 0.03 * H;
+const pIn = 0.1 * H;
+const pOut = 0.34 * H;
+const pLen = pOut - pIn;
+const pMid = (pIn + pOut) / 2;
+const tipR = 0.022 * H;
+
+for (let i = 0; i < 12; i++) {
+  const a = i * Math.PI / 6;
+  const col = (i % 2 === 0) ? 0xff3aa8 : 0x2ee6ff;
+
+  const pg = new THREE.PlaneGeometry(pW, pLen);
+  pg.translate(0, pMid, 0);
+  const pm = new THREE.MeshBasicMaterial({ color: col, side: THREE.DoubleSide });
+  const pmesh = new THREE.Mesh(pg, pm);
+  pmesh.name = 'petal_' + i;
+  pmesh.rotation.z = a;
+  petals.add(pmesh);
+
+  const tg = new THREE.CircleGeometry(tipR, 32);
+  const tm = new THREE.MeshBasicMaterial({ color: col, side: THREE.DoubleSide });
+  const tmesh = new THREE.Mesh(tg, tm);
+  tmesh.name = 'tip_' + i;
+  tmesh.position.set(pOut * Math.sin(a), pOut * Math.cos(a), 0);
+  petals.add(tmesh);
+}
+
+// Second series (shorter, +15°)
+const petals2 = new THREE.Group();
+petals2.name = 'petals2';
+wheel.add(petals2);
+
+const p2W = 0.042 * H;
+const p2In = 0.1 * H;
+const p2Out = 0.2 * H;
+const p2Len = p2Out - p2In;
+const p2Mid = (p2In + p2Out) / 2;
+
+for (let i = 0; i < 12; i++) {
+  const a = (i * 30 + 15) * Math.PI / 180;
+  const col = (i % 2 === 0) ? 0xff3aa8 : 0x2ee6ff;
+
+  const pg = new THREE.PlaneGeometry(p2W, p2Len);
+  pg.translate(0, p2Mid, 0);
+  const pm = new THREE.MeshBasicMaterial({ color: col, side: THREE.DoubleSide });
+  const pmesh = new THREE.Mesh(pg, pm);
+  pmesh.name = 'petal2_' + i;
+  pmesh.rotation.z = a;
+  petals2.add(pmesh);
+}
+
+// Ring 1 – gold
+const r1Geo = new THREE.TorusGeometry(0.16 * H, 0.012 * H, 16, 64);
+const r1Mat = new THREE.MeshBasicMaterial({ color: 0xffd257, side: THREE.DoubleSide });
+const ring1 = new THREE.Mesh(r1Geo, r1Mat);
+ring1.name = 'ring1';
+wheel.add(ring1);
+
+// Ring 2 – cyan
+const r2Geo = new THREE.TorusGeometry(0.34 * H, 0.006 * H, 16, 64);
+const r2Mat = new THREE.MeshBasicMaterial({ color: 0x2ee6ff, side: THREE.DoubleSide });
+const ring2 = new THREE.Mesh(r2Geo, r2Mat);
+ring2.name = 'ring2';
+wheel.add(ring2);
+
+// State
+let t = 0;
+
+function render() {
+  wheel.rotation.z = 0.2014 * t;
+  renderer.render(scene, camera);
+}
+
+render();
+
+window.__probe = function () {
+  const objects = [];
+  scene.traverse(function (o) { if (o.name) objects.push(o.name); });
+  const angleDeg = 0.2014 * t * 180 / Math.PI;
+  return {
+    t: Math.round(t * 10000) / 10000,
+    objects: objects,
+    angle: Math.round(angleDeg * 10000) / 10000
+  };
+};
+
+window.__step = function (dt) {
+  t += dt;
+  render();
+  return window.__probe();
+};
+
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-3 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

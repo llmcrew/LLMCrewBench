@@ -42,14 +42,16 @@ POLICY: dict[str, Any] = {
     "system_prompt": "one neutral system message, identical for every model",
     "answer_budget_default": 4096,
     "answer_budget_artifact": 8192,
-    "answer_budget_note": "includes thinking; the artefact-producing category (C) gets the larger budget",
+    "answer_budget_note": ("unbounded by default: the limit is the window minus the prompt; the "
+                           "per-category table below is the fallback mode"),
     "reasoning_budget": 2048,
-    "reasoning_budget_note": "server-side thinking cap, so a thinking model cannot spend the whole answer budget on thoughts",
-    "request_wall_clock": 600,
+    "reasoning_budget_note": "server-side thinking cap (llama.cpp); vLLM stands keep their own default",
+    "reasoning_effort_note": "not forced: the stand decides, the spend is documented instead",
+    "request_wall_clock": 1800,
     "request_wall_clock_note": "ceiling per request; a task that hits it is reported as unverified, never as a wrong answer",
     "max_total_tokens": 16384,
     "max_tool_calls": 12,
-    "context_window": 32768,
+    "context_window": 262144,
     "prompt_cache": "each measured prompt carries a fresh nonce, so no run is served from another run's prompt cache",
     "offload": "none — weights and KV cache fully on the GPU; partial offload is a different configuration",
     "rope_scaling": "none — no YaRN/linear scaling, the model must be run inside its trained window",
@@ -141,223 +143,19 @@ RUNTIMES: dict[str, dict[str, str]] = {
 #: actually in use, ``GSQ-RCO`` is the quant under test, ``UD-Q4_K_XL`` shows
 #: what a larger quant costs in VRAM and speed.
 MODELS: list[dict[str, Any]] = [
-    {
-        "id": "qwen3.8-27b-ud-iq2-s-128k",
-        "label": "Qwen3.8 27B · UD-IQ2_S · окно 131072",
-        "runtime": "unsloth-studio v0.1.811-beta",
-        "base_url": "http://127.0.0.1:8888/v1",
-        "model": "unsloth/Qwen3.8-27B-GGUF",
-        "quant": "UD-IQ2_S",
-        "weights": "",
-        "context_window": 131072,
-        "kv_type": "q4_0",
-        "capabilities": {"thinking": True, "tools": True},
-        "notes": [
-            "Полное окно 131072 достижимо только с 4-битным KV: при f16 он весит 32.5 ГиБ, при q8_0 — 17.2, при q4_0 — 8.96 (посчитано по метаданным GGUF: 4 KV-головы, голова 256, 64 слоя).",
-            "Измерено: загрузка с 131072 и q4_0 занимает 14446 MiB.",
-        ],
-    },
-    {
-        "id": "bonsai-2-27b-pq2-128k",
-        "label": "Ternary-Bonsai-2 27B Abliterated · PQ2_0 · окно 131072",
-        "runtime": "llama.cpp форк PrismML (prism-b10709-9a9394a)",
-        "base_url": "http://127.0.0.1:8090/v1",
-        "model": "bonsai-2-27b-pq2",
-        "quant": "PQ2_0 (2.13 bpw, тернарные веса)",
-        "weights": "",
-        "context_window": 131072,
-        "kv_type": "q4_0",
-        "capabilities": {"thinking": True, "tools": "probe"},
-        "notes": [
-            "Требует форк PrismML: типы тензоров PQ2_0=142 и PTQ1_0=143 лежат за GGML_TYPE_COUNT любой стоковой сборки (в дереве Studio 67, в mainline 43) — сток отказывается их читать.",
-            "Измерено: загрузка с 131072 и q4_0 KV — 12324 MiB; генерация 78–79 tok/s, prompt до 9322 tok/s, TTFT 0.27 с.",
-            "MTP-спекудяция с этим abliterated-файлом не работает: «Hadamard-latent table 'token_embd.weight' is read without the inverse transform»; карточка модели подтверждает, что без спекуляции текст байт-в-байт тот же.",
-        ],
-    },
-    {
-        "id": "qwen3.8-27b-ud-q3-k-xl",
-        "label": "Qwen3.8 27B · UD-Q3_K_XL (база)",
-        "runtime": "unsloth-studio v0.1.808-beta",
-        "base_url": "http://127.0.0.1:8888/v1",
-        "model": "unsloth/Qwen3.8-27B-GGUF",
-        "quant": "UD-Q3_K_XL",
-        "weights": "",
-        "context_window": 32768,
-        "kv_type": "q8_0",
-        "capabilities": {"thinking": True, "tools": True},
-        "notes": [
-            "Базовая линия сравнения — та конфигурация, что используется сейчас.",
-            "Launch-строка: --max-seq-length 32768 при --gpu-memory-mode manual (auto умеет урезать окно под VRAM), -ngl 999 (все слои) без CPU offload, --jinja, --reasoning-format deepseek, --no-context-shift, --parallel 1.",
-            "Указать --weights, чтобы в отчёт попал SHA-256 именно этого файла.",
-        ],
-        "verified": {
-            "tools": "preflight: модель вызвала search_code с корректными аргументами",
-            "reasoning": "preflight: размышление отделено от ответа",
-            "usage": "preflight: prompt/completion tokens приходят в потоковом ответе",
-            "window": "preflight --full: принят вход 28116 токенов при окне 32768",
-        },
-    },
-    {
-        "id": "qwen3.8-27b-ud-iq1-s",
-        "label": "Qwen3.8 27B · UD-IQ1_S (5.77 GiB)",
-        "runtime": "unsloth-studio v0.1.808-beta",
-        "base_url": "http://127.0.0.1:8888/v1",
-        "model": "unsloth/Qwen3.8-27B-GGUF",
-        "quant": "UD-IQ1_S",
-        "weights": "",
-        "context_window": 32768,
-        "kv_type": "q8_0",
-        "capabilities": {"thinking": True, "tools": "probe"},
-        "notes": [
-            "Самый лёгкий из скачанных квантов: проверяет, где начинается обвал качества.",
-            "Тот же репозиторий и тот же рантайм, что у базы: сравниваются только веса.",
-        ],
-    },
-    {
-        "id": "qwen3.8-27b-ud-iq2-s",
-        "label": "Qwen3.8 27B · UD-IQ2_S (7.80 GiB)",
-        "runtime": "unsloth-studio v0.1.808-beta",
-        "base_url": "http://127.0.0.1:8888/v1",
-        "model": "unsloth/Qwen3.8-27B-GGUF",
-        "quant": "UD-IQ2_S",
-        "weights": "",
-        "context_window": 32768,
-        "kv_type": "q8_0",
-        "capabilities": {"thinking": True, "tools": "probe"},
-        "notes": [
-            "Компромисс между IQ1 и IQ3: интересно, удержится ли reasoning и длинный контекст.",
-            "Тот же репозиторий и тот же рантайм, что у базы: сравниваются только веса.",
-        ],
-    },
-    {
-        "id": "qwen3.8-27b-ud-iq3-s",
-        "label": "Qwen3.8 27B · UD-IQ3_S (11.21 GiB)",
-        "runtime": "unsloth-studio v0.1.808-beta",
-        "base_url": "http://127.0.0.1:8888/v1",
-        "model": "unsloth/Qwen3.8-27B-GGUF",
-        "quant": "UD-IQ3_S",
-        "weights": "",
-        "context_window": 32768,
-        "kv_type": "q8_0",
-        "capabilities": {"thinking": True, "tools": "probe"},
-        "notes": [
-            "Прямой конкурент базы UD-Q3_K_XL при меньшем файле.",
-            "Тот же репозиторий и тот же рантайм, что у базы: сравниваются только веса.",
-        ],
-    },
-    {
-        "id": "qwen3.8-27b-ud-iq2-xxs",
-        "label": "Qwen3.8 27B · UD-IQ2_XXS (8.39 GiB, копия из кэша LM Studio)",
-        "runtime": "unsloth-studio v0.1.808-beta",
-        "base_url": "http://127.0.0.1:8888/v1",
-        "model": "C:\\Users\\spgs\\.lmstudio\\models\\unsloth\\Qwen3.8-27B-GGUF",
-        "quant": "UD-IQ2_XXS",
-        "weights": "",
-        "context_window": 32768,
-        "kv_type": "q8_0",
-        "capabilities": {"thinking": True, "tools": "probe"},
-        "notes": [
-            "Файл скачан в каталог LM Studio, но грузится тем же рантаймом unsloth-studio: сравниваются веса, не приложение.",
-            "Если Studio не примет этот путь как идентификатор модели, preflight/загрузка это покажут, и строка останется честно непройденной.",
-        ],
-    },
-    {
-        "id": "qwen3.8-27b-gsq-rco-iq3xxs",
-        "label": "Qwen3.8 27B · GSQ-RCO IQ3_XXS (сравнение)",
-        "runtime": "unsloth-studio v0.1.808-beta + GSQ",
-        "base_url": "http://127.0.0.1:8888/v1",
-        "model": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
-        "quant": "IQ3_XXS",
-        "weights": "",
-        "context_window": 32768,
-        "kv_type": "q8_0",
-        "capabilities": {"thinking": True, "tools": "probe"},
-        "notes": [
-            "Главный вопрос выпуска: сколько баллов из 100 теряется против UD-Q3_K_XL и сколько при этом освобождается VRAM.",
-            "Тот же рантайм и порт, что у базы: сравниваются веса, а не сервер.",
-            "GSQ требует своей сборки рантайма — версия фиксируется в поле runtime.",
-        ],
-    },
-    {
-        "id": "unsloth-lfm2.5-8b-a1b",
-        "label": "LFM2.5 8B A1B · UD-Q8_K_XL",
-        "runtime": "unsloth-studio v0.1.808-beta",
-        "base_url": "http://127.0.0.1:8888/v1",
-        "model": "unsloth/LFM2.5-8B-A1B-GGUF",
-        "quant": "UD-Q8_K_XL",
-        "weights": "",
-        "context_window": 32768,
-        "kv_type": "q8_0",
-        "capabilities": {"thinking": "probe", "tools": "probe"},
-        "notes": [
-            "Малая MoE-модель: показывает, как сьют ведёт себя на быстрой конфигурации и где узкое место — модель или тест.",
-            "Thinking и tools проверяются preflight'ом; непроверенная категория не превращается в нули.",
-        ],
-    },
-    {
-        "id": "gemma-4-12b-agentic",
-        "label": "Gemma 4 12B agentic · Q8_0",
-        "runtime": "unsloth-studio v0.1.808-beta",
-        "base_url": "http://127.0.0.1:8888/v1",
-        "model": "yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF",
-        "quant": "Q8_0",
-        "weights": "",
-        "context_window": 32768,
-        "kv_type": "q8_0",
-        "capabilities": {"thinking": "probe", "tools": "probe"},
-        "notes": [
-            "Другое семейство и заявленная agentic-настройка: проверяет, что сьют не подогнан под Qwen.",
-            "Sliding-window attention у Gemma снижает реальный размер KV: пик VRAM измеряется, а не считается.",
-        ],
-    },
-    {
-        "id": "qwen3-14b-uncensored-q5km",
-        "label": "Qwen3 14B Uncensored · Q5_K_M",
-        "runtime": "unsloth-studio v0.1.808-beta",
-        "base_url": "http://127.0.0.1:8888/v1",
-        "model": "mradermacher/Qwen3-14B-Uncensored-GGUF",
-        "quant": "Q5_K_M",
-        "weights": "",
-        "context_window": 32768,
-        "kv_type": "q8_0",
-        "capabilities": {"thinking": "probe", "tools": "probe"},
-        "notes": [
-            "Меньшая модель того же семейства: показывает цену размера, а не кванта.",
-            "Квант крупнее (Q5_K_M) при меньшем числе параметров — сравнение с 27B IQ3-класса особенно показательно для вывода про VRAM.",
-        ],
-    },
-    {
-        "id": "qwen3.8-27b-uncensored-iq3xs",
-        "label": "Qwen3.8 27B Uncensored (MTP) · IQ3_XS",
-        "runtime": "unsloth-studio v0.1.808-beta",
-        "base_url": "http://127.0.0.1:8888/v1",
-        "model": "HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF",
-        "quant": "IQ3_XS",
-        "weights": "",
-        "context_window": 32768,
-        "kv_type": "q8_0",
-        "capabilities": {"thinking": True, "tools": "probe"},
-        "notes": [
-            "Третий квант того же размера: IQ3_XS против UD-Q3_K_XL и GSQ-RCO IQ3_XXS.",
-            "MTP-сборка: если speculative decoding включён загрузчиком, это меняет скорость — фиксировать в отчёте.",
-        ],
-    },
-    {
-        "id": "generic-gguf",
-        "label": "Шаблон для любой другой GGUF-модели",
-        "runtime": "unsloth-studio",
-        "base_url": "http://127.0.0.1:8888/v1",
-        "model": "<model-name>",
-        "quant": "<quant>",
-        "weights": "",
-        "context_window": 32768,
-        "kv_type": "q8_0",
-        "capabilities": {"thinking": "probe", "tools": "probe"},
-        "notes": [
-            "Скопировать запись, заполнить model/quant/weights, прогнать preflight --full.",
-            "Менять только эти поля: политика одинакова для всех, её изменение обесценивает сравнение.",
-        ],
-    },
+    {"id": "qwen3.8-27b-ud-iq2-s-128k", "label": "Qwen3.8 27B · UD-IQ2_S · окно 131072", "runtime": "unsloth-studio v0.1.811-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "unsloth/Qwen3.8-27B-GGUF", "quant": "UD-IQ2_S", "weights": "", "context_window": 131072, "kv_type": "q4_0", "capabilities": {"thinking": True, "tools": True}, "notes": ["Полное окно 131072 достижимо только с 4-битным KV: при f16 он весит 32.5 ГиБ, при q8_0 — 17.2, при q4_0 — 8.96 (посчитано по метаданным GGUF: 4 KV-головы, голова 256, 64 слоя).", "Измерено: загрузка с 131072 и q4_0 занимает 14446 MiB."]},
+    {"id": "bonsai-2-27b-pq2-128k", "label": "Ternary-Bonsai-2 27B Abliterated · PQ2_0 · окно 131072", "runtime": "llama.cpp форк PrismML (prism-b10709-9a9394a)", "base_url": "http://127.0.0.1:8090/v1", "model": "bonsai-2-27b-pq2", "quant": "PQ2_0 (2.13 bpw, тернарные веса)", "weights": "", "context_window": 131072, "kv_type": "q4_0", "capabilities": {"thinking": True, "tools": "probe"}, "notes": ["Требует форк PrismML: типы тензоров PQ2_0=142 и PTQ1_0=143 лежат за GGML_TYPE_COUNT любой стоковой сборки (в дереве Studio 67, в mainline 43) — сток отказывается их читать.", "Измерено: загрузка с 131072 и q4_0 KV — 12324 MiB; генерация 78–79 tok/s, prompt до 9322 tok/s, TTFT 0.27 с.", "MTP-спекудяция с этим abliterated-файлом не работает: «Hadamard-latent table 'token_embd.weight' is read without the inverse transform»; карточка модели подтверждает, что без спекуляции текст байт-в-байт тот же."]},
+    {"id": "qwen3.8-27b-ud-q3-k-xl", "label": "Qwen3.8 27B · UD-Q3_K_XL (база)", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "unsloth/Qwen3.8-27B-GGUF", "quant": "UD-Q3_K_XL", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": True, "tools": True}, "notes": ["Базовая линия сравнения — та конфигурация, что используется сейчас.", "Launch-строка: --max-seq-length 32768 при --gpu-memory-mode manual (auto умеет урезать окно под VRAM), -ngl 999 (все слои) без CPU offload, --jinja, --reasoning-format deepseek, --no-context-shift, --parallel 1.", "Указать --weights, чтобы в отчёт попал SHA-256 именно этого файла."], "verified": {"tools": "preflight: модель вызвала search_code с корректными аргументами", "reasoning": "preflight: размышление отделено от ответа", "usage": "preflight: prompt/completion tokens приходят в потоковом ответе", "window": "preflight --full: принят вход 28116 токенов при окне 32768"}},
+    {"id": "qwen3.8-27b-ud-iq1-s", "label": "Qwen3.8 27B · UD-IQ1_S (5.77 GiB)", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "unsloth/Qwen3.8-27B-GGUF", "quant": "UD-IQ1_S", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": True, "tools": "probe"}, "notes": ["Самый лёгкий из скачанных квантов: проверяет, где начинается обвал качества.", "Тот же репозиторий и тот же рантайм, что у базы: сравниваются только веса."]},
+    {"id": "qwen3.8-27b-ud-iq2-s", "label": "Qwen3.8 27B · UD-IQ2_S (7.80 GiB)", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "unsloth/Qwen3.8-27B-GGUF", "quant": "UD-IQ2_S", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": True, "tools": "probe"}, "notes": ["Компромисс между IQ1 и IQ3: интересно, удержится ли reasoning и длинный контекст.", "Тот же репозиторий и тот же рантайм, что у базы: сравниваются только веса."]},
+    {"id": "qwen3.8-27b-ud-iq3-s", "label": "Qwen3.8 27B · UD-IQ3_S (11.21 GiB)", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "unsloth/Qwen3.8-27B-GGUF", "quant": "UD-IQ3_S", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": True, "tools": "probe"}, "notes": ["Прямой конкурент базы UD-Q3_K_XL при меньшем файле.", "Тот же репозиторий и тот же рантайм, что у базы: сравниваются только веса."]},
+    {"id": "qwen3.8-27b-ud-iq2-xxs", "label": "Qwen3.8 27B · UD-IQ2_XXS (8.39 GiB, копия из кэша LM Studio)", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "C:\\Users\\spgs\\.lmstudio\\models\\unsloth\\Qwen3.8-27B-GGUF", "quant": "UD-IQ2_XXS", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": True, "tools": "probe"}, "notes": ["Файл скачан в каталог LM Studio, но грузится тем же рантаймом unsloth-studio: сравниваются веса, не приложение.", "Если Studio не примет этот путь как идентификатор модели, preflight/загрузка это покажут, и строка останется честно непройденной."]},
+    {"id": "qwen3.8-27b-gsq-rco-iq3xxs", "label": "Qwen3.8 27B · GSQ-RCO IQ3_XXS (сравнение)", "runtime": "unsloth-studio v0.1.808-beta + GSQ", "base_url": "http://127.0.0.1:8888/v1", "model": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF", "quant": "IQ3_XXS", "weights": "", "kv_type": "q8_0", "capabilities": {"thinking": True, "tools": "probe"}, "notes": ["Главный вопрос выпуска: сколько баллов из 100 теряется против UD-Q3_K_XL и сколько при этом освобождается VRAM.", "Тот же рантайм и порт, что у базы: сравниваются веса, а не сервер.", "GSQ требует своей сборки рантайма — версия фиксируется в поле runtime."]},
+    {"id": "unsloth-lfm2.5-8b-a1b", "label": "LFM2.5 8B A1B · UD-Q8_K_XL", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "unsloth/LFM2.5-8B-A1B-GGUF", "quant": "UD-Q8_K_XL", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": "probe", "tools": "probe"}, "notes": ["Малая MoE-модель: показывает, как сьют ведёт себя на быстрой конфигурации и где узкое место — модель или тест.", "Thinking и tools проверяются preflight'ом; непроверенная категория не превращается в нули."]},
+    {"id": "gemma-4-12b-agentic", "label": "Gemma 4 12B agentic · Q8_0", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF", "quant": "Q8_0", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": "probe", "tools": "probe"}, "notes": ["Другое семейство и заявленная agentic-настройка: проверяет, что сьют не подогнан под Qwen.", "Sliding-window attention у Gemma снижает реальный размер KV: пик VRAM измеряется, а не считается."]},
+    {"id": "qwen3-14b-uncensored-q5km", "label": "Qwen3 14B Uncensored · Q5_K_M", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "mradermacher/Qwen3-14B-Uncensored-GGUF", "quant": "Q5_K_M", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": "probe", "tools": "probe"}, "notes": ["Меньшая модель того же семейства: показывает цену размера, а не кванта.", "Квант крупнее (Q5_K_M) при меньшем числе параметров — сравнение с 27B IQ3-класса особенно показательно для вывода про VRAM."]},
+    {"id": "qwen3.8-27b-uncensored-iq3xs", "label": "Qwen3.8 27B Uncensored (MTP) · IQ3_XS", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF", "quant": "IQ3_XS", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": True, "tools": "probe"}, "notes": ["Третий квант того же размера: IQ3_XS против UD-Q3_K_XL и GSQ-RCO IQ3_XXS.", "MTP-сборка: если speculative decoding включён загрузчиком, это меняет скорость — фиксировать в отчёте."]},
+    {"id": "generic-gguf", "label": "Шаблон для любой другой GGUF-модели", "runtime": "unsloth-studio", "base_url": "http://127.0.0.1:8888/v1", "model": "<model-name>", "quant": "<quant>", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": "probe", "tools": "probe"}, "notes": ["Скопировать запись, заполнить model/quant/weights, прогнать preflight --full.", "Менять только эти поля: политика одинакова для всех, её изменение обесценивает сравнение."]},
 ]
 
 
@@ -430,13 +228,28 @@ class ReferenceConfig:
 
 
 def load_reference(path: Path | str | None = None) -> dict[str, Any]:
-    target = Path(path) if path else DEFAULT_PATH
+    target = Path(path) if path else default_path()
     if target.is_file():
         return json.loads(target.read_text(encoding="utf-8"))
     return {"schema": "dailybench/reference/1", "policy": POLICY, "runtimes": RUNTIMES, "models": MODELS}
 
 
+#: Environment override for the reference file: a clone keeps its own entries
+#: (machine paths, ports, keys) in a local copy instead of editing the tracked one.
+PATH_ENV = "DAILYBENCH_REFERENCE"
+
+
+def default_path() -> Path:
+    from .config import _env
+
+    return Path(_env(PATH_ENV)) if _env(PATH_ENV) else DEFAULT_PATH
+
+
 def model_entries(path: Path | str | None = None) -> list[ReferenceConfig]:
+    if path is None:
+        # The data file is the source of truth: the same table is also a Python
+        # constant, so falling back to it keeps the file local-only-friendly.
+        path = default_path()
     data = load_reference(path)
     entries = data.get("models") or MODELS
     policy = data.get("policy") or POLICY
@@ -469,7 +282,13 @@ def apply_to_run_config(cfg: RunConfig, reference: ReferenceConfig) -> RunConfig
         temperature=float(policy["temperature"]),
         top_p=float(policy["top_p"]),
         max_new_tokens=int(policy.get("answer_budget_default", 4096)),
-        max_new_tokens_by_category={"C": int(policy.get("answer_budget_artifact", 8192))},
+        # Artefact categories are graded on the artefact, so they get the larger
+        # budget: thinking plus a whole file rarely fits 4K.
+        max_new_tokens_by_category={
+            "C": int(policy.get("answer_budget_artifact", 8192)),
+            "K": int(policy.get("answer_budget_visual_sim", policy.get("answer_budget_artifact", 8192))),
+            "L": int(policy.get("answer_budget_visual_art", policy.get("answer_budget_artifact", 8192))),
+        },
         request_wall_clock=float(policy.get("request_wall_clock", 600)),
         max_total_tokens=int(policy["max_total_tokens"]),
         max_tool_calls=int(policy["max_tool_calls"]),

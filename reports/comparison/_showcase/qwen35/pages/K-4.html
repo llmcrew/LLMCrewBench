@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Three.js Collision Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Configuration ---
+        const W = 9.0;
+        const R = 0.4;
+        const SHIFT = -W / 2; // -4.5
+
+        // --- State ---
+        const state = {
+            steps: 0,
+            t: 0,
+            collisions: 0,
+            balls: [
+                { x: 1.7, v: -1.83 },
+                { x: 4.38, v: 2.33 },
+                { x: 6.93, v: 2.28 }
+            ]
+        };
+
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+        
+        // Camera: PerspectiveCamera(50, 800/600, 0.1, 200) at [0.0, 3.8, 12.0], lookAt [0.0, 0.2, 0.0]
+        const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+        camera.position.set(0.0, 3.8, 12.0);
+        camera.lookAt(0.0, 0.2, 0.0);
+
+        // Renderer
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 2.0);
+        directionalLight.position.set(7.0, 13.0, 10.0);
+        scene.add(directionalLight);
+
+        // Objects
+        const objects = [];
+
+        // Floor: Plane 22.0 x 60, y = -R, color 0x2b3a4a, name 'floor'
+        const floorGeo = new THREE.PlaneGeometry(22.0, 60);
+        const floorMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a, side: THREE.DoubleSide });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = -R;
+        floor.name = 'floor';
+        scene.add(floor);
+        objects.push(floor);
+
+        // Walls: 0.3x2.4x1.6, color 0x8a93a6
+        const wallGeo = new THREE.BoxGeometry(0.3, 2.4, 1.6);
+        const wallMat = new THREE.MeshStandardMaterial({ color: 0x8a93a6 });
+
+        // Wall Left: (-4.65, 0.6, 0)
+        const wallLeft = new THREE.Mesh(wallGeo, wallMat);
+        wallLeft.position.set(-4.65, 0.6, 0);
+        wallLeft.name = 'wall-left';
+        scene.add(wallLeft);
+        objects.push(wallLeft);
+
+        // Wall Right: (4.65, 0.6, 0)
+        const wallRight = new THREE.Mesh(wallGeo, wallMat);
+        wallRight.position.set(4.65, 0.6, 0);
+        wallRight.name = 'wall-right';
+        scene.add(wallRight);
+        objects.push(wallRight);
+
+        // Balls: Sphere R=0.4, color 0xff8a3d
+        const ballGeo = new THREE.SphereGeometry(R, 32, 32);
+        const ballMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+        const ballMeshes = [];
+
+        for (let i = 0; i < 3; i++) {
+            const ball = new THREE.Mesh(ballGeo, ballMat);
+            ball.name = `ball-${i}`;
+            // Initial position shifted by SHIFT
+            ball.position.set(state.balls[i].x + SHIFT, 0, 0);
+            scene.add(ball);
+            objects.push(ball);
+            ballMeshes.push(ball);
+        }
+
+        // --- Simulation Logic ---
+
+        window.__step = function(dt) {
+            state.steps++;
+            state.t += dt;
+
+            // 1. Move
+            for (let i = 0; i < 3; i++) {
+                state.balls[i].x += state.balls[i].v * dt;
+            }
+
+            // 2. Collisions (0,1) then (1,2)
+            const pairs = [[0, 1], [1, 2]];
+            for (const [a, b] of pairs) {
+                const ballA = state.balls[a];
+                const ballB = state.balls[b];
+                
+                if (ballB.x - ballA.x < 2 * R) {
+                    const d = (2 * R - (ballB.x - ballA.x)) / 2;
+                    ballA.x -= d;
+                    ballB.x += d;
+                    
+                    // Swap velocities
+                    const tempV = ballA.v;
+                    ballA.v = ballB.v;
+                    ballB.v = tempV;
+                    
+                    state.collisions++;
+                }
+            }
+
+            // 3. Wall Bounces
+            for (let i = 0; i < 3; i++) {
+                const ball = state.balls[i];
+                // Left wall (x=0)
+                if (ball.x - R < 0) {
+                    ball.x = R;
+                    ball.v = -ball.v;
+                    state.collisions++;
+                }
+                // Right wall (x=W)
+                if (ball.x + R > W) {
+                    ball.x = W - R;
+                    ball.v = -ball.v;
+                    state.collisions++;
+                }
+            }
+
+            // Update Visuals
+            for (let i = 0; i < 3; i++) {
+                ballMeshes[i].position.x = state.balls[i].x + SHIFT;
+            }
+            
+            // Render immediately after step to ensure visual consistency if called manually
+            renderer.render(scene, camera);
+        };
+
+        // --- Probe ---
+
+        window.__probe = function() {
+            const round4 = (n) => parseFloat(n.toFixed(4));
+            
+            return {
+                steps: state.steps,
+                t: round4(state.t),
+                objects: objects.map(o => o.name),
+                camera: [
+                    round4(camera.position.x),
+                    round4(camera.position.y),
+                    round4(camera.position.z)
+                ],
+                balls: state.balls.map(b => ({
+                    x: round4(b.x),
+                    v: round4(b.v)
+                })),
+                collisions: state.collisions
+            };
+        };
+
+        // --- Initial Render ---
+        renderer.render(scene, camera);
+        window.__ready = true;
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-4 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

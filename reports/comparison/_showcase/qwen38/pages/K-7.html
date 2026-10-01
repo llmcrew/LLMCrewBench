@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Фонтан частиц</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #10141a; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// ---------- Детерминированный ГСЧ (ЛЦГ) ----------
+let s = 1804069101;
+function nextU() {
+  s = (1664525 * s + 1013904223) % 4294967296;
+  return s / 4294967296;
+}
+
+// ---------- Сцена ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x10141a);
+
+// Земля
+const groundGeo = new THREE.PlaneGeometry(80, 80);
+const groundMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a, side: THREE.DoubleSide });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.name = 'ground';
+ground.rotation.x = -Math.PI / 2; // плоскость y=0
+ground.position.set(0, 0, 0);
+scene.add(ground);
+
+// Частицы — одна InstancedMesh из 24 сфер
+const COUNT = 24;
+const sphereGeo = new THREE.SphereGeometry(0.25, 16, 12);
+const sphereMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+const particles = new THREE.InstancedMesh(sphereGeo, sphereMat, COUNT);
+particles.name = 'particles';
+scene.add(particles);
+
+// Свет
+const ambient = new THREE.AmbientLight(0xffffff, 0.45);
+ambient.name = 'ambient';
+scene.add(ambient);
+
+const dir = new THREE.DirectionalLight(0xffffff, 2.0);
+dir.name = 'directional';
+dir.position.set(6.0, 12.0, 8.0);
+scene.add(dir);
+
+// Камера
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+camera.position.set(0.0, 4.0, 14.0);
+camera.lookAt(0.0, 3.0, 0.0);
+
+// ---------- Состояние частиц ----------
+const px = new Float64Array(COUNT);
+const py = new Float64Array(COUNT);
+const pz = new Float64Array(COUNT);
+const vx = new Float64Array(COUNT);
+const vy = new Float64Array(COUNT);
+const alive = new Uint8Array(COUNT);
+
+const G = 12.00;
+
+// Начальные скорости из ЛЦГ (порядок обращений: vx затем vy для каждой i)
+for (let i = 0; i < COUNT; i++) {
+  const u1 = nextU();
+  vx[i] = -3 + 6 * u1;
+  const u2 = nextU();
+  vy[i] = 5 + 4 * u2;
+  px[i] = 0;
+  py[i] = 0.25;
+  pz[i] = 0;
+  alive[i] = 1;
+}
+
+let steps = 0;
+
+const _m = new THREE.Matrix4();
+function updateInstances() {
+  for (let i = 0; i < COUNT; i++) {
+    _m.makeTranslation(px[i], py[i], pz[i]);
+    particles.setMatrixAt(i, _m);
+  }
+  particles.instanceMatrix.needsUpdate = true;
+}
+updateInstances();
+
+// ---------- Рендерер ----------
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+// Первая отрисовка
+renderer.render(scene, camera);
+
+// ---------- Публичный API ----------
+function round4(n) {
+  return Math.round(n * 10000) / 10000;
+}
+
+window.__step = function (dt) {
+  for (let i = 0; i < COUNT; i++) {
+    if (!alive[i]) continue;
+    vy[i] -= G * dt;
+    py[i] += vy[i] * dt;
+    px[i] += vx[i] * dt;
+    if (py[i] < 0) {
+      py[i] = 0;
+      alive[i] = 0;
+    }
+  }
+  steps++;
+  updateInstances();
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+window.__probe = function () {
+  let aliveCount = 0;
+  let sumY = 0;
+  for (let i = 0; i < COUNT; i++) {
+    if (alive[i]) {
+      aliveCount++;
+      sumY += py[i];
+    }
+  }
+  const meanHeight = aliveCount > 0 ? sumY / aliveCount : 0;
+
+  const firstThree = [];
+  for (let i = 0; i < 3; i++) {
+    firstThree.push({ x: round4(px[i]), y: round4(py[i]) });
+  }
+
+  const objects = [];
+  scene.traverse((o) => {
+    if (o.name) objects.push(o.name);
+  });
+
+  return {
+    steps: steps,
+    alive: aliveCount,
+    mean_height: round4(meanHeight),
+    particles: firstThree,
+    camera: [round4(camera.position.x), round4(camera.position.y), round4(camera.position.z)],
+    objects: objects
+  };
+};
+
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · K-7 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

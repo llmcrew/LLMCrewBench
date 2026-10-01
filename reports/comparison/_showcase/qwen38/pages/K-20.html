@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#111}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const N=64, fs=64, A1=2.73, k1=6, A2=2.03, k2=11;
+const bins=[6,11,18];
+
+const s=new Array(N);
+for(let n=0;n<N;n++){
+  s[n]=A1*Math.sin(2*Math.PI*k1*n/N)+A2*Math.sin(2*Math.PI*k2*n/N);
+}
+
+function computeDFT(k){
+  let Re=0,Im=0;
+  for(let n=0;n<N;n++){
+    Re+=s[n]*Math.cos(2*Math.PI*k*n/N);
+    Im+=s[n]*Math.sin(2*Math.PI*k*n/N);
+  }
+  const amp=(2/N)*Math.sqrt(Re*Re+Im*Im);
+  return{freq:k*fs/N,amplitude:amp};
+}
+
+const binResults=bins.map(k=>computeDFT(k));
+
+let dominantIdx=0;
+for(let i=1;i<binResults.length;i++){
+  if(binResults[i].amplitude>binResults[dominantIdx].amplitude)dominantIdx=i;
+}
+const dominantFreq=binResults[dominantIdx].freq;
+
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(50,800/600,0.1,200);
+camera.position.set(0.0,5.0,15.0);
+camera.lookAt(0.0,2.5,0.0);
+
+const renderer=new THREE.WebGLRenderer({preserveDrawingBuffer:true});
+renderer.setPixelRatio(1);
+renderer.setSize(800,600,false);
+document.body.appendChild(renderer.domElement);
+
+const ambientLight=new THREE.AmbientLight(0xffffff,0.35);
+scene.add(ambientLight);
+const dirLight=new THREE.DirectionalLight(0xffffff,2.2);
+dirLight.position.set(7.0,13.0,8.0);
+scene.add(dirLight);
+
+const groundGeo=new THREE.PlaneGeometry(20,20);
+const groundMat=new THREE.MeshBasicMaterial({color:0x2b3a4a,side:THREE.DoubleSide});
+const ground=new THREE.Mesh(groundGeo,groundMat);
+ground.rotation.x=-Math.PI/2;
+ground.position.y=0;
+ground.name='ground';
+scene.add(ground);
+
+const m=bins.length;
+const boxGeo=new THREE.BoxGeometry(1,1,1);
+const boxMat=new THREE.MeshStandardMaterial({color:0xff8a3d});
+
+for(let i=0;i<m;i++){
+  const h=binResults[i].amplitude*1.5;
+  const mesh=new THREE.Mesh(boxGeo,boxMat);
+  mesh.scale.y=h;
+  mesh.position.x=(i-(m-1)/2)*3.2;
+  mesh.position.y=h/2;
+  mesh.position.z=0;
+  mesh.name='bin-'+i;
+  scene.add(mesh);
+}
+
+const wavePoints=[];
+for(let n=0;n<N;n++){
+  const x=-6+12*n/(N-1);
+  const y=4.2+s[n]*0.5;
+  wavePoints.push(new THREE.Vector3(x,y,-2));
+}
+const waveGeo=new THREE.BufferGeometry().setFromPoints(wavePoints);
+const waveMat=new THREE.LineBasicMaterial({color:0x66e0ff});
+const wave=new THREE.Line(waveGeo,waveMat);
+wave.name='wave';
+scene.add(wave);
+
+const playheadGeo=new THREE.SphereGeometry(0.15,16,16);
+const playheadMat=new THREE.MeshStandardMaterial({color:0xffe066});
+const playhead=new THREE.Mesh(playheadGeo,playheadMat);
+playhead.name='playhead';
+scene.add(playhead);
+
+let steps=0, t=0;
+
+function updatePlayhead(){
+  const p=(steps*4)%N;
+  const x=-6+12*p/(N-1);
+  const y=4.2+s[p]*0.5;
+  playhead.position.set(x,y,-2);
+  return p;
+}
+
+updatePlayhead();
+renderer.render(scene,camera);
+window.__ready=true;
+
+window.__step=function(dt){
+  steps+=1;
+  t+=dt;
+  updatePlayhead();
+  renderer.render(scene,camera);
+  return window.__probe();
+};
+
+window.__probe=function(){
+  const p=(steps*4)%N;
+  const objects=[];
+  scene.children.forEach(c=>{if(c.name)objects.push(c.name);});
+  return{
+    steps:steps,
+    t:Math.round(t*10000)/10000,
+    objects:objects,
+    bins:binResults.map(b=>({
+      freq:Math.round(b.freq*10000)/10000,
+      amplitude:Math.round(b.amplitude*10000)/10000
+    })),
+    dominant:Math.round(dominantFreq*10000)/10000,
+    playhead:p
+  };
+};
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · K-20 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

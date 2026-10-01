@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Spectrum scene</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ---------- signal & DFT (computed once) ---------- */
+const N  = 64;
+const fs = 64;
+const A1 = 2.73, k1 = 6;
+const A2 = 2.03, k2 = 11;
+const BINS = [6, 11, 18];
+
+const s = new Array(N);
+for (let n = 0; n < N; n++) {
+  s[n] = A1 * Math.sin(2 * Math.PI * k1 * n / N)
+       + A2 * Math.sin(2 * Math.PI * k2 * n / N);
+}
+
+function dftAmp(k) {
+  let re = 0, im = 0;
+  for (let n = 0; n < N; n++) {
+    const a = 2 * Math.PI * k * n / N;
+    re += s[n] * Math.cos(a);
+    im += s[n] * Math.sin(a);
+  }
+  return (2 / N) * Math.sqrt(re * re + im * im);
+}
+
+const amps  = BINS.map(dftAmp);
+const freqs = BINS.map(k => k * fs / N);
+
+let dominantFreq = freqs[0];
+for (let i = 1; i < freqs.length; i++) {
+  if (amps[i] > amps[freqs.indexOf(dominantFreq)]) dominantFreq = freqs[i];
+}
+// explicit, deterministic dominant selection
+{
+  let best = 0;
+  for (let i = 1; i < amps.length; i++) if (amps[i] > amps[best]) best = i;
+  dominantFreq = freqs[best];
+}
+
+/* ---------- renderer / scene / camera ---------- */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+camera.position.set(0.0, 5.0, 15.0);
+camera.lookAt(0.0, 2.5, 0.0);
+
+const ambient = new THREE.AmbientLight(0xffffff, 0.35);
+scene.add(ambient);
+
+const dir = new THREE.DirectionalLight(0xffffff, 2.2);
+dir.position.set(7.0, 13.0, 8.0);
+scene.add(dir);
+
+/* ---------- ground ---------- */
+const groundGeo = new THREE.PlaneGeometry(20, 20);
+const groundMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.name = 'ground';
+scene.add(ground);
+
+/* ---------- columns (bins) ---------- */
+const m = BINS.length;
+const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+const binMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+
+for (let i = 0; i < m; i++) {
+  const h = amps[i] * 1.5;
+  const box = new THREE.Mesh(boxGeo, binMat);
+  box.name = 'bin-' + i;
+  box.position.set((i - (m - 1) / 2) * 3.2, h / 2, 0);
+  box.scale.set(1, h, 1);
+  scene.add(box);
+}
+
+/* ---------- signal polyline ---------- */
+const wavePts = [];
+for (let n = 0; n < N; n++) {
+  wavePts.push(new THREE.Vector3(
+    -6 + 12 * n / (N - 1),
+    4.2 + s[n] * 0.5,
+    -2
+  ));
+}
+const waveGeo = new THREE.BufferGeometry().setFromPoints(wavePts);
+const waveMat = new THREE.LineBasicMaterial({ color: 0x66e0ff });
+const wave = new THREE.Line(waveGeo, waveMat);
+wave.name = 'wave';
+scene.add(wave);
+
+/* ---------- playhead ---------- */
+const playheadGeo = new THREE.SphereGeometry(0.15, 16, 12);
+const playheadMat = new THREE.MeshBasicMaterial({ color: 0xffe066 });
+const playhead = new THREE.Mesh(playheadGeo, playheadMat);
+playhead.name = 'playhead';
+scene.add(playhead);
+
+/* ---------- state ---------- */
+let steps = 0;
+let t = 0;
+
+function setPlayhead(p) {
+  const n = ((p % N) + N) % N;
+  playhead.position.set(
+    -6 + 12 * n / (N - 1),
+    4.2 + s[n] * 0.5,
+    -2
+  );
+  return n;
+}
+
+setPlayhead(0);
+
+function round4(x) { return Math.round(x * 1e4) / 1e4; }
+
+/* ---------- probe ---------- */
+window.__probe = function () {
+  const objects = scene.children.map(c => c.name);
+  return {
+    steps: steps,
+    t: round4(t),
+    objects: objects,
+    bins: BINS.map((k, i) => ({
+      freq: round4(freqs[i]),
+      amplitude: round4(amps[i])
+    })),
+    dominant: round4(dominantFreq),
+    playhead: ((steps * 4) % N + N) % N
+  };
+};
+
+/* ---------- step ---------- */
+window.__step = function (dt) {
+  steps += 1;
+  t += dt;
+  const p = (steps * 4) % N;
+  setPlayhead(p);
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+/* ---------- first render ---------- */
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · K-20 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

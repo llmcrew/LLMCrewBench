@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Orbits</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #080f22; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// Configuration
+const WIDTH = 800;
+const HEIGHT = 600;
+const FRAME_HEIGHT_UNITS = 3.314;
+const SCALE_FACTOR = FRAME_HEIGHT_UNITS / 2; // 1.657
+
+// Colors
+const COLORS = {
+    bg: new THREE.Color('#080f22'),
+    center: new THREE.Color('#ffe9a8'),
+    spheres: [
+        new THREE.Color('#ff4d6d'), // 1
+        new THREE.Color('#ffd166'), // 2
+        new THREE.Color('#4dd0e1'), // 3
+        new THREE.Color('#9b6dff'), // 4
+        new THREE.Color('#ff4d6d'), // 5
+        new THREE.Color('#ffd166')  // 6
+    ]
+};
+
+// Sphere Parameters
+// a, inc, t0, T, colorIndex (0-5)
+const SPHERES_DATA = [
+    { a: 0.603, inc: 0.765, t0: 2.567, T: 5.76, colorIdx: 0 },
+    { a: 0.784, inc: 0.780, t0: 5.254, T: 8.40, colorIdx: 1 },
+    { a: 0.668, inc: 0.754, t0: 2.690, T: 5.09, colorIdx: 2 },
+    { a: 0.691, inc: 0.620, t0: 6.163, T: 8.27, colorIdx: 3 },
+    { a: 0.321, inc: 0.520, t0: 3.844, T: 6.70, colorIdx: 4 },
+    { a: 0.507, inc: 0.688, t0: 3.682, T: 5.89, colorIdx: 5 }
+];
+
+const TAIL_LENGTH = 60;
+const TAIL_DT = 0.0167;
+
+// Setup Scene
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, WIDTH / HEIGHT, 0.1, 100);
+camera.position.set(0, 0, 4.0);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
+renderer.setPixelRatio(1);
+renderer.setSize(WIDTH, HEIGHT, false);
+document.body.appendChild(renderer.domElement);
+
+// Background Plane
+const bgGeometry = new THREE.PlaneGeometry(20, 20);
+const bgMaterial = new THREE.MeshBasicMaterial({ color: COLORS.bg });
+const bgPlane = new THREE.Mesh(bgGeometry, bgMaterial);
+bgPlane.position.z = -10;
+bgPlane.name = "фон";
+scene.add(bgPlane);
+
+// Center Disk
+function createCenterTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    const gradient = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gradient.addColorStop(0, '#ffe9a8');
+    gradient.addColorStop(1, '#080f22'); // Fade to background
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 128, 128);
+    const texture = new THREE.CanvasTexture(canvas);
+    return texture;
+}
+
+const centerRadius = 0.22 * FRAME_HEIGHT_UNITS; // 0.72908
+const centerGeometry = new THREE.PlaneGeometry(centerRadius * 2, centerRadius * 2);
+const centerMaterial = new THREE.MeshBasicMaterial({ 
+    map: createCenterTexture(), 
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+});
+const centerDisk = new THREE.Mesh(centerGeometry, centerMaterial);
+centerDisk.name = "центр";
+scene.add(centerDisk);
+
+// Sprite Texture for Tails and Spheres
+function createGlowTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 32;
+    const ctx = canvas.getContext('2d');
+    const gradient = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+    gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+    gradient.addColorStop(0.4, 'rgba(255, 255, 255, 0.5)');
+    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 32, 32);
+    return new THREE.CanvasTexture(canvas);
+}
+const glowTexture = createGlowTexture();
+
+// Spheres and Tails
+const sphereMeshes = [];
+const tailPoints = [];
+const objectsList = [];
+
+SPHERES_DATA.forEach((data, idx) => {
+    // Sphere Mesh
+    const geometry = new THREE.SphereGeometry(0.05 * FRAME_HEIGHT_UNITS, 16, 16); // Small sphere
+    const material = new THREE.MeshBasicMaterial({ 
+        color: COLORS.spheres[data.colorIdx],
+        toneMapped: false 
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = `сфера ${idx + 1}`;
+    scene.add(mesh);
+    sphereMeshes.push({ mesh, data, color: COLORS.spheres[data.colorIdx] });
+    objectsList.push(mesh.name);
+
+    // Tail Points
+    const tailGeo = new THREE.BufferGeometry();
+    const positions = new Float32Array(TAIL_LENGTH * 3);
+    const colors = new Float32Array(TAIL_LENGTH * 3);
+    
+    tailGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    tailGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    
+    const tailMat = new THREE.PointsMaterial({
+        size: 0.15, // Adjust based on visual preference
+        map: glowTexture,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.8,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        sizeAttenuation: true
+    });
+    
+    const points = new THREE.Points(tailGeo, tailMat);
+    points.name = `хвост ${idx + 1}`;
+    scene.add(points);
+    tailPoints.push({ points, data, color: COLORS.spheres[data.colorIdx] });
+    objectsList.push(points.name);
+});
+
+// State
+let currentTime = 0;
+
+// Helper to calculate position
+function getPosition(a, inc, t0, T, t) {
+    const theta = t0 + 2 * Math.PI * t / T;
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+    const cosI = Math.cos(inc);
+    const sinI = Math.sin(inc);
+    
+    const scale = a * SCALE_FACTOR;
+    
+    return {
+        x: scale * cosT,
+        y: scale * sinT * cosI,
+        z: scale * sinT * sinI
+    };
+}
+
+function updateScene(t) {
+    // Update Spheres and Tails
+    sphereMeshes.forEach((item, idx) => {
+        const { mesh, data } = item;
+        const pos = getPosition(data.a, data.inc, data.t0, data.T, t);
+        mesh.position.set(pos.x, pos.y, pos.z);
+        
+        // Update Tail
+        const tailObj = tailPoints[idx];
+        const positions = tailObj.points.geometry.attributes.position.array;
+        const colors = tailObj.points.geometry.attributes.color.array;
+        const baseColor = tailObj.color;
+        
+        for (let i = 0; i < TAIL_LENGTH; i++) {
+            const tailTime = t - i * TAIL_DT;
+            const tPos = getPosition(data.a, data.inc, data.t0, data.T, tailTime);
+            
+            positions[i * 3] = tPos.x;
+            positions[i * 3 + 1] = tPos.y;
+            positions[i * 3 + 2] = tPos.z;
+            
+            // Brightness fade: 1.0 at i=0 to 0.06 at i=59
+            const brightness = 1.0 - (i / (TAIL_LENGTH - 1)) * (1.0 - 0.06);
+            
+            colors[i * 3] = baseColor.r * brightness;
+            colors[i * 3 + 1] = baseColor.g * brightness;
+            colors[i * 3 + 2] = baseColor.b * brightness;
+        }
+        
+        tailObj.points.geometry.attributes.position.needsUpdate = true;
+        tailObj.points.geometry.attributes.color.needsUpdate = true;
+    });
+}
+
+// Initial Render
+updateScene(0);
+renderer.render(scene, camera);
+
+// API
+window.__step = function(dt) {
+    currentTime += dt;
+    updateScene(currentTime);
+    renderer.render(scene, camera);
+    return window.__probe();
+};
+
+window.__probe = function() {
+    const planets = [];
+    const orbits = [];
+    
+    sphereMeshes.forEach((item) => {
+        const { data } = item;
+        // Current angle
+        const theta = data.t0 + 2 * Math.PI * currentTime / data.T;
+        orbits.push(parseFloat(theta.toFixed(4)));
+        
+        // Position in frame fractions (coord / 3.314)
+        const pos = item.mesh.position;
+        planets.push({
+            x: parseFloat((pos.x / FRAME_HEIGHT_UNITS).toFixed(4)),
+            y: parseFloat((pos.y / FRAME_HEIGHT_UNITS).toFixed(4)),
+            z: parseFloat((pos.z / FRAME_HEIGHT_UNITS).toFixed(4))
+        });
+    });
+    
+    return {
+        t: parseFloat(currentTime.toFixed(4)),
+        objects: objectsList,
+        orbits: orbits,
+        planets: planets
+    };
+};
+
+window.__ready = true;
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-16 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

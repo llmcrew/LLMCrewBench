@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Bridge</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #15171f; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // Scene setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x15171f);
+
+        const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 1000);
+        camera.position.set(13, 7, 21);
+        camera.lookAt(0, 1, 0);
+
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Rig group
+        const rig = new THREE.Group();
+        scene.add(rig);
+
+        // Materials
+        const matStructure = new THREE.MeshBasicMaterial({ color: 0x123f4a });
+        const matRoad = new THREE.MeshBasicMaterial({ color: 0xffc247 });
+        const matAccent = new THREE.MeshBasicMaterial({ color: 0x3ce8f0 });
+        const lineMat = new THREE.LineBasicMaterial({ color: 0x3ce8f0 });
+
+        // Object names list
+        const objects = [];
+
+        // Helper to create box with edges
+        function createNamedBox(w, h, d, x, y, z, material, name) {
+            const geo = new THREE.BoxGeometry(w, h, d);
+            const mesh = new THREE.Mesh(geo, material);
+            mesh.position.set(x, y, z);
+            mesh.name = name;
+            objects.push(name);
+            
+            const edges = new THREE.EdgesGeometry(geo);
+            const lines = new THREE.LineSegments(edges, lineMat);
+            lines.position.set(x, y, z);
+            lines.name = name + "_edges";
+            objects.push(name + "_edges");
+            
+            rig.add(mesh);
+            rig.add(lines);
+        }
+
+        // 1. Deck: 18 x 1.0 x 5.0, y=0, #123f4a
+        createNamedBox(18, 1.0, 5.0, 0, 0, 0, matStructure, "deck");
+
+        // 2. Road: 18 x 0.35 x 4.6, y=0.68, #ffc247
+        createNamedBox(18, 0.35, 4.6, 0, 0.68, 0, matRoad, "road");
+
+        // 3. Railings: 18 x 0.4 x 0.22, y=1.05, z=±2.3, #3ce8f0
+        createNamedBox(18, 0.4, 0.22, 0, 1.05, 2.3, matAccent, "railing_pos");
+        createNamedBox(18, 0.4, 0.22, 0, 1.05, -2.3, matAccent, "railing_neg");
+
+        // 4. Pylons: 1.4 x 8.0 x 1.4, y=-4.0, x=±6.5, z=±2.0, #123f4a
+        createNamedBox(1.4, 8.0, 1.4, 6.5, -4.0, 2.0, matStructure, "pylon_1");
+        createNamedBox(1.4, 8.0, 1.4, -6.5, -4.0, 2.0, matStructure, "pylon_2");
+        createNamedBox(1.4, 8.0, 1.4, 6.5, -4.0, -2.0, matStructure, "pylon_3");
+        createNamedBox(1.4, 8.0, 1.4, -6.5, -4.0, -2.0, matStructure, "pylon_4");
+
+        // 5. Arch: TorusGeometry r=3.8, tube=0.30, thetaLength=PI, y=1.2, #3ce8f0
+        // "stands in XY plane". Default Torus is XY.
+        const archGeo = new THREE.TorusGeometry(3.8, 0.30, 16, 48, Math.PI);
+        const archMesh = new THREE.Mesh(archGeo, matAccent);
+        archMesh.position.set(0, 1.2, 0);
+        archMesh.name = "arch";
+        objects.push("arch");
+        rig.add(archMesh);
+
+        const archEdges = new THREE.EdgesGeometry(archGeo, 24);
+        const archLines = new THREE.LineSegments(archEdges, lineMat);
+        archLines.position.set(0, 1.2, 0);
+        archLines.name = "arch_edges";
+        objects.push("arch_edges");
+        rig.add(archLines);
+
+        // 6. Hangers: 0.16 x 2.63 x 0.16, x=±2.74, #3ce8f0
+        // Height 2.63 matches vertical distance from arch center to rim at x=2.74
+        const hangerH = 2.63;
+        const hangerY = 1.2 - hangerH / 2; 
+        createNamedBox(0.16, hangerH, 0.16, 2.74, hangerY, 0, matAccent, "hanger_pos");
+        createNamedBox(0.16, hangerH, 0.16, -2.74, hangerY, 0, matAccent, "hanger_neg");
+
+        // Animation state
+        let t = 0;
+
+        // Initial render
+        renderer.render(scene, camera);
+        window.__ready = true;
+
+        // Animation control
+        window.__step = function(dt) {
+            t += dt;
+            rig.rotation.y = 0.080 * t;
+            renderer.render(scene, camera);
+            return window.__probe();
+        };
+
+        window.__probe = function() {
+            return {
+                t: parseFloat(t.toFixed(4)),
+                objects: objects,
+                yaw: parseFloat((rig.rotation.y * 180 / Math.PI).toFixed(4))
+            };
+        };
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-5 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

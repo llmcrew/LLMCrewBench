@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Aurora</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #1d1638; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- LCG Setup ---
+        // Seed 53827
+        let seed = 53827;
+        function nextRandom() {
+            seed = (1664525 * seed + 1013904223) % 4294967296;
+            return seed / 4294967296;
+        }
+
+        // --- Texture Generation ---
+        function createAuroraTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64;
+            canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+
+            // Vertical Gradient: Bottom #18f051, Mid #2197db, Top #ff33ee
+            const grad = ctx.createLinearGradient(0, 0, 0, 256);
+            grad.addColorStop(0.0, '#18f051');
+            grad.addColorStop(0.5, '#2197db');
+            grad.addColorStop(1.0, '#ff33ee');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 64, 256);
+
+            // Horizontal Alpha Mask (Soft Edges)
+            const imageData = ctx.getImageData(0, 0, 64, 256);
+            const data = imageData.data;
+            const w = 64;
+            const h = 256;
+            const cx = w / 2;
+
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const idx = (y * w + x) * 4;
+                    // Distance from center normalized 0..1
+                    const dist = Math.abs(x - cx) / cx;
+                    // Soft fade: cosine
+                    const alpha = Math.cos(dist * Math.PI / 2);
+                    data[idx + 3] = Math.floor(alpha * 255);
+                }
+            }
+            ctx.putImageData(imageData, 0, 0);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.needsUpdate = true;
+            return texture;
+        }
+
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#1d1638');
+
+        const camera = new THREE.PerspectiveCamera(45, 800/600, 0.1, 200);
+        camera.position.set(0, 0, 10.0);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // --- Ribbons ---
+        const ribbons = [];
+        const texture = createAuroraTexture();
+        const materialBase = {
+            map: texture,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            depthTest: false
+        };
+
+        // Camera Frustum Dimensions at Z=0 (Distance 10)
+        // vFOV = 45 deg. tan(22.5) ≈ 0.41421356
+        // viewHeight = 2 * 10 * tan(22.5 * PI/180) ≈ 8.284
+        const viewHeight = 2 * 10 * Math.tan(45 * 0.5 * Math.PI / 180);
+        const viewWidth = viewHeight * (800/600);
+
+        for (let i = 0; i < 28; i++) {
+            // Generate 6 random numbers strictly in order
+            const u = nextRandom();
+            const v = nextRandom();
+            const u2 = nextRandom();
+            const u3 = nextRandom();
+            const u4 = nextRandom();
+            const u5 = nextRandom();
+
+            // Calculate properties
+            const w_frac = 0.030 + 0.055 * u;
+            const h_frac = 0.30 + 0.38 * v;
+            const x_frac = (i + 0.5 + 0.6 * (u2 - 0.5)) / 28 - 0.5;
+            const y_frac = 0.02 + 0.26 * u3;
+            const op = 0.16 + 0.24 * u4;
+            const ph = 0.4 * u5;
+
+            // Convert fractions to World Units
+            const worldX = x_frac * viewWidth;
+            const worldY = y_frac * viewHeight;
+
+            const geometry = new THREE.PlaneGeometry(1, 1);
+            const material = new THREE.MeshBasicMaterial({
+                ...materialBase,
+                opacity: op
+            });
+
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.name = `ribbon_${i+1}`;
+
+            // Store base properties for animation
+            mesh.userData = {
+                baseX: worldX,
+                baseH_frac: h_frac,
+                ph: ph,
+                x_frac: x_frac
+            };
+
+            // Initial Position & Scale
+            mesh.position.set(worldX, worldY, 0);
+            mesh.scale.set(w_frac * viewWidth, h_frac * viewHeight, 1);
+
+            scene.add(mesh);
+            ribbons.push(mesh);
+        }
+
+        // --- Animation State ---
+        let time = 0;
+
+        window.__step = function(dt) {
+            time += dt;
+            updateScene(time);
+            renderer.render(scene, camera);
+            return window.__probe();
+        };
+
+        function updateScene(t) {
+            const waveSpeed = 0.35;
+            const waveFreqX = 3.0;
+            const ampX = 0.05;
+            const ampY = 0.15;
+            const waveSpeedY = 0.7;
+
+            ribbons.forEach(mesh => {
+                const { baseX, baseH_frac, ph, x_frac } = mesh.userData;
+                
+                // Wave X: dx = 0.05 * sin(2*pi*0.35*t - 3.0*x + ph)
+                // x in formula is the fraction x_frac
+                const dx_frac = ampX * Math.sin(2 * Math.PI * waveSpeed * t - waveFreqX * x_frac + ph);
+                const dx_world = dx_frac * viewWidth;
+
+                // Wave Y (Height scaling): h * (1 + 0.15 * sin(2*pi*0.35*0.7*t + ph))
+                const scaleY = 1 + ampY * Math.sin(2 * Math.PI * waveSpeed * waveSpeedY * t + ph);
+                const currentH = baseH_frac * viewHeight * scaleY;
+
+                mesh.position.x = baseX + dx_world;
+                mesh.scale.y = currentH;
+            });
+        }
+
+        window.__probe = function() {
+            return {
+                t: parseFloat(time.toFixed(4)),
+                objects: ribbons.map(m => m.name),
+                wave: parseFloat((2 * Math.PI * 0.35 * time).toFixed(4))
+            };
+        };
+
+        // Initial Render
+        renderer.render(scene, camera);
+        window.__ready = true;
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-8 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Мост в наклонной изометрии</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #15171f; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const W = 800, H = 600;
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15171f);
+
+const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 300);
+camera.position.set(13, 7, 21);
+camera.lookAt(0.0, 1.0, 0.0);
+
+// Материалы: самосветящиеся, света нет
+const lineMat  = new THREE.LineBasicMaterial({ color: 0x3ce8f0 });
+const matDark  = new THREE.MeshBasicMaterial({ color: 0x123f4a });
+const matRoad  = new THREE.MeshBasicMaterial({ color: 0xffc247 });
+const matCyan  = new THREE.MeshBasicMaterial({ color: 0x3ce8f0 });
+
+const rig = new THREE.Group();
+rig.name = 'rig';
+scene.add(rig);
+
+function addBox(name, w, h, d, x, y, z, mat) {
+  const g = new THREE.BoxGeometry(w, h, d);
+  const m = new THREE.Mesh(g, mat);
+  m.name = name;
+  m.position.set(x, y, z);
+  rig.add(m);
+  const e = new THREE.LineSegments(new THREE.EdgesGeometry(g), lineMat);
+  e.name = name + '_edges';
+  e.position.copy(m.position);
+  rig.add(e);
+  return m;
+}
+
+// Балка пролёта
+addBox('beam', 18, 1.0, 5.0, 0, 0, 0, matDark);
+// Полотно дороги
+addBox('road', 18, 0.35, 4.6, 0, 0.68, 0, matRoad);
+// Перила
+addBox('rail_l', 18, 0.4, 0.22, 0, 1.05,  2.3, matCyan);
+addBox('rail_r', 18, 0.4, 0.22, 0, 1.05, -2.3, matCyan);
+// Четыре пилона
+addBox('pylon_1', 1.4, 8.0, 1.4,  6.5, -4.0,  2.0, matDark);
+addBox('pylon_2', 1.4, 8.0, 1.4,  6.5, -4.0, -2.0, matDark);
+addBox('pylon_3', 1.4, 8.0, 1.4, -6.5, -4.0,  2.0, matDark);
+addBox('pylon_4', 1.4, 8.0, 1.4, -6.5, -4.0, -2.0, matDark);
+// Подвесы: от арки (y≈3.83 при x=±2.74) вниз до полотна (верх y≈0.855)
+addBox('hanger_l', 0.16, 2.63, 0.16,  2.74, 2.17, 0, matCyan);
+addBox('hanger_r', 0.16, 2.63, 0.16, -2.74, 2.17, 0, matCyan);
+
+// Арка: полукруг в плоскости XY, y = 1.2
+const torusGeo = new THREE.TorusGeometry(3.8, 0.30, 12, 48, Math.PI);
+const arch = new THREE.Mesh(torusGeo, matCyan);
+arch.name = 'arch';
+arch.position.set(0, 1.2, 0);
+rig.add(arch);
+const archEdges = new THREE.LineSegments(new THREE.EdgesGeometry(torusGeo, 24), lineMat);
+archEdges.name = 'arch_edges';
+archEdges.position.copy(arch.position);
+rig.add(archEdges);
+
+// Анимация: только по вызову __step(dt)
+let t = 0;
+
+function render() {
+  rig.rotation.y = 0.080 * t;
+  renderer.render(scene, camera);
+}
+
+function probe() {
+  const names = [];
+  scene.traverse(o => { if (o.name) names.push(o.name); });
+  const yaw = 0.080 * t * 180 / Math.PI;
+  return {
+    t: Math.round(t * 10000) / 10000,
+    objects: names,
+    yaw: Math.round(yaw * 10000) / 10000
+  };
+}
+
+window.__step = function (dt) {
+  t += dt;
+  render();
+  return window.__probe();
+};
+
+window.__probe = probe;
+
+// Первый кадр — начало анимации (t = 0)
+render();
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-5 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

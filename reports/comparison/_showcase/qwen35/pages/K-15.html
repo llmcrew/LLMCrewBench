@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>String Vibration Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Configuration ---
+        const N = 64;
+        const A = 0.8;
+        const CENTER = 18;
+        const SIGMA = 7.0;
+        const C2 = 0.25;
+        
+        // State arrays
+        let u = new Float64Array(N);
+        let u_prev = new Float64Array(N);
+        let next = new Float64Array(N);
+
+        // --- Initialization of Physics State ---
+        function initPhysics() {
+            for (let i = 0; i < N; i++) {
+                // Initial deviation: Bell curve
+                const exponent = -Math.pow((i - CENTER) / SIGMA, 2);
+                u[i] = A * Math.exp(exponent);
+            }
+            // Boundary conditions explicitly set (though exp is near 0 at edges, spec says u[0]=u[63]=0)
+            u[0] = 0;
+            u[N - 1] = 0;
+
+            // Initial velocity zero: u_prev = u
+            u_prev.set(u);
+        }
+
+        // --- Three.js Setup ---
+        const scene = new THREE.Scene();
+        
+        // Camera: PerspectiveCamera(50, 800/600, 0.1, 500) at [0, 0, 60] looking at (0,0,0)
+        const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 500);
+        camera.position.set(0.0, 0.0, 60.0);
+        camera.lookAt(0, 0, 0);
+
+        // Renderer: preserveDrawingBuffer: true, pixelRatio 1, size 800x600
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.6);
+        dirLight.position.set(0.0, 20.0, 40.0);
+        scene.add(dirLight);
+
+        // String Mesh (InstancedMesh)
+        // 64 spheres radius 0.55
+        const sphereGeo = new THREE.SphereGeometry(0.55, 16, 16);
+        const sphereMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+        const stringMesh = new THREE.InstancedMesh(sphereGeo, sphereMat, N);
+        stringMesh.name = "string";
+        scene.add(stringMesh);
+
+        // String Line
+        const lineGeo = new THREE.BufferGeometry();
+        const linePositions = new Float32Array(N * 3);
+        lineGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+        const lineMat = new THREE.LineBasicMaterial({ color: 0xffd27f });
+        const stringLine = new THREE.Line(lineGeo, lineMat);
+        scene.add(stringLine);
+
+        // Helper: Color Lerp
+        const colorLow = new THREE.Color(0x1d3f7a);
+        const colorHigh = new THREE.Color(0xffd27f);
+        const tempColor = new THREE.Color();
+
+        // --- Update Functions ---
+
+        function updateVisuals() {
+            const dummy = new THREE.Object3D();
+            
+            for (let i = 0; i < N; i++) {
+                // Position: ((i - 31.5) * 0.7, u[i] * 4.5, 0)
+                const x = (i - 31.5) * 0.7;
+                const y = u[i] * 4.5;
+                const z = 0;
+
+                dummy.position.set(x, y, z);
+                dummy.updateMatrix();
+                stringMesh.setMatrixAt(i, dummy.matrix);
+
+                // Color: lerp(0x1d3f7a, 0xffd27f, |u[i]| / A)
+                const t = Math.abs(u[i]) / A;
+                // Clamp t just in case, though physics should keep it reasonable
+                const clampedT = Math.min(1.0, Math.max(0.0, t));
+                tempColor.copy(colorLow).lerp(colorHigh, clampedT);
+                stringMesh.setColorAt(i, tempColor);
+
+                // Line positions
+                linePositions[i * 3] = x;
+                linePositions[i * 3 + 1] = y;
+                linePositions[i * 3 + 2] = z;
+            }
+            
+            stringMesh.instanceMatrix.needsUpdate = true;
+            stringMesh.instanceColor.needsUpdate = true;
+            lineGeo.attributes.position.needsUpdate = true;
+        }
+
+        function calculateEnergy() {
+            let energy = 0.0;
+            // sum for i = 1..62
+            for (let i = 1; i <= 62; i++) {
+                const kineticTerm = 0.5 * Math.pow(u[i] - u_prev[i], 2);
+                const potentialTerm = 0.5 * C2 * Math.pow(u[i + 1] - u[i], 2);
+                energy += kineticTerm + potentialTerm;
+            }
+            return energy;
+        }
+
+        // --- Global API ---
+
+        window.__step = function(dt) {
+            // Scheme: next[i] = 2 * u[i] - u_prev[i] + c2 * (u[i-1] - 2 * u[i] + u[i+1])
+            // Boundary: next[0] = next[63] = 0
+            
+            next[0] = 0;
+            next[N - 1] = 0;
+
+            for (let i = 1; i < N - 1; i++) {
+                next[i] = 2 * u[i] - u_prev[i] + C2 * (u[i - 1] - 2 * u[i] + u[i + 1]);
+            }
+
+            // Shift arrays: u_prev = u, u = next
+            // We can swap references if we allocate a new 'next' buffer, 
+            // but to keep it simple and deterministic with fixed buffers:
+            u_prev.set(u);
+            u.set(next);
+        };
+
+        window.__probe = function() {
+            updateVisuals();
+            renderer.render(scene, camera);
+
+            const samples = [
+                Number(u[16].toFixed(4)),
+                Number(u[32].toFixed(4)),
+                Number(u[48].toFixed(4))
+            ];
+            
+            const energy = Number(calculateEnergy().toFixed(4));
+
+            return {
+                samples: samples,
+                energy: energy
+            };
+        };
+
+        // --- Start ---
+        initPhysics();
+        window.__probe(); // Initial render
+        window.__ready = true;
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-15 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

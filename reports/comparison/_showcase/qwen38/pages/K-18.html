@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Orrery</title>
+<style>body{margin:0;overflow:hidden}</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+camera.position.set(0.0, 10.0, 13.0);
+camera.lookAt(0.0, 0.0, 0.0);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
+scene.add(ambientLight);
+
+const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
+dirLight.position.set(7.0, 13.0, 7.0);
+scene.add(dirLight);
+
+// Sun
+const sunGeo = new THREE.SphereGeometry(0.6, 32, 32);
+const sunMat = new THREE.MeshStandardMaterial({ color: 0xffcf5c });
+const sun = new THREE.Mesh(sunGeo, sunMat);
+sun.name = 'sun';
+sun.position.set(0, 0.6, 0);
+scene.add(sun);
+
+// Planet definitions
+const planetDefs = [
+  { name: 'Mercury', R: 2.04, T: 7.81,  theta0: 150.00, color: 0x3d6bff },
+  { name: 'Venus',   R: 3.77, T: 16.36, theta0: 175.06, color: 0x22b3a0 },
+  { name: 'Mars',    R: 5.19, T: 8.84,  theta0: 116.62, color: 0xff5566 }
+];
+
+const planets = [];
+
+planetDefs.forEach((def, i) => {
+  // Orbit ring
+  const orbitGeo = new THREE.RingGeometry(def.R - 0.03, def.R + 0.03, 96);
+  const orbitMat = new THREE.MeshBasicMaterial({ color: 0x2f4a63, side: THREE.DoubleSide });
+  const orbit = new THREE.Mesh(orbitGeo, orbitMat);
+  orbit.name = 'orbit-' + i;
+  orbit.rotation.x = -Math.PI / 2;
+  orbit.position.y = 0.3;
+  scene.add(orbit);
+
+  // Planet sphere
+  const pGeo = new THREE.SphereGeometry(0.3, 32, 32);
+  const pMat = new THREE.MeshStandardMaterial({ color: def.color });
+  const mesh = new THREE.Mesh(pGeo, pMat);
+  mesh.name = def.name;
+
+  const theta = def.theta0;
+  const x = def.R * Math.cos(theta * Math.PI / 180);
+  const z = def.R * Math.sin(theta * Math.PI / 180);
+  mesh.position.set(x, 0.3, z);
+  scene.add(mesh);
+
+  planets.push({ name: def.name, R: def.R, T: def.T, theta: theta, mesh: mesh });
+});
+
+// Simulation state
+let steps = 0;
+let t = 0;
+
+function round4(n) {
+  return Math.round(n * 10000) / 10000;
+}
+
+window.__step = function (dt) {
+  t += dt;
+  steps++;
+  for (const p of planets) {
+    p.theta += 360 / p.T * dt;
+    p.theta = p.theta % 360;
+    const x = p.R * Math.cos(p.theta * Math.PI / 180);
+    const z = p.R * Math.sin(p.theta * Math.PI / 180);
+    p.mesh.position.set(x, 0.3, z);
+  }
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+window.__probe = function () {
+  const objects = scene.children.map(c => c.name).filter(n => n !== '');
+  const planetsOut = planets.map(p => ({
+    name: p.name,
+    theta: round4(p.theta),
+    x: round4(p.R * Math.cos(p.theta * Math.PI / 180)),
+    z: round4(p.R * Math.sin(p.theta * Math.PI / 180))
+  }));
+  return {
+    steps: steps,
+    t: round4(t),
+    camera: [0, 10, 13],
+    objects: objects,
+    planets: planetsOut
+  };
+};
+
+// Initial render
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · K-18 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,8 +1,8 @@
 """Load every reference configuration in turn and run the full suite on it.
 
 One GPU, one model at a time: stop the previous server, start the next with the
-entry's own launch settings, verify it with ``preflight --full``, then run all
-29 tasks. Failures are recorded and the sweep continues — a model that does not
+entry's own launch settings, verify it with ``preflight --full``, then run the
+whole suite. Failures are recorded and the sweep continues — a model that does not
 fit in 16 GiB is a result, not an interruption.
 
     python scripts/sweep.py                       # every entry except the template
@@ -14,154 +14,24 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
-import shutil
-import subprocess
 import sys
-import time
-import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from dailybench import reference  # noqa: E402
+from dailybench import launch, reference  # noqa: E402
 from dailybench.cli import main as cli_main  # noqa: E402
 from dailybench.measure import used_mib  # noqa: E402
 
-UNSLOTH = shutil.which("unsloth") or str(Path.home() / ".unsloth" / "studio" / "bin" / "unsloth.exe")
-LOGS = ROOT / "runs" / "_servers"
 
+def _suite_size(cfg_id: str) -> int:
+    """How many tasks the current suite generates for a reference entry."""
+    from dailybench.config import RunConfig
+    from dailybench.suite import build_suite
 
-def api(base_url: str, path: str, timeout: float = 10.0):
-    try:
-        with urllib.request.urlopen(base_url.rstrip("/") + path, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except Exception:
-        return None
-
-
-STUDIO_LOG = LOGS / "studio.log"
-API_KEY_RE = re.compile(r"API Key:\s*(sk-\S+)")
-
-
-def server_reachable(base_url: str) -> bool:
-    return api(base_url, "/models") is not None
-
-
-def ensure_server(base_url: str, entry: dict) -> str:
-    """Start the studio server once; later models are loaded through its API.
-
-    Switching models through ``POST /api/inference/load`` uses the same code path
-    as the application itself, so the loaded configuration is the one the app
-    would produce — including the memory strategy and the KV cache type, which
-    the CLI passthrough does not reproduce identically.
-    """
-    if server_reachable(base_url):
-        # The key is printed once at startup; find it in any log we started.
-        for candidate in sorted(LOGS.glob("*.log")):
-            found = API_KEY_RE.search(candidate.read_text(encoding="utf-8", errors="replace"))
-            if found:
-                return found.group(1)
-        # A reachable server whose key we do not have: restart it ourselves.
-        subprocess.run([UNSLOTH, "studio", "stop"], capture_output=True, timeout=180)
-        deadline = time.time() + 60
-        while time.time() < deadline and server_reachable(base_url):
-            time.sleep(2)
-
-    LOGS.mkdir(parents=True, exist_ok=True)
-    command = [
-        UNSLOTH, "studio", "run",
-        "--model", str(entry["model"]),
-        "--gguf-variant", str(entry["quant"]),
-        "--max-seq-length", str(entry.get("context_window") or 32768),
-    ]
-    flags = 0
-    if sys.platform == "win32":
-        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-    with STUDIO_LOG.open("w", encoding="utf-8") as log:
-        subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, cwd=str(ROOT), creationflags=flags)
-
-    deadline = time.time() + 900
-    while time.time() < deadline:
-        if server_reachable(base_url):
-            text = STUDIO_LOG.read_text(encoding="utf-8", errors="replace")
-            found = API_KEY_RE.search(text)
-            if found:
-                return found.group(1)
-        time.sleep(2)
-    raise RuntimeError("сервер studio не поднялся за 15 минут")
-
-
-def api_root(base_url: str) -> str:
-    """The studio's management API lives at the server root, not under /v1."""
-    root = base_url.rstrip("/")
-    return root[: -len("/v1")] if root.endswith("/v1") else root
-
-
-def studio_api(base_url: str, path: str, key: str, payload: dict | None = None, timeout: float = 900):
-    data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    request = urllib.request.Request(
-        api_root(base_url) + path,
-        data=data,
-        method="POST" if payload is not None else "GET",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8") or "{}")
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", "replace")[:300]
-        return {"error": f"HTTP {exc.code}: {body}"}
-    except Exception as exc:
-        return {"error": f"{type(exc).__name__}: {exc}"}
-
-
-def load_entry(base_url: str, key: str, entry: dict, timeout_s: float = 900) -> tuple[bool, str]:
-    """Load one configuration through the studio's own API and wait for it."""
-    model = str(entry["model"])
-    studio_api(base_url, "/api/inference/unload", key, {"model_path": model})
-    payload = {
-        "model_path": model,
-        "gguf_variant": str(entry["quant"]),
-        "max_seq_length": int(entry.get("context_window") or 32768),
-        "n_parallel": 1,
-        "gpu_memory_mode": "auto",
-        "cache_type_kv": str(entry.get("kv_type") or "q8_0"),
-        "force_reload": True,
-        "llama_extra_args": [
-            "-fa", "on",
-            "--jinja",
-            "--reasoning-format", "deepseek",
-            # Without this the thinking phase eats the whole answer budget: the
-            # coding tasks returned `finish_reason=length` with empty content
-            # until the cap was declared.
-            "--reasoning-budget", str(int(reference.POLICY.get("reasoning_budget", 2048))),
-            "--no-context-shift",
-            "--temp", "0",
-            "--top-p", "1",
-        ],
-    }
-    started = time.time()
-    result = studio_api(base_url, "/api/inference/load", key, payload)
-    if result.get("error"):
-        return False, f"загрузка отклонена: {result['error']}"
-
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        models = api(base_url, "/models")
-        row = next((m for m in (models or {}).get("data", []) if m.get("id") == model), None)
-        if row and row.get("loaded"):
-            props = api(base_url, "/props")
-            n_ctx = ((props or {}).get("default_generation_settings") or {}).get("n_ctx")
-            note = f"загружена за {int(time.time() - started)} с, n_ctx={n_ctx}"
-            if n_ctx and int(n_ctx) < int(entry.get("context_window") or 0):
-                note += " — окно урезано по VRAM (auto), допуск long context будет честно провален"
-            return True, note
-        time.sleep(5)
-    return False, "модель не загрузилась за отведённое время"
+    return len(build_suite(reference.apply_to_run_config(RunConfig(), reference.resolve(cfg_id))))
 
 
 def run_one(entry: dict, args: argparse.Namespace) -> dict:
@@ -169,8 +39,8 @@ def run_one(entry: dict, args: argparse.Namespace) -> dict:
     base_url = str(entry.get("base_url") or "http://127.0.0.1:8888/v1")
     result: dict = {"id": cfg_id, "label": entry.get("label"), "vram_before_mib": used_mib()}
 
-    key = ensure_server(base_url, entry)
-    ok, note = load_entry(base_url, key, entry)
+    key = launch.ensure_server(base_url, entry)
+    ok, note = launch.load_entry(base_url, key, entry)
     result["loaded"] = ok
     result["load_note"] = note
     if not ok:
@@ -208,7 +78,7 @@ def run_one(entry: dict, args: argparse.Namespace) -> dict:
         from dailybench.report import summarise
 
         scores = json.loads(scores_path.read_text(encoding="utf-8"))
-        summary = summarise(scores, 29)
+        summary = summarise(scores, _suite_size(cfg_id))
         result["verdict"] = summary["verdict"]
         result["earned"] = summary["headline_earned"]
         result["possible"] = summary["headline_possible"]

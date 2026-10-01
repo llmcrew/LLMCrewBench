@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body{margin:0;background:#000;overflow:hidden}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+let lcg = 782736n;
+function rnd(){
+  lcg = (lcg * 1103515245n + 12345n) % 2147483648n;
+  return Number(lcg) / 2147483648;
+}
+
+const renderer = new THREE.WebGLRenderer({preserveDrawingBuffer:true});
+renderer.setPixelRatio(1);
+renderer.setSize(800,600,false);
+document.body.appendChild(renderer.domElement);
+
+const FOV = 50*Math.PI/180;
+const ASPECT = 800/600;
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 200);
+camera.position.set(0,0,4);
+camera.lookAt(0,0,-1);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a1c4a);
+
+function s2w(u,v,z){
+  const d=4-z;
+  const hH=d*Math.tan(FOV/2);
+  const hW=hH*ASPECT;
+  return new THREE.Vector3((u-0.5)*2*hW,(0.5-v)*2*hH,z);
+}
+
+// night
+{
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(120,90),new THREE.MeshBasicMaterial({color:0x2a1c4a}));
+  m.position.set(0,0,-45);m.name='night';scene.add(m);
+}
+
+// glass
+{
+  const d=9,hH=d*Math.tan(FOV/2),hW=hH*ASPECT;
+  const w=0.78*2*hW,h=0.46*2*hH;
+  const c=s2w(0.5,0.35,-5);
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0xa8c8dc,transparent:true,opacity:0.35,side:THREE.DoubleSide,depthWrite:false}));
+  m.position.copy(c);m.name='glass';scene.add(m);
+}
+
+// visor
+{
+  const d=9,hH=d*Math.tan(FOV/2),hW=hH*ASPECT;
+  const w=2*hW*1.1,h=0.12*2*hH;
+  const c=s2w(0.5,0.06,-5);
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0x2a1c4a}));
+  m.position.copy(c);m.name='visor';scene.add(m);
+}
+
+// rain
+const RAIN_N=44;
+const rainGeo=new THREE.BufferGeometry();
+{
+  const pos=new Float32Array(RAIN_N*3);
+  for(let i=0;i<RAIN_N;i++){
+    const u=0.11+rnd()*0.78;
+    const v=0.12+rnd()*0.11;
+    const p=s2w(u,v,-12);
+    pos[i*3]=p.x;pos[i*3+1]=p.y;pos[i*3+2]=p.z;
+  }
+  rainGeo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+}
+const rainMat=new THREE.PointsMaterial({color:0xa8c8dc,size:5,sizeAttenuation:false,blending:THREE.AdditiveBlending,transparent:true,depthWrite:false});
+const rain=new THREE.Points(rainGeo,rainMat);rain.name='rain';scene.add(rain);
+
+// skyline
+{
+  const d=18,hH=d*Math.tan(FOV/2),hW=hH*ASPECT;
+  const us=[0.15,0.30,0.50,0.70,0.85];
+  const hs=[0.15,0.22,0.18,0.25,0.12];
+  const ws=[0.08,0.10,0.09,0.11,0.07];
+  const grp=new THREE.Group();grp.name='skyline';
+  for(let i=0;i<5;i++){
+    const w=ws[i]*2*hW,h=hs[i]*2*hH;
+    const c=s2w(us[i],0.58-hs[i]/2,-14);
+    const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0x1a2140}));
+    m.position.copy(c);grp.add(m);
+  }
+  scene.add(grp);
+}
+
+// drops
+const DROP_N=58;
+const dropGeo=new THREE.BufferGeometry();
+{
+  const pos=new Float32Array(DROP_N*3);
+  for(let i=0;i<DROP_N;i++){
+    const u=0.11+rnd()*0.78;
+    const v=0.12+rnd()*0.46;
+    const p=s2w(u,v,-4.9);
+    pos[i*3]=p.x;pos[i*3+1]=p.y;pos[i*3+2]=p.z;
+  }
+  dropGeo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+}
+const dropMat=new THREE.PointsMaterial({color:0xa8c8dc,size:6,sizeAttenuation:false,transparent:true,depthWrite:false});
+const drops=new THREE.Points(dropGeo,dropMat);drops.name='drops';scene.add(drops);
+
+// panel
+const PZ=-3;
+const pD=4-PZ;
+const pHalfH=pD*Math.tan(FOV/2);
+const pHalfW=pHalfH*ASPECT;
+{
+  const w=0.84*2*pHalfW,h=0.14*2*pHalfH;
+  const c=s2w(0.5,0.3,PZ);
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0x2a1c4a}));
+  m.position.copy(c);m.rotation.x=0.25;m.name='panel';scene.add(m);
+}
+
+// screens
+const screenMeshes=[];
+{
+  const us=[0.20,0.40,0.60,0.80];
+  const w=0.11*2*pHalfW,h=0.10*2*pHalfH;
+  const grp=new THREE.Group();grp.name='screen';
+  for(let i=0;i<4;i++){
+    const c=s2w(us[i],0.3,PZ+0.01);
+    const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0x57e08a}));
+    m.position.copy(c);m.rotation.x=0.25;
+    screenMeshes.push(m);grp.add(m);
+  }
+  scene.add(grp);
+}
+
+// dials
+const dialMeshes=[];
+{
+  const us=[0.45,0.475,0.50,0.525,0.55];
+  const grp=new THREE.Group();grp.name='dial';
+  for(let i=0;i<5;i++){
+    const v=0.26+i*0.012;
+    const c=s2w(us[i],v,PZ+0.02);
+    const r=0.008*2*pHalfW;
+    const m=new THREE.Mesh(new THREE.CircleGeometry(r,12),new THREE.MeshBasicMaterial({color:0xffd166}));
+    m.position.copy(c);m.rotation.x=0.25;
+    dialMeshes.push(m);grp.add(m);
+  }
+  scene.add(grp);
+}
+
+// toggles
+const toggleMeshes=[];
+{
+  const us=[0.45,0.475,0.50,0.525,0.55];
+  const grp=new THREE.Group();grp.name='toggle';
+  for(let i=0;i<5;i++){
+    const v=0.34+i*0.012;
+    const c=s2w(us[i],v,PZ+0.02);
+    const w=0.015*2*pHalfW,h=0.022*2*pHalfH;
+    const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0xffd166}));
+    m.position.copy(c);m.rotation.x=0.25;
+    toggleMeshes.push(m);grp.add(m);
+  }
+  scene.add(grp);
+}
+
+// floor
+{
+  const topY=s2w(0.5,0.52,PZ).y;
+  const botY=s2w(0.5,1.0,PZ).y;
+  const h=topY-botY,w=2*pHalfW*1.2;
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0x2a1c4a}));
+  m.position.set(0,(topY+botY)/2,PZ);m.name='floor';scene.add(m);
+}
+
+// flash
+const fD=18,fHH=fD*Math.tan(FOV/2),fHW=fHH*ASPECT;
+const flashMat=new THREE.MeshBasicMaterial({color:0xa8c8dc,transparent:true,opacity:0.5,blending:THREE.AdditiveBlending,depthWrite:false});
+{
+  const w=0.5*2*fHW,h=0.4*2*fHH;
+  const c=s2w(0.34,0.34,-14);
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),flashMat);
+  m.position.copy(c);m.name='flash';scene.add(m);
+}
+
+// state
+let t=0;
+
+renderer.render(scene,camera);
+window.__ready=true;
+
+window.__probe=function(){
+  const objects=[];
+  scene.traverse(o=>{if(o.name)objects.push(o.name);});
+  const fb=0.5+0.5*Math.sin(2*Math.PI*0.94*t);
+  return{t:Math.round(t*10000)/10000,objects,flash:Math.round(fb*10000)/10000};
+};
+
+window.__step=function(dt){
+  t+=dt;
+  camera.position.x=0.059*t;
+
+  // rain
+  const rp=rainGeo.attributes.position.array;
+  const rTop=s2w(0.5,0.12,-12).y,rBot=s2w(0.5,0.23,-12).y;
+  for(let i=0;i<RAIN_N;i++){
+    rp[i*3+1]-=1.80*dt;
+    if(rp[i*3+1]<rBot)rp[i*3+1]+=(rTop-rBot);
+  }
+  rainGeo.attributes.position.needsUpdate=true;
+
+  // drops
+  const dp=dropGeo.attributes.position.array;
+  const dTop=s2w(0.5,0.12,-4.9).y,dBot=s2w(0.5,0.58,-4.9).y;
+  for(let i=0;i<DROP_N;i++){
+    dp[i*3+1]-=1.80*dt;
+    if(dp[i*3+1]<dBot)dp[i*3+1]+=(dTop-dBot);
+  }
+  dropGeo.attributes.position.needsUpdate=true;
+
+  // flash
+  const fb=0.5+0.5*Math.sin(2*Math.PI*0.94*t);
+  flashMat.opacity=0.2+0.6*fb;
+
+  // dials
+  for(let i=0;i<5;i++){
+    const b=0.6+0.4*Math.sin(2*Math.PI*0.94*t+i*1.256);
+    dialMeshes[i].material.color.setRGB(b,0.82*b,0.4*b);
+  }
+
+  // screens scanline
+  for(let i=0;i<4;i++){
+    const s=0.75+0.25*Math.sin(2*Math.PI*1.5*t+i*1.57);
+    screenMeshes[i].material.color.setRGB(0.34*s,0.88*s,0.54*s);
+  }
+
+  renderer.render(scene,camera);
+  return window.__probe();
+};
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-21 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

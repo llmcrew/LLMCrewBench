@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+*{margin:0;padding:0}
+body{background:#000;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const W=800,H=600;
+const HH30=24.853;
+const TH=HH30/30;
+const FOV=2*Math.atan(TH)*180/Math.PI;
+
+const renderer=new THREE.WebGLRenderer({preserveDrawingBuffer:true});
+renderer.setPixelRatio(1);
+renderer.setSize(W,H,false);
+document.body.appendChild(renderer.domElement);
+
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(FOV,W/H,0.1,200);
+camera.position.set(0,0,0);
+camera.lookAt(0,0,-1);
+
+// --- SKY ---
+const skyGeo=new THREE.PlaneGeometry(70,27.338);
+const skyMat=new THREE.ShaderMaterial({
+  vertexShader:`
+    varying vec2 vUv;
+    void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+  fragmentShader:`
+    varying vec2 vUv;
+    void main(){
+      vec3 top=vec3(0.10588,0.05882,0.23529);
+      vec3 bot=vec3(0.09804,0.87843,0.90980);
+      float t=smoothstep(0.0,0.32,vUv.y);
+      gl_FragColor=vec4(mix(bot,top,t),1.0);
+    }`,
+  side:THREE.DoubleSide
+});
+const sky=new THREE.Mesh(skyGeo,skyMat);
+sky.name='sky';
+sky.position.set(0,(24.853+(-2.485))/2,-30);
+scene.add(sky);
+
+// --- GROUND ---
+const groundGeo=new THREE.PlaneGeometry(300,120);
+const groundMat=new THREE.ShaderMaterial({
+  uniforms:{uOffset:{value:0.0}},
+  vertexShader:`
+    varying vec3 vWorld;
+    void main(){
+      vec4 wp=modelMatrix*vec4(position,1.0);
+      vWorld=wp.xyz;
+      gl_Position=projectionMatrix*viewMatrix*wp;
+    }`,
+  fragmentShader:`
+    uniform float uOffset;
+    varying vec3 vWorld;
+    void main(){
+      float t=clamp(-vWorld.z/30.0,0.0,1.0);
+      vec3 near=vec3(0.07059,0.03922,0.16471);
+      vec3 far=vec3(0.10588,0.05882,0.23529);
+      vec3 base=mix(near,far,t);
+
+      float depth=abs(vWorld.z);
+      float lw=(0.08+0.004*depth)/1.6;
+
+      float hf=fract((vWorld.z+uOffset)/1.6);
+      float hl=1.0-smoothstep(0.0,lw,min(hf,1.0-hf));
+
+      float vf=fract(vWorld.x/1.6);
+      float vl=1.0-smoothstep(0.0,lw,min(vf,1.0-vf));
+
+      float grid=max(hl,vl);
+      float fade=1.0-0.7*smoothstep(30.0,120.0,depth);
+
+      vec3 gc=vec3(1.0,0.18431,0.69020);
+      vec3 col=mix(base,gc,grid*fade);
+      gl_FragColor=vec4(col,1.0);
+    }`,
+  side:THREE.DoubleSide
+});
+const ground=new THREE.Mesh(groundGeo,groundMat);
+ground.name='ground';
+ground.rotation.x=-Math.PI/2;
+ground.position.set(0,-2.485,-60);
+scene.add(ground);
+
+// --- SUN ---
+const SR=4.971;
+const sunGeo=new THREE.PlaneGeometry(SR*2,SR*2);
+const sunMat=new THREE.ShaderMaterial({
+  vertexShader:`
+    varying vec2 vUv;
+    void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+  fragmentShader:`
+    varying vec2 vUv;
+    void main(){
+      vec2 p=vUv*2.0-1.0;
+      float r=length(p);
+      if(r>1.0)discard;
+      float y=p.y;
+      vec3 top=vec3(1.0,0.69020,0.22745);
+      vec3 bot=vec3(0.75,0.30,0.05);
+      vec3 col=mix(bot,top,y*0.5+0.5);
+      if(y<-1.0/3.0){
+        float t=(y+1.0)/(2.0/3.0);
+        float s=fract(t*5.0);
+        if(s<0.45)discard;
+      }
+      gl_FragColor=vec4(col,1.0);
+    }`,
+  side:THREE.DoubleSide
+});
+const sun=new THREE.Mesh(sunGeo,sunMat);
+sun.name='sun';
+const sunStartY=0.224*29.5*TH;
+const sunEndY=-0.04*29.5*TH;
+const sunSpeed=0.025*600*(2*29.5*TH/600);
+sun.position.set(0,sunStartY,-29.5);
+scene.add(sun);
+
+// --- STATE ---
+let time=0;
+let uOffset=0;
+let sunY=sunStartY;
+
+renderer.render(scene,camera);
+window.__ready=true;
+
+window.__probe=function(){
+  const ndcY=sunY/(29.5*TH);
+  const syFrac=(1-ndcY)/2;
+  return{
+    t:time.toFixed(4),
+    objects:['sky','ground','sun'],
+    sun:[0.5,syFrac],
+    grid_z:uOffset
+  };
+};
+
+window.__step=function(dt){
+  time+=dt;
+  uOffset=(uOffset+0.90*dt)%1.6;
+  groundMat.uniforms.uOffset.value=uOffset;
+  if(sunY>sunEndY){
+    sunY=Math.max(sunY-sunSpeed*dt,sunEndY);
+    sun.position.y=sunY;
+  }
+  renderer.render(scene,camera);
+  return window.__probe();
+};
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-2 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

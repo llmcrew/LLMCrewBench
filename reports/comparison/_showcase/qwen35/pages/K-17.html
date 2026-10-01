@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Bar Chart Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Data ---
+        const data = [
+            { label: "A", value: 4.99 },
+            { label: "B", value: 4.21 },
+            { label: "C", value: 6.61 },
+            { label: "D", value: 7.00 },
+            { label: "E", value: 4.97 },
+            { label: "F", value: 6.07 },
+            { label: "G", value: 2.00 }
+        ];
+        const n = data.length;
+
+        // --- State ---
+        const state = {
+            t: 0,
+            steps: 0,
+            activeIndex: 0
+        };
+
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+        
+        // Camera
+        const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+        camera.position.set(0.0, 7.0, 18.0);
+        camera.lookAt(0.0, 3.0, 0.0);
+
+        // Renderer
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 2.2);
+        directionalLight.position.set(8.0, 14.0, 8.0);
+        scene.add(directionalLight);
+
+        // Objects
+        
+        // Ground
+        const groundGeo = new THREE.PlaneGeometry(24, 24);
+        const groundMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.name = "ground";
+        scene.add(ground);
+
+        // Bars
+        const bars = [];
+        const barGeo = new THREE.BoxGeometry(1, 1, 1);
+        const barMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+
+        for (let i = 0; i < n; i++) {
+            const bar = new THREE.Mesh(barGeo, barMat);
+            // Position x = (i - (n - 1) / 2) * 2.0
+            const x = (i - (n - 1) / 2) * 2.0;
+            bar.position.set(x, 0, 0); 
+            bar.name = `bar-${i}`;
+            scene.add(bar);
+            bars.push({
+                mesh: bar,
+                label: data[i].label,
+                value: data[i].value
+            });
+        }
+
+        // Marker
+        const markerGeo = new THREE.SphereGeometry(0.25, 32, 32);
+        const markerMat = new THREE.MeshStandardMaterial({ color: 0xffe066 });
+        const marker = new THREE.Mesh(markerGeo, markerMat);
+        marker.name = "marker";
+        scene.add(marker);
+
+        // --- Logic Functions ---
+
+        function updateScene() {
+            const factor = Math.min(1, state.t / 0.5);
+            
+            // Update Bars
+            bars.forEach((b) => {
+                const h = b.value * factor;
+                b.mesh.scale.set(1, h, 1);
+                b.mesh.position.y = h / 2;
+            });
+
+            // Update Active Bar & Marker
+            state.activeIndex = state.steps % n;
+            const activeBar = bars[state.activeIndex];
+            const activeH = activeBar.value * factor;
+            
+            marker.position.x = activeBar.mesh.position.x;
+            marker.position.z = activeBar.mesh.position.z;
+            marker.position.y = activeH + 0.5;
+
+            renderer.render(scene, camera);
+        }
+
+        // --- API ---
+
+        window.__step = function(dt) {
+            state.t += dt;
+            state.steps += 1;
+            updateScene();
+        };
+
+        window.__probe = function() {
+            const factor = Math.min(1, state.t / 0.5);
+            
+            const barsInfo = bars.map(b => {
+                const h = b.value * factor;
+                return {
+                    label: b.label,
+                    height: Number(h.toFixed(4))
+                };
+            });
+
+            const heights = bars.map(b => b.value * factor);
+            const maxH = heights.length > 0 ? Math.max(...heights) : 0;
+
+            // Collect object names from direct children
+            const objects = scene.children.map(child => child.name).filter(name => name);
+
+            return {
+                steps: state.steps,
+                t: Number(state.t.toFixed(4)),
+                objects: objects,
+                bars: barsInfo,
+                max_height: Number(maxH.toFixed(4)),
+                active: state.activeIndex
+            };
+        };
+
+        // Initial Render
+        updateScene();
+        window.__ready = true;
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-17 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

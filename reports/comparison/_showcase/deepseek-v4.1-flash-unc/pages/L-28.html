@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Collapse — chain reaction</title>
+<style>
+  html,body{margin:0;padding:0;background:#000;overflow:hidden}
+  canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ============================================================
+   ДЕТЕРМИНИРОВАННЫЙ LCG
+   ============================================================ */
+let lcg = 701695;
+function rnd(){
+  lcg = (Math.imul(lcg, 1103515245) + 12345) & 0x7FFFFFFF;
+  return lcg / 2147483648;
+}
+
+/* ============================================================
+   РЕНДЕРЕР / СЦЕНА / КАМЕРА
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({preserveDrawingBuffer:true, antialias:true});
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+renderer.setClearColor(0x03040a, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 1920/1080, 0.1, 800);
+
+const CAM_START = new THREE.Vector3(0.6, 0.4, 4);
+const CAM_END   = new THREE.Vector3(-0.19, 1.16, 12);
+const LOOK_AT   = new THREE.Vector3(0.0, -0.55, -11.0);
+camera.position.copy(CAM_START);
+camera.lookAt(LOOK_AT);
+
+/* ============================================================
+   КЛЮЧЕВЫЕ ТОЧКИ СЦЕНЫ
+   ============================================================ */
+const EARTH_POS   = new THREE.Vector3(3.0, -2.2, -14.0);
+const CORE_POS    = new THREE.Vector3(-3.2, 1.4, -12.0);
+const STATION_POS = new THREE.Vector3(-4.2, 0.6, -2.5);
+
+/* ============================================================
+   ОБЩАЯ ТЕКСТУРА-СВЕЧЕНИЕ (canvas, без внешних ресурсов)
+   ============================================================ */
+function makeGlowTexture(){
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(32,32,0, 32,32,32);
+  g.addColorStop(0.00, 'rgba(255,255,255,1.0)');
+  g.addColorStop(0.22, 'rgba(255,255,255,0.55)');
+  g.addColorStop(0.55, 'rgba(255,255,255,0.14)');
+  g.addColorStop(1.00, 'rgba(255,255,255,0.0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,64,64);
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  return tex;
+}
+const GLOW_TEX = makeGlowTexture();
+
+/* ============================================================
+   СВЕТ
+   ============================================================ */
+scene.add(new THREE.AmbientLight(0x1b2440, 1.1));
+
+const coreLight = new THREE.PointLight(0xff9a5a, 4.2, 90, 1.6);
+coreLight.position.copy(CORE_POS);
+scene.add(coreLight);
+
+const fillLight = new THREE.DirectionalLight(0x6fb6ff, 0.55);
+fillLight.position.set(-6, 5, 6);
+scene.add(fillLight);
+
+const stationLight = new THREE.PointLight(0x9fd8ff, 1.6, 22, 1.8);
+stationLight.position.copy(STATION_POS).add(new THREE.Vector3(0.4, 0.6, 0.8));
+scene.add(stationLight);
+
+/* ============================================================
+   ЗВЁЗДЫ (2400 точек)
+   ============================================================ */
+const stars = (() => {
+  const N = 2400;
+  const g = new THREE.BufferGeometry();
+  const pos = new Float32Array(N*3);
+  const col = new Float32Array(N*3);
+  for (let i = 0; i < N; i++){
+    const u  = rnd()*2 - 1;
+    const th = rnd()*Math.PI*2;
+    const r  = 95 + rnd()*130;
+    const s  = Math.sqrt(Math.max(0, 1 - u*u));
+    pos[i*3+0] = Math.cos(th)*s*r;
+    pos[i*3+1] = u*r;
+    pos[i*3+2] = Math.sin(th)*s*r - 40;
+
+    const tint = rnd();
+    let cr = 1.0, cg = 1.0, cb = 1.0;
+    if (tint < 0.18)      { cr = 0.68; cg = 0.80; cb = 1.00; }
+    else if (tint < 0.34) { cr = 1.00; cg = 0.84; cb = 0.62; }
+    else if (tint < 0.42) { cr = 0.80; cg = 0.92; cb = 1.00; }
+    const b = 0.30 + rnd()*0.70;
+    col[i*3+0] = cr*b; col[i*3+1] = cg*b; col[i*3+2] = cb*b;
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+  const m = new THREE.PointsMaterial({
+    size: 1.5, sizeAttenuation: true, map: GLOW_TEX,
+    vertexColors: true, transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+  const p = new THREE.Points(g, m);
+  p.name = 'stars';
+  scene.add(p);
+  return p;
+})();
+
+/* ============================================================
+   ТУМАННОСТЬ (большая полупрозрачная плоскость позади)
+   ============================================================ */
+const nebula = (() => {
+  const geo = new THREE.PlaneGeometry(520, 340, 1, 1);
+  const mat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      varying vec2 vUv;
+      void main(){
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+      }`,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform float uTime;
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+      float noise(vec2 p){
+        vec2 i = floor(p), f = fract(p);
+        f = f*f*(3.0-2.0*f);
+        return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), f.x),
+                   mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x), f.y);
+      }
+      void main(){
+        vec2 uv = vUv;
+        float n = noise(uv*3.5)*0.55 + noise(uv*8.0)*0.28 + noise(uv*19.0)*0.13;
+        float d = distance(uv, vec2(0.5,0.5));
+        float mask = smoothstep(0.78, 0.04, d);
+        vec3 col = mix(vec3(0.07,0.05,0.17), vec3(0.42,0.30,0.72), n);
+        col += vec3(0.30,0.14,0.48) * pow(mask, 2.2) * 0.75;
+        col += vec3(0.10,0.16,0.34) * pow(1.0-mask, 3.0) * 0.5;
+        gl_FragColor = vec4(col, mask*0.88);
+      }`
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(0, 0, -60);
+  m.renderOrder = -2;
+  m.name = 'nebula';
+  scene.add(m);
+  return m;
+})();
+
+/* ============================================================
+   ЗЕМЛЯ (шейдер поверхности)
+   ============================================================ */
+const earthUniforms = {
+  uTime:       { value: 0 },
+  uCam:        { value: new THREE.Vector3() },
+  uLightDir:   { value: new THREE.Vector3(-0.83, 0.48, 0.27).normalize() },
+  uLightColor: { value: new THREE.Color(0xff9a5a) }
+};
+
+const earth = (() => {
+  const geo = new THREE.SphereGeometry(3.0, 96, 64);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: earthUniforms,
+    vertexShader: `
+      varying vec3 vNormal;
+      varying vec3 vWorld;
+      void main(){
+        vNormal = normalize(mat3(modelMatrix) * normal);
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorld = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader: `
+      varying vec3 vNormal;
+      varying vec3 vWorld;
+      uniform float uTime;
+      uniform vec3  uCam;
+      uniform vec3  uLightDir;
+      uniform vec3  uLightColor;
+
+      float hash(vec3 p){ return fract(sin(dot(p, vec3(12.9898,78.233,37.719)))*43758.5453); }
+      float noise(vec3 p){
+        vec3 i = floor(p), f = fract(p);
+        f = f*f*(3.0-2.0*f);
+        return mix(mix(mix(hash(i+vec3(0.0,0.0,0.0)), hash(i+vec3(1.0,0.0,0.0)), f.x),
+                       mix(hash(i+vec3(0.0,1.0,0.0)), hash(i+vec3(1.0,1.0,0.0)), f.x), f.y),
+                   mix(mix(hash(i+vec3(0.0,0.0,1.0)), hash(i+vec3(1.0,0.0,1.0)), f.x),
+                       mix(hash(i+vec3(0.0,1.0,1.0)), hash(i+vec3(1.0,1.0,1.0)), f.x), f.y), f.z);
+      }
+      float fbm(vec3 p){
+        float a = 0.5, s = 0.0;
+        for (int i = 0; i < 5; i++){ s += a*noise(p); p *= 2.07; a *= 0.5; }
+        return s;
+      }
+
+      void main(){
+        vec3 n = normalize(vNormal);
+        vec3 p = normalize(vWorld - vec3(3.0, -2.2, -14.0));
+
+        float c = fbm(p*2.3 + vec3(0.0, 0.0, uTime*0.012));
+        float land = smoothstep(0.47, 0.56, c);
+
+        vec3 ocean   = vec3(0.015, 0.075, 0.22);
+        vec3 shallow = vec3(0.05, 0.22, 0.42);
+        vec3 landCol = mix(vec3(0.09, 0.26, 0.14), vec3(0.36, 0.30, 0.17),
+                           smoothstep(0.55, 0.78, c));
+        vec3 col = mix(ocean, shallow, smoothstep(0.40, 0.47, c));
+        col = mix(col, landCol, land);
+
+        // полярные шапки
+        float lat = abs(p.y);
+        col = mix(col, vec3(0.86, 0.93, 1.0), smoothstep(0.76, 0.95, lat));
+
+        // облачный слой
+        float cl = fbm(p*3.6 + vec3(uTime*0.02, 0.0, 0.0));
+        col = mix(col, vec3(0.92,0.95,1.0), smoothstep(0.55,0.78,cl)*0.42);
+
+        // освещение от раскалённого ядра
+        vec3 L = normalize(uLightDir);
+        float d = max(dot(n, L), 0.0);
+        vec3 lit = col * (0.10 + 1.45*d);
+        lit += uLightColor * pow(d, 3.0) * 0.55;
+
+        // атмосферный рим
+        vec3 V = normalize(uCam - vWorld);
+        float rim = pow(1.0 - max(dot(n, V), 0.0), 3.0);
+        lit += vec3(0.34, 0.62, 1.0) * rim * 1.05;
+
+        gl_FragColor = vec4(lit, 1.0);
+      }`
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(EARTH_POS);
+  m.name = 'earth';
+  scene.add(m);
+  return m;
+})();
+
+/* ============================================================
+   АТМОСФЕРНЫЙ ОРЕОЛ
+   ============================================================ */
+const atmosphere = (() => {
+  const geo = new THREE.SphereGeometry(3.42, 64, 48);
+  const mat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.BackSide,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      uColor: { value: new THREE.Color(0x6fb6ff) },
+      uCam:   { value: new THREE.Vector3() }
+    },
+    vertexShader: `
+      varying vec3 vNormal;
+      varying vec3 vWorld;
+      void main(){
+        vNormal = normalize(mat3(modelMatrix) * normal);
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorld = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader: `
+      varying vec3 vNormal;
+      varying vec3 vWorld;
+      uniform vec3 uColor;
+      uniform vec3 uCam;
+      void main(){
+        vec3 n = normalize(vNormal);
+        vec3 V = normalize(uCam - vWorld);
+        float f = pow(1.0 - abs(dot(n, V)), 2.6);
+        gl_FragColor = vec4(uColor * f * 1.9, f * 0.95);
+      }`
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(EARTH_POS);
+  m.name = 'atmosphere';
+  scene.add(m);
+  return m;
+})();
+
+/* ============================================================
+   ПОЛЯРНЫЕ СИЯНИЯ — две сплющенные полупрозрачные полосы
+   ============================================================ */
+const auroraGroup = new THREE.Group();
+auroraGroup.name = 'aurora';
+scene.add(auroraGroup);
+
+const auroraMats = [];
+for (let i = 0; i < 2; i++){
+  const geo = new THREE.TorusGeometry(1.75, 0.30, 10, 96);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x7bf0c8,
+    transparent: true,
+    opacity: 0.42,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.rotation.x = Math.PI/2;
+  m.scale.set(1.0, 0.38, 1.0);
+  m.position.copy(EARTH_POS).add(new THREE.Vector3(0, i === 0 ? 2.45 : -2.45, 0));
+  m.userData.phase = i * 1.7;
+  auroraGroup.add(m);
+  auroraMats.push(m);
+}
+
+/* ============================================================
+   ЯДРО РАЗРУШЕННОЙ ПЛАНЕТЫ
+   ============================================================ */
+const core = (() => {
+  const geo = new THREE.SphereGeometry(1.1, 64, 48);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      varying vec3 vNormal;
+      varying vec3 vWorld;
+      void main(){
+        vNormal = normalize(mat3(modelMatrix) * normal);
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorld = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader: `
+      varying vec3 vNormal;
+      varying vec3 vWorld;
+      uniform float uTime;
+      float hash(vec3 p){ return fract(sin(dot(p, vec3(12.9898,78.233,37.719)))*43758.5453); }
+      float noise(vec3 p){
+        vec3 i = floor(p), f = fract(p);
+        f = f*f*(3.0-2.0*f);
+        return mix(mix(mix(hash(i+vec3(0.0,0.0,0.0)), hash(i+vec3(1.0,0.0,0.0)), f.x),
+                       mix(hash(i+vec3(0.0,1.0,0.0)), hash(i+vec3(1.0,1.0,0.0)), f.x), f.y),
+                   mix(mix(hash(i+vec3(0.0,0.0,1.0)), hash(i+vec3(1.0,0.0,1.0)), f.x),
+                       mix(hash(i+vec3(0.0,1.0,1.0)), hash(i+vec3(1.0,1.0,1.0)), f.x), f.y), f.z);
+      }
+      void main(){
+        vec3 p = normalize(vWorld - vec3(-3.2, 1.4, -12.0));
+        float n = noise(p*4.5 + vec3(0.0, 0.0, uTime*0.55));
+        n += 0.5 * noise(p*10.0 - vec3(uTime*0.35));
+        n = clamp(n, 0.0, 1.0);
+        vec3 col = mix(vec3(1.0, 0.30, 0.06), vec3(1.0, 0.88, 0.55), n*0.85);
+        col += vec3(1.0, 0.55, 0.18) * pow(n, 3.0) * 0.9;
+        gl_FragColor = vec4(col, 1.0);
+      }`
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(CORE_POS);
+  m.name = 'core';
+  scene.add(m);
+  return m;
+})();
+
+/* ============================================================
+   ОБЛОМКИ — 200 аддитивных точек
+   ============================================================ */
+const DEBRIS = 200;
+const debrisOrigin = [];
+const debrisVel    = [];
+const debrisPhase  = [];
+const debrisFlick  = [];
+
+for (let i = 0; i < DEBRIS; i++){
+  const o = CORE_POS.clone().add(new THREE.Vector3(
+    (rnd()-0.5)*2.4, (rnd()-0.5)*2.4, (rnd()-0.5)*2.4
+  ));
+
+  let target;
+  const r = rnd();
+  if (r < 0.36){
+    // мимо станции
+    target = STATION_POS.clone().add(new THREE.Vector3(
+      (rnd()-0.5)*3.2, (rnd()-0.5)*3.2, (rnd()-0.5)*3.2
+    ));
+  } else {
+    // к Земле
+    target = EARTH_POS.clone().add(new THREE.Vector3(
+      (rnd()-0.5)*6.5, (rnd()-0.5)*6.5, (rnd()-0.5)*6.5
+    ));
+  }
+
+  const T = 4.5 + rnd()*7.5;
+  const v = target.clone().sub(o).divideScalar(T);
+
+  debrisOrigin.push(o);
+  debrisVel.push(v);
+  debrisPhase.push(rnd()*4.0);
+  debrisFlick.push(0.65 + rnd()*0.55);
+}
+
+const debrisGeo = new THREE.BufferGeometry();
+const debrisPosArr = new Float32Array(DEBRIS*3);
+const debrisColArr = new Float32Array(DEBRIS*3);
+debrisGeo.setAttribute('position', new THREE.BufferAttribute(debrisPosArr, 3).setUsage(THREE.DynamicDrawUsage));
+debrisGeo.setAttribute('color',    new THREE.BufferAttribute(debrisColArr, 3).setUsage(THREE.DynamicDrawUsage));
+
+const debrisMat = new THREE.PointsMaterial({
+  size: 0.16,
+  sizeAttenuation: true,
+  map: GLOW_TEX,
+  vertexColors: true,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending
+});
+const cloud_debris = new THREE.Points(debrisGeo, debrisMat);
+cloud_debris.name = 'cloud_debris';
+cloud_debris.frustumCulled = false;
+scene.add(cloud_debris);
+
+/* ============================================================
+   ОРБИТЫ — 4 светящихся кольца вокруг Земли
+   ============================================================ */
+const orbitDefs = [
+  { r: 4.2, tx:  0.42, tz:  0.20, sp:  0.34 },
+  { r: 5.0, tx: -0.62, tz:  0.52, sp: -0.27 },
+  { r: 5.9, tx:  0.92, tz: -0.32, sp:  0.21 },
+  { r: 6.8, tx: -0.22, tz:  0.84, sp: -0.17 }
+];
+
+const orbits = new THREE.Group();
+orbits.name = 'orbits';
+scene.add(orbits);
+
+const orbitEulers = [];
+for (const d of orbitDefs){
+  const geo = new THREE.TorusGeometry(d.r, 0.018, 6, 200);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x6fb6ff,
+    transparent: true,
+    opacity: 0.25,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(EARTH_POS);
+  m.rotation.set(d.tx, 0, d.tz);
+  orbits.add(m);
+  orbitEulers.push(new THREE.Euler(d.tx, 0, d.tz));
+}
+
+/* ============================================================
+   СПУТНИКИ — 5 мелких точек на кольцах
+   ============================================================ */
+const SAT_N = 5;
+const satGroup = new THREE.Group();
+satGroup.name = 'satellites';
+scene.add(satGroup);
+
+const satMeshes = [];
+const satRing   = [];
+const satAngle0 = [];
+for (let i = 0; i < SAT_N; i++){
+  const geo = new THREE.SphereGeometry(0.075, 10, 8);
+  const mat = new THREE.MeshBasicMaterial({ color: 0xd6ecff });
+  const m = new THREE.Mesh(geo, mat);
+  satGroup.add(m);
+  satMeshes.push(m);
+  satRing.push(i % orbitDefs.length);
+  satAngle0.push(rnd()*Math.PI*2);
+}
+
+/* ============================================================
+   СТАНЦИЯ
+   ============================================================ */
+const station = new THREE.Group();
+station.name = 'station';
+station.position.copy(STATION_POS);
+station.scale.setScalar(1.3);
+scene.add(station);
+
+const metalMat  = new THREE.MeshStandardMaterial({ color: 0x9aa8bb, metalness: 0.85, roughness: 0.34 });
+const panelMat  = new THREE.MeshStandardMaterial({ color: 0x24407a, metalness: 0.6, roughness: 0.28, emissive: 0x0a1730 });
+const glowMat   = new THREE.MeshBasicMaterial({ color: 0xa8e4ff });
+
+{
+  const truss = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 2.6, 8), metalMat);
+  truss.rotation.z = Math.PI/2;
+  station.add(truss);
+
+  const hab = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.95, 14), metalMat);
+  hab.rotation.z = Math.PI/2;
+  station.add(hab);
+
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.045, 8, 24), metalMat);
+  ring.rotation.y = Math.PI/2;
+  station.add(ring);
+
+  for (const sx of [-1.15, 1.15]){
+    const p = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.02, 0.55), panelMat);
+    p.position.set(sx, 0, 0);
+    station.add(p);
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.35, 6), metalMat);
+    strut.rotation.z = Math.PI/2;
+    strut.position.set(sx*0.72, 0, 0);
+    station.add(strut);
+  }
+
+  const dish = new THREE.Mesh(
+    new THREE.SphereGeometry(0.26, 14, 10, 0, Math.PI*2, 0, Math.PI/2), metalMat);
+  dish.position.set(0, 0.30, 0);
+  dish.rotation.x = Math.PI;
+  station.add(dish);
+
+  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 8), glowMat);
+  beacon.position.set(0, -0.36, 0);
+  station.add(beacon);
+
+  const beacon2 = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 8), glowMat);
+  beacon2.position.set(0.9, 0.16, 0);
+  station.add(beacon2);
+}
+
+/* ============================================================
+   СОСТОЯНИЕ И ОБНОВЛЕНИЕ
+   ============================================================ */
+let t = 0;
+let aheadCount = 0;
+
+const _v = new THREE.Vector3();
+
+function update(){
+  /* --- камера: плавно от станции к панораме за 6 с --- */
+  const k = Math.min(t / 6, 1);
+  const e = k*k*(3 - 2*k);
+  camera.position.lerpVectors(CAM_START, CAM_END, e);
+  camera.lookAt(LOOK_AT);
+
+  earthUniforms.uTime.value = t;
+  earthUniforms.uCam.value.copy(camera.position);
+  atmosphere.material.uniforms.uCam.value.copy(camera.position);
+  core.material.uniforms.uTime.value = t;
+  nebula.material.uniforms.uTime.value = t;
+
+  /* --- мерцание сияний --- */
+  for (const a of auroraMats){
+    const ph = a.userData.phase;
+    a.material.opacity = 0.30 + 0.26 * (0.5 + 0.5*Math.sin(t*2.1 + ph));
+    const s = 1.0 + 0.06*Math.sin(t*1.6 + ph*1.3);
+    a.scale.set(s, 0.38 * (1.0 + 0.10*Math.sin(t*2.7 + ph)), s);
+  }
+
+  /* --- пульсация ядра --- */
+  const pulse = 1.0 + 0.05*Math.sin(t*3.1);
+  core.scale.setScalar(pulse);
+  coreLight.intensity = 3.6 + 1.1*Math.sin(t*3.1);
+
+  /* --- обломки --- */
+  const pa = debrisGeo.attributes.position.array;
+  const ca = debrisGeo.attributes.color.array;
+  let ahead = 0;
+
+  for (let i = 0; i < DEBRIS; i++){
+    const o = debrisOrigin[i];
+    const v = debrisVel[i];
+    const tt = t + debrisPhase[i];
+
+    const x = o.x + v.x*tt;
+    const y = o.y + v.y*tt;
+    const z = o.z + v.z*tt;
+
+    pa[i*3+0] = x; pa[i*3+1] = y; pa[i*3+2] = z;
+
+    // затухание у Земли (сгорание в атмосфере)
+    const dx = x - EARTH_POS.x, dy = y - EARTH_POS.y, dz = z - EARTH_POS.z;
+    const dE = Math.sqrt(dx*dx + dy*dy + dz*dz);
+    let b = Math.min(1, Math.max(0, (dE - 3.05) / 1.7));
+
+    // затухание далеко улетевших
+    if (tt > 22) b *= Math.max(0, Math.min(1, (32 - tt) / 9));
+
+    // мерцание
+    b *= debrisFlick[i] * (0.82 + 0.18*Math.sin(t*7.0 + i*1.37));
+
+    // раскалённость рядом с ядром
+    const cx = x - CORE_POS.x, cy = y - CORE_POS.y, cz = z - CORE_POS.z;
+    const dC = Math.sqrt(cx*cx + cy*cy + cz*cz);
+    const hot = Math.max(0, 1 - dC/3.5);
+
+    const r = (1.00 + hot*0.0) * b;
+    const g = (0.69 + hot*0.22) * b;
+    const bl = (0.44 + hot*0.30) * b;
+    ca[i*3+0] = r; ca[i*3+1] = g; ca[i*3+2] = bl;
+
+    // подсчёт «впереди» — ближе 2.76 к станции
+    const sx = x - STATION_POS.x, sy = y - STATION_POS.y, sz = z - STATION_POS.z;
+    if (sx*sx + sy*sy + sz*sz < 2.76*2.76) ahead++;
+  }
+  aheadCount = ahead;
+
+  debrisGeo.attributes.position.needsUpdate = true;
+  debrisGeo.attributes.color.needsUpdate = true;
+
+  /* --- спутники по кольцам --- */
+  for (let i = 0; i < SAT_N; i++){
+    const rd = orbitDefs[satRing[i]];
+    const a = satAngle0[i] + t * rd.sp;
+    _v.set(rd.r*Math.cos(a), rd.r*Math.sin(a), 0);
+    _v.applyEuler(orbitEulers[satRing[i]]);
+    _v.add(EARTH_POS);
+    satMeshes[i].position.copy(_v);
+  }
+}
+
+/* ============================================================
+   ПРОБА
+   ============================================================ */
+window.__probe = function(){
+  return {
+    t: Number(t.toFixed(4)),
+    objects: [
+      'earth', 'atmosphere', 'aurora', 'core', 'cloud_debris',
+      'orbits', 'satellites', 'station', 'nebula', 'stars'
+    ],
+    ahead: aheadCount
+  };
+};
+
+/* ============================================================
+   ШАГ
+   ============================================================ */
+window.__step = function(dt){
+  t += dt;
+  update();
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+/* ============================================================
+   ПЕРВЫЙ КАДР
+   ============================================================ */
+update();
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-28 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

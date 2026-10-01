@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Mandala Animation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #0a0a24; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+    const THREE = window.THREE;
+
+    // Constants
+    const WIDTH = 800;
+    const HEIGHT = 600;
+    const FRAME_HEIGHT_UNITS = 6.627;
+    
+    // Colors
+    const COLOR_BG = 0x0a0a24;
+    const COLOR_GOLD = 0xffd257;
+    const COLOR_PINK = 0xff3aa8;
+    const COLOR_CYAN = 0x2ee6ff;
+
+    // Dimensions based on Frame Height Units
+    const H = FRAME_HEIGHT_UNITS;
+    
+    const CORE_RADIUS = 0.06 * H;
+    const CORE_RING_TUBE = 0.01 * H; // Approximate visual match for "ring of same gold"
+
+    const PETAL1_WIDTH = 0.03 * H;
+    const PETAL1_R_IN = 0.1 * H;
+    const PETAL1_R_OUT = 0.34 * H;
+    const PETAL1_LENGTH = PETAL1_R_OUT - PETAL1_R_IN;
+    
+    const PETAL2_WIDTH = 0.042 * H;
+    const PETAL2_R_IN = 0.1 * H;
+    const PETAL2_R_OUT = 0.2 * H;
+    const PETAL2_LENGTH = PETAL2_R_OUT - PETAL2_R_IN;
+
+    const TIP_RADIUS = 0.022 * H;
+
+    const RING1_RADIUS = 0.16 * H;
+    const RING1_TUBE = 0.012 * H;
+
+    const RING2_RADIUS = 0.34 * H;
+    const RING2_TUBE = 0.006 * H;
+
+    // Scene Setup
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(COLOR_BG);
+
+    const camera = new THREE.PerspectiveCamera(45, WIDTH / HEIGHT, 0.1, 100);
+    camera.position.set(0, 0, 8);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(WIDTH, HEIGHT, false);
+    document.body.appendChild(renderer.domElement);
+
+    // Materials
+    const matGold = new THREE.MeshBasicMaterial({ color: COLOR_GOLD });
+    const matPink = new THREE.MeshBasicMaterial({ color: COLOR_PINK });
+    const matCyan = new THREE.MeshBasicMaterial({ color: COLOR_CYAN });
+
+    // Group: Wheel
+    const wheel = new THREE.Group();
+    wheel.name = "wheel";
+    scene.add(wheel);
+
+    // 1. Core
+    const coreGeo = new THREE.CircleGeometry(CORE_RADIUS, 32);
+    const coreMesh = new THREE.Mesh(coreGeo, matGold);
+    coreMesh.name = "core";
+    coreMesh.rotation.x = -Math.PI / 2; // Face camera
+    wheel.add(coreMesh);
+
+    const coreRingGeo = new THREE.TorusGeometry(CORE_RADIUS, CORE_RING_TUBE, 16, 32);
+    const coreRingMesh = new THREE.Mesh(coreRingGeo, matGold);
+    wheel.add(coreRingMesh);
+
+    // 2. Petals Group
+    const petalsGroup = new THREE.Group();
+    petalsGroup.name = "petals";
+    wheel.add(petalsGroup);
+
+    // Helper to create a petal plane
+    function createPetal(width, length, colorMat) {
+        const geo = new THREE.PlaneGeometry(width, length);
+        // Pivot adjustment: Geometry is centered. We want it to start at R_IN.
+        // We will position the mesh at (0, R_IN + length/2, 0) effectively, 
+        // but since we rotate the group, it's easier to translate the mesh up.
+        const mesh = new THREE.Mesh(geo, colorMat);
+        mesh.position.y = length / 2 + PETAL1_R_IN; // Base offset for all petals
+        return mesh;
+    }
+
+    // Helper to create a tip
+    function createTip() {
+        const geo = new THREE.CircleGeometry(TIP_RADIUS, 16);
+        const mesh = new THREE.Mesh(geo, matGold); // Tips usually match core or contrast, prompt says "circles-tips", implies gold like core/rings usually, or matching petal. 
+        // Re-reading: "12 кружков-наконечников... на внешнем радиусе". Color not explicitly specified for tips, 
+        // but core/rings are gold. Let's use Gold for tips to match "core and rings" theme or Pink/Cyan.
+        // Given "core and rings" are gold, and tips are distinct, let's make them Gold to tie to the center.
+        mesh.position.y = PETAL1_R_OUT; 
+        return mesh;
+    }
+
+    // Series 1: 12 planes, alternating colors
+    for (let i = 0; i < 12; i++) {
+        const angle = (Math.PI / 2) - i * (Math.PI / 6); // Start at 90deg (Top), go clockwise
+        const color = (i % 2 === 0) ? matPink : matCyan;
+        
+        const petal = createPetal(PETAL1_WIDTH, PETAL1_LENGTH, color);
+        petal.rotation.z = -angle; // Rotate to position (Plane is vertical by default)
+        // Actually, PlaneGeometry is in XY plane. Rotation Z rotates it in XY plane.
+        // If we want it radial from center:
+        // Default Plane is vertical. Rotate Z by angle makes it point at angle.
+        // Wait, PlaneGeometry is flat on Z=0. 
+        // To make it face camera, we need rotation.x = -PI/2? No, we are looking down Z.
+        // PlaneGeometry lies in XY plane. Camera looks down Z. So Plane is facing camera perfectly.
+        // We just need to rotate it around Z to distribute radially.
+        
+        petal.rotation.z = -angle; 
+        petalsGroup.add(petal);
+
+        // Tip
+        const tip = createTip();
+        tip.rotation.z = -angle;
+        petalsGroup.add(tip);
+    }
+
+    // Series 2: 12 short planes, rotated 15 deg (PI/12)
+    const offsetAngle = Math.PI / 12;
+    for (let i = 0; i < 12; i++) {
+        const angle = (Math.PI / 2) - offsetAngle - i * (Math.PI / 6);
+        // Color not specified for short petals, assume same alternation or one color?
+        // "вторая, короткая серия лепестков того же числа...". Usually implies similar style.
+        // Let's alternate or pick one. To ensure palette coverage, let's alternate too.
+        const color = (i % 2 === 0) ? matCyan : matPink; 
+
+        const petal = new THREE.Mesh(
+            new THREE.PlaneGeometry(PETAL2_WIDTH, PETAL2_LENGTH),
+            color
+        );
+        petal.position.y = PETAL2_LENGTH / 2 + PETAL2_R_IN;
+        petal.rotation.z = -angle;
+        petalsGroup.add(petal);
+    }
+
+    // 3. Rings
+    // Ring 1: Radius 0.16H, Tube 0.012H, Gold
+    const ring1Geo = new THREE.TorusGeometry(RING1_RADIUS, RING1_TUBE, 16, 64);
+    const ring1Mesh = new THREE.Mesh(ring1Geo, matGold);
+    wheel.add(ring1Mesh);
+
+    // Ring 2: Radius 0.34H, Tube 0.006H, Cyan
+    const ring2Geo = new THREE.TorusGeometry(RING2_RADIUS, RING2_TUBE, 16, 64);
+    const ring2Mesh = new THREE.Mesh(ring2Geo, matCyan);
+    wheel.add(ring2Mesh);
+
+    // Animation State
+    let time = 0;
+    const SPEED = 0.2014; // rad/s
+
+    // Exposed Functions
+    window.__step = function(dt) {
+        time += dt;
+        wheel.rotation.z = SPEED * time;
+        renderer.render(scene, camera);
+        return window.__probe();
+    };
+
+    window.__probe = function() {
+        const angleDeg = (wheel.rotation.z * 180 / Math.PI) % 360;
+        // Normalize to positive
+        const normalizedAngle = angleDeg < 0 ? angleDeg + 360 : angleDeg;
+        
+        return {
+            t: parseFloat(time.toFixed(4)),
+            objects: ["core", "petals", "wheel"],
+            angle: parseFloat(normalizedAngle.toFixed(4))
+        };
+    };
+
+    window.__ready = true;
+
+    // Initial Render
+    renderer.render(scene, camera);
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-3 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

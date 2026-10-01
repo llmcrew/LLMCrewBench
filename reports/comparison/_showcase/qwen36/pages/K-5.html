@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Chain Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // Сцена
+        const scene = new THREE.Scene();
+
+        // Камера
+        const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+        camera.position.set(0.0, 3.2, 13.0);
+        camera.lookAt(0.0, 0.6, 0.0);
+
+        // Рендерер
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Свет
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+        dirLight.position.set(7.0, 13.0, 10.0);
+        scene.add(dirLight);
+
+        // Пол
+        const floor = new THREE.Mesh(
+            new THREE.PlaneGeometry(40, 40),
+            new THREE.MeshStandardMaterial({ color: 0x2b3a4a })
+        );
+        floor.rotation.x = -Math.PI / 2;
+        floor.name = 'floor';
+        scene.add(floor);
+
+        // Рельс
+        const rail = new THREE.Mesh(
+            new THREE.BoxGeometry(24, 0.12, 0.6),
+            new THREE.MeshStandardMaterial({ color: 0x8a93a6 })
+        );
+        rail.position.set(0, 0.06, 0);
+        rail.name = 'rail';
+        scene.add(rail);
+
+        // Грузы
+        const cartGeo = new THREE.BoxGeometry(0.9, 0.9, 0.9);
+        const cartMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+        const carts = [];
+        for (let i = 0; i < 3; i++) {
+            const cart = new THREE.Mesh(cartGeo, cartMat);
+            cart.name = `cart-${i}`;
+            cart.position.set(0, 0.45, 0);
+            scene.add(cart);
+            carts.push(cart);
+        }
+
+        // Пружины
+        const springGeo = new THREE.CylinderGeometry(0.06, 0.06, 1, 16);
+        const springMat = new THREE.MeshStandardMaterial({ color: 0xd8dde6 });
+        const springs = [];
+        for (let i = 0; i < 2; i++) {
+            const spring = new THREE.Mesh(springGeo, springMat);
+            spring.name = `spring-${i}${i + 1}`;
+            scene.add(spring);
+            springs.push(spring);
+        }
+
+        // Физическое состояние
+        let x = [-2.24, -0.09, 2.13];
+        let v = [0.9, 0.0, -0.9];
+        let steps = 0;
+        let t = 0.0;
+        const k = 10.7;
+        const m = 1.0;
+        const c = 0.56;
+        const d0 = 2.12;
+
+        function updateVisuals() {
+            for (let i = 0; i < 3; i++) {
+                carts[i].position.x = x[i];
+            }
+            for (let i = 0; i < 2; i++) {
+                const p1 = carts[i].position;
+                const p2 = carts[i + 1].position;
+                const midX = (p1.x + p2.x) / 2;
+                springs[i].position.set(midX, 0.45, 0);
+                springs[i].lookAt(p2.x, 0.45, 0);
+            }
+        }
+
+        window.__step = function(dt) {
+            const e12 = x[1] - x[0] - d0;
+            const e23 = x[2] - x[1] - d0;
+
+            const F1 = k * e12 + c * (v[1] - v[0]);
+            const F2 = -k * e12 + c * (v[0] - v[1]) + k * e23 + c * (v[2] - v[1]);
+            const F3 = -k * e23 + c * (v[1] - v[2]);
+
+            // Полунеявный Эйлер: сначала скорости
+            v[0] += (F1 / m) * dt;
+            v[1] += (F2 / m) * dt;
+            v[2] += (F3 / m) * dt;
+
+            // Затем координаты
+            x[0] += v[0] * dt;
+            x[1] += v[1] * dt;
+            x[2] += v[2] * dt;
+
+            steps++;
+            t += dt;
+
+            updateVisuals();
+            renderer.render(scene, camera);
+
+            return { x: [...x], v: [...v], steps, t };
+        };
+
+        window.__probe = function() {
+            const round = (n) => Math.round(n * 10000) / 10000;
+            return {
+                steps: steps,
+                t: round(t),
+                objects: ["floor", "rail", "cart-0", "cart-1", "cart-2", "spring-01", "spring-12"],
+                camera: [0, 3.2, 13],
+                x: [round(x[0]), round(x[1]), round(x[2])],
+                v: [round(v[0]), round(v[1]), round(v[2])]
+            };
+        };
+
+        // Первая отрисовка
+        updateVisuals();
+        renderer.render(scene, camera);
+        window.__ready = true;
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · K-5 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

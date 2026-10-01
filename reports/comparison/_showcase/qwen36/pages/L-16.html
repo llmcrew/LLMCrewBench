@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; overflow: hidden; background: #080f22; }
+    canvas { display: block; }
+  </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <script type="module">
+    const THREE = window.THREE;
+
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ canvas, preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 100);
+    camera.position.set(0, 0, 4.0);
+    camera.lookAt(0, 0, 0);
+
+    // Фон: плоскость во весь кадр
+    const bgGeo = new THREE.PlaneGeometry(10, 10);
+    const bgMat = new THREE.MeshBasicMaterial({ color: 0x080f22 });
+    const bgMesh = new THREE.Mesh(bgGeo, bgMat);
+    bgMesh.position.z = -2;
+    scene.add(bgMesh);
+
+    // Центр: диск с радиальным градиентом
+    const cCanvas = document.createElement('canvas');
+    cCanvas.width = 128; cCanvas.height = 128;
+    const ctx = cCanvas.getContext('2d');
+    const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+    grad.addColorStop(0, '#ffe9a8');
+    grad.addColorStop(1, '#080f22');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 128, 128);
+    const centerTex = new THREE.CanvasTexture(cCanvas);
+    const centerGeo = new THREE.CircleGeometry(0.22 * 3.314, 32);
+    const centerMat = new THREE.MeshBasicMaterial({ map: centerTex, transparent: true, side: THREE.DoubleSide });
+    const centerMesh = new THREE.Mesh(centerGeo, centerMat);
+    centerMesh.position.z = -0.1;
+    scene.add(centerMesh);
+
+    const SCALE = 3.314 / 2;
+    const TAIL_DT = 1 / 60;
+    let t = 0;
+
+    const sphereData = [
+      { a: 0.603, inc: 0.765, t0: 2.567, T: 5.76, color: 0xff4d6d, name: 'sphere1' },
+      { a: 0.784, inc: 0.780, t0: 5.254, T: 8.40, color: 0xffd166, name: 'sphere2' },
+      { a: 0.668, inc: 0.754, t0: 2.690, T: 5.09, color: 0x4dd0e1, name: 'sphere3' },
+      { a: 0.691, inc: 0.620, t0: 6.163, T: 8.27, color: 0x9b6dff, name: 'sphere4' },
+      { a: 0.321, inc: 0.520, t0: 3.844, T: 6.70, color: 0xff4d6d, name: 'sphere5' },
+      { a: 0.507, inc: 0.688, t0: 3.682, T: 5.89, color: 0xffd166, name: 'sphere6' }
+    ];
+
+    const spheres = [];
+
+    sphereData.forEach((d) => {
+      const geo = new THREE.SphereGeometry(0.06, 16, 16);
+      const mat = new THREE.MeshBasicMaterial({ color: d.color });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.name = d.name;
+      scene.add(mesh);
+
+      const tailGeo = new THREE.BufferGeometry();
+      const positions = new Float32Array(60 * 3);
+      const colors = new Float32Array(60 * 3);
+      tailGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      tailGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+      const tailMat = new THREE.PointsMaterial({
+        size: 0.07,
+        vertexColors: true,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      const tail = new THREE.Points(tailGeo, tailMat);
+      tail.name = d.name + '_tail';
+      scene.add(tail);
+
+      const baseColor = new THREE.Color(d.color);
+      spheres.push({ mesh, tail, geo: tailGeo, positions, colors, baseColor, d });
+    });
+
+    function update() {
+      for (const s of spheres) {
+        const theta = s.d.t0 + 2 * Math.PI * t / s.d.T;
+        const p = s.d.a * SCALE * (Math.cos(theta), Math.sin(theta) * Math.cos(s.d.inc), Math.sin(theta) * Math.sin(s.d.inc));
+        s.mesh.position.set(p.x, p.y, p.z);
+
+        for (let i = 0; i < 60; i++) {
+          const tTail = t - i * TAIL_DT;
+          const thetaTail = s.d.t0 + 2 * Math.PI * tTail / s.d.T;
+          const pTail = s.d.a * SCALE * (Math.cos(thetaTail), Math.sin(thetaTail) * Math.cos(s.d.inc), Math.sin(thetaTail) * Math.sin(s.d.inc));
+          s.positions[i * 3] = pTail.x;
+          s.positions[i * 3 + 1] = pTail.y;
+          s.positions[i * 3 + 2] = pTail.z;
+
+          const bright = 1.0 - (i / 59) * 0.94;
+          s.colors[i * 3] = s.baseColor.r * bright;
+          s.colors[i * 3 + 1] = s.baseColor.g * bright;
+          s.colors[i * 3 + 2] = s.baseColor.b * bright;
+        }
+        s.geo.attributes.position.needsUpdate = true;
+        s.geo.attributes.color.needsUpdate = true;
+      }
+    }
+
+    window.__step = function (dt) {
+      t += dt;
+      update();
+      renderer.render(scene, camera);
+      return window.__probe();
+    };
+
+    window.__probe = function () {
+      const orbits = spheres.map(s => {
+        const theta = s.d.t0 + 2 * Math.PI * t / s.d.T;
+        return parseFloat(theta.toFixed(4));
+      });
+      const planets = spheres.map(s => {
+        const theta = s.d.t0 + 2 * Math.PI * t / s.d.T;
+        const p = s.d.a * SCALE * (Math.cos(theta), Math.sin(theta) * Math.cos(s.d.inc), Math.sin(theta) * Math.sin(s.d.inc));
+        return {
+          x: parseFloat((p.x / 3.314).toFixed(4)),
+          y: parseFloat((p.y / 3.314).toFixed(4)),
+          z: parseFloat((p.z / 3.314).toFixed(4))
+        };
+      });
+      const objects = spheres.map(s => s.mesh.name).concat(spheres.map(s => s.tail.name));
+      return { t: parseFloat(t.toFixed(4)), objects, orbits, planets };
+    };
+
+    update();
+    renderer.render(scene, camera);
+    window.__ready = true;
+  </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-16 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#000}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const N = 40;
+const TOTAL = N * N;
+
+// LCG
+let seed = 1920875681;
+function next() {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+}
+
+// Initialize grid
+const grid = new Uint8Array(TOTAL);
+for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+        const v = next();
+        grid[i * N + j] = v < 0.7 ? 1 : 0;
+    }
+}
+grid[20 * N + 20] = 2;
+
+let steps = 0;
+
+// Colors per state
+const COLORS = [
+    new THREE.Color(0x0f1620),
+    new THREE.Color(0x2f8f46),
+    new THREE.Color(0xff5a1e),
+    new THREE.Color(0x4a3a2a)
+];
+
+// Scene
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 500);
+camera.position.set(0.0, 50.0, 46.0);
+camera.lookAt(0, 0, 0);
+
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambientLight);
+
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+dirLight.position.set(16.0, 46.0, 18.0);
+scene.add(dirLight);
+
+// InstancedMesh
+const geometry = new THREE.BoxGeometry(0.9, 0.6, 0.9);
+const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
+const mesh = new THREE.InstancedMesh(geometry, material, TOTAL);
+mesh.name = 'forest';
+
+const dummy = new THREE.Object3D();
+for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+        const idx = i * N + j;
+        dummy.position.set(j - 19.5, 0.3, i - 19.5);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(idx, dummy.matrix);
+        mesh.setColorAt(idx, COLORS[grid[idx]]);
+    }
+}
+mesh.instanceMatrix.needsUpdate = true;
+mesh.instanceColor.needsUpdate = true;
+scene.add(mesh);
+
+// Renderer
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+// Step logic
+function doStep() {
+    const old = grid.slice();
+    for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+            const idx = i * N + j;
+            if (old[idx] === 2) {
+                grid[idx] = 3;
+            } else if (old[idx] === 1) {
+                let nb = false;
+                for (let di = -1; di <= 1 && !nb; di++) {
+                    for (let dj = -1; dj <= 1 && !nb; dj++) {
+                        if (di === 0 && dj === 0) continue;
+                        const ni = i + di;
+                        const nj = j + dj;
+                        if (ni >= 0 && ni < N && nj >= 0 && nj < N) {
+                            if (old[ni * N + nj] === 2) nb = true;
+                        }
+                    }
+                }
+                grid[idx] = nb ? 2 : 1;
+            }
+        }
+    }
+    steps++;
+}
+
+function countStates() {
+    let trees = 0, burning = 0, burned = 0;
+    for (let k = 0; k < TOTAL; k++) {
+        if (grid[k] === 1) trees++;
+        else if (grid[k] === 2) burning++;
+        else if (grid[k] === 3) burned++;
+    }
+    return { trees, burning, burned, steps };
+}
+
+function updateColors() {
+    for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+            const idx = i * N + j;
+            mesh.setColorAt(idx, COLORS[grid[idx]]);
+        }
+    }
+    mesh.instanceColor.needsUpdate = true;
+}
+
+// Initial render
+renderer.render(scene, camera);
+
+// API
+window.__step = function (dt) {
+    doStep();
+    return countStates();
+};
+
+window.__probe = function () {
+    updateColors();
+    renderer.render(scene, camera);
+    return countStates();
+};
+
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · K-13 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

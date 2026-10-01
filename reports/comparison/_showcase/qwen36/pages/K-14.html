@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Game of Life</title>
+    <style>body { margin: 0; overflow: hidden; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        const SIZE = 24;
+        let seed = 1741694328;
+        function next() {
+            seed = (seed * 1664525 + 1013904223) % 4294967296;
+            return seed / 4294967296;
+        }
+
+        let grid = new Array(SIZE).fill(null).map(() => new Array(SIZE).fill(0));
+        for (let i = 0; i < SIZE; i++) {
+            for (let j = 0; j < SIZE; j++) {
+                grid[i][j] = next() < 0.3 ? 1 : 0;
+            }
+        }
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 500);
+        camera.position.set(0.0, 34.0, 23.0);
+        camera.lookAt(0, 0, 0);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(10.0, 28.0, 14.0);
+        scene.add(dirLight);
+
+        const geometry = new THREE.BoxGeometry(0.92, 0.4, 0.92);
+        const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
+        const instancedMesh = new THREE.InstancedMesh(geometry, material, SIZE * SIZE);
+        instancedMesh.name = 'life';
+
+        const dummy = new THREE.Object3D();
+        const color = new THREE.Color();
+        const ALIVE_COLOR = new THREE.Color(0xffa726);
+        const DEAD_COLOR = new THREE.Color(0x1a2432);
+
+        for (let i = 0; i < SIZE; i++) {
+            for (let j = 0; j < SIZE; j++) {
+                const idx = i * SIZE + j;
+                dummy.position.set(j - 11.5, 0.2, i - 11.5);
+                dummy.updateMatrix();
+                instancedMesh.setMatrixAt(idx, dummy.matrix);
+                color.set(grid[i][j] ? ALIVE_COLOR : DEAD_COLOR);
+                instancedMesh.setColorAt(idx, color);
+            }
+        }
+        instancedMesh.instanceMatrix.needsUpdate = true;
+        instancedMesh.instanceColor.needsUpdate = true;
+        scene.add(instancedMesh);
+
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        let generation = 0;
+
+        window.__step = function(dt) {
+            const newGrid = new Array(SIZE).fill(null).map(() => new Array(SIZE).fill(0));
+            for (let i = 0; i < SIZE; i++) {
+                for (let j = 0; j < SIZE; j++) {
+                    let neighbors = 0;
+                    for (let di = -1; di <= 1; di++) {
+                        for (let dj = -1; dj <= 1; dj++) {
+                            if (di === 0 && dj === 0) continue;
+                            const ni = i + di;
+                            const nj = j + dj;
+                            if (ni >= 0 && ni < SIZE && nj >= 0 && nj < SIZE) {
+                                neighbors += grid[ni][nj];
+                            }
+                        }
+                    }
+                    if (grid[i][j] === 1) {
+                        newGrid[i][j] = (neighbors === 2 || neighbors === 3) ? 1 : 0;
+                    } else {
+                        newGrid[i][j] = (neighbors === 3) ? 1 : 0;
+                    }
+                }
+            }
+            grid = newGrid;
+            generation++;
+
+            for (let i = 0; i < SIZE; i++) {
+                for (let j = 0; j < SIZE; j++) {
+                    const idx = i * SIZE + j;
+                    color.set(grid[i][j] ? ALIVE_COLOR : DEAD_COLOR);
+                    instancedMesh.setColorAt(idx, color);
+                }
+            }
+            instancedMesh.instanceColor.needsUpdate = true;
+            return grid;
+        };
+
+        window.__probe = function() {
+            for (let i = 0; i < SIZE; i++) {
+                for (let j = 0; j < SIZE; j++) {
+                    const idx = i * SIZE + j;
+                    color.set(grid[i][j] ? ALIVE_COLOR : DEAD_COLOR);
+                    instancedMesh.setColorAt(idx, color);
+                }
+            }
+            instancedMesh.instanceColor.needsUpdate = true;
+
+            let alive = 0;
+            let row0 = 0, row11 = 0, row23 = 0;
+            for (let i = 0; i < SIZE; i++) {
+                for (let j = 0; j < SIZE; j++) {
+                    if (grid[i][j]) {
+                        alive++;
+                        if (i === 0) row0++;
+                        if (i === 11) row11++;
+                        if (i === 23) row23++;
+                    }
+                }
+            }
+
+            renderer.render(scene, camera);
+
+            return {
+                alive: alive,
+                generation: generation,
+                rows: [row0, row11, row23]
+            };
+        };
+
+        renderer.render(scene, camera);
+        window.__ready = true;
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · K-14 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

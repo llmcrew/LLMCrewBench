@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>flow</title>
+<style>
+  html,body{margin:0;padding:0;background:#0b1424;overflow:hidden}
+  canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ---------- renderer / scene / camera ---------- */
+const renderer = new THREE.WebGLRenderer({preserveDrawingBuffer:true});
+renderer.setPixelRatio(1);
+renderer.setSize(800,600,false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b1424);
+
+const camera = new THREE.OrthographicCamera(-4/3, 4/3, 1, -1, 0.1, 10);
+camera.position.set(0, 0, 2);
+camera.lookAt(0, 0, 0);
+
+/* ---------- instanced strokes ---------- */
+const N = 1500;
+const geo = new THREE.PlaneGeometry(1, 1);
+{
+  const cnt = geo.attributes.position.count;
+  const c = new Float32Array(cnt * 3).fill(1);
+  geo.setAttribute('color', new THREE.BufferAttribute(c, 3));
+}
+const mat = new THREE.MeshBasicMaterial({vertexColors:true, side:THREE.DoubleSide});
+const mesh = new THREE.InstancedMesh(geo, mat, N);
+mesh.name = 'particles';
+mesh.frustumCulled = false;
+mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(mesh);
+
+const dummy = new THREE.Object3D();
+const col = new THREE.Color();
+
+/* ---------- analytic velocity field (curl of stream function) ---------- */
+const waves = [
+  {a:0.50, k: 1.40, m: 0.90, w:0.70, p:0.987},
+  {a:0.35, k: 0.80, m:-1.70, w:1.10, p:0.987 + 2.1}
+];
+
+function velocity(x, y, t){
+  let vx = 0, vy = 0;
+  for(let i = 0; i < waves.length; i++){
+    const wv = waves[i];
+    const ph = wv.k * x + wv.m * y - wv.w * t + wv.p;
+    const c = wv.a * Math.cos(ph);
+    vx += c * wv.m;
+    vy += c * (-wv.k);
+  }
+  return [vx, vy];
+}
+
+/* ---------- deterministic LCG ---------- */
+let seed = 765555113;
+function rnd(){
+  seed = (Math.imul(1664525, seed) + 1013904223) >>> 0;
+  return seed / 4294967296;
+}
+
+const px = new Float32Array(N);
+const py = new Float32Array(N);
+const pa = new Float32Array(N);
+
+function spawn(i){
+  px[i] = (rnd() * 2 - 1) * (4/3);
+  py[i] = rnd() * 2 - 1;
+  pa[i] = 0;
+}
+for(let i = 0; i < N; i++) spawn(i);
+
+let t = 0;
+
+/* ---------- per-frame instance update ---------- */
+function updateInstances(){
+  for(let i = 0; i < N; i++){
+    const x = px[i], y = py[i];
+    const v = velocity(x, y, t);
+    const ang = Math.atan2(v[1], v[0]);
+    const age = pa[i];
+    const len = 0.090 + (0.040 - 0.090) * age;
+    const b   = 1.0   + (0.25  - 1.0  ) * age;
+
+    dummy.position.set(x, y, 0);
+    dummy.rotation.set(0, 0, ang - Math.PI / 2);
+    dummy.scale.set(0.010, len, 1);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+
+    const deg = ang * 180 / Math.PI;
+    if(deg < -60)      col.setHex(0x28d7e8);
+    else if(deg < 60)  col.setHex(0xe8399b);
+    else               col.setHex(0xf2c53d);
+    col.multiplyScalar(b);
+    mesh.setColorAt(i, col);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  if(mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+}
+
+/* ---------- probe ---------- */
+function probe(){
+  const parts = [];
+  for(let i = 0; i < 8; i++){
+    parts.push([
+      +(((px[i] + 4/3) / (8/3)).toFixed(4)),
+      +(((py[i] + 1) / 2).toFixed(4))
+    ]);
+  }
+  let s = 0;
+  for(let i = 0; i < N; i++){
+    const v = velocity(px[i], py[i], t);
+    s += Math.hypot(v[0], v[1]);
+  }
+  s /= N;
+  return {
+    t: +t.toFixed(4),
+    objects: scene.children.map(o => o.name || o.type),
+    particles: parts,
+    speed: +s.toFixed(4)
+  };
+}
+
+/* ---------- step ---------- */
+function step(dt){
+  t += dt;
+  for(let i = 0; i < N; i++){
+    const v = velocity(px[i], py[i], t);
+    px[i] += v[0] * 0.18 * dt;
+    py[i] += v[1] * 0.18 * dt;
+    pa[i] += dt / 2.6;
+    if(pa[i] >= 1 || Math.abs(px[i]) > 4/3 || Math.abs(py[i]) > 1){
+      spawn(i);
+    }
+  }
+  updateInstances();
+  renderer.render(scene, camera);
+  return probe();
+}
+
+window.__step = step;
+window.__probe = probe;
+
+/* ---------- first frame (t = 0) ---------- */
+updateInstances();
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-15 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

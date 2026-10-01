@@ -18,11 +18,11 @@ def test_longctx_ids_points_and_self_checks() -> None:
     cfg = RunConfig()
     tasks = generate(task_rng(20260915, "E"), cfg)
     assert [task.id for task in tasks] == ["LC-1", "LC-2", "LC-3", "LC-4", "LC-5"]
-    assert sum(task.max_points for task in tasks) == 15.0
+    assert sum(task.max_points for task in tasks) == 10.0
     for task in tasks:
         good = evaluate(task, _transcript(task, task.oracle["reference"]))
-        assert good.earned == 3.0
-        assert good.possible == 3.0
+        assert good.earned == 2.0
+        assert good.possible == 2.0
         assert evaluate(task, _transcript(task, "")).earned == 0.0
         assert evaluate(task, _transcript(task, "не знаю")).earned == 0.0
         if task.id == "LC-5":
@@ -65,7 +65,7 @@ def test_longctx_non_admitted_variant() -> None:
     score = evaluate(task, _transcript(task, task.oracle["reference"]))
     assert score.admission is False
     assert score.notes
-    assert score.possible == 3.0
+    assert score.possible == 2.0
 
 
 def test_longctx_reported_overflow_and_measured_admission() -> None:
@@ -91,10 +91,10 @@ def test_longctx_accepts_the_documented_spellings_only() -> None:
     lc1, lc5 = tasks[0], tasks[4]
 
     plain = evaluate(lc1, _transcript(lc1, lc1.oracle["answer"], prompt_tokens=8000))
-    assert plain.admission is True and plain.earned == 3.0
+    assert plain.admission is True and plain.earned == 2.0
 
     prefixed = evaluate(lc1, _transcript(lc1, f"sha256:{lc1.oracle['answer']}", prompt_tokens=8000))
-    assert prefixed.earned == 3.0, "префикс поля не несёт информации о качестве поиска"
+    assert prefixed.earned == 2.0, "префикс поля не несёт информации о качестве поиска"
 
     wrong = evaluate(lc1, _transcript(lc1, "sha256:deadbeef", prompt_tokens=8000))
     assert wrong.earned == 0.0
@@ -103,4 +103,4 @@ def test_longctx_accepts_the_documented_spellings_only() -> None:
     distractor = evaluate(lc5, _transcript(lc5, str(lc5.oracle["distractor_answer"]), prompt_tokens=27000))
     assert distractor.earned == 0.0
     labeled = evaluate(lc5, _transcript(lc5, f"service {lc5.oracle['answer']}", prompt_tokens=27000))
-    assert labeled.earned == 3.0
+    assert labeled.earned == 2.0

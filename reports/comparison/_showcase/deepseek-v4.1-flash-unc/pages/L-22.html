@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Робот-ремонтник под дождём</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ======================= базовые настройки ======================= */
+const W = 800, H = 600;
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+renderer.setClearColor(0x1b1a2a, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b1a2a);
+
+const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 500);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
+
+const TAN = Math.tan(25 * Math.PI / 180);
+const halfH = z => (4 - z) * TAN;
+const halfW = z => halfH(z) * (W / H);
+
+/* ======================= детерминированный LCG ======================= */
+let lcg = 238931;
+function rnd() {
+  lcg = (lcg * 1103515245 + 12345) % 2147483648;
+  return lcg / 2147483648;
+}
+
+/* ======================= утилиты ======================= */
+const objects = [];
+
+function addPlane(name, w, h, x, y, z, color, opacity) {
+  if (opacity === undefined) opacity = 1;
+  const mat = new THREE.MeshBasicMaterial({
+    color: color,
+    transparent: opacity < 1,
+    opacity: opacity,
+    depthWrite: opacity >= 1
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+  mesh.position.set(x, y, z);
+  mesh.name = name;
+  scene.add(mesh);
+  objects.push(name);
+  return mesh;
+}
+
+/* ======================= фон: ночь, стена, асфальт ======================= */
+addPlane('night', 200, 200, 0, 0, -45, 0x1b1a2a, 1);
+addPlane('wall', 80, 24, 0, 13.9, -16, 0x1b1a2a, 1);
+addPlane('floor', 60, 12, 0, -4.881, -8, 0x14121f, 1);
+
+/* ======================= неоновая вывеска ======================= */
+const signMat = new THREE.MeshBasicMaterial({ color: 0xff2f7a });
+const sign = new THREE.Mesh(new THREE.PlaneGeometry(7.461, 2.238), signMat);
+sign.position.set(0.746, 6.342, -15.9);
+sign.name = 'sign';
+scene.add(sign);
+objects.push('sign');
+
+const glowMat = new THREE.MeshBasicMaterial({
+  color: 0xff2f7a,
+  transparent: true,
+  opacity: 0.35,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+const glow = new THREE.Mesh(new THREE.PlaneGeometry(9.6, 3.6), glowMat);
+glow.position.set(0.746, 6.342, -15.95);
+scene.add(glow);
+
+/* ======================= робот ======================= */
+const robot = new THREE.Group();
+robot.name = 'robot';
+robot.position.set(-0.746, -1.492, -6);
+scene.add(robot);
+objects.push('robot');
+
+const RW = 2.487;   // ширина робота (20% кадра на z = -6)
+const RH = 3.48;    // высота робота
+const DARK = 0x1b1a2a;
+
+function rpart(w, h, x, y, z, color) {
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, h),
+    new THREE.MeshBasicMaterial({ color: color })
+  );
+  m.position.set(x, y, z);
+  robot.add(m);
+  return m;
+}
+
+// корпус
+rpart(RW * 0.60, RH * 0.55, 0, 0, 0, DARK);
+// голова
+rpart(RW * 0.50, RH * 0.30, 0, RH * 0.425, 0, DARK);
+// ноги
+rpart(RW * 0.15, RH * 0.35, -RW * 0.18, -RH * 0.45, 0, DARK);
+rpart(RW * 0.15, RH * 0.35,  RW * 0.18, -RH * 0.45, 0, DARK);
+// руки
+rpart(RW * 0.12, RH * 0.45, -RW * 0.36, RH * 0.05, 0, DARK);
+rpart(RW * 0.12, RH * 0.45,  RW * 0.36, RH * 0.05, 0, DARK);
+// глаз
+rpart(RW * 0.12, RW * 0.12, 0, RH * 0.425, 0.02, 0xa8c8dc);
+// лампа на плече
+rpart(RW * 0.10, RW * 0.10, RW * 0.36, RH * 0.275, 0.02, 0xffd94a);
+
+/* ======================= мокрый асфальт и лужи ======================= */
+addPlane('wet', 14.20, 0.666, 0, -4.939, -7.9, 0xa8c8dc, 0.5);
+
+const puddleMat = new THREE.MeshBasicMaterial({
+  color: 0xff2f7a,
+  transparent: true,
+  opacity: 0.4,
+  depthWrite: false
+});
+[-1.2, 0, 1.2].forEach(function (x) {
+  const p = new THREE.Mesh(new THREE.PlaneGeometry(2.934, 0.550), puddleMat);
+  p.position.set(x, -4.182, -7.8);
+  p.name = 'puddle';
+  scene.add(p);
+});
+objects.push('puddle');
+
+/* ======================= капли дождя ======================= */
+const DROP_N = 54;
+const dropGeo = new THREE.BufferGeometry();
+const dropPos = new Float32Array(DROP_N * 3);
+const dropState = [];
+for (let i = 0; i < DROP_N; i++) {
+  const a = rnd(), b = rnd();
+  dropState.push({ x: (a - 0.5) * 9.8, y: -3.68 + b * 7.36 });
+}
+dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPos, 3));
+const dropMat = new THREE.PointsMaterial({
+  color: 0xa8c8dc,
+  size: 8,
+  sizeAttenuation: false,
+  transparent: true,
+  depthWrite: false
+});
+const drops = new THREE.Points(dropGeo, dropMat);
+drops.name = 'drops';
+scene.add(drops);
+objects.push('drops');
+
+/* ======================= искры ======================= */
+const SPARK_N = 22;
+const sparkGeo = new THREE.BufferGeometry();
+const sparkPos = new Float32Array(SPARK_N * 3);
+const sparkState = [];
+for (let i = 0; i < SPARK_N; i++) {
+  const a = rnd(), b = rnd(), c = rnd(), d = rnd();
+  sparkState.push({
+    x: (a - 0.5) * 0.5,
+    y: -b * 0.5,
+    vy: 3 + c * 1.5,
+    phase: d * Math.PI * 2
+  });
+}
+sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPos, 3));
+const sparkMat = new THREE.PointsMaterial({
+  color: 0xffd94a,
+  size: 6,
+  sizeAttenuation: false,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+const sparks = new THREE.Points(sparkGeo, sparkMat);
+sparks.name = 'sparks';
+scene.add(sparks);
+objects.push('sparks');
+
+const SPARK_ORIGIN = new THREE.Vector3(0.15, -0.8, -5.95);
+
+/* ======================= анимация ======================= */
+let t = 0;
+
+function updateDrops(dt) {
+  for (let i = 0; i < DROP_N; i++) {
+    const d = dropState[i];
+    d.y -= 1.93 * dt;
+    if (d.y < -3.68) d.y += 7.36;
+    dropPos[i * 3]     = d.x;
+    dropPos[i * 3 + 1] = d.y;
+    dropPos[i * 3 + 2] = -3.9;
+  }
+  dropGeo.attributes.position.needsUpdate = true;
+}
+
+function updateSparks(dt) {
+  for (let i = 0; i < SPARK_N; i++) {
+    const s = sparkState[i];
+    s.y -= s.vy * dt;
+    s.x += Math.sin(s.phase + t * 6) * 1.6 * dt;
+    if (s.y < -3.0) {
+      s.y += 3.0;
+      s.x *= 0.5;
+    }
+    sparkPos[i * 3]     = SPARK_ORIGIN.x + s.x;
+    sparkPos[i * 3 + 1] = SPARK_ORIGIN.y + s.y;
+    sparkPos[i * 3 + 2] = SPARK_ORIGIN.z;
+  }
+  sparkGeo.attributes.position.needsUpdate = true;
+}
+
+function probe() {
+  return {
+    t: Number(t.toFixed(4)),
+    objects: objects.slice(),
+    spark: [
+      Number((SPARK_ORIGIN.x + sparkState[0].x).toFixed(4)),
+      Number((SPARK_ORIGIN.y + sparkState[0].y).toFixed(4))
+    ],
+    camera: [
+      Number(camera.position.x.toFixed(4)),
+      Number(camera.position.z.toFixed(4))
+    ]
+  };
+}
+
+function step(dt) {
+  t += dt;
+
+  // камера приближается к роботу
+  camera.position.z = Math.max(0.8, 4 - 1.06 * t);
+  camera.lookAt(0, 0, -1);
+
+  // мигание вывески раз в 1.4 с
+  const on = (t % 1.4) < 0.9;
+  signMat.color.setHex(on ? 0xff2f7a : 0x7a1538);
+  glowMat.opacity = on ? 0.35 : 0.12;
+
+  updateDrops(dt);
+  updateSparks(dt);
+
+  renderer.render(scene, camera);
+  return probe();
+}
+
+/* ======================= старт ======================= */
+updateDrops(0);
+updateSparks(0);
+renderer.render(scene, camera);
+
+window.__step = step;
+window.__probe = probe;
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-22 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

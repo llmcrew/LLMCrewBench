@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Seeded value-noise terrain</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #000; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const W = 800, H = 600;
+
+/* ---------- 32-битный хеш (ровно по формуле) ---------- */
+function hash(x, y) {
+  let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263)) >>> 0;
+  h = (h ^ (h >>> 13)) >>> 0;
+  h = Math.imul(h, 1274126177) >>> 0;
+  h = (h ^ (h >>> 16)) >>> 0;
+  return h / 4294967296; // [0, 1)
+}
+
+const A = 4.0;
+function hgt(x, y) {
+  return A * (hash(x, y) - 0.5);
+}
+
+/* ---------- рендерер ---------- */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+document.body.appendChild(renderer.domElement);
+
+/* ---------- сцена ---------- */
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 500);
+camera.position.set(56.0, 43.0, 43.0);
+camera.lookAt(0, 0, 0);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.8);
+dirLight.position.set(30.0, 40.0, 20.0);
+scene.add(dirLight);
+
+/* ---------- рельеф ---------- */
+const geo = new THREE.PlaneGeometry(40, 40, 40, 40);
+geo.rotateX(-Math.PI / 2);
+
+const pos = geo.attributes.position;
+for (let i = 0; i < pos.count; i++) {
+  const x = Math.round(pos.getX(i));
+  const z = Math.round(pos.getZ(i));
+  pos.setY(i, hgt(x, z));
+}
+pos.needsUpdate = true;
+geo.computeVertexNormals();
+
+const mat = new THREE.MeshStandardMaterial({
+  color: 0x8a6b3d,
+  flatShading: true
+});
+const terrain = new THREE.Mesh(geo, mat);
+scene.add(terrain);
+
+/* ---------- min / max по всей решётке 41x41 ---------- */
+let mn = Infinity, mx = -Infinity;
+for (let x = -20; x <= 20; x++) {
+  for (let z = -20; z <= 20; z++) {
+    const v = hgt(x, z);
+    if (v < mn) mn = v;
+    if (v > mx) mx = v;
+  }
+}
+
+const r4 = (v) => Number(v.toFixed(4));
+
+/* ---------- API ---------- */
+window.__probe = function () {
+  renderer.render(scene, camera);
+  return {
+    heights: [r4(hgt(2, 3)), r4(hgt(10, 10)), r4(hgt(20, 5))],
+    min: r4(mn),
+    max: r4(mx)
+  };
+};
+
+// терраин статичен: шаг ничего не меняет, но кадр рисуется
+window.__step = function (dt) {
+  return window.__probe();
+};
+
+/* ---------- первая отрисовка ---------- */
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · K-16 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

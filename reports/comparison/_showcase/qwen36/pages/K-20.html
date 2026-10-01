@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Спектр сигнала</title>
+  <style>body { margin: 0; overflow: hidden; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+  <script type="module">
+    const THREE = window.THREE;
+
+    const N = 64;
+    const fs = 64;
+    const A1 = 2.73, k1 = 6;
+    const A2 = 2.03, k2 = 11;
+    const binsToCompute = [6, 11, 18];
+
+    // Вычисляем сигнал
+    const s = new Array(N);
+    for (let n = 0; n < N; n++) {
+      s[n] = A1 * Math.sin(2 * Math.PI * k1 * n / N) + A2 * Math.sin(2 * Math.PI * k2 * n / N);
+    }
+
+    // Вычисляем ДПФ для заданных бинов
+    const binData = [];
+    for (const k of binsToCompute) {
+      let Re = 0, Im = 0;
+      for (let n = 0; n < N; n++) {
+        const angle = 2 * Math.PI * k * n / N;
+        Re += s[n] * Math.cos(angle);
+        Im += s[n] * Math.sin(angle);
+      }
+      const amp = (2 / N) * Math.sqrt(Re * Re + Im * Im);
+      binData.push({ freq: k * fs / N, amplitude: amp });
+    }
+
+    // Сцена и камера
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+    camera.position.set(0, 5, 15);
+    camera.lookAt(0, 2.5, 0);
+
+    // Рендерер
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    document.body.appendChild(renderer.domElement);
+
+    // Свет
+    scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
+    dirLight.position.set(7, 13, 8);
+    scene.add(dirLight);
+
+    // Пол
+    const groundGeo = new THREE.PlaneGeometry(20, 20);
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.name = 'ground';
+    scene.add(ground);
+
+    // Столбцы бинов
+    const m = binsToCompute.length;
+    for (let i = 0; i < m; i++) {
+      const h = binData[i].amplitude * 1.5;
+      const geo = new THREE.BoxGeometry(1, 1, 1);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.scale.y = h;
+      mesh.position.set((i - (m - 1) / 2) * 3.2, h / 2, 0);
+      mesh.name = `bin-${i}`;
+      scene.add(mesh);
+    }
+
+    // График сигнала
+    const wavePositions = new Float32Array(N * 3);
+    for (let n = 0; n < N; n++) {
+      wavePositions[n * 3] = -6 + 12 * n / (N - 1);
+      wavePositions[n * 3 + 1] = 4.2 + s[n] * 0.5;
+      wavePositions[n * 3 + 2] = -2;
+    }
+    const waveGeo = new THREE.BufferGeometry();
+    waveGeo.setAttribute('position', new THREE.BufferAttribute(wavePositions, 3));
+    const waveMat = new THREE.LineBasicMaterial({ color: 0x66e0ff });
+    const wave = new THREE.Line(waveGeo, waveMat);
+    wave.name = 'wave';
+    scene.add(wave);
+
+    // Бегунок
+    const playheadGeo = new THREE.SphereGeometry(0.15, 16, 16);
+    const playheadMat = new THREE.MeshStandardMaterial({ color: 0xffe066 });
+    const playhead = new THREE.Mesh(playheadGeo, playheadMat);
+    playhead.name = 'playhead';
+    scene.add(playhead);
+
+    // Состояние симуляции
+    let steps = 0;
+    let t = 0;
+
+    function updatePlayhead() {
+      const p = (steps * 4) % N;
+      playhead.position.set(
+        -6 + 12 * p / (N - 1),
+        4.2 + s[p] * 0.5,
+        -2
+      );
+    }
+    updatePlayhead();
+
+    function render() {
+      renderer.render(scene, camera);
+    }
+    render();
+    window.__ready = true;
+
+    window.__step = function(dt) {
+      steps += 1;
+      t += dt;
+      updatePlayhead();
+      render();
+    };
+
+    window.__probe = function() {
+      let maxAmp = -Infinity;
+      let dominantFreq = 0;
+      for (const b of binData) {
+        if (b.amplitude > maxAmp) {
+          maxAmp = b.amplitude;
+          dominantFreq = b.freq;
+        }
+      }
+      const p = (steps * 4) % N;
+      return {
+        steps: steps,
+        t: parseFloat(t.toFixed(4)),
+        objects: scene.children.map(c => c.name),
+        bins: binData.map(b => ({ freq: parseFloat(b.freq.toFixed(4)), amplitude: parseFloat(b.amplitude.toFixed(4)) })),
+        dominant: parseFloat(dominantFreq.toFixed(4)),
+        playhead: p
+      };
+    };
+  </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · K-20 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

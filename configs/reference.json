@@ -7,14 +7,14 @@
     "system_prompt": "one neutral system message, identical for every model",
     "answer_budget_default": 4096,
     "answer_budget_artifact": 8192,
-    "answer_budget_note": "includes thinking; the artefact-producing category (C) gets the larger budget",
+    "answer_budget_note": "unbounded by default: the limit is the window minus the prompt; the per-category table below is the fallback mode",
     "reasoning_budget": 2048,
-    "reasoning_budget_note": "server-side thinking cap, so a thinking model cannot spend the whole answer budget on thoughts",
-    "request_wall_clock": 600,
+    "reasoning_budget_note": "server-side thinking cap (llama.cpp); vLLM stands keep their own default",
+    "request_wall_clock": 1800,
     "request_wall_clock_note": "ceiling per request; a task that hits it is reported as unverified, never as a wrong answer",
     "max_total_tokens": 16384,
     "max_tool_calls": 12,
-    "context_window": 32768,
+    "context_window": 262144,
     "prompt_cache": "each measured prompt carries a fresh nonce, so no run is served from another run's prompt cache",
     "offload": "none — weights and KV cache fully on the GPU; partial offload is a different configuration",
     "rope_scaling": "none — no YaRN/linear scaling, the model must be run inside its trained window",
@@ -25,7 +25,8 @@
     "quantization": "the largest quant that still fits the full 32K window on the GPU without offload",
     "kv_cache": "declared per entry; measured here: q8_0 doubles generation speed at a 32K window, so it is the reference value, not a default",
     "thinking": "enabled where the model has it, with the same token budget as everything else",
-    "repeat_policy": "one scored pass per task; temperature=0 is not bitwise deterministic, so a re-run disagreement is reported instead of the better attempt"
+    "repeat_policy": "one scored pass per task; temperature=0 is not bitwise deterministic, so a re-run disagreement is reported instead of the better attempt",
+    "reasoning_effort_note": "not forced: the stand decides, the spend is documented instead"
   },
   "runtimes": {
     "llama.cpp": {
@@ -221,7 +222,6 @@
       "model": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
       "quant": "IQ3_XXS",
       "weights": "",
-      "context_window": 32768,
       "kv_type": "q8_0",
       "capabilities": {
         "thinking": true,

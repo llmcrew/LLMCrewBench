@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ночной город</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; }
+    canvas { display: block; }
+  </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Сцена и камера ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#2a1b5c');
+
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 100);
+camera.position.set(0, 8, 26);
+camera.lookAt(0, 8, 0);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+// --- Земля ---
+const groundGeo = new THREE.PlaneGeometry(100, 100);
+const groundMat = new THREE.MeshBasicMaterial({ color: '#0b0b14' });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.name = 'ground';
+scene.add(ground);
+
+// --- Дома ---
+const houseData = [
+  { x: -6.8, w: 2.4, h: 14.8, num: 1 },
+  { x: -3.7, w: 2.1, h: 10.1, num: 2 },
+  { x: -1.2, w: 1.6, h: 10.7, num: 3 },
+  { x: 1.5, w: 2.3, h: 14.9, num: 4 },
+  { x: 4.8, w: 2.6, h: 13.5, num: 5 },
+  { x: 8.0, w: 1.6, h: 10.9, num: 6 }
+];
+
+houseData.forEach(h => {
+  const geo = new THREE.BoxGeometry(h.w, h.h, 3);
+  const mat = new THREE.MeshBasicMaterial({ color: '#0b0b14' });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(h.x, h.h / 2, 0);
+  mesh.name = 'house';
+  scene.add(mesh);
+});
+
+// --- Окна ---
+const windowGeo = new THREE.PlaneGeometry(0.5, 0.7);
+const windowMat = new THREE.MeshBasicMaterial({ color: '#ffffff', side: THREE.DoubleSide });
+const windows = [];
+const originalColors = [];
+
+houseData.forEach(h => {
+  const cols = Math.floor(h.w / 0.95);
+  const startX = h.x - h.w / 2 + 0.475;
+  const isEven = h.num % 2 === 0;
+  const baseColor = isEven ? new THREE.Color('#22e0d0') : new THREE.Color('#ffb066');
+
+  for (let c = 0; c < cols; c++) {
+    const wx = startX + c * 0.95;
+    const floors = Math.floor((h.h - 1.0) / 1.45);
+    for (let f = 0; f < floors; f++) {
+      const wy = 1.0 + f * 1.45;
+      windows.push({ x: wx, y: wy, z: 1.5 });
+      originalColors.push(baseColor.clone());
+    }
+  }
+});
+
+const instancedWindows = new THREE.InstancedMesh(windowGeo, windowMat, windows.length);
+instancedWindows.name = 'windows';
+const dummy = new THREE.Object3D();
+
+windows.forEach((w, i) => {
+  dummy.position.set(w.x, w.y, w.z);
+  dummy.updateMatrix();
+  instancedWindows.setMatrixAt(i, dummy.matrix);
+  instancedWindows.setColorAt(i, originalColors[i]);
+});
+instancedWindows.instanceMatrix.needsUpdate = true;
+instancedWindows.instanceColor.needsUpdate = true;
+scene.add(instancedWindows);
+
+// --- Дымка ---
+const hazeCanvas = document.createElement('canvas');
+hazeCanvas.width = 1;
+hazeCanvas.height = 64;
+const ctx = hazeCanvas.getContext('2d');
+const grad = ctx.createLinearGradient(0, 0, 0, 64);
+grad.addColorStop(0, 'rgba(74, 90, 138, 0.22)');
+grad.addColorStop(1, 'rgba(74, 90, 138, 0.0)');
+ctx.fillStyle = grad;
+ctx.fillRect(0, 0, 1, 64);
+const hazeTex = new THREE.CanvasTexture(hazeCanvas);
+const hazeMat = new THREE.MeshBasicMaterial({ map: hazeTex, transparent: true, opacity: 1, side: THREE.DoubleSide });
+const hazeGeo = new THREE.PlaneGeometry(100, 100);
+const haze = new THREE.Mesh(hazeGeo, hazeMat);
+haze.position.set(0, 7.35, 5);
+haze.name = 'haze';
+scene.add(haze);
+
+// --- Анимация и состояние ---
+let t = 0;
+let litCount = 0;
+
+function updateWindows() {
+  litCount = 0;
+  for (let i = 0; i < windows.length; i++) {
+    const phase = (i * 0.129 + t * 0.500) % 1;
+    const isLit = phase < 0.78;
+    if (isLit) litCount++;
+    const color = originalColors[i].clone();
+    if (!isLit) color.multiplyScalar(0.15);
+    instancedWindows.setColorAt(i, color);
+  }
+  instancedWindows.instanceColor.needsUpdate = true;
+}
+
+function updateHaze() {
+  haze.position.y = 7.35 + 0.9 * Math.sin(t * 0.25);
+}
+
+function render() {
+  updateWindows();
+  updateHaze();
+  renderer.render(scene, camera);
+}
+
+window.__step = function(dt) {
+  t += dt;
+  render();
+  return window.__probe();
+};
+
+window.__probe = function() {
+  return {
+    t: parseFloat(t.toFixed(4)),
+    objects: ['ground', 'house', 'windows', 'haze'],
+    lit: litCount,
+    haze_y: haze.position.y
+  };
+};
+
+window.__ready = true;
+render();
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-4 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

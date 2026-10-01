@@ -21,8 +21,14 @@ NAMES = ("nora", "ivan", "mei", "alex", "zoe", "oleg", "kira", "pavel", "lena", 
 FILES = ("qwen.gguf", "gemma.gguf", "tiny.gguf", "alpha.gguf", "delta.gguf", "omega.gguf", "readme.txt", "model.bin")
 
 
-def _one_point(score: core.Score, name: str, passed: bool, detail: str = "") -> None:
-    score.add(name, passed, 1.0, detail)
+def _format_point(score: core.Score, name: str, passed: bool, detail: str = "") -> None:
+    """Half a point: the requested shape of the answer, apart from its content."""
+    score.add(name, passed, 0.5, detail)
+
+
+def _content_point(score: core.Score, name: str, passed: bool, detail: str = "") -> None:
+    """Three quarters: one separable content fact the scenario asked for."""
+    score.add(name, passed, 0.75, detail)
 
 
 # --------------------------------------------------------------------------- #
@@ -92,7 +98,7 @@ def _if1(rng: random.Random) -> core.TaskInstance:
         category="A",
         title="Фильтрация логов",
         prompt=prompt,
-        max_points=3.0,
+        max_points=2.0,
         oracle={
             "reference": reference,
             "ids": expected_ids,
@@ -125,16 +131,12 @@ def _eval_if1(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
         and isinstance(payload.get("mean_latency"), int)
         and payload["mean_latency"] == oracle["mean_latency"]
     )
-    _one_point(
-        score,
-        "json_format",
+    _format_point(score, "json_format",
         fmt_ok,
         "строгий JSON с ключами ids и mean_latency (целое)" if not fmt_ok else "ok",
     )
-    _one_point(score, "ids", ids_ok, f"получено {payload.get('ids') if isinstance(payload, dict) else None}, ожидалось {oracle['ids']}")
-    _one_point(
-        score,
-        "mean_latency",
+    _content_point(score, "ids", ids_ok, f"получено {payload.get('ids') if isinstance(payload, dict) else None}, ожидалось {oracle['ids']}")
+    _content_point(score, "mean_latency",
         mean_ok,
         f"получено {payload.get('mean_latency') if isinstance(payload, dict) else None}, ожидалось {oracle['mean_latency']}",
     )
@@ -193,7 +195,7 @@ def _if2(rng: random.Random) -> core.TaskInstance:
         category="A",
         title="Сортировка записей",
         prompt=prompt,
-        max_points=3.0,
+        max_points=2.0,
         oracle={"reference": reference, "rows": expected_rows, "all_names": sorted(r["name"] for r in rows)},
         meta={"scenario": "IF-2", "tie_usage": shared_usage, "selected": len(selected)},
     )
@@ -230,9 +232,9 @@ def _eval_if2(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     set_ok = sorted(parsed) == sorted(expected) if fmt_ok else False
     order_ok = parsed == expected if (fmt_ok and set_ok) else False
 
-    _one_point(score, "csv_format", fmt_ok, "ожидался CSV name,usage без заголовка и без Markdown")
-    _one_point(score, "rows", set_ok, f"получено {parsed}, ожидалось {sorted(expected)}")
-    _one_point(score, "order", order_ok, f"получено {parsed}, ожидалось {expected}")
+    _format_point(score, "csv_format", fmt_ok, "ожидался CSV name,usage без заголовка и без Markdown")
+    _content_point(score, "rows", set_ok, f"получено {parsed}, ожидалось {sorted(expected)}")
+    _content_point(score, "order", order_ok, f"получено {parsed}, ожидалось {expected}")
     return score
 
 
@@ -274,7 +276,7 @@ def _if3(rng: random.Random) -> core.TaskInstance:
         category="A",
         title="Firewall rules",
         prompt=prompt,
-        max_points=3.0,
+        max_points=2.0,
         oracle={"reference": reference, "open": expected, "count": len(expected)},
         meta={"scenario": "IF-3", "deny_only": denied_only, "udp_only": udp_only, "allow_and_deny": both},
     )
@@ -300,16 +302,12 @@ def _eval_if3(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
         isinstance(payload, dict)
         and payload.get("count") == oracle["count"]
     )
-    _one_point(score, "json_format", fmt_ok, "ожидался строгий JSON с ключами open и count")
-    _one_point(
-        score,
-        "open",
+    _format_point(score, "json_format", fmt_ok, "ожидался строгий JSON с ключами open и count")
+    _content_point(score, "open",
         open_ok,
         f"получено {payload.get('open') if isinstance(payload, dict) else None}, ожидалось {oracle['open']}",
     )
-    _one_point(
-        score,
-        "count",
+    _content_point(score, "count",
         count_ok,
         f"получено {payload.get('count') if isinstance(payload, dict) else None}, ожидалось {oracle['count']}",
     )
@@ -357,7 +355,7 @@ def _if4(rng: random.Random) -> core.TaskInstance:
         category="A",
         title="Выбор файлов",
         prompt=prompt,
-        max_points=3.0,
+        max_points=2.0,
         oracle={"reference": reference, "files": expected, "threshold": threshold},
         meta={"scenario": "IF-4", "tied_size": tied_size, "entries": entries},
     )
@@ -372,14 +370,12 @@ def _eval_if4(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     fmt_ok = strict and isinstance(payload, list) and all(isinstance(n, str) for n in payload)
     set_ok = isinstance(payload, list) and sorted(payload) == sorted(oracle["files"])
     order_ok = isinstance(payload, list) and payload == oracle["files"]
-    _one_point(score, "json_format", fmt_ok, "ожидался строгий JSON-массив строк без обвязки")
-    _one_point(
-        score,
-        "files",
+    _format_point(score, "json_format", fmt_ok, "ожидался строгий JSON-массив строк без обвязки")
+    _content_point(score, "files",
         set_ok,
         f"получено {payload if isinstance(payload, list) else None}, ожидалось {sorted(oracle['files'])}",
     )
-    _one_point(score, "order", order_ok, f"получено {payload if isinstance(payload, list) else None}, ожидалось {oracle['files']}")
+    _content_point(score, "order", order_ok, f"получено {payload if isinstance(payload, list) else None}, ожидалось {oracle['files']}")
     return score
 
 
@@ -438,7 +434,7 @@ def _if5(rng: random.Random) -> core.TaskInstance:
         category="A",
         title="Приоритет конфигурации",
         prompt=prompt,
-        max_points=3.0,
+        max_points=2.0,
         oracle={
             "reference": reference,
             "expected": expected,
@@ -482,16 +478,12 @@ def _eval_if5(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
         and payload.get("max_tokens") == expected["max_tokens"]
         and payload.get("mode") == expected["mode"]
     )
-    _one_point(score, "json_format", fmt_ok, "ожидался строгий JSON ровно с четырьмя ключами и верными типами")
-    _one_point(
-        score,
-        "request_layer",
+    _format_point(score, "json_format", fmt_ok, "ожидался строгий JSON ровно с четырьмя ключами и верными типами")
+    _content_point(score, "request_layer",
         request_ok,
         f"temperature/tools: получено {payload if isinstance(payload, dict) else None}, ожидалось {expected['temperature']} и false",
     )
-    _one_point(
-        score,
-        "profile_layer",
+    _content_point(score, "profile_layer",
         profile_ok,
         f"max_tokens/mode: получено {payload if isinstance(payload, dict) else None}, ожидалось {expected['max_tokens']} и {expected['mode']!r}",
     )
@@ -524,7 +516,7 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 core.register(
     key="A",
     title="Instruction following",
-    points=15.0,
+    points=10.0,
     generate=generate,
     evaluate=evaluate,
     expected_ids=IDS,

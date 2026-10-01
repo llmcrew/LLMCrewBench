@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body{margin:0;overflow:hidden;background:#000}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const W=800,H=600,FOV=45,ASPECT=W/H,CAM_D=10.0;
+const HALF_H=Math.tan(FOV*0.5*Math.PI/180)*CAM_D;
+const HALF_W=HALF_H*ASPECT;
+const PX=2*HALF_H/H;
+
+function fxW(fx){return(fx-0.5)*2*HALF_H*ASPECT}
+function fyW(fy){return(0.5-fy)*2*HALF_H}
+
+let s=219090;
+function rng(){s=(1664525*s+1013904223)%4294967296;return s/4294967296}
+
+const renderer=new THREE.WebGLRenderer({preserveDrawingBuffer:true});
+renderer.setPixelRatio(1);
+renderer.setSize(W,H,false);
+document.body.appendChild(renderer.domElement);
+
+const camera=new THREE.PerspectiveCamera(FOV,ASPECT,0.1,200);
+camera.position.set(0,0,CAM_D);
+camera.lookAt(0,0,0);
+
+const scene=new THREE.Scene();
+
+// Sky
+const sc=document.createElement('canvas');sc.width=2;sc.height=512;
+const sx=sc.getContext('2d');
+const sg=sx.createLinearGradient(0,0,0,512);
+sg.addColorStop(0,'#090722');sg.addColorStop(1,'#150b38');
+sx.fillStyle=sg;sx.fillRect(0,0,2,512);
+const skyTex=new THREE.CanvasTexture(sc);
+const sky=new THREE.Mesh(
+  new THREE.PlaneGeometry(2*HALF_W,2*HALF_H),
+  new THREE.MeshBasicMaterial({map:skyTex})
+);
+sky.name='sky';sky.position.z=-0.01;sky.renderOrder=0;
+scene.add(sky);
+
+// Mountains
+const hts=[0.395,0.367,0.438,0.144,0.242,0.229,0.420,0.260,0.363];
+const shape=new THREE.Shape();
+shape.moveTo(-HALF_W,-HALF_H);
+for(let i=0;i<9;i++){
+  shape.lineTo(fxW(i/8),fyW(1-hts[i]));
+}
+shape.lineTo(HALF_W,-HALF_H);
+shape.closePath();
+const ridge=new THREE.Mesh(
+  new THREE.ShapeGeometry(shape),
+  new THREE.MeshBasicMaterial({color:0x00b1d9})
+);
+ridge.name='ridge';ridge.position.z=0;ridge.renderOrder=1;
+scene.add(ridge);
+
+// Stars
+const N=620;
+const starGeo=new THREE.PlaneGeometry(1,1);
+const starMat=new THREE.MeshBasicMaterial({
+  color:0xf2f6ff,blending:THREE.AdditiveBlending,depthTest:false,transparent:true
+});
+const stars=new THREE.InstancedMesh(starGeo,starMat,N);
+stars.name='stars';stars.renderOrder=3;
+
+const sd=[];
+const dm=new THREE.Object3D();
+for(let i=0;i<N;i++){
+  const u=rng(),u2=rng(),u3=rng(),u4=rng();
+  const sz=(2.0+2.6*u)*PX;
+  const x=fxW(u2),y=fyW(u3*0.72),ph=6.283*u4;
+  sd.push({x,y,sz,ph});
+  dm.position.set(x,y,0.03);
+  dm.scale.set(sz,sz,1);
+  dm.updateMatrix();
+  stars.setMatrixAt(i,dm.matrix);
+}
+stars.instanceMatrix.needsUpdate=true;
+scene.add(stars);
+
+// Moon
+const mR=0.075*2*HALF_H;
+const moon=new THREE.Mesh(
+  new THREE.CircleGeometry(mR,32),
+  new THREE.MeshBasicMaterial({color:0xffd699})
+);
+moon.name='moon';moon.renderOrder=2;
+
+// Moon glow
+const gc=document.createElement('canvas');gc.width=128;gc.height=128;
+const gx=gc.getContext('2d');
+const gg=gx.createRadialGradient(64,64,0,64,64,64);
+gg.addColorStop(0,'rgba(255,214,153,0.5)');
+gg.addColorStop(0.35,'rgba(255,214,153,0.18)');
+gg.addColorStop(1,'rgba(255,214,153,0)');
+gx.fillStyle=gg;gx.fillRect(0,0,128,128);
+const glowTex=new THREE.CanvasTexture(gc);
+const glowSz=mR*5;
+const glow=new THREE.Mesh(
+  new THREE.PlaneGeometry(glowSz*2,glowSz*2),
+  new THREE.MeshBasicMaterial({map:glowTex,blending:THREE.AdditiveBlending,transparent:true,depthTest:false})
+);
+glow.name='moonGlow';glow.renderOrder=2;
+
+let moonFx=0.664,moonFy=0.340,t=0;
+
+function updMoon(){
+  const mx=fxW(moonFx),my=fyW(moonFy);
+  moon.position.set(mx,my,0.02);
+  glow.position.set(mx,my,0.015);
+}
+updMoon();
+scene.add(moon);
+scene.add(glow);
+
+function updStars(){
+  for(let i=0;i<N;i++){
+    const d=sd[i];
+    const sc2=0.5+0.5*Math.sin(d.ph+1.7*t);
+    const sz=d.sz*sc2;
+    dm.position.set(d.x,d.y,0.03);
+    dm.scale.set(sz,sz,1);
+    dm.updateMatrix();
+    stars.setMatrixAt(i,dm.matrix);
+  }
+  stars.instanceMatrix.needsUpdate=true;
+}
+
+updStars();
+renderer.render(scene,camera);
+window.__ready=true;
+
+window.__step=function(dt){
+  t+=dt;
+  moonFx+=0.02*dt;
+  updStars();
+  updMoon();
+  renderer.render(scene,camera);
+  return window.__probe();
+};
+
+window.__probe=function(){
+  const objects=[];
+  scene.traverse(o=>{if(o.name)objects.push(o.name)});
+  return{
+    t:Math.round(t*10000)/10000,
+    objects:objects,
+    moon:Math.round(moonFx*10000)/10000
+  };
+};
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-9 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

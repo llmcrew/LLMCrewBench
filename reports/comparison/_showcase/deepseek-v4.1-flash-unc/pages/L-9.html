@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Звёздное небо над горами</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ------------------------------------------------------------------ *
+ *  Базовые константы кадра
+ * ------------------------------------------------------------------ */
+const W = 800, H = 600;
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 200);
+camera.position.set(0, 0, 10.0);
+camera.lookAt(0, 0, 0);
+
+// полувысота кадра на дистанции 10
+const HALF_H = Math.tan((45 * Math.PI / 180) / 2) * 10.0;   // ≈ 4.14214
+const HALF_W = HALF_H * (W / H);                            // ≈ 5.52285
+const PX     = (2 * HALF_H) / H;                            // мировых единиц в пикселе
+
+const fx2x = fx => (fx - 0.5) * 2 * HALF_H * (W / H);
+const fy2y = fy => (0.5 - fy) * 2 * HALF_H;
+
+/* ------------------------------------------------------------------ *
+ *  Детерминированный ГПСЧ (LCG)
+ * ------------------------------------------------------------------ */
+let _s = 219090;
+function rnd() {
+  _s = (1664525 * _s + 1013904223) % 4294967296;
+  return _s / 4294967296;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Небо: плоскость во весь кадр, вертикальный градиент
+ * ------------------------------------------------------------------ */
+function makeSkyTexture() {
+  const c = document.createElement('canvas');
+  c.width = 1; c.height = 256;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, 256);
+  // canvas y=0 — верх кадра (fy = 0), y=255 — низ (fy = 1)
+  g.addColorStop(0.00, '#090722');
+  g.addColorStop(0.30, '#150b38');
+  g.addColorStop(1.00, '#150b38');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 1, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+const SKY_DEPTH = 1.0;
+const skyHalfH = Math.tan((45 * Math.PI / 180) / 2) * (10.0 + SKY_DEPTH);
+const skyHalfW = skyHalfH * (W / H);
+
+const sky = new THREE.Mesh(
+  new THREE.PlaneGeometry(2 * skyHalfW, 2 * skyHalfH),
+  new THREE.MeshBasicMaterial({ map: makeSkyTexture(), depthWrite: false })
+);
+sky.name = 'sky';
+sky.position.z = -SKY_DEPTH;
+sky.renderOrder = 0;
+scene.add(sky);
+
+/* ------------------------------------------------------------------ *
+ *  Горы: силуэт-ломаная из 9 точек + нижние углы кадра
+ * ------------------------------------------------------------------ */
+const RIDGE_H = [0.395, 0.367, 0.438, 0.144, 0.242, 0.229, 0.420, 0.260, 0.363];
+
+const ridgeShape = new THREE.Shape();
+for (let i = 0; i < RIDGE_H.length; i++) {
+  const fx = i / (RIDGE_H.length - 1);
+  const x  = fx2x(fx);
+  const y  = (RIDGE_H[i] - 0.5) * 2 * HALF_H;
+  if (i === 0) ridgeShape.moveTo(x, y);
+  else         ridgeShape.lineTo(x, y);
+}
+ridgeShape.lineTo( HALF_W, -HALF_H);
+ridgeShape.lineTo(-HALF_W, -HALF_H);
+ridgeShape.closePath();
+
+const ridge = new THREE.Mesh(
+  new THREE.ShapeGeometry(ridgeShape),
+  new THREE.MeshBasicMaterial({ color: '#00b1d9' })
+);
+ridge.name = 'ridge';
+ridge.renderOrder = 1;
+scene.add(ridge);
+
+/* ------------------------------------------------------------------ *
+ *  Звёзды: InstancedMesh из 620 четырёхугольников
+ * ------------------------------------------------------------------ */
+const N = 620;
+const baseX = new Float32Array(N);
+const baseY = new Float32Array(N);
+const baseS = new Float32Array(N);
+const phase = new Float32Array(N);
+
+for (let i = 0; i < N; i++) {
+  const u1 = rnd();   // размер
+  const u2 = rnd();   // fx
+  const u3 = rnd();   // fy
+  const u4 = rnd();   // фаза
+  baseS[i] = (2.0 + 2.6 * u1) * PX;      // пиксели -> мировые единицы
+  baseX[i] = fx2x(u2);
+  baseY[i] = fy2y(u3 * 0.72);            // верхние две трети кадра
+  phase[i] = 6.283 * u4;
+}
+
+const starGeo = new THREE.PlaneGeometry(1, 1);
+const starMat = new THREE.MeshBasicMaterial({
+  color: '#f2f6ff',
+  blending: THREE.AdditiveBlending,
+  transparent: true,
+  depthTest: false,
+  depthWrite: false
+});
+
+const stars = new THREE.InstancedMesh(starGeo, starMat, N);
+stars.name = 'stars';
+stars.renderOrder = 2;
+stars.frustumCulled = false;
+stars.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(stars);
+
+const _dummy = new THREE.Object3D();
+function updateStars(t) {
+  for (let i = 0; i < N; i++) {
+    const k = 0.5 + 0.5 * Math.sin(phase[i] + 1.7 * t);
+    _dummy.position.set(baseX[i], baseY[i], 0.5);
+    _dummy.scale.set(baseS[i] * k, baseS[i] * k, 1);
+    _dummy.updateMatrix();
+    stars.setMatrixAt(i, _dummy.matrix);
+  }
+  stars.instanceMatrix.needsUpdate = true;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Луна: диск + аддитивное пятно
+ * ------------------------------------------------------------------ */
+const moonR  = 0.075 * (2 * HALF_H);   // радиус = 0.075 высоты кадра
+const moonX0 = fx2x(0.664);
+const moonY0 = fy2y(0.340);
+
+function makeGlowTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+  g.addColorStop(0.0, 'rgba(255,255,255,0.50)');
+  g.addColorStop(0.4, 'rgba(255,255,255,0.34)');
+  g.addColorStop(0.7, 'rgba(255,255,255,0.12)');
+  g.addColorStop(1.0, 'rgba(255,255,255,0.00)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 256, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  return tex;
+}
+
+const glow = new THREE.Mesh(
+  new THREE.PlaneGeometry(5 * moonR, 5 * moonR),
+  new THREE.MeshBasicMaterial({
+    map: makeGlowTexture(),
+    color: '#ffd699',
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthTest: false,
+    depthWrite: false
+  })
+);
+glow.name = 'moonGlow';
+glow.position.set(moonX0, moonY0, 0.2);
+glow.renderOrder = 3;
+scene.add(glow);
+
+const moon = new THREE.Mesh(
+  new THREE.CircleGeometry(moonR, 64),
+  new THREE.MeshBasicMaterial({
+    color: '#ffd699',
+    transparent: true,
+    depthTest: false,
+    depthWrite: false
+  })
+);
+moon.name = 'moon';
+moon.position.set(moonX0, moonY0, 0.3);
+moon.renderOrder = 4;
+scene.add(moon);
+
+/* ------------------------------------------------------------------ *
+ *  Анимация
+ * ------------------------------------------------------------------ */
+let t = 0;
+const MOON_SPEED = 0.02 * (2 * HALF_W);   // 0.02 ширины кадра в секунду
+
+function updateMoon() {
+  const x = moonX0 + MOON_SPEED * t;
+  moon.position.x = x;
+  glow.position.x = x;
+}
+
+window.__probe = function () {
+  return {
+    t: Number(t.toFixed(4)),
+    objects: scene.children.map(o => o.name).filter(Boolean),
+    moon: Number((0.664 + 0.02 * t).toFixed(4))
+  };
+};
+
+window.__step = function (dt) {
+  t += dt;
+  updateStars(t);
+  updateMoon();
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+/* ------------------------------------------------------------------ *
+ *  Первый кадр
+ * ------------------------------------------------------------------ */
+updateStars(0);
+updateMoon();
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-9 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

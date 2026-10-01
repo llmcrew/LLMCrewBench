@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Bouncing balls in a closed box</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const W = 800, H = 600;
+
+/* ---------- renderer ---------- */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+document.body.appendChild(renderer.domElement);
+
+/* ---------- scene ---------- */
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 200);
+camera.position.set(0.0, 4.0, 16.0);
+camera.lookAt(0.0, 2.0, 0.0);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+dirLight.position.set(6.0, 12.0, 8.0);
+scene.add(dirLight);
+
+/* ---------- floor ---------- */
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshStandardMaterial({ color: 0x2b3a4a, roughness: 0.9, metalness: 0.0 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.name = 'floor';
+scene.add(floor);
+
+/* ---------- back wall ---------- */
+const wall = new THREE.Mesh(
+  new THREE.PlaneGeometry(16, 12),
+  new THREE.MeshStandardMaterial({ color: 0x22303f, roughness: 0.9, metalness: 0.0 })
+);
+wall.position.set(0.0, 6.0, -2.0);
+wall.name = 'wall';
+scene.add(wall);
+
+/* ---------- physics constants ---------- */
+const R = 0.4;
+const G = 9.0;
+const X_MIN = -5.0, X_MAX = 5.0;
+const Y_MIN = 0.0,  Y_MAX = 4.0;
+
+/* ---------- deterministic LCG ---------- */
+let s = 2278553777;
+function nextU() {
+  s = (1664525 * s + 1013904223) % 4294967296;
+  return s / 4294967296;
+}
+
+/* ---------- balls ---------- */
+const ballGeo = new THREE.SphereGeometry(R, 32, 16);
+const ballMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d, roughness: 0.45, metalness: 0.0 });
+
+const balls = [];
+for (let i = 0; i < 4; i++) {
+  const x  = -4 + 8 * nextU();
+  const y  = 0.8 + 1.2 * nextU();
+  const vx = -3 + 6 * nextU();
+  const vy = 3 + 7 * nextU();
+
+  const mesh = new THREE.Mesh(ballGeo, ballMat);
+  mesh.name = 'ball-' + i;
+  mesh.position.set(x, y, 0.0);
+  scene.add(mesh);
+
+  balls.push({ x, y, vx, vy, mesh });
+}
+
+/* ---------- state ---------- */
+let steps = 0;
+let bounces = 0;
+
+function syncMeshes() {
+  for (const b of balls) b.mesh.position.set(b.x, b.y, 0.0);
+}
+
+function render() {
+  renderer.render(scene, camera);
+}
+
+/* ---------- probe ---------- */
+function r4(v) { return Math.round(v * 10000) / 10000; }
+
+window.__probe = function () {
+  return {
+    steps: steps,
+    bounces: bounces,
+    balls: balls.map(b => ({ x: r4(b.x), y: r4(b.y), vx: r4(b.vx), vy: r4(b.vy) })),
+    camera: [r4(camera.position.x), r4(camera.position.y), r4(camera.position.z)],
+    objects: scene.children.filter(o => o.name).map(o => o.name)
+  };
+};
+
+/* ---------- step ---------- */
+window.__step = function (dt) {
+  for (const b of balls) {
+    b.vy -= G * dt;
+    b.x  += b.vx * dt;
+    b.y  += b.vy * dt;
+
+    if (b.y - R < Y_MIN) {
+      b.y = Y_MIN + R;
+      b.vy = -b.vy;
+      bounces++;
+    } else if (b.y + R > Y_MAX) {
+      b.y = Y_MAX - R;
+      b.vy = -b.vy;
+      bounces++;
+    }
+
+    if (b.x - R < X_MIN) {
+      b.x = X_MIN + R;
+      b.vx = -b.vx;
+      bounces++;
+    } else if (b.x + R > X_MAX) {
+      b.x = X_MAX - R;
+      b.vx = -b.vx;
+      bounces++;
+    }
+  }
+
+  steps++;
+  syncMeshes();
+  render();
+  return window.__probe();
+};
+
+/* ---------- first frame ---------- */
+syncMeshes();
+render();
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · K-10 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

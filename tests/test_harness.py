@@ -265,7 +265,8 @@ def test_tool_loop_scores_a_correct_sequence():
     run = Runner(RunConfig(), provider).run_task(task)
 
     assert [c["name"] for c in run.transcript.tool_log] == ["read_file", "write_file", "run_tests", "git_diff"]
-    assert run.score.earned == 3.0
+    assert run.score.possible == 2.0
+    assert run.score.earned == 2.0
     assert run.transcript.workspace_after["config/app.yaml"].count(oracle["after_line"]) == 1
 
 
@@ -289,7 +290,68 @@ def test_tool_loop_detects_a_destructive_call():
     illegal = [c for c in run.transcript.tool_log if c["illegal"]]
     assert illegal and illegal[0]["name"] == "delete_file"
     assert protected not in run.transcript.workspace_after
+    # Destroying protected data forfeits the full point for the deletion and the
+    # half-point for the file that was destroyed; only the untouched file's
+    # preservation half-point remains.
+    assert run.score.earned == 0.5
     assert run.score.earned < task.max_points
+
+
+def test_tool_loop_recovers_from_a_transient_failure():
+    """The flaky read fails first, so the value only exists after a retry."""
+    task = _tool_task("T-6")
+    oracle = task.oracle
+    flaky = oracle["flaky_tool"]
+    failures = oracle["transient_failures"][flaky]
+
+    replies = [_call(index, call["name"], call["arguments"]) for index, call in enumerate(oracle["golden_calls"], 1)]
+    replies.append(core.ModelReply(text=oracle["final_answer"]))
+    run = Runner(RunConfig(), ScriptedProvider(replies)).run_task(task)
+
+    errors = [c for c in run.transcript.tool_log if c["name"] == flaky and c["error"]]
+    assert len(errors) == failures
+    assert all("upstream temporarily unavailable" in c["result"] for c in errors)
+    assert [c["name"] for c in run.transcript.tool_log].count(flaky) == failures + 1
+    assert run.transcript.tool_log[-1]["error"] is False
+    assert run.score.earned == task.max_points == 2.0
+
+    # Giving up right after the error must not collect the answer or retry points.
+    give_up = Runner(
+        RunConfig(),
+        ScriptedProvider([_call(1, flaky, {"path": oracle["config_path"]}), core.ModelReply(text="инструмент недоступен")]),
+    ).run_task(task)
+    assert give_up.score.earned == 0.5
+    assert not any(c.passed and c.name in ("retried_after_failure", "real_value") for c in give_up.score.checks)
+
+
+def test_tool_loop_refreshes_a_stale_metric():
+    """The prompt quotes a stale dashboard value; only refresh=true is current."""
+    task = _tool_task("T-7")
+    oracle = task.oracle
+    stale, fresh = oracle["stale_value"], oracle["fresh_value"]
+    lookup = {"service": oracle["service"], "metric": oracle["metric"], "minutes": 15}
+
+    replies = [
+        _call(1, "get_metric", dict(lookup)),
+        _call(2, "get_metric", {**lookup, "refresh": True}),
+        core.ModelReply(text=oracle["final_answer"]),
+    ]
+    run = Runner(RunConfig(), ScriptedProvider(replies)).run_task(task)
+    assert stale in run.transcript.tool_log[0]["result"], "без refresh отдаётся устаревший снимок"
+    assert "refresh=true" in run.transcript.tool_log[0]["result"], "подсказка о кэше обязательна"
+    assert fresh in run.transcript.tool_log[1]["result"]
+    assert run.score.earned == task.max_points == 2.0
+
+    # Echoing the stale dashboard value is a distractor, not an answer: without
+    # a refresh call the two content checks must stay at zero.
+    stale_only = Runner(
+        RunConfig(),
+        ScriptedProvider(
+            [_call(1, "get_metric", dict(lookup)), core.ModelReply(text=f"queue_depth = {stale}")]
+        ),
+    ).run_task(task)
+    assert stale_only.score.earned == 0.5
+    assert not any(c.passed and c.name in ("refreshed", "fresh_value") for c in stale_only.score.checks)
 
 
 def test_tool_budget_is_enforced():
@@ -353,8 +415,13 @@ def test_selfcheck_proves_generators_and_evaluators_agree():
 
     report = selfcheck(RunConfig())
     assert report.ok, report.render()
-    assert len(report.rows) == 29
-    assert sum(row["max"] for row in report.rows) == core.FULL_TOTAL
+    scored = [row for row in report.rows if row["category"] in core.SCORED_CATEGORIES]
+    showcase = [row for row in report.rows if row["category"] in core.SHOWCASE_CATEGORIES]
+    assert len(scored) == 47
+    assert showcase, "визуальный блок должен попадать в selfcheck, а не пропадать"
+    assert core.FULL_TOTAL == 100.0
+    assert sum(row["max"] for row in scored) == core.FULL_TOTAL
+    assert all(row["max"] == row["oracle"] and row["garbage"] == 0 for row in showcase)
 
 
 def test_run_persists_oracles_with_exact_values(tmp_path: Path):
@@ -369,7 +436,7 @@ def test_run_persists_oracles_with_exact_values(tmp_path: Path):
     result = RunResult(cfg=cfg, runs=[run], provider_info={"provider": "oracle"})
     out = result.save()
     scores = json.loads((out / "scores.json").read_text(encoding="utf-8"))
-    assert scores[0]["earned"] == 2.0
+    assert scores[0]["earned"] == task.max_points
     tasks_payload = json.loads((out / "tasks.json").read_text(encoding="utf-8"))
     assert tasks_payload[0]["task"]["meta"]["price_in"]
     assert (out / "transcripts" / "R-4.json").is_file()
@@ -384,12 +451,17 @@ def test_reference_config_applies_the_policy():
     assert cfg.reference == "qwen3.8-27b-gsq-rco-iq3xxs"
     assert cfg.quant == "IQ3_XXS"
     assert cfg.base_url == "http://127.0.0.1:8888/v1"
-    assert cfg.context_window == reference.POLICY["context_window"] == 32768
+    assert cfg.context_window == reference.POLICY["context_window"]
     assert cfg.temperature == reference.POLICY["temperature"] == 0.0
     assert cfg.top_p == 1.0
     assert cfg.max_new_tokens == reference.POLICY["answer_budget_default"]
+    # unbounded_budget: лимит ответа = окно минус резерв; таблица категорий —
+    # запасной режим, в который можно вернуться переключателем.
+    cfg.unbounded_budget = False
     assert cfg.budget_for("C") == reference.POLICY["answer_budget_artifact"]
     assert cfg.budget_for("A") == reference.POLICY["answer_budget_default"]
+    cfg.unbounded_budget = True
+    assert cfg.budget_for("C") == cfg.context_window - cfg.context_reserve
     assert cfg.max_tool_calls == reference.POLICY["max_tool_calls"]
     unsloth = cfg.runtime.startswith("unsloth")
     window = str(cfg.context_window)
@@ -406,7 +478,7 @@ def test_reference_config_applies_the_policy():
     # would claim a configuration it cannot reproduce.
     for shipped in reference.model_entries():
         assert shipped.runtime_id, f"{shipped.id}: runtime не сопоставлен с шаблоном загрузки"
-        window = str(shipped.entry.get("context_window"))
+        window = str(shipped.entry.get("context_window") or shipped.policy.get("context_window"))
         assert window in shipped.launch_line(), f"{shipped.id}: в launch-строке нет окна {window}"
         assert "-ctk" in shipped.launch_line(), f"{shipped.id}: в launch-строке нет типа KV"
 

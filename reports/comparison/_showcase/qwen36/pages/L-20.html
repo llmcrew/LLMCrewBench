@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <script type="importmap">{"imports":{"three":"./vendor/three.module.js"}}</script>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <script type="module">
+    const THREE = window.THREE;
+
+    // Deterministic LCG
+    let lcg = 160488;
+    function rnd() {
+      lcg = (lcg * 1103515245 + 12345) % 2147483648;
+      return lcg / 2147483648;
+    }
+
+    // Renderer & Scene
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ canvas, preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    renderer.setClearColor(0x123038, 1);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, 800 / 600, 0.1, 100);
+    camera.position.set(0, 0, 4);
+    camera.lookAt(0, 0, -1);
+
+    // Palette
+    const COL_DARK = 0x123038;
+    const COL_GREEN = 0x7fd054;
+    const COL_WARM = 0xffc06a;
+    const COL_COLD = 0xa8c8dc;
+
+    // Helpers
+    function toWorld(u, v, z) {
+      return new THREE.Vector3((u - 0.5) * 10, (v - 0.5) * 7.5, z);
+    }
+
+    // dome_back
+    const domeBackGeo = new THREE.PlaneGeometry(7.1, 7.2);
+    const domeBackMat = new THREE.MeshBasicMaterial({ color: COL_DARK, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
+    const domeBack = new THREE.Mesh(domeBackGeo, domeBackMat);
+    domeBack.position.set(0, 0, -14.8);
+    domeBack.name = 'dome_back';
+    scene.add(domeBack);
+
+    // Side panels
+    const sideGeo = new THREE.PlaneGeometry(3, 6);
+    const sideMat = new THREE.MeshBasicMaterial({ color: COL_DARK, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
+    const s1 = new THREE.Mesh(sideGeo, sideMat);
+    s1.position.set(toWorld(0.16, 0.5, -12).x, toWorld(0.16, 0.5, -12).y, -12);
+    s1.rotation.y = -0.6;
+    s1.name = 'dome_back';
+    scene.add(s1);
+    const s2 = s1.clone();
+    s2.position.set(toWorld(0.84, 0.5, -12).x, toWorld(0.84, 0.5, -12).y, -12);
+    s2.rotation.y = 0.6;
+    scene.add(s2);
+
+    // floor
+    const floorGeo = new THREE.PlaneGeometry(10, 10);
+    const floorMat = new THREE.MeshBasicMaterial({ color: COL_DARK });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(0, -3.75, -8);
+    floor.name = 'floor';
+    scene.add(floor);
+
+    // warm edge
+    const edgeGeo = new THREE.PlaneGeometry(10, 0.1);
+    const edgeMat = new THREE.MeshBasicMaterial({ color: COL_WARM });
+    const edge = new THREE.Mesh(edgeGeo, edgeMat);
+    edge.rotation.x = -Math.PI / 2;
+    edge.position.set(0, -3.75 + 3.75 * 0.38, -8);
+    scene.add(edge);
+
+    // rib
+    const ribGeo = new THREE.PlaneGeometry(0.012, 8);
+    const ribMat = new THREE.MeshBasicMaterial({ color: COL_DARK });
+    for (let i = 0; i < 4; i++) {
+      const rib = new THREE.Mesh(ribGeo, ribMat);
+      rib.position.set((i - 1.5) * 2, 0, -12);
+      rib.rotation.z = (i - 1.5) * 0.3;
+      rib.name = 'rib';
+      scene.add(rib);
+    }
+
+    // lamp
+    const lampGeo = new THREE.PlaneGeometry(0.09 * 10, 0.07 * 7.5);
+    const lampMat = new THREE.MeshBasicMaterial({ color: COL_WARM, transparent: true, opacity: 0.75, side: THREE.DoubleSide });
+    const lamps = [];
+    for (let i = 0; i < 5; i++) {
+      const u = 0.28 + i * (0.72 - 0.28) / 4;
+      const lamp = new THREE.Mesh(lampGeo, lampMat);
+      lamp.position.set(toWorld(u, 0.1, -10).x, toWorld(u, 0.1, -10).y, -10);
+      lamp.name = 'lamp';
+      scene.add(lamp);
+      lamps.push(lamp);
+    }
+
+    // plant
+    const plants = [];
+    const plantUs = [0.12, 0.30, 0.68, 0.86];
+    for (let i = 0; i < 4; i++) {
+      const u = plantUs[i];
+      const z = -4 - i * 1.5;
+      const height = 0.30 + i * 0.05;
+      const group = new THREE.Group();
+      group.position.set(toWorld(u, 0.5, z).x, toWorld(u, 0.5, z).y, z);
+
+      const trunkGeo = new THREE.CylinderGeometry(0.05, 0.05, height, 8);
+      const trunkMat = new THREE.MeshBasicMaterial({ color: COL_DARK });
+      const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+      trunk.position.y = -height / 2;
+      group.add(trunk);
+
+      const leafGeo = new THREE.PlaneGeometry(0.3, 0.3);
+      const leafMat = new THREE.MeshBasicMaterial({ color: COL_GREEN, side: THREE.DoubleSide });
+      for (let j = 0; j < 3; j++) {
+        const leaf = new THREE.Mesh(leafGeo, leafMat);
+        leaf.position.set((j - 1) * 0.15, height * 0.6 + j * 0.1, 0);
+        leaf.rotation.z = (j - 1) * 0.5;
+        group.add(leaf);
+      }
+      group.name = 'plant';
+      scene.add(group);
+      plants.push(group);
+    }
+
+    // meteor
+    const meteorCount = 26;
+    const meteorMat = new THREE.MeshBasicMaterial({ color: COL_COLD, transparent: true, opacity: 1, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
+    const meteors = [];
+    for (let i = 0; i < meteorCount; i++) {
+      const m = new THREE.Sprite(meteorMat);
+      m.scale.set(0.0625, 0.0625, 1); // ~5px
+      m.position.set((rnd() - 0.5) * 10, 5, -22);
+      m.userData = { speed: 6 + rnd() * 3, curve: (rnd() - 0.5) * 2, resetY: 5 };
+      m.name = 'meteor';
+      scene.add(m);
+      meteors.push(m);
+    }
+
+    // drops
+    const dropCount = 64;
+    const dropMat = new THREE.MeshBasicMaterial({ color: COL_COLD, transparent: true, opacity: 0.8, side: THREE.DoubleSide });
+    const drops = [];
+    for (let i = 0; i < dropCount; i++) {
+      const d = new THREE.Sprite(dropMat);
+      d.scale.set(0.0625, 0.0625, 1);
+      d.position.set((rnd() - 0.5) * 8, (rnd() - 0.5) * 6, -13.5);
+      d.userData = { speed: 2.0, resetY: 3 };
+      d.name = 'drops';
+      scene.add(d);
+      drops.push(d);
+    }
+
+    // Animation state
+    let time = 0;
+    let firstMeteorPos = [0, 0];
+
+    window.__step = function(dt) {
+      time += dt;
+
+      // Camera movement
+      camera.position.z = Math.max(1.0, 4 - 2.32 * time);
+      camera.position.x = Math.sin(time * 1.5) * 0.6;
+      camera.lookAt(0, 0, -1);
+
+      // Meteors
+      for (let m of meteors) {
+        m.position.y -= m.userData.speed * dt;
+        m.position.x += m.userData.curve * dt;
+        if (m.position.y < -5) {
+          m.position.y = m.userData.resetY;
+          m.position.x = (rnd() - 0.5) * 10;
+        }
+      }
+      firstMeteorPos = [meteors[0].position.x, meteors[0].position.y];
+
+      // Drops
+      for (let d of drops) {
+        d.position.y -= 2.0 * dt;
+        if (d.position.y < -4) {
+          d.position.y = d.userData.resetY;
+          d.position.x = (rnd() - 0.5) * 8;
+        }
+      }
+
+      renderer.render(scene, camera);
+      return window.__probe();
+    };
+
+    window.__probe = function() {
+      return {
+        t: parseFloat(time.toFixed(4)),
+        objects: ['dome_back', 'floor', 'rib', 'lamp', 'plant', 'meteor', 'drops'],
+        meteor: [parseFloat(firstMeteorPos[0].toFixed(4)), parseFloat(firstMeteorPos[1].toFixed(4))],
+        camera: [parseFloat(camera.position.x.toFixed(4)), parseFloat(camera.position.z.toFixed(4))]
+      };
+    };
+
+    // Initial render
+    renderer.render(scene, camera);
+    window.__ready = true;
+  </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-20 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

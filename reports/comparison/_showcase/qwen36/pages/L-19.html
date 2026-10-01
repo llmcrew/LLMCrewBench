@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Трамвай сквозь дождливый город</title>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Deterministic LCG ---
+let lcg = 488641;
+function rnd() {
+  lcg = (lcg * 1103515245 + 12345) % 2147483648;
+  return lcg / 2147483648;
+}
+
+// --- Scene & Camera ---
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 100);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+renderer.setClearColor(0x1a1230, 1);
+document.body.appendChild(renderer.domElement);
+
+// --- Helpers ---
+function ndc(u, v) { return { x: (u - 0.5) * 2, y: (v - 0.5) * 2 }; }
+function makePlane(w, h, color, opacity, z, u, v) {
+  const geo = new THREE.PlaneGeometry(w, h);
+  const mat = new THREE.MeshBasicMaterial({
+    color,
+    transparent: opacity < 1,
+    opacity,
+    depthWrite: false,
+    side: THREE.DoubleSide
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  const pos = ndc(u + w / 2, v + h / 2);
+  mesh.position.set(pos.x, pos.y, z);
+  return mesh;
+}
+
+// --- Geometry Construction ---
+// night
+const night = makePlane(2, 2, 0x1a1230, 1, -45, 0, 0);
+night.name = 'night';
+scene.add(night);
+
+// cabin_top & cabin_low
+const cabin_top = makePlane(2, 0.2, 0x1a1230, 1, -4, 0, 0);
+cabin_top.name = 'cabin_top';
+scene.add(cabin_top);
+
+const cabin_low = makePlane(2, 0.56, 0x1a1230, 1, -4, 0, 0.72);
+cabin_low.name = 'cabin_low';
+scene.add(cabin_low);
+
+// mullion (two vertical)
+const mullion1 = makePlane(0.024, 1.24, 0x1a1230, 1, -4, 0.31, 0.10);
+const mullion2 = makePlane(0.024, 1.24, 0x1a1230, 1, -4, 0.65, 0.10);
+mullion1.name = 'mullion';
+mullion2.name = 'mullion';
+scene.add(mullion1, mullion2);
+
+// glass
+const glass = makePlane(1.56, 1.24, 0xffffff, 0.30, -4, 0.11, 0.10);
+glass.name = 'glass';
+scene.add(glass);
+
+// rail
+const rail = makePlane(1.56, 0.04, 0x12c7d4, 0.4, -4, 0.11, 0.58);
+rail.name = 'rail';
+scene.add(rail);
+
+// glow_top & glow_low
+const glow_top = makePlane(1.4, 0.1, 0xffa63c, 1, -3.95, 0.15, 0.145);
+glow_top.name = 'glow_top';
+scene.add(glow_top);
+
+const glow_low = makePlane(1.24, 0.08, 0xffa63c, 1, -3.95, 0.19, 0.64);
+glow_low.name = 'glow_low';
+scene.add(glow_low);
+
+// blobs (22 additive spots)
+const blobs = [];
+const blobGeo = new THREE.PlaneGeometry(1, 1);
+for (let i = 0; i < 22; i++) {
+  const size = 0.0175 + rnd() * (0.0325 - 0.0175); // 7..13 px in NDC
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x12c7d4,
+    transparent: true,
+    opacity: 0.85,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const mesh = new THREE.Mesh(blobGeo, mat);
+  mesh.scale.set(size, size, 1);
+  const x = rnd() * 2 - 1;
+  const y = rnd() * 0.62 + 0.10;
+  mesh.position.set(x, y, -14);
+  mesh.name = 'blobs';
+  scene.add(mesh);
+  blobs.push({ mesh, x, y, speed: 2 + rnd() * 2 });
+}
+
+// drops (60 raindrops)
+const drops = [];
+const dropGeo = new THREE.PlaneGeometry(1, 1);
+for (let i = 0; i < 60; i++) {
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xa8c8dc,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false
+  });
+  const mesh = new THREE.Mesh(dropGeo, mat);
+  mesh.scale.set(0.015, 0.015, 1); // 6 px
+  const x = rnd() * 0.78 + 0.11;
+  const y = rnd() * 0.62 + 0.10;
+  mesh.position.set((x - 0.5) * 2, (y - 0.5) * 2, -3.9);
+  mesh.name = 'drops';
+  scene.add(mesh);
+  drops.push({ mesh, x, y });
+}
+
+// --- Animation State ---
+let t = 0;
+
+// --- Public API ---
+window.__step = function(dt) {
+  t += dt;
+
+  // Camera rock
+  camera.position.x = Math.sin(t * 1.5) * 0.045;
+  camera.lookAt(0, 0, -1);
+
+  // Move drops down
+  for (let d of drops) {
+    d.y -= 1.56 * dt;
+    if (d.y < 0.10) d.y += 0.62;
+    d.mesh.position.y = (d.y - 0.5) * 2;
+  }
+
+  // Move blobs sideways
+  for (let b of blobs) {
+    b.x += b.speed * dt;
+    if (b.x > 1.0) b.x -= 2.0;
+    if (b.x < -1.0) b.x += 2.0;
+    b.mesh.position.x = b.x;
+  }
+
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+window.__probe = function() {
+  const firstBlob = blobs[0];
+  return {
+    t: t.toFixed(4),
+    objects: ['night', 'cabin_top', 'cabin_low', 'mullion', 'glass', 'blobs', 'rail', 'glow_top', 'glow_low', 'drops'],
+    blob: [parseFloat(firstBlob.x.toFixed(4)), parseFloat(firstBlob.y.toFixed(4))]
+  };
+};
+
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-19 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

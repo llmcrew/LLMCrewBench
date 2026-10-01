@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Particle Fountain</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ---------- renderer ---------- */
+const W = 800, H = 600;
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+document.body.appendChild(renderer.domElement);
+
+/* ---------- scene / camera ---------- */
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 200);
+camera.position.set(0.0, 4.0, 14.0);
+camera.lookAt(0.0, 3.0, 0.0);
+
+/* ---------- ground ---------- */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.MeshStandardMaterial({ color: 0x2b3a4a })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.name = 'ground';
+scene.add(ground);
+
+/* ---------- particles (single InstancedMesh, 24 spheres r=0.25) ---------- */
+const N = 24;
+const sphereGeo = new THREE.SphereGeometry(0.25, 16, 12);
+const sphereMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+const particles = new THREE.InstancedMesh(sphereGeo, sphereMat, N);
+particles.name = 'particles';
+scene.add(particles);
+
+/* ---------- lights ---------- */
+const ambient = new THREE.AmbientLight(0xffffff, 0.45);
+ambient.name = 'ambient';
+scene.add(ambient);
+
+const directional = new THREE.DirectionalLight(0xffffff, 2.0);
+directional.position.set(6.0, 12.0, 8.0);
+directional.name = 'directional';
+scene.add(directional);
+
+/* ---------- deterministic LCG ---------- */
+const S0 = 1804069101;
+const MOD = 4294967296;
+let lcgState = S0;
+
+function nextU() {
+  lcgState = (1664525 * lcgState + 1013904223) % MOD;
+  return lcgState / MOD;
+}
+
+/* ---------- state ---------- */
+const vx = new Float64Array(N);
+const vy = new Float64Array(N);
+const px = new Float64Array(N);
+const py = new Float64Array(N);
+const aliveFlag = new Uint8Array(N);
+
+for (let i = 0; i < N; i++) {
+  vx[i] = -3 + 6 * nextU();
+  vy[i] = 5 + 4 * nextU();
+  px[i] = 0.0;
+  py[i] = 0.25;
+  aliveFlag[i] = 1;
+}
+
+const G = 12.00;
+let steps = 0;
+
+/* ---------- instanced matrix update ---------- */
+const dummy = new THREE.Object3D();
+function syncInstances() {
+  for (let i = 0; i < N; i++) {
+    dummy.position.set(px[i], py[i], 0.0);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(1, 1, 1);
+    dummy.updateMatrix();
+    particles.setMatrixAt(i, dummy.matrix);
+  }
+  particles.instanceMatrix.needsUpdate = true;
+}
+
+/* ---------- helpers ---------- */
+function r4(v) {
+  return Math.round(v * 10000) / 10000;
+}
+
+/* ---------- probe ---------- */
+window.__probe = function () {
+  let alive = 0;
+  let sum = 0;
+  for (let i = 0; i < N; i++) {
+    if (aliveFlag[i]) {
+      alive++;
+      sum += py[i];
+    }
+  }
+  const mean = alive > 0 ? sum / alive : 0;
+
+  return {
+    steps: steps,
+    alive: alive,
+    mean_height: r4(mean),
+    particles: [
+      { x: r4(px[0]), y: r4(py[0]) },
+      { x: r4(px[1]), y: r4(py[1]) },
+      { x: r4(px[2]), y: r4(py[2]) }
+    ],
+    camera: [
+      r4(camera.position.x),
+      r4(camera.position.y),
+      r4(camera.position.z)
+    ],
+    objects: scene.children.map(function (o) { return o.name; })
+  };
+};
+
+/* ---------- step ---------- */
+window.__step = function (dt) {
+  for (let i = 0; i < N; i++) {
+    if (!aliveFlag[i]) continue;
+
+    vy[i] -= G * dt;
+    py[i] += vy[i] * dt;
+    px[i] += vx[i] * dt;
+
+    if (py[i] < 0) {
+      py[i] = 0;
+      aliveFlag[i] = 0;
+    }
+  }
+
+  steps++;
+  syncInstances();
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+/* ---------- first frame ---------- */
+syncInstances();
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · K-7 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#000}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+camera.position.set(0.0, 0.0, 18.0);
+camera.lookAt(0.0, 0.0, 0.0);
+
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(ambientLight);
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.8);
+dirLight.position.set(5.0, 5.0, 10.0);
+scene.add(dirLight);
+
+const backdropGeo = new THREE.PlaneGeometry(40, 40);
+const backdropMat = new THREE.MeshBasicMaterial({ color: 0x22303f });
+const backdrop = new THREE.Mesh(backdropGeo, backdropMat);
+backdrop.name = 'backdrop';
+backdrop.position.set(0, 0, -2);
+scene.add(backdrop);
+
+let s = 694576027;
+function lcg() {
+  s = (1664525 * s + 1013904223) % 4294967296;
+  return s / 4294967296;
+}
+
+const N = 12;
+const agents = [];
+const agentMeshes = [];
+const sphereGeo = new THREE.SphereGeometry(0.3, 16, 12);
+const sphereMat = new THREE.MeshStandardMaterial({ color: 0xffb03a });
+
+for (let i = 0; i < N; i++) {
+  const x  = -4 + 8 * lcg();
+  const y  = -4 + 8 * lcg();
+  const vx = -1.5 + 3 * lcg();
+  const vy = -1.5 + 3 * lcg();
+  agents.push({ x, y, vx, vy });
+
+  const mesh = new THREE.Mesh(sphereGeo, sphereMat);
+  mesh.name = 'agent-' + i;
+  mesh.position.set(x, y, 0);
+  scene.add(mesh);
+  agentMeshes.push(mesh);
+}
+
+const w_c = 0.4, w_s = 1.0, w_a = 0.3, r_sep = 2.5, max_speed = 2.5;
+let steps = 0;
+
+window.__step = function (dt) {
+  const ax = new Float64Array(N);
+  const ay = new Float64Array(N);
+
+  for (let i = 0; i < N; i++) {
+    let comX = 0, comY = 0;
+    let avgVx = 0, avgVy = 0;
+    let sepX = 0, sepY = 0;
+
+    for (let j = 0; j < N; j++) {
+      if (j === i) continue;
+      comX += agents[j].x;
+      comY += agents[j].y;
+      avgVx += agents[j].vx;
+      avgVy += agents[j].vy;
+
+      const dx = agents[i].x - agents[j].x;
+      const dy = agents[i].y - agents[j].y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0 && dist < r_sep) {
+        sepX += dx / dist;
+        sepY += dy / dist;
+      }
+    }
+
+    comX /= 11;
+    comY /= 11;
+    avgVx /= 11;
+    avgVy /= 11;
+
+    ax[i] = w_c * (comX - agents[i].x) + w_s * sepX + w_a * (avgVx - agents[i].vx);
+    ay[i] = w_c * (comY - agents[i].y) + w_s * sepY + w_a * (avgVy - agents[i].vy);
+  }
+
+  for (let i = 0; i < N; i++) {
+    agents[i].vx += ax[i] * dt;
+    agents[i].vy += ay[i] * dt;
+
+    const speed = Math.sqrt(agents[i].vx * agents[i].vx + agents[i].vy * agents[i].vy);
+    if (speed > max_speed) {
+      agents[i].vx = agents[i].vx / speed * max_speed;
+      agents[i].vy = agents[i].vy / speed * max_speed;
+    }
+
+    agents[i].x += agents[i].vx * dt;
+    agents[i].y += agents[i].vy * dt;
+
+    agentMeshes[i].position.set(agents[i].x, agents[i].y, 0);
+  }
+
+  steps++;
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+function r4(v) {
+  return Math.round(v * 10000) / 10000;
+}
+
+window.__probe = function () {
+  return {
+    steps: steps,
+    agents: agents.map(a => ({
+      x: r4(a.x),
+      y: r4(a.y),
+      vx: r4(a.vx),
+      vy: r4(a.vy)
+    })),
+    camera: [r4(camera.position.x), r4(camera.position.y), r4(camera.position.z)],
+    objects: ['backdrop', ...agentMeshes.map((_, i) => 'agent-' + i)]
+  };
+};
+
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · K-9 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

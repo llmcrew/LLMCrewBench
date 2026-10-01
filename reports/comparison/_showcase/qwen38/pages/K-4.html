@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#111}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const R = 0.4;
+const W = 9.0;
+
+// --- Scene ---
+const scene = new THREE.Scene();
+
+// Floor
+const floorGeo = new THREE.PlaneGeometry(22.0, 60);
+const floorMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a });
+const floor = new THREE.Mesh(floorGeo, floorMat);
+floor.name = 'floor';
+floor.rotation.x = -Math.PI / 2;
+floor.position.set(0, -R, 0);
+scene.add(floor);
+
+// Walls
+const wallGeo = new THREE.BoxGeometry(0.3, 2.4, 1.6);
+const wallMat = new THREE.MeshStandardMaterial({ color: 0x8a93a6 });
+const wallLeft = new THREE.Mesh(wallGeo, wallMat);
+wallLeft.name = 'wall-left';
+wallLeft.position.set(-4.65, 0.6, 0);
+scene.add(wallLeft);
+
+const wallRight = new THREE.Mesh(wallGeo, wallMat);
+wallRight.name = 'wall-right';
+wallRight.position.set(4.65, 0.6, 0);
+scene.add(wallRight);
+
+// Balls
+const ballGeo = new THREE.SphereGeometry(R, 32, 32);
+const ballMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+const ballMeshes = [];
+for (let i = 0; i < 3; i++) {
+  const m = new THREE.Mesh(ballGeo, ballMat);
+  m.name = 'ball-' + i;
+  scene.add(m);
+  ballMeshes.push(m);
+}
+
+// Camera
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+camera.position.set(0.0, 3.8, 12.0);
+camera.lookAt(0.0, 0.2, 0.0);
+
+// Lights
+const ambient = new THREE.AmbientLight(0xffffff, 0.45);
+scene.add(ambient);
+const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+dirLight.position.set(7.0, 13.0, 10.0);
+scene.add(dirLight);
+
+// Renderer
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+// --- Simulation state ---
+let balls = [
+  { x: 1.7,  v: -1.83 },
+  { x: 4.38, v:  2.33 },
+  { x: 6.93, v:  2.28 }
+];
+let t = 0;
+let steps = 0;
+let collisions = 0;
+
+function syncMeshes() {
+  for (let i = 0; i < 3; i++) {
+    ballMeshes[i].position.set(balls[i].x - W / 2, 0, 0);
+  }
+}
+
+// Initial render
+syncMeshes();
+renderer.render(scene, camera);
+
+window.__ready = true;
+
+// --- Step ---
+window.__step = function (dt) {
+  // 1. Integrate positions
+  for (let i = 0; i < 3; i++) {
+    balls[i].x += balls[i].v * dt;
+  }
+
+  // 2. Pair collisions: (0,1) then (1,2)
+  const pairs = [[0, 1], [1, 2]];
+  for (const [a, b] of pairs) {
+    if (balls[b].x - balls[a].x < 2 * R) {
+      const d = (2 * R - (balls[b].x - balls[a].x)) / 2;
+      balls[a].x -= d;
+      balls[b].x += d;
+      const tmp = balls[a].v;
+      balls[a].v = balls[b].v;
+      balls[b].v = tmp;
+      collisions++;
+    }
+  }
+
+  // 3. Wall bounces
+  for (let i = 0; i < 3; i++) {
+    if (balls[i].x - R < 0) {
+      balls[i].x = R;
+      balls[i].v = -balls[i].v;
+      collisions++;
+    }
+    if (balls[i].x + R > W) {
+      balls[i].x = W - R;
+      balls[i].v = -balls[i].v;
+      collisions++;
+    }
+  }
+
+  t += dt;
+  steps++;
+
+  syncMeshes();
+  renderer.render(scene, camera);
+
+  return window.__probe();
+};
+
+// --- Probe ---
+function r4(n) {
+  return Math.round(n * 10000) / 10000;
+}
+
+window.__probe = function () {
+  return {
+    steps: steps,
+    t: r4(t),
+    objects: ["floor", "wall-left", "wall-right", "ball-0", "ball-1", "ball-2"],
+    camera: [0, 4.5, 15],
+    balls: balls.map(b => ({ x: r4(b.x), v: r4(b.v) })),
+    collisions: collisions
+  };
+};
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · K-4 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

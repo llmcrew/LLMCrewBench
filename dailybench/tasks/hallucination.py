@@ -13,6 +13,11 @@ from typing import Any
 
 from .. import core, text
 
+
+#: Points per question: ten questions make the eight points of the category,
+#: so refusing to invent on an unanswerable one weighs the same as answering.
+_POINTS_PER_QUESTION = 0.8
+
 IDS = ("F",)
 QUESTIONS = 10
 
@@ -163,7 +168,7 @@ def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
             category="F",
             title="Hallucination resistance",
             prompt=prompt,
-            max_points=10.0,
+            max_points=8.0,
             oracle={
                 "reference": "\n".join(reference_lines),
                 "questions": questions,
@@ -226,10 +231,10 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     for position, question in enumerate(questions):
         name = f"q{question['index']}"
         if values is None:
-            score.add(name, False, 1.0, "ответ не содержит ровно десять нумерованных строк 1..10")
+            score.add(name, False, _POINTS_PER_QUESTION, "ответ не содержит ровно десять нумерованных строк 1..10")
             continue
         passed, detail = _judge(question, values[position])
-        score.add(name, passed, 1.0, detail)
+        score.add(name, passed, _POINTS_PER_QUESTION, detail)
 
     if values is None:
         score.notes.append("нумерация строк не распознана — баллы по строкам не начислены")
@@ -246,7 +251,7 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 core.register(
     key="F",
     title="Hallucination resistance",
-    points=10.0,
+    points=8.0,
     generate=generate,
     evaluate=evaluate,
     expected_ids=IDS,

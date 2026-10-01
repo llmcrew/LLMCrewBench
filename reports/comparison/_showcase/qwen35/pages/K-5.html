@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Spring Mass System</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Configuration ---
+const CONFIG = {
+    k: 10.7,
+    m: 1.0,
+    c: 0.56,
+    d0: 2.12,
+    initialX: [-2.24, -0.09, 2.13],
+    initialV: [0.9, 0.0, -0.9]
+};
+
+// --- State ---
+let state = {
+    steps: 0,
+    t: 0.0,
+    x: [...CONFIG.initialX],
+    v: [...CONFIG.initialV]
+};
+
+// --- Scene Setup ---
+const scene = new THREE.Scene();
+// Background needs to be explicit or default. Default is usually black/transparent. 
+// To ensure determinism and visibility, let's keep default or set a dark color if needed, 
+// but the prompt implies standard rendering.
+
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+camera.position.set(0.0, 3.2, 13.0);
+camera.lookAt(0.0, 0.6, 0.0);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+// --- Materials ---
+const matFloor = new THREE.MeshStandardMaterial({ color: 0x2b3a4a, roughness: 0.8 });
+const matRail = new THREE.MeshStandardMaterial({ color: 0x8a93a6, roughness: 0.5 });
+const matCart = new THREE.MeshStandardMaterial({ color: 0xff8a3d, roughness: 0.4 });
+const matSpring = new THREE.MeshStandardMaterial({ color: 0xd8dde6, roughness: 0.3 });
+
+// --- Objects ---
+
+// Floor
+const geoFloor = new THREE.PlaneGeometry(40, 40);
+const meshFloor = new THREE.Mesh(geoFloor, matFloor);
+meshFloor.rotation.x = -Math.PI / 2;
+meshFloor.name = 'floor';
+scene.add(meshFloor);
+
+// Rail
+const geoRail = new THREE.BoxGeometry(24, 0.12, 0.6);
+const meshRail = new THREE.Mesh(geoRail, matRail);
+meshRail.position.set(0, 0.06, 0);
+meshRail.name = 'rail';
+scene.add(meshRail);
+
+// Carts
+const carts = [];
+const geoCart = new THREE.BoxGeometry(0.9, 0.9, 0.9);
+for (let i = 0; i < 3; i++) {
+    const cart = new THREE.Mesh(geoCart, matCart);
+    cart.position.set(state.x[i], 0.45, 0);
+    cart.name = `cart-${i}`;
+    scene.add(cart);
+    carts.push(cart);
+}
+
+// Springs
+// Cylinder geometry is vertical by default. We rotate it to lie on X axis.
+const geoSpring = new THREE.CylinderGeometry(0.06, 0.06, 1, 8);
+geoSpring.rotateZ(Math.PI / 2); 
+
+const springs = [];
+// Spring 0-1
+const spring01 = new THREE.Mesh(geoSpring, matSpring);
+spring01.name = 'spring-01';
+scene.add(spring01);
+springs.push(spring01);
+
+// Spring 1-2
+const spring12 = new THREE.Mesh(geoSpring, matSpring);
+spring12.name = 'spring-12';
+scene.add(spring12);
+springs.push(spring12);
+
+// --- Lights ---
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+scene.add(ambientLight);
+
+const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+dirLight.position.set(7.0, 13.0, 10.0);
+scene.add(dirLight);
+
+// --- Physics & Update Logic ---
+
+function updateVisuals() {
+    // Update carts
+    for (let i = 0; i < 3; i++) {
+        carts[i].position.x = state.x[i];
+    }
+
+    // Update springs
+    // Spring 0-1 connects cart 0 and cart 1
+    const x0 = state.x[0];
+    const x1 = state.x[1];
+    const x2 = state.x[2];
+
+    // Spring 01
+    const len01 = Math.abs(x1 - x0);
+    spring01.position.set((x0 + x1) / 2, 0.45, 0);
+    spring01.scale.set(1, len01, 1); // Scale Y because we rotated geometry to align with X, but scale applies to local Y which is now the length axis? 
+    // Wait, CylinderGeometry default is Y-up. 
+    // rotateZ(Math.PI/2) makes it X-aligned. 
+    // So the length is along Local X. 
+    // So we should scale X.
+    // Let's re-verify: Default Cylinder is along Y. Rotate Z 90 -> Along X.
+    // So scale.x controls length.
+    spring01.scale.set(len01, 1, 1);
+
+    // Spring 12
+    const len12 = Math.abs(x2 - x1);
+    spring12.position.set((x1 + x2) / 2, 0.45, 0);
+    spring12.scale.set(len12, 1, 1);
+}
+
+window.__step = function(dt) {
+    const { k, m, c, d0 } = CONFIG;
+    const x = state.x;
+    const v = state.v;
+
+    // Calculate forces based on current state
+    const e12 = x[1] - x[0] - d0;
+    const e23 = x[2] - x[1] - d0;
+
+    const F1 = k * e12 + c * (v[1] - v[0]);
+    const F2 = -k * e12 + c * (v[0] - v[1]) + k * e23 + c * (v[2] - v[1]);
+    const F3 = -k * e23 + c * (v[1] - v[2]);
+
+    // Semi-implicit Euler: Update velocities first
+    const newV = [
+        v[0] + (F1 / m) * dt,
+        v[1] + (F2 / m) * dt,
+        v[2] + (F3 / m) * dt
+    ];
+
+    // Then update positions using new velocities
+    const newX = [
+        x[0] + newV[0] * dt,
+        x[1] + newV[1] * dt,
+        x[2] + newV[2] * dt
+    ];
+
+    // Commit state
+    state.v = newV;
+    state.x = newX;
+    state.t += dt;
+    state.steps++;
+
+    updateVisuals();
+    
+    // Return state for convenience if needed, though spec says __probe is the source of truth
+    return { x: [...state.x], v: [...state.v], t: state.t };
+};
+
+window.__probe = function() {
+    const round4 = (n) => parseFloat(n.toFixed(4));
+    
+    return {
+        steps: state.steps,
+        t: round4(state.t),
+        objects: ["floor", "rail", "cart-0", "cart-1", "cart-2", "spring-01", "spring-12"],
+        camera: [0, 3.2, 13],
+        x: state.x.map(round4),
+        v: state.v.map(round4)
+    };
+};
+
+// --- Initialization ---
+updateVisuals();
+renderer.render(scene, camera);
+window.__ready = true;
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-5 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

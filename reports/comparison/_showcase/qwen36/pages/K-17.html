@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Bar Chart Simulation</title>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+  <script type="module">
+    const THREE = window.THREE;
+
+    // Состояние симуляции
+    let t = 0;
+    let steps = 0;
+    const n = 7;
+    const values = [4.99, 4.21, 6.61, 7.00, 4.97, 6.07, 2.00];
+    const labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+
+    // Сцена и камера
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+    camera.position.set(0.0, 7.0, 18.0);
+    camera.lookAt(0.0, 3.0, 0.0);
+
+    // Рендерер
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    document.body.appendChild(renderer.domElement);
+
+    // Освещение
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
+    dirLight.position.set(8.0, 14.0, 8.0);
+    scene.add(dirLight);
+
+    // Пол
+    const groundGeo = new THREE.PlaneGeometry(24, 24);
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.name = 'ground';
+    ground.rotation.x = -Math.PI / 2;
+    scene.add(ground);
+
+    // Столбцы
+    const bars = [];
+    for (let i = 0; i < n; i++) {
+      const geo = new THREE.BoxGeometry(1, 1, 1);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.name = `bar-${i}`;
+      const x = (i - (n - 1) / 2) * 2.0;
+      mesh.position.set(x, 0, 0);
+      scene.add(mesh);
+      bars.push(mesh);
+    }
+
+    // Маркер
+    const markerGeo = new THREE.SphereGeometry(0.25);
+    const markerMat = new THREE.MeshStandardMaterial({ color: 0xffe066 });
+    const marker = new THREE.Mesh(markerGeo, markerMat);
+    marker.name = 'marker';
+    scene.add(marker);
+
+    // Первая отрисовка
+    renderer.render(scene, camera);
+
+    // Шаг симуляции
+    window.__step = function(dt) {
+      t += dt;
+      steps += 1;
+      const active = steps % n;
+
+      for (let i = 0; i < n; i++) {
+        const h = values[i] * Math.min(1, t / 0.5);
+        bars[i].scale.y = h;
+        bars[i].position.y = h / 2;
+      }
+
+      const activeH = values[active] * Math.min(1, t / 0.5);
+      marker.position.x = bars[active].position.x;
+      marker.position.z = bars[active].position.z;
+      marker.position.y = activeH + 0.5;
+
+      renderer.render(scene, camera);
+    };
+
+    // Зонд состояния
+    window.__probe = function() {
+      const barsData = bars.map((b, i) => ({
+        label: labels[i],
+        height: parseFloat(b.scale.y.toFixed(4))
+      }));
+      const maxH = Math.max(...barsData.map(b => b.height));
+      return {
+        steps: steps,
+        t: parseFloat(t.toFixed(4)),
+        objects: scene.children.map(c => c.name),
+        bars: barsData,
+        max_height: parseFloat(maxH.toFixed(4)),
+        active: steps % n
+      };
+    };
+
+    window.__ready = true;
+  </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · K-17 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

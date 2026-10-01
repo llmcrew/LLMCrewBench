@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Brownian motion</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const WIDTH = 800;
+const HEIGHT = 600;
+const N = 12;
+const H_STEP = 0.2;
+const S0 = 2215753936;
+
+/* ---------- renderer ---------- */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(WIDTH, HEIGHT, false);
+document.body.appendChild(renderer.domElement);
+
+/* ---------- scene / camera ---------- */
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(50, WIDTH / HEIGHT, 0.1, 200);
+camera.position.set(0.0, 0.0, 16.0);
+camera.lookAt(0.0, 0.0, 0.0);
+
+/* ---------- backdrop ---------- */
+const backdrop = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshBasicMaterial({ color: 0x22303f })
+);
+backdrop.position.set(0, 0, -2);
+backdrop.name = 'backdrop';
+scene.add(backdrop);
+
+/* ---------- particles (single InstancedMesh, 12 spheres) ---------- */
+const particles = new THREE.InstancedMesh(
+  new THREE.SphereGeometry(0.3, 16, 12),
+  new THREE.MeshStandardMaterial({ color: 0xffa64d, roughness: 0.45, metalness: 0.0 }),
+  N
+);
+particles.name = 'particles';
+scene.add(particles);
+
+/* ---------- lights ---------- */
+const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+ambient.name = 'ambient';
+scene.add(ambient);
+
+const directional = new THREE.DirectionalLight(0xffffff, 1.8);
+directional.position.set(4.0, 6.0, 10.0);
+directional.name = 'directional';
+scene.add(directional);
+
+/* ---------- state ---------- */
+let s = S0;
+let steps = 0;
+
+const xs = new Float64Array(N);
+const ys = new Float64Array(N);
+for (let i = 0; i < N; i++) {
+  xs[i] = -3 + 2 * (i % 4);
+  ys[i] = 2 - 1.5 * Math.floor(i / 4);
+}
+
+const dummy = new THREE.Object3D();
+
+function syncInstances() {
+  for (let i = 0; i < N; i++) {
+    dummy.position.set(xs[i], ys[i], 0);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(1, 1, 1);
+    dummy.updateMatrix();
+    particles.setMatrixAt(i, dummy.matrix);
+  }
+  particles.instanceMatrix.needsUpdate = true;
+}
+
+/* ---------- LCG ---------- */
+function nextU() {
+  s = (1664525 * s + 1013904223) % 4294967296;
+  return s / 4294967296;
+}
+
+/* ---------- one simulation step ---------- */
+function doStep() {
+  for (let i = 0; i < N; i++) {
+    xs[i] += (2 * nextU() - 1) * H_STEP;
+    ys[i] += (2 * nextU() - 1) * H_STEP;
+
+    if (xs[i] < -6.0) xs[i] = -6.0;
+    else if (xs[i] > 6.0) xs[i] = 6.0;
+
+    if (ys[i] < -4.0) ys[i] = -4.0;
+    else if (ys[i] > 4.0) ys[i] = 4.0;
+  }
+  steps += 1;
+  syncInstances();
+}
+
+/* ---------- probe ---------- */
+const r4 = (v) => Math.round(v * 10000) / 10000;
+
+window.__probe = function () {
+  return {
+    steps: steps,
+    particles: Array.from({ length: N }, (_, i) => ({ x: r4(xs[i]), y: r4(ys[i]) })),
+    camera: [r4(camera.position.x), r4(camera.position.y), r4(camera.position.z)],
+    objects: scene.children.map((o) => o.name)
+  };
+};
+
+/* ---------- step API ---------- */
+window.__step = function (dt) {
+  doStep();
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+/* ---------- first frame ---------- */
+syncInstances();
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · K-8 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

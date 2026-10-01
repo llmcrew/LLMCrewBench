@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Signal Spectrum Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+    const THREE = window.THREE;
+
+    // --- Configuration ---
+    const N = 64;
+    const fs = 64;
+    const A1 = 2.73, k1 = 6;
+    const A2 = 2.03, k2 = 11;
+    const binsToCalc = [6, 11, 18];
+    
+    // --- State ---
+    let steps = 0;
+    let t = 0.0;
+    
+    // --- Signal Generation ---
+    const signal = new Float32Array(N);
+    for (let n = 0; n < N; n++) {
+        const term1 = A1 * Math.sin(2 * Math.PI * k1 * n / N);
+        const term2 = A2 * Math.sin(2 * Math.PI * k2 * n / N);
+        signal[n] = term1 + term2;
+    }
+
+    // --- DFT Calculation ---
+    const binData = [];
+    for (const k of binsToCalc) {
+        let Re_k = 0;
+        let Im_k = 0;
+        for (let n = 0; n < N; n++) {
+            const angle = 2 * Math.PI * k * n / N;
+            Re_k += signal[n] * Math.cos(angle);
+            Im_k += signal[n] * Math.sin(angle);
+        }
+        const amp_k = (2 / N) * Math.sqrt(Re_k * Re_k + Im_k * Im_k);
+        const freq = k * fs / N;
+        binData.push({ k, freq, amp: amp_k });
+    }
+
+    // Find dominant frequency
+    let maxAmp = -1;
+    let dominantFreq = 0;
+    for (const b of binData) {
+        if (b.amp > maxAmp) {
+            maxAmp = b.amp;
+            dominantFreq = b.freq;
+        }
+    }
+
+    // --- Three.js Setup ---
+    const scene = new THREE.Scene();
+    
+    // Camera
+    const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+    camera.position.set(0.0, 5.0, 15.0);
+    camera.lookAt(0.0, 2.5, 0.0);
+
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    document.body.appendChild(renderer.domElement);
+
+    // Lights
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
+    scene.add(ambientLight);
+    
+    const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
+    dirLight.position.set(7.0, 13.0, 8.0);
+    scene.add(dirLight);
+
+    // Ground
+    const groundGeo = new THREE.PlaneGeometry(20, 20);
+    const groundMat = new THREE.MeshBasicMaterial({ color: 0x2b3a4a });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.name = "ground";
+    scene.add(ground);
+
+    // Bars (Bins)
+    const m = binsToCalc.length;
+    const barObjects = [];
+    
+    binsToCalc.forEach((k, i) => {
+        const data = binData.find(b => b.k === k);
+        const h_i = data.amp * 1.5;
+        
+        const geo = new THREE.BoxGeometry(1, 1, 1);
+        const mat = new THREE.MeshBasicMaterial({ color: 0xff8a3d });
+        const mesh = new THREE.Mesh(geo, mat);
+        
+        // Position: x = (i - (m - 1) / 2) * 3.2
+        const x = (i - (m - 1) / 2) * 3.2;
+        mesh.position.set(x, h_i / 2, 0);
+        mesh.scale.set(1, h_i, 1); // Scale Y to height
+        mesh.name = `bin-${i}`;
+        
+        scene.add(mesh);
+        barObjects.push(mesh);
+    });
+
+    // Wave Line
+    const wavePoints = [];
+    for (let n = 0; n < N; n++) {
+        const x = -6 + 12 * n / (N - 1);
+        const y = 4.2 + signal[n] * 0.5;
+        const z = -2;
+        wavePoints.push(new THREE.Vector3(x, y, z));
+    }
+    const waveGeo = new THREE.BufferGeometry().setFromPoints(wavePoints);
+    const waveMat = new THREE.LineBasicMaterial({ color: 0x66e0ff });
+    const waveLine = new THREE.Line(waveGeo, waveMat);
+    waveLine.name = "wave";
+    scene.add(waveLine);
+
+    // Playhead
+    const playheadGeo = new THREE.SphereGeometry(0.15, 16, 16);
+    const playheadMat = new THREE.MeshBasicMaterial({ color: 0xffe066 });
+    const playhead = new THREE.Mesh(playheadGeo, playheadMat);
+    playhead.name = "playhead";
+    scene.add(playhead);
+
+    // --- Simulation Logic ---
+
+    function updatePlayhead() {
+        const p = (steps * 4) % N;
+        const pos = wavePoints[p];
+        playhead.position.copy(pos);
+        return p;
+    }
+
+    // Initial draw
+    updatePlayhead();
+    renderer.render(scene, camera);
+    window.__ready = true;
+
+    // --- API ---
+
+    window.__step = function(dt) {
+        steps += 1;
+        t += dt;
+        updatePlayhead();
+        renderer.render(scene, camera);
+    };
+
+    window.__probe = function() {
+        const objects = [];
+        scene.children.forEach(child => {
+            if (child.name) objects.push(child.name);
+        });
+
+        const binsInfo = binData.map(b => ({
+            freq: parseFloat(b.freq.toFixed(4)),
+            amplitude: parseFloat(b.amp.toFixed(4))
+        }));
+
+        return {
+            steps: steps,
+            t: parseFloat(t.toFixed(4)),
+            objects: objects,
+            bins: binsInfo,
+            dominant: parseFloat(dominantFreq.toFixed(4)),
+            playhead: (steps * 4) % N
+        };
+    };
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-20 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

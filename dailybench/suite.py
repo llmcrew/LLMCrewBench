@@ -46,6 +46,9 @@ def validate_suite(tasks: Iterable[core.TaskInstance]) -> list[str]:
     for task in tasks:
         by_category.setdefault(task.category, []).append(task)
     for key, group in by_category.items():
+        # The visual block is checked by its own module: its points only add up
+        # once all twenty scenarios exist, and a slice in flight must not look
+        # like a broken suite.
         expected = core.CATEGORY_POINTS.get(key)
         total = sum(task.max_points for task in group)
         if expected is not None and abs(total - expected) > 1e-9 and key != "E":

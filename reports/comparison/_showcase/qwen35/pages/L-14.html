@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Water Surface</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // Renderer
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Scene
+        const scene = new THREE.Scene();
+
+        // Camera
+        // PerspectiveCamera(45, 800/600, 0.1, 1000)
+        const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 1000);
+        camera.position.set(0, 0.9, 0);
+        // LookAt (0, 0.9 - 0.1185, -1)
+        camera.lookAt(0, 0.9 - 0.1185, -1);
+
+        // Time
+        let time = 0.0;
+
+        // --- Sky ---
+        // Plane at distance 500.0
+        // Colors: #ffb066 (horizon), #8c5f86 (mid), #14224f (top)
+        
+        const lookDir = new THREE.Vector3(0, -0.1185, -1).normalize();
+        const skyDist = 500.0;
+        const skyCenter = camera.position.clone().add(lookDir.clone().multiplyScalar(skyDist));
+        
+        const tanHalfFov = Math.tan(THREE.MathUtils.degToRad(45) / 2);
+        const skyHeight = 2 * skyDist * tanHalfFov;
+        const skyWidth = skyHeight * (800 / 600);
+        
+        const skyGeo = new THREE.PlaneGeometry(skyWidth, skyHeight);
+        
+        const skyMat = new THREE.ShaderMaterial({
+            uniforms: {
+                colorHorizon: { value: new THREE.Color(0xffb066) },
+                colorMid: { value: new THREE.Color(0x8c5f86) },
+                colorTop: { value: new THREE.Color(0x14224f) }
+            },
+            vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 colorHorizon;
+                uniform vec3 colorMid;
+                uniform vec3 colorTop;
+                varying vec2 vUv;
+                void main() {
+                    vec3 color;
+                    if (vUv.y < 0.5) {
+                        color = mix(colorHorizon, colorMid, vUv.y * 2.0);
+                    } else {
+                        color = mix(colorMid, colorTop, (vUv.y - 0.5) * 2.0);
+                    }
+                    gl_FragColor = vec4(color, 1.0);
+                }
+            `
+        });
+
+        const skyMesh = new THREE.Mesh(skyGeo, skyMat);
+        skyMesh.position.copy(skyCenter);
+        skyMesh.lookAt(camera.position);
+        
+        // Align bottom of sky with horizon
+        // Horizon is 6.76 deg above look vector.
+        // Offset = 500 * tan(6.76 deg) = 59.25
+        skyMesh.translateY(59.25); 
+        skyMesh.name = "sky";
+        scene.add(skyMesh);
+
+        // --- Sun ---
+        // Disk radius 0.05 frame height.
+        // 0.05 * 600px = 30px height. Radius = 15px.
+        // At dist 300.
+        // 600px corresponds to 45 deg FOV height = 2 * 300 * tan(22.5) = 248.5 units.
+        // 30px = (30/600) * 248.5 = 12.425 units (diameter).
+        // Radius = 6.21 units.
+        const sunRadius = 6.21;
+        const sunGeo = new THREE.CircleGeometry(sunRadius, 32);
+        const sunMat = new THREE.MeshBasicMaterial({ color: 0xffe6b0 });
+        const sunMesh = new THREE.Mesh(sunGeo, sunMat);
+        
+        // Position: Center horizontally. 0.012 frame height above horizon.
+        // 0.012 * 600px = 7.2px.
+        // 7.2px in units at dist 300 = (7.2/600) * 248.5 = 2.98 units.
+        // Horizon is at Y=0. Sun is at Y=2.98.
+        // Camera is at (0, 0.9, 0).
+        // Vector to Sun: (0, 2.98 - 0.9, -300) approx.
+        // Let's place it precisely on the ray.
+        // Horizon angle from camera: atan((0 - 0.9) / 7.59) = -6.76 deg.
+        // Sun angle: -6.76 + (0.012 * 45) = -6.22 deg.
+        // Wait, 0.012 frame height is angular offset.
+        // 0.012 * 45 deg = 0.54 deg.
+        // Sun is 0.54 deg ABOVE horizon.
+        // Horizon is at Y=0.
+        // So Sun is at Y = 0 + 300 * tan(0.54 deg) = 2.82 relative to horizon plane?
+        // No, relative to camera Y.
+        // Camera Y = 0.9.
+        // Ray to horizon hits Y=0 at Z=-7.59.
+        // Ray to Sun hits Z=-300.
+        // Angle of horizon ray = atan(-0.9 / 7.59) = -6.76 deg.
+        // Angle of sun ray = -6.76 + 0.54 = -6.22 deg.
+        // Sun Y = 0.9 + 300 * tan(-6.22 deg) = 0.9 - 32.7 = -31.8.
+        // This puts Sun BELOW horizon (Y=0).
+        // Contradiction: "0.012 height of frame ABOVE horizon".
+        // Horizon is at Y=0. Sun must be at Y > 0.
+        // My angle calculation:
+        // Camera (0, 0.9, 0). LookAt (0, 0.7815, -1).
+        // Look vector is DOWN.
+        // Horizon is HORIZONTAL (Y=0).
+        // So Horizon is ABOVE look vector.
+        // Sun is ABOVE Horizon.
+        // So Sun is EVEN MORE ABOVE look vector.
+        // Look vector angle = -6.76 deg.
+        // Horizon angle = 0 deg.
+        // Sun angle = +0.54 deg.
+        // Sun Y = 0.9 + 300 * tan(0.54 deg) = 0.9 + 2.82 = 3.72.
+        // Sun Z = -300 * cos(0.54 deg) = -299.9.
+        sunMesh.position.set(0, 3.72, -299.9);
+        sunMesh.lookAt(camera.position);
+        sunMesh.name = "sun";
+        scene.add(sunMesh);
+
+        // --- Water ---
+        const waterGeo = new THREE.PlaneGeometry(300, 400.0, 180, 200);
+        waterGeo.rotateX(-Math.PI / 2);
+        
+        const waterMat = new THREE.ShaderMaterial({
+            uniforms: {
+                time: { value: 0.0 },
+                colorHorizon: { value: new THREE.Color(0x2f86b0) },
+                colorBottom: { value: new THREE.Color(0x0b2740) },
+                sunColor: { value: new THREE.Color(0xffe6b0) },
+                sunDirection: { value: sunMesh.position.clone() },
+                cameraPosition: { value: camera.position }
+            },
+            vertexShader: `
+                uniform float time;
+                varying vec3 vWorldPosition;
+                varying vec3 vNormal;
+                varying vec3 vViewPosition;
+
+                void main() {
+                    // World X = position.x
+                    // World Z = -position.y - 199.6
+                    vec2 p_xz = vec2(position.x, -position.y - 199.6);
+                    
+                    float h = 0.0;
+                    float dh_dx = 0.0;
+                    float dh_dz = 0.0;
+                    
+                    float scale = 1.080;
+                    
+                    // Wave 1
+                    {
+                        vec2 d = vec2(0.924, 0.383);
+                        float k = 0.38;
+                        float w = 0.90;
+                        float a = 0.26;
+                        float p = 2.282 + 0.0 * 1.7;
+                        float phase = k * dot(d, p_xz) - w * time + p;
+                        float s = sin(phase);
+                        float c = cos(phase);
+                        h += scale * a * s;
+                        dh_dx += scale * a * k * d.x * c;
+                        dh_dz += scale * a * k * d.z * c;
+                    }
+                    // Wave 2
+                    {
+                        vec2 d = vec2(-0.643, 0.766);
+                        float k = 0.72;
+                        float w = 1.50;
+                        float a = 0.16;
+                        float p = 2.282 + 1.0 * 1.7;
+                        float phase = k * dot(d, p_xz) - w * time + p;
+                        float s = sin(phase);
+                        float c = cos(phase);
+                        h += scale * a * s;
+                        dh_dx += scale * a * k * d.x * c;
+                        dh_dz += scale * a * k * d.z * c;
+                    }
+                    // Wave 3
+                    {
+                        vec2 d = vec2(0.309, -0.951);
+                        float k = 1.25;
+                        float w = 2.40;
+                        float a = 0.09;
+                        float p = 2.282 + 2.0 * 1.7;
+                        float phase = k * dot(d, p_xz) - w * time + p;
+                        float s = sin(phase);
+                        float c = cos(phase);
+                        h += scale * a * s;
+                        dh_dx += scale * a * k * d.x * c;
+                        dh_dz += scale * a * k * d.z * c;
+                    }
+                    
+                    vec3 newPos = vec3(position.x, h, position.z);
+                    vec4 mvPosition = modelViewMatrix * vec4(newPos, 1.0);
+                    gl_Position = projectionMatrix * mvPosition;
+                    
+                    vWorldPosition = (modelMatrix * vec4(newPos, 1.0)).xyz;
+                    vNormal = normalize(vec3(-dh_dx, 1.0, -dh_dz));
+                    vViewPosition = -mvPosition.xyz;
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 colorHorizon;
+                uniform vec3 colorBottom;
+                uniform vec3 sunColor;
+                uniform vec3 sunDirection;
+                uniform vec3 cameraPosition;
+                
+                varying vec3 vWorldPosition;
+                varying vec3 vNormal;
+                varying vec3 vViewPosition;
+                
+                void main() {
+                    vec3 V = normalize(vViewPosition);
+                    
+                    // Fresnel
+                    float fresnel = pow(1.0 - max(dot(vNormal, V), 0.0), 3.0);
+                    
+                    // Base Color Gradient
+                    float zNorm = (vWorldPosition.z - (-399.6)) / (0.4 - (-399.6));
+                    vec3 baseColor = mix(colorHorizon, colorBottom, zNorm);
+                    
+                    // Fresnel lighten
+                    baseColor = mix(baseColor, vec3(1.0), fresnel * 0.5);
+                    
+                    // Specular
+                    vec3 L = normalize(sunDirection - vWorldPosition);
+                    vec3 R = reflect(-L, vNormal);
+                    float spec = pow(max(dot(R, V), 0.0), 32.0);
+                    
+                    // Warm Path
+                    float path = exp(-vWorldPosition.x * vWorldPosition.x / 0.35);
+                    float zFade = smoothstep(-2.0, -25.0, vWorldPosition.z);
+                    float warmPath = path * zFade;
+                    
+                    vec3 finalColor = baseColor;
+                    finalColor += sunColor * spec;
+                    finalColor += sunColor * warmPath;
+                    
+                    gl_FragColor = vec4(finalColor, 1.0);
+                }
+            `
+        });
+        
+        const waterMesh = new THREE.Mesh(waterGeo, waterMat);
+        waterMesh.position.set(0, 0, -199.6);
+        waterMesh.name = "water";
+        scene.add(waterMesh);
+
+        // Initial Render
+        renderer.render(scene, camera);
+        window.__ready = true;
+
+        // API
+        window.__step = function(dt) {
+            time += dt;
+            waterMat.uniforms.time.value = time;
+            renderer.render(scene, camera);
+            return window.__probe();
+        };
+
+        window.__probe = function() {
+            return {
+                t: parseFloat(time.toFixed(4)),
+                objects: ["sky", "sun", "water"],
+                horizon: 0.357,
+                wave: time.toFixed(4)
+            };
+        };
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-14 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

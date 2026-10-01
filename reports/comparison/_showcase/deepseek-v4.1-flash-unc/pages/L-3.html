@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Mandala</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0a0a24; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ---------- базовые константы ---------- */
+const W = 800, Hpx = 600;
+const FH = 6.627;                 // высота кадра в мировых единицах на плоскости мандалы
+
+/* ---------- сцена / камера / рендерер ---------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a24);
+
+const camera = new THREE.PerspectiveCamera(45, W / Hpx, 0.1, 100);
+camera.position.set(0, 0, 8);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, Hpx, false);
+renderer.setClearColor(0x0a0a24, 1);
+document.body.appendChild(renderer.domElement);
+
+/* ---------- палитра ---------- */
+const GOLD = 0xffd257, PINK = 0xff3aa8, CYAN = 0x2ee6ff;
+const mGold = new THREE.MeshBasicMaterial({ color: GOLD, side: THREE.DoubleSide });
+const mPink = new THREE.MeshBasicMaterial({ color: PINK, side: THREE.DoubleSide });
+const mCyan = new THREE.MeshBasicMaterial({ color: CYAN, side: THREE.DoubleSide });
+
+/* ---------- корневая группа ---------- */
+const wheel = new THREE.Group();
+wheel.name = 'wheel';
+scene.add(wheel);
+
+/* ---------- ядро ---------- */
+const coreR = 0.06 * FH;
+const core = new THREE.Mesh(new THREE.CircleGeometry(coreR, 64), mGold);
+core.name = 'core';
+wheel.add(core);
+
+const coreRing = new THREE.Mesh(new THREE.TorusGeometry(coreR, 0.012 * FH, 12, 64), mGold);
+coreRing.name = 'coreRing';
+coreRing.position.z = 0.001;
+wheel.add(coreRing);
+
+/* ---------- лучи-лепестки ---------- */
+const petals = new THREE.Group();
+petals.name = 'petals';
+wheel.add(petals);
+
+const rIn = 0.10 * FH, rOut = 0.34 * FH;
+const pw = 0.03 * FH, tipR = 0.022 * FH;
+
+for (let i = 0; i < 12; i++) {
+  const a = i * Math.PI / 6;                       // 0, 30, 60, ... — зеркально симметрично
+  const mat = (i % 2 === 0) ? mPink : mCyan;       // через одну
+  const len = rOut - rIn, mid = (rIn + rOut) / 2;
+
+  const p = new THREE.Mesh(new THREE.PlaneGeometry(pw, len), mat);
+  p.name = 'petal_' + i;
+  p.position.set(Math.cos(a) * mid, Math.sin(a) * mid, 0.002);
+  p.rotation.z = a - Math.PI / 2;
+  petals.add(p);
+
+  const tip = new THREE.Mesh(new THREE.CircleGeometry(tipR, 24), mat);
+  tip.name = 'tip_' + i;
+  tip.position.set(Math.cos(a) * rOut, Math.sin(a) * rOut, 0.003);
+  petals.add(tip);
+}
+
+/* ---------- вторая короткая серия, повёрнутая на 15° ---------- */
+const rIn2 = 0.10 * FH, rOut2 = 0.20 * FH, pw2 = 0.042 * FH;
+/* цвета подобраны так, чтобы кадр оставался зеркально симметричным относительно вертикали */
+const secondPink = [true, false, true, true, false, true, false, true, false, false, true, false];
+
+for (let i = 0; i < 12; i++) {
+  const a = Math.PI / 12 + i * Math.PI / 6;        // 15, 45, 75, ...
+  const mat = secondPink[i] ? mPink : mCyan;
+  const len = rOut2 - rIn2, mid = (rIn2 + rOut2) / 2;
+
+  const p = new THREE.Mesh(new THREE.PlaneGeometry(pw2, len), mat);
+  p.name = 'petal2_' + i;
+  p.position.set(Math.cos(a) * mid, Math.sin(a) * mid, 0.0025);
+  p.rotation.z = a - Math.PI / 2;
+  petals.add(p);
+}
+
+/* ---------- кольца ---------- */
+const ring1 = new THREE.Mesh(new THREE.TorusGeometry(0.16 * FH, 0.012 * FH, 12, 128), mGold);
+ring1.name = 'ring1';
+ring1.position.z = 0.0015;
+wheel.add(ring1);
+
+const ring2 = new THREE.Mesh(new THREE.TorusGeometry(0.34 * FH, 0.006 * FH, 12, 128), mCyan);
+ring2.name = 'ring2';
+ring2.position.z = 0.0015;
+wheel.add(ring2);
+
+/* ---------- probe / step ---------- */
+const names = [];
+scene.traverse(o => { if (o.name) names.push(o.name); });
+
+let t = 0;
+
+window.__probe = function () {
+  return {
+    t: Number(t.toFixed(4)),
+    objects: names.slice(),
+    angle: Number((wheel.rotation.z * 180 / Math.PI).toFixed(4))
+  };
+};
+
+window.__step = function (dt) {
+  t += dt;
+  wheel.rotation.z = 0.2014 * t;      // ровно 15° за 78 шагов по 1/60 с
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+/* ---------- первый кадр ---------- */
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-3 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

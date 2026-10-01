@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Particle Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Configuration & Constants ---
+        const G = 9.00;
+        const R = 0.4;
+        const BOUNDS = { xMin: -5.0, xMax: 5.0, yMin: 0.0, yMax: 4.0 };
+        
+        // LCG State
+        let lcgState = 2278553777;
+        const LCG_A = 1664525;
+        const LCG_C = 1013904223;
+        const LCG_M = 4294967296;
+
+        function nextLCG() {
+            lcgState = (LCG_A * lcgState + LCG_C) % LCG_M;
+            return lcgState / LCG_M;
+        }
+
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+        
+        // Camera
+        const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+        camera.position.set(0.0, 4.0, 16.0);
+        camera.lookAt(0.0, 2.0, 0.0);
+
+        // Renderer
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+        dirLight.position.set(6.0, 12.0, 8.0);
+        scene.add(dirLight);
+
+        // Objects
+        // Floor: 40x40, y=0, color 0x2b3a4a
+        const floorGeo = new THREE.PlaneGeometry(40, 40);
+        const floorMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.name = "floor";
+        scene.add(floor);
+
+        // Wall: 16x12, z=-2, color 0x22303f
+        const wallGeo = new THREE.PlaneGeometry(16, 12);
+        const wallMat = new THREE.MeshStandardMaterial({ color: 0x22303f });
+        const wall = new THREE.Mesh(wallGeo, wallMat);
+        wall.position.z = -2;
+        wall.name = "wall";
+        scene.add(wall);
+
+        // Balls
+        const balls = [];
+        const ballGeo = new THREE.SphereGeometry(R, 32, 32);
+        const ballMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+
+        for (let i = 0; i < 4; i++) {
+            const u1 = nextLCG();
+            const u2 = nextLCG();
+            const u3 = nextLCG();
+            const u4 = nextLCG();
+
+            const x = -4 + 8 * u1;
+            const y = 0.8 + 1.2 * u2;
+            const vx = -3 + 6 * u3;
+            const vy = 3 + 7 * u4;
+
+            const mesh = new THREE.Mesh(ballGeo, ballMat);
+            mesh.name = `ball-${i}`;
+            mesh.position.set(x, y, 0); // z=0 for 2D simulation in 3D space
+            scene.add(mesh);
+
+            balls.push({
+                mesh: mesh,
+                x: x,
+                y: y,
+                vx: vx,
+                vy: vy
+            });
+        }
+
+        // Simulation State
+        let steps = 0;
+        let bounces = 0;
+
+        // --- API Functions ---
+
+        window.__step = function(dt) {
+            for (let i = 0; i < balls.length; i++) {
+                const b = balls[i];
+                
+                // Physics
+                b.vy -= G * dt;
+                b.x += b.vx * dt;
+                b.y += b.vy * dt;
+
+                // Collisions Y
+                if (b.y - R < 0) {
+                    b.y = R;
+                    b.vy = -b.vy;
+                    bounces++;
+                } else if (b.y + R > BOUNDS.yMax) {
+                    b.y = BOUNDS.yMax - R;
+                    b.vy = -b.vy;
+                    bounces++;
+                }
+
+                // Collisions X
+                if (b.x - R < BOUNDS.xMin) {
+                    b.x = BOUNDS.xMin + R;
+                    b.vx = -b.vx;
+                    bounces++;
+                } else if (b.x + R > BOUNDS.xMax) {
+                    b.x = BOUNDS.xMax - R;
+                    b.vx = -b.vx;
+                    bounces++;
+                }
+
+                // Update Mesh
+                b.mesh.position.x = b.x;
+                b.mesh.position.y = b.y;
+            }
+            steps++;
+            renderer.render(scene, camera);
+        };
+
+        function round4(num) {
+            return Number(num.toFixed(4));
+        }
+
+        window.__probe = function() {
+            const ballData = balls.map(b => ({
+                x: round4(b.x),
+                y: round4(b.y),
+                vx: round4(b.vx),
+                vy: round4(b.vy)
+            }));
+
+            return {
+                steps: steps,
+                bounces: bounces,
+                balls: ballData,
+                camera: [round4(camera.position.x), round4(camera.position.y), round4(camera.position.z)],
+                objects: ["floor", "wall", "ball-0", "ball-1", "ball-2", "ball-3"]
+            };
+        };
+
+        // Initial Render
+        renderer.render(scene, camera);
+        window.__ready = true;
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-10 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

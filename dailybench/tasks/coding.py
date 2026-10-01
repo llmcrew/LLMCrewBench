@@ -33,7 +33,7 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 core.register(
     key="C",
     title="Coding",
-    points=25.0,
+    points=20.0,
     generate=generate,
     evaluate=evaluate,
     expected_ids=IDS,

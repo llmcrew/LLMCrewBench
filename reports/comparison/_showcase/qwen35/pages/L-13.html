@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Lava Lamp</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Configuration & Data ---
+        const BLOBS_DATA = [
+            { x: 0.333, y: 0.604, r: 0.089, A: 0.126, w: 0.497, p: 1.59 },
+            { x: 0.457, y: 0.657, r: 0.102, A: 0.106, w: 0.478, p: 3.21 },
+            { x: 0.120, y: 0.672, r: 0.081, A: 0.112, w: 0.679, p: 4.65 },
+            { x: 0.606, y: 0.543, r: 0.077, A: 0.136, w: 0.965, p: 3.37 },
+            { x: 0.420, y: 0.600, r: 0.081, A: 0.100, w: 1.148, p: 2.45 },
+            { x: 0.779, y: 0.713, r: 0.103, A: 0.175, w: 1.136, p: 0.39 },
+            { x: 0.472, y: 0.318, r: 0.079, A: 0.178, w: 0.656, p: 1.23 },
+            { x: 0.192, y: 0.509, r: 0.101, A: 0.161, w: 1.014, p: 3.99 },
+            { x: 0.892, y: 0.486, r: 0.102, A: 0.115, w: 0.862, p: 2.83 }
+        ];
+
+        // Colors
+        const COLOR_BG = new THREE.Color('#16092b');
+        const COLOR_HALO = new THREE.Color('#ff2d6b');
+        const COLOR_BODY = new THREE.Color('#ff6b1a');
+        const COLOR_CORE = new THREE.Color('#ffdf3d');
+
+        // --- Three.js Setup ---
+        const scene = new THREE.Scene();
+        
+        // Camera: 45 deg FOV, aspect 4/3 (800/600)
+        // Near/Far don't matter much for orthographic-like plane, but standard perspective defaults work.
+        const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 100);
+        camera.position.z = 2.0; // As per instructions: plane is at 2.0 units from camera? 
+        // Wait, instruction says: "Кадр целиком занят одной плоскостью PlaneGeometry в 2.0 единицах от камеры".
+        // Usually camera is at 0,0,0 looking down -Z. So plane should be at z = -2.0.
+        
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // --- Geometry ---
+        // Plane covers the frame exactly.
+        // Half-height at z=2 with 45deg FOV: tan(22.5deg) * 2 = 0.4142 * 2 = 0.8284.
+        // Height = 1.6568. Width = Height * 4/3 = 2.209.
+        const planeHeight = 0.8284 * 2;
+        const planeWidth = planeHeight * (4 / 3);
+        const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
+
+        // --- Shader ---
+        // We need to pass blob data to shader.
+        // Uniforms: time, and arrays for blob properties.
+        const uBlobsPos = []; // x, y, r, A
+        const uBlobsParam = []; // w, p, 0, 0
+
+        BLOBS_DATA.forEach(b => {
+            uBlobsPos.push(b.x, b.y, b.r, b.A);
+            uBlobsParam.push(b.w, b.p, 0, 0);
+        });
+
+        const material = new THREE.ShaderMaterial({
+            uniforms: {
+                uTime: { value: 0.0 },
+                uBlobsPos: { value: new Float32Array(uBlobsPos) },
+                uBlobsParam: { value: new Float32Array(uBlobsParam) },
+                uColorBg: { value: COLOR_BG },
+                uColorHalo: { value: COLOR_HALO },
+                uColorBody: { value: COLOR_BODY },
+                uColorCore: { value: COLOR_CORE }
+            },
+            vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform float uTime;
+                uniform vec4 uBlobsPos[9]; // x, y, r, A
+                uniform vec4 uBlobsParam[9]; // w, p, _, _
+                uniform vec3 uColorBg;
+                uniform vec3 uColorHalo;
+                uniform vec3 uColorBody;
+                uniform vec3 uColorCore;
+                varying vec2 vUv;
+
+                void main() {
+                    // Coordinate mapping as per instructions
+                    // p = (vUv - 0.5) * vec2(1.3333, 1.0)
+                    vec2 p = (vUv - 0.5) * vec2(1.3333, 1.0);
+
+                    float field = 0.0;
+
+                    for (int i = 0; i < 9; i++) {
+                        vec4 bPos = uBlobsPos[i];
+                        vec4 bParam = uBlobsParam[i];
+
+                        // Animation: y(t) = y0 + A * sin(w * t + p)
+                        float y = bPos.y + bPos.w * sin(bParam.x * uTime + bParam.y);
+                        vec2 center = vec2(bPos.x, y);
+                        
+                        float r = bPos.z;
+                        vec2 diff = p - center;
+                        float distSq = dot(diff, diff);
+                        
+                        // Field contribution: r_i^2 / max(|p - c_i|^2, 0.0001)
+                        field += (r * r) / max(distSq, 0.0001);
+                    }
+
+                    vec3 color = uColorBg;
+
+                    // Color mapping based on Field strips
+                    // Core: 2.4 - 3.2
+                    // Body: 0.85 - 1.3
+                    // Halo: 0.3 - 0.62
+                    
+                    // We use smoothstep to blend nicely, centering on the ranges provided
+                    // However, strict ranges imply we might just check thresholds.
+                    // To avoid aliasing and make it look like a lamp, we blend.
+                    
+                    float fCore = smoothstep(2.4, 2.6, field) * (1.0 - smoothstep(3.0, 3.2, field));
+                    float fBody = smoothstep(0.85, 0.95, field) * (1.0 - smoothstep(1.2, 1.3, field));
+                    float fHalo = smoothstep(0.3, 0.4, field) * (1.0 - smoothstep(0.52, 0.62, field));
+
+                    // Mix logic: Core overrides Body, Body overrides Halo, Halo overrides BG
+                    // But since ranges are disjoint, we can just add them if we treat them as emission layers
+                    // or mix sequentially.
+                    
+                    // Let's do sequential mixing for better control over "gaps"
+                    if (field > 2.4) {
+                         color = mix(uColorBody, uColorCore, smoothstep(2.4, 2.8, field));
+                    } else if (field > 0.85) {
+                         color = mix(uColorHalo, uColorBody, smoothstep(0.85, 1.1, field));
+                    } else if (field > 0.3) {
+                         color = mix(uColorBg, uColorHalo, smoothstep(0.3, 0.5, field));
+                    }
+                    
+                    // Refine based on exact prompt ranges to ensure palette compliance
+                    // Prompt: "colors are picked by field strips"
+                    // Let's try a direct mapping approach to ensure the specific colors dominate their ranges.
+                    
+                    vec3 finalColor = uColorBg;
+                    
+                    // Halo Layer
+                    if (field >= 0.3 && field <= 0.62) {
+                         finalColor = uColorHalo;
+                    }
+                    // Body Layer
+                    if (field >= 0.85 && field <= 1.3) {
+                         finalColor = uColorBody;
+                    }
+                    // Core Layer
+                    if (field >= 2.4 && field <= 3.2) {
+                         finalColor = uColorCore;
+                    }
+                    
+                    // Smoothing edges to avoid hard pixelation (aliasing) while keeping colors distinct
+                    // We blend with neighbors if close to boundary
+                    if (field > 0.25 && field < 0.35) finalColor = mix(uColorBg, uColorHalo, smoothstep(0.25, 0.35, field));
+                    if (field > 0.57 && field < 0.90) finalColor = mix(uColorHalo, uColorBody, smoothstep(0.57, 0.90, field)); // Gap fill
+                    if (field > 1.25 && field < 2.45) finalColor = mix(uColorBody, uColorCore, smoothstep(1.25, 2.45, field)); // Gap fill
+                    
+                    // Re-apply strict logic for the main bands to ensure palette %
+                    if (field > 0.3 && field < 0.62) finalColor = uColorHalo;
+                    if (field > 0.85 && field < 1.3) finalColor = uColorBody;
+                    if (field > 2.4 && field < 3.2) finalColor = uColorCore;
+
+                    gl_FragColor = vec4(finalColor, 1.0);
+                }
+            `
+        });
+
+        const plane = new THREE.Mesh(geometry, material);
+        plane.position.z = -2.0; // 2.0 units from camera (camera at 0,0,0)
+        scene.add(plane);
+
+        // --- API Implementation ---
+        let currentTime = 0.0;
+        window.__ready = false;
+
+        // Initial Render
+        renderer.render(scene, camera);
+        window.__ready = true;
+
+        window.__step = function(dt) {
+            currentTime += dt;
+            material.uniforms.uTime.value = currentTime;
+            renderer.render(scene, camera);
+            return window.__probe();
+        };
+
+        window.__probe = function() {
+            // Calculate current blob positions for the probe
+            const currentBlobs = BLOBS_DATA.map(b => {
+                const y = b.y + b.A * Math.sin(b.w * currentTime + b.p);
+                return { x: b.x, y: y };
+            });
+
+            return {
+                t: parseFloat(currentTime.toFixed(4)),
+                objects: ['PlaneGeometry'],
+                blobs: currentBlobs
+            };
+        };
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-13 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Ночной город</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Конфигурация ---
+const CONFIG = {
+    width: 800,
+    height: 600,
+    cameraY: 8,
+    cameraZ: 26,
+    fov: 45,
+    colors: {
+        sky: 0x2a1b5c,
+        dark: 0x0b0b14,
+        winTurquoise: 0x22e0d0,
+        winWarm: 0xffb066,
+        haze: 0x4a5a8a
+    },
+    houses: [
+        { x: -6.8, w: 2.4, h: 14.8 },
+        { x: -3.7, w: 2.1, h: 10.1 },
+        { x: -1.2, w: 1.6, h: 10.7 },
+        { x: 1.5,  w: 2.3, h: 14.9 },
+        { x: 4.8,  w: 2.6, h: 13.5 },
+        { x: 8.0,  w: 1.6, h: 10.9 }
+    ]
+};
+
+// --- Сцена ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(CONFIG.colors.sky);
+
+const camera = new THREE.PerspectiveCamera(CONFIG.fov, CONFIG.width / CONFIG.height, 0.1, 1000);
+camera.position.set(0, CONFIG.cameraY, CONFIG.cameraZ);
+camera.lookAt(0, CONFIG.cameraY, 0);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setSize(CONFIG.width, CONFIG.height, false);
+renderer.setPixelRatio(1);
+document.body.appendChild(renderer.domElement);
+
+// --- Объекты ---
+
+// 1. Земля
+const groundGeo = new THREE.PlaneGeometry(200, 200);
+const groundMat = new THREE.MeshBasicMaterial({ color: CONFIG.colors.dark });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.name = "ground";
+scene.add(ground);
+
+// 2. Дома и Окна
+const houseGroup = new THREE.Group();
+scene.add(houseGroup);
+
+const houseMat = new THREE.MeshBasicMaterial({ color: CONFIG.colors.dark });
+const windowGeo = new THREE.PlaneGeometry(0.5, 0.7);
+
+// Собираем данные для окон, чтобы создать один InstancedMesh
+const windowInstances = [];
+const totalWindows = CONFIG.houses.reduce((acc, h, index) => {
+    // Расчет сетки окон
+    // Колонки: шаг 0.95
+    const cols = Math.floor(h.w / 0.95);
+    // Этажи: шаг 1.45, старт 1.0
+    const rows = Math.floor((h.h - 1.0) / 1.45);
+    
+    // Цвет окна: четный номер дома (индекс+1) -> бирюзовый, нечетный -> теплый
+    // Индекс 0 (Дом 1) -> Нечетный -> Теплый
+    // Индекс 1 (Дом 2) -> Четный -> Бирюзовый
+    const isEvenHouse = (index + 1) % 2 === 0;
+    const color = isEvenHouse ? CONFIG.colors.winTurquoise : CONFIG.colors.winWarm;
+    
+    const startX = h.x - (cols * 0.95) / 2 + 0.95 / 2;
+    const startY = 1.0;
+    
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            const wx = startX + c * 0.95;
+            const wy = startY + r * 1.45;
+            windowInstances.push({
+                x: wx,
+                y: wy,
+                z: 1.51, // Чуть перед фасадом (фасад от -1.5 до 1.5)
+                color: color,
+                index: acc + r * cols + c // Глобальный индекс для анимации
+            });
+        }
+    }
+    return acc + cols * rows;
+}, 0);
+
+// Создаем дома
+CONFIG.houses.forEach(h => {
+    const geo = new THREE.BoxGeometry(h.w, h.h, 3);
+    const mesh = new THREE.Mesh(geo, houseMat);
+    mesh.position.set(h.x, h.h / 2, 0);
+    mesh.name = "house";
+    houseGroup.add(mesh);
+});
+
+// Создаем InstancedMesh для окон
+const windowMat = new THREE.MeshBasicMaterial({ color: 0xffffff }); // Цвет задается через instanceColor
+const windowsMesh = new THREE.InstancedMesh(windowGeo, windowMat, totalWindows);
+windowsMesh.name = "windows";
+windowsMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+windowsMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+
+const dummy = new THREE.Object3D();
+const colorObj = new THREE.Color();
+
+windowInstances.forEach((win, i) => {
+    dummy.position.set(win.x, win.y, win.z);
+    dummy.updateMatrix();
+    windowsMesh.setMatrixAt(i, dummy.matrix);
+    windowsMesh.setColorAt(i, colorObj.setHex(win.color));
+});
+
+scene.add(windowsMesh);
+
+// 3. Дымка (Haze)
+// Шейдер для градиента по вертикали
+const hazeVertexShader = `
+    varying vec2 vUv;
+    void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+`;
+
+const hazeFragmentShader = `
+    uniform vec3 color;
+    uniform float opacity;
+    varying vec2 vUv;
+    void main() {
+        // Градиент: плотнее внизу (vUv.y = 0), прозрачнее вверху
+        float alpha = opacity * (1.0 - vUv.y);
+        gl_FragColor = vec4(color, alpha);
+    }
+`;
+
+const hazeGeo = new THREE.PlaneGeometry(60, 40);
+const hazeMat = new THREE.ShaderMaterial({
+    vertexShader: hazeVertexShader,
+    fragmentShader: hazeFragmentShader,
+    uniforms: {
+        color: { value: new THREE.Color(CONFIG.colors.haze) },
+        opacity: { value: 0.22 }
+    },
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide
+});
+
+const haze = new THREE.Mesh(hazeGeo, hazeMat);
+haze.name = "haze";
+haze.position.set(0, 7.35, 10); // Перед домами
+scene.add(haze);
+
+// --- Анимация и Управление ---
+
+let t = 0;
+
+function update() {
+    // Дымка
+    haze.position.y = 7.35 + 0.9 * Math.sin(t * 0.25);
+
+    // Окна
+    let litCount = 0;
+    const threshold = 0.78;
+    const factor = 0.129;
+    const speed = 0.500;
+
+    for (let i = 0; i < totalWindows; i++) {
+        const val = (i * factor + t * speed) % 1;
+        const isLit = val < threshold;
+        
+        if (isLit) {
+            litCount++;
+            windowsMesh.setColorAt(i, colorObj.setHex(windowInstances[i].color));
+        } else {
+            // 15% яркости
+            const baseColor = new THREE.Color(windowInstances[i].color);
+            baseColor.multiplyScalar(0.15);
+            windowsMesh.setColorAt(i, baseColor);
+        }
+    }
+    windowsMesh.instanceColor.needsUpdate = true;
+    
+    // Сохраняем счетчик для probe
+    window.__litCount = litCount;
+}
+
+function render() {
+    renderer.render(scene, camera);
+}
+
+// --- API ---
+
+window.__step = function(dt) {
+    t += dt;
+    update();
+    render();
+    return window.__probe();
+};
+
+window.__probe = function() {
+    return {
+        t: t.toFixed(4),
+        objects: ["ground", "house", "windows", "haze"], // Упрощенный список имен
+        lit: window.__litCount || 0,
+        haze_y: haze.position.y
+    };
+};
+
+// Инициализация
+update();
+render();
+window.__ready = true;
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-4 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

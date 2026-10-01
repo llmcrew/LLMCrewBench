@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Three balls elastic collision</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ---------- Параметры сцены и симуляции ---------- */
+const W = 9.0;          // длина коробки [0, W]
+const R = 0.4;          // радиус шара
+const DT_EPS = 1e-12;
+
+/* Начальное состояние (в системе координат коробки [0, W]) */
+const balls = [
+  { x: 1.7,  v: -1.83 },
+  { x: 4.38, v:  2.33 },
+  { x: 6.93, v:  2.28 }
+];
+
+let collisions = 0;
+let steps = 0;
+let t = 0;
+
+/* ---------- Рендерер ---------- */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+/* ---------- Сцена и камера ---------- */
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+camera.position.set(0.0, 3.8, 12.0);
+camera.lookAt(0.0, 0.2, 0.0);
+
+/* ---------- Свет ---------- */
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+
+const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+dirLight.position.set(7.0, 13.0, 10.0);
+scene.add(dirLight);
+
+/* ---------- Пол ---------- */
+const floorGeo = new THREE.PlaneGeometry(22.0, 60);
+const floorMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a });
+const floor = new THREE.Mesh(floorGeo, floorMat);
+floor.rotation.x = -Math.PI / 2;
+floor.position.set(0, -R, 0);
+floor.name = 'floor';
+scene.add(floor);
+
+/* ---------- Стенки коробки ---------- */
+const wallGeo = new THREE.BoxGeometry(0.3, 2.4, 1.6);
+const wallMat = new THREE.MeshStandardMaterial({ color: 0x8a93a6 });
+
+const wallLeft = new THREE.Mesh(wallGeo, wallMat);
+wallLeft.position.set(-4.65, 0.6, 0);
+wallLeft.name = 'wall-left';
+scene.add(wallLeft);
+
+const wallRight = new THREE.Mesh(wallGeo, wallMat);
+wallRight.position.set(4.65, 0.6, 0);
+wallRight.name = 'wall-right';
+scene.add(wallRight);
+
+/* ---------- Шары ---------- */
+const ballGeo = new THREE.SphereGeometry(R, 32, 24);
+const ballMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+const ballMeshes = [];
+
+for (let i = 0; i < 3; i++) {
+  const mesh = new THREE.Mesh(ballGeo, ballMat);
+  mesh.name = 'ball-' + i;
+  scene.add(mesh);
+  ballMeshes.push(mesh);
+}
+
+/* Отрисовка шаров: x_i сдвинуто на -W/2 (центр коробки в центре кадра) */
+function syncMeshes() {
+  for (let i = 0; i < 3; i++) {
+    ballMeshes[i].position.set(balls[i].x - W / 2, 0, 0);
+  }
+}
+syncMeshes();
+
+/* ---------- Вспомогательное округление ---------- */
+function r4(v) {
+  return Math.round(v * 10000) / 10000;
+}
+
+/* ---------- Состояние ---------- */
+function probe() {
+  return {
+    steps: steps,
+    t: r4(t),
+    objects: scene.children
+      .map(o => o.name)
+      .filter(n => typeof n === 'string' && n.length > 0),
+    camera: [r4(camera.position.x), r4(camera.position.y), r4(camera.position.z)],
+    balls: balls.map(b => ({ x: r4(b.x), v: r4(b.v) })),
+    collisions: collisions
+  };
+}
+
+/* ---------- Один дискретный шаг симуляции ---------- */
+function step(dt) {
+  // 1. Движение
+  for (let i = 0; i < balls.length; i++) {
+    balls[i].x += balls[i].v * dt;
+  }
+
+  // 2. Парные столкновения по порядку индексов: (0,1), затем (1,2)
+  for (let a = 0; a < balls.length - 1; a++) {
+    const b = a + 1;
+    if (balls[b].x - balls[a].x < 2 * R) {
+      const d = (2 * R - (balls[b].x - balls[a].x)) / 2;
+      balls[a].x -= d;
+      balls[b].x += d;
+      const tmp = balls[a].v;
+      balls[a].v = balls[b].v;
+      balls[b].v = tmp;
+      collisions++;
+    }
+  }
+
+  // 3. Отскок от стен
+  for (let i = 0; i < balls.length; i++) {
+    if (balls[i].x - R < 0) {
+      balls[i].x = R;
+      balls[i].v = -balls[i].v;
+      collisions++;
+    }
+    if (balls[i].x + R > W) {
+      balls[i].x = W - R;
+      balls[i].v = -balls[i].v;
+      collisions++;
+    }
+  }
+
+  steps++;
+  t += dt;
+
+  syncMeshes();
+  renderer.render(scene, camera);
+
+  return probe();
+}
+
+/* ---------- Публичный интерфейс ---------- */
+window.__step = function (dt) {
+  return step(dt);
+};
+
+window.__probe = function () {
+  return probe();
+};
+
+/* ---------- Первая отрисовка ---------- */
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · K-4 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

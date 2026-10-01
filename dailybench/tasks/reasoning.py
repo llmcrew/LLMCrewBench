@@ -1,25 +1,50 @@
 """Category B — deterministic numeric reasoning scenarios.
 
-Each scenario has one all-or-nothing check worth two points.  The values in a
+Each scenario has one all-or-nothing check worth one point.  The values in a
 fixture are generated from the supplied random stream, while the answer is
 computed here before the prompt is handed to a model.
+
+The fifteen scenarios cover queueing (R-1), critical paths (R-2), subnets
+(R-3), token cost (R-4), bit operations (R-5), batching (R-6), probability
+(R-7), LRU state (R-8), retry timelines (R-9), bin packing (R-10), free-slot
+scheduling (R-11), timezone/DST arithmetic (R-12), conditional probability
+(R-13), constrained makespan (R-14) and topological tie-breaking (R-15).
 """
 
 from __future__ import annotations
 
+import heapq
 import ipaddress
 import random
 import re
+from collections import deque
 from decimal import Decimal
 from fractions import Fraction
+from itertools import permutations, product
 from math import comb
 from typing import Any, Callable
 
 from .. import core, text
 from ..config import RunConfig
 
-IDS = ("R-1", "R-2", "R-3", "R-4", "R-5", "R-6", "R-7", "R-8", "R-9", "R-10")
-_POINTS = 2.0
+IDS = (
+    "R-1",
+    "R-2",
+    "R-3",
+    "R-4",
+    "R-5",
+    "R-6",
+    "R-7",
+    "R-8",
+    "R-9",
+    "R-10",
+    "R-11",
+    "R-12",
+    "R-13",
+    "R-14",
+    "R-15",
+)
+_POINTS = 1.0
 
 
 # --------------------------------------------------------------------------- #
@@ -31,6 +56,11 @@ def _minutes_word(n: int) -> str:
     if 11 <= n % 100 <= 14:
         return "минут"
     return {1: "минута", 2: "минуты", 3: "минуты", 4: "минуты"}.get(n % 10, "минут")
+
+
+def _hhmm(minutes: int) -> str:
+    """Format minutes from midnight as a fixed ``HH:MM`` clock value."""
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
 def _task(
@@ -608,6 +638,424 @@ def r10(rng: random.Random) -> core.TaskInstance:
 
 
 # --------------------------------------------------------------------------- #
+# R-11 — longest free interval
+# --------------------------------------------------------------------------- #
+
+_DAY_START = 8 * 60
+_DAY_END = 20 * 60
+
+
+def _free_slots(busy: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return ``(start, duration)`` for every gap between merged busy ranges."""
+    slots: list[tuple[int, int]] = []
+    cursor = _DAY_START
+    for start, end in busy:
+        slots.append((cursor, start - cursor))
+        cursor = end
+    slots.append((cursor, _DAY_END - cursor))
+    return slots
+
+
+def r11(rng: random.Random) -> core.TaskInstance:
+    minimum = rng.choice((40, 45, 50, 60))
+    # Retry until the longest qualifying window is unique and strictly longer
+    # than the runner-up, so the answer is a single unambiguous minute.
+    for _ in range(300):
+        busy: list[tuple[int, int]] = []
+        cursor = _DAY_START + rng.randrange(0, 30)
+        for _ in range(rng.randrange(3, 6)):
+            start = cursor + rng.randrange(15, 120)
+            duration = rng.randrange(30, 100)
+            end = start + duration
+            if end > _DAY_END - 90:
+                break
+            busy.append((start, end))
+            cursor = end
+        if len(busy) < 3:
+            continue
+        slots = _free_slots(busy)
+        qualifying = [slot for slot in slots if slot[1] >= minimum]
+        if not qualifying:
+            continue
+        best = max(qualifying, key=lambda slot: slot[1])
+        if sum(1 for slot in qualifying if slot[1] == best[1]) != 1:
+            continue
+        answer = best[0]
+        # A model that reports the end of the window instead of its start
+        # misses the mark; the exact end is the plausible distractor.
+        naive = best[0] + best[1]
+        assert naive != answer
+        break
+    else:
+        raise AssertionError("could not generate a unique longest free slot")
+    assert sum(1 for slot in qualifying if slot[1] == best[1]) == 1, "longest slot must be unique"
+
+    ranges = "\n".join(f"{_hhmm(start)}–{_hhmm(end)}" for start, end in busy)
+    prompt = (
+        "Рабочий день длится с 08:00 до 20:00.\n\n"
+        f"Зал занят в следующие интервалы:\n{ranges}\n\n"
+        "Интервалы не пересекаются и уже объединены.\n\n"
+        f"Найди самое длинное свободное окно длительностью не менее {minimum} минут.\n\n"
+        "Если такого окна нет, ответь ровно словом: нет\n\n"
+        "Верни время начала этого окна в минутах от 00:00.\n\n"
+        "Ответь только целым числом."
+    )
+    return _int_task(
+        "R-11",
+        "Свободное окно",
+        prompt,
+        answer,
+        {
+            "day": {"start": _DAY_START, "end": _DAY_END},
+            "busy": [{"start": start, "end": end} for start, end in busy],
+            "minimum_slot": minimum,
+            "slots": [{"start": start, "duration": duration} for start, duration in slots],
+            "best_window": {"start": best[0], "duration": best[1]},
+            "naive_window_end": naive,
+        },
+        units=("минут", "минуты", "минута", "min", "minutes", "minute"),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# R-12 — timezone / DST arrival
+# --------------------------------------------------------------------------- #
+
+_A_OFFSET_H = 3  # origin zone, UTC+3 all year
+_B_STANDARD_H = 1  # arrival zone standard offset
+_B_DST_H = 2  # arrival zone offset after the spring-forward switch
+_SWITCH_LOCAL = 2 * 60  # 02:00 local becomes 03:00 on the arrival night
+
+
+def r12(rng: random.Random) -> core.TaskInstance:
+    # The arrival zone has already switched to DST, so the local arrival time
+    # must be converted with UTC+2.  Using the standard UTC+1 is the trap.
+    for _ in range(300):
+        departure_local = rng.randrange(5 * 60, 12 * 60, 5)
+        duration = rng.randrange(90, 400, 5)
+        departure_utc = departure_local - _A_OFFSET_H * 60
+        arrival_utc = departure_utc + duration
+        arrival_local = arrival_utc + _B_DST_H * 60
+        if departure_utc < 0 or arrival_utc < 0 or arrival_utc >= 24 * 60:
+            continue
+        if arrival_local >= 24 * 60 or arrival_local < _SWITCH_LOCAL + 60:
+            continue
+        break
+    else:
+        raise AssertionError("could not generate a same-day DST arrival")
+
+    answer = _hhmm(arrival_utc)
+    naive = _hhmm(arrival_local - _B_STANDARD_H * 60)
+    assert naive != answer
+    assert arrival_local - _B_DST_H * 60 == arrival_utc
+    assert arrival_utc - departure_utc == duration
+    prompt = (
+        f"Самолёт вылетел из города A в {_hhmm(departure_local)} по местному времени.\n"
+        f"A всегда живёт по UTC+{_A_OFFSET_H}.\n\n"
+        f"Он приземлился в городе B в {_hhmm(arrival_local)} по местному времени.\n\n"
+        f"B зимой живёт по UTC+{_B_STANDARD_H}, но в ночь перед прилётом\n"
+        "в 02:00 местного времени часы перевели на 1 час вперёд (02:00 → 03:00).\n\n"
+        "Во сколько по UTC самолёт приземлился?\n\n"
+        "Ответь только временем в формате HH:MM."
+    )
+    return _task(
+        "R-12",
+        "Часовые пояса и DST",
+        prompt,
+        answer,
+        kind="hm",
+        reference=answer,
+        meta={
+            "departure_local": _hhmm(departure_local),
+            "arrival_local": _hhmm(arrival_local),
+            "duration_min": duration,
+            "a_offset_h": _A_OFFSET_H,
+            "b_standard_h": _B_STANDARD_H,
+            "b_dst_h": _B_DST_H,
+            "arrival_utc": answer,
+            "naive_standard_offset": naive,
+        },
+    )
+
+
+# --------------------------------------------------------------------------- #
+# R-13 — conditional probability
+# --------------------------------------------------------------------------- #
+
+
+def r13(rng: random.Random) -> core.TaskInstance:
+    # Retry until the marginal probability differs from the conditional one,
+    # so the naive distractor is genuinely rejected.
+    for _ in range(300):
+        total = rng.randrange(40, 120)
+        both = rng.randrange(5, 20)
+        python_only = rng.randrange(5, 20)
+        sql_only = rng.randrange(5, 20)
+        python = both + python_only
+        sql = both + sql_only
+        if python + sql - both > total:
+            continue
+        answer = Fraction(both, sql)
+        naive = f"{python}/{total}"
+        if Fraction(naive) == answer:
+            continue
+        break
+    else:
+        raise AssertionError("could not generate a distinct marginal distractor")
+    assert python + sql - both <= total, "counts must fit inside the company"
+    assert Fraction(naive) != answer, "the marginal distractor must differ"
+
+    # P(Python | SQL) = both / sql, kept as the unreduced fraction on purpose.
+    reference = f"{both}/{sql}"
+    reduced = f"{answer.numerator}/{answer.denominator}"
+    prompt = (
+        f"В компании {total} сотрудников.\n\n"
+        f"{python} знают Python,\n"
+        f"{sql} знают SQL,\n"
+        f"{both} знают и Python, и SQL.\n\n"
+        "Случайно выбирают сотрудника, про которого известно,\n"
+        "что он знает SQL.\n\n"
+        "Какова вероятность, что он знает Python?\n\n"
+        "Ответ дай точной дробью вида a/b (сокращать не обязательно)."
+    )
+    return _task(
+        "R-13",
+        "Условная вероятность",
+        prompt,
+        answer,
+        kind="fraction",
+        reference=reference,
+        meta={
+            "total": total,
+            "python": python,
+            "sql": sql,
+            "both": both,
+            "reduced": reduced,
+            "unreduced": reference,
+            "naive_marginal": naive,
+        },
+    )
+
+
+# --------------------------------------------------------------------------- #
+# R-14 — constrained makespan on identical machines
+# --------------------------------------------------------------------------- #
+
+_R14_MACHINES = 3
+
+
+def _r14_completion(subset: tuple[int, ...], release: list[int], duration: list[int], setup: int) -> int:
+    """Minimal finish of one machine's front setup plus this exact job subset."""
+    best: int | None = None
+    for perm in permutations(subset):
+        available = setup
+        for job in perm:
+            available = max(available, release[job]) + duration[job]
+        if best is None or available < best:
+            best = available
+    return 0 if best is None else best
+
+
+def _r14_makespan(release: list[int], duration: list[int], setup: int) -> int:
+    n = len(release)
+    cache: dict[tuple[int, ...], int] = {}
+
+    def completion(subset: tuple[int, ...]) -> int:
+        if subset not in cache:
+            cache[subset] = _r14_completion(subset, release, duration, setup)
+        return cache[subset]
+
+    best: int | None = None
+    # Each machine is independent, so its subset's minimal finish can be
+    # minimised separately; the makespan is the maximum over used machines.
+    for colors in product(range(_R14_MACHINES), repeat=n):
+        per_machine: list[list[int]] = [[] for _ in range(_R14_MACHINES)]
+        for job, machine in enumerate(colors):
+            per_machine[machine].append(job)
+        makespan = max((completion(tuple(subset)) for subset in per_machine if subset), default=0)
+        if best is None or makespan < best:
+            best = makespan
+    assert best is not None
+    return best
+
+
+def _r14_greedy(release: list[int], duration: list[int], setup: int) -> int:
+    """List scheduling in release order: plausible, but not always optimal."""
+    available = [setup] * _R14_MACHINES
+    used = [False] * _R14_MACHINES
+    for job in sorted(range(len(release)), key=lambda index: release[index]):
+        starts = [
+            max(available[machine] if used[machine] else setup, release[job])
+            for machine in range(_R14_MACHINES)
+        ]
+        machine = min(range(_R14_MACHINES), key=lambda index: (starts[index], index))
+        available[machine] = starts[machine] + duration[job]
+        used[machine] = True
+    return max(available[machine] for machine in range(_R14_MACHINES) if used[machine])
+
+
+def r14(rng: random.Random) -> core.TaskInstance:
+    # Retry until the greedy list schedule is strictly suboptimal, which is
+    # what makes the release times bite and the exact search necessary.
+    for _ in range(400):
+        count = rng.randrange(5, 7)
+        setup = rng.randrange(3, 9)
+        release = [rng.randrange(0, 45, 5) for _ in range(count)]
+        duration = [rng.randrange(5, 26, 5) for _ in range(count)]
+        optimal = _r14_makespan(release, duration, setup)
+        naive = _r14_greedy(release, duration, setup)
+        if naive > optimal:
+            break
+    else:
+        raise AssertionError("could not generate a case where greedy is suboptimal")
+
+    assert _R14_MACHINES == 3
+    assert naive > optimal, "the greedy schedule must be strictly worse"
+    lines = "\n".join(
+        f"Задача {chr(ord('A') + index)}: выпущена в {release[index]} мин, длится {duration[index]} мин"
+        for index in range(len(release))
+    )
+    prompt = (
+        f"Есть {_R14_MACHINES} идентичные машины.\n\n"
+        f"Перед первой задачей на каждой машине нужна настройка {setup} мин.\n"
+        "Если машина не используется, настройка не выполняется.\n\n"
+        f"{lines}\n\n"
+        "Задачи не прерываются, машина выполняет их по одной.\n"
+        "Задача не может начаться раньше момента выпуска.\n\n"
+        "Каков минимальный makespan (время завершения всех задач)?\n\n"
+        "Ответь только целым числом минут."
+    )
+    return _int_task(
+        "R-14",
+        "Расписание с ограничениями",
+        prompt,
+        optimal,
+        {
+            "machines": _R14_MACHINES,
+            "setup": setup,
+            "release": release,
+            "duration": duration,
+            "optimal_makespan": optimal,
+            "naive_greedy": naive,
+        },
+        units=("минут", "минуты", "минута", "min", "minutes", "minute"),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# R-15 — lexicographically smallest topological order
+# --------------------------------------------------------------------------- #
+
+
+def _topo_lex_smallest(nodes: int, edges: list[tuple[int, int]]) -> list[int]:
+    indegree = [0] * nodes
+    outgoing: list[list[int]] = [[] for _ in range(nodes)]
+    for source, target in edges:
+        outgoing[source].append(target)
+        indegree[target] += 1
+    available = [node for node in range(nodes) if indegree[node] == 0]
+    heapq.heapify(available)
+    order: list[int] = []
+    while available:
+        node = heapq.heappop(available)
+        order.append(node)
+        for target in outgoing[node]:
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                heapq.heappush(available, target)
+    return order
+
+
+def _topo_fifo(nodes: int, edges: list[tuple[int, int]]) -> list[int]:
+    """Textbook Kahn with a plain queue: a valid order, not the smallest one."""
+    indegree = [0] * nodes
+    outgoing: list[list[int]] = [[] for _ in range(nodes)]
+    for source, target in edges:
+        outgoing[source].append(target)
+        indegree[target] += 1
+    available = deque(node for node in range(nodes) if indegree[node] == 0)
+    order: list[int] = []
+    while available:
+        node = available.popleft()
+        order.append(node)
+        for target in outgoing[node]:
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                available.append(target)
+    return order
+
+
+def _is_topological(nodes: int, edges: list[tuple[int, int]], order: list[int]) -> bool:
+    if sorted(order) != list(range(nodes)):
+        return False
+    position = {node: index for index, node in enumerate(order)}
+    return all(position[source] < position[target] for source, target in edges)
+
+
+def r15(rng: random.Random) -> core.TaskInstance:
+    # Retry until the tie-break actually matters: a random layout makes edges
+    # point in either letter direction, the alphabetical order is not valid,
+    # and the FIFO queue disagrees with the lexicographically smallest order.
+    for _ in range(300):
+        nodes = rng.randrange(6, 8)
+        layout = list(range(nodes))
+        rng.shuffle(layout)
+        edges = [
+            (layout[early], layout[late])
+            for early in range(nodes)
+            for late in range(early + 1, nodes)
+            if rng.random() < 0.25
+        ]
+        if not edges:
+            continue
+        if _is_topological(nodes, edges, list(range(nodes))):
+            continue  # alphabetical would be valid: no real tie-break to test
+        smallest = _topo_lex_smallest(nodes, edges)
+        naive_order = _topo_fifo(nodes, edges)
+        if naive_order == smallest:
+            continue
+        assert _is_topological(nodes, edges, smallest)
+        assert _is_topological(nodes, edges, naive_order)
+        break
+    else:
+        raise AssertionError("could not generate a DAG with a meaningful tie-break")
+
+    assert not _is_topological(nodes, edges, list(range(nodes))), "alphabetical must be invalid"
+    assert naive_order != smallest, "FIFO must not match the lexicographically smallest order"
+
+    answer = "".join(chr(ord("A") + node) for node in smallest)
+    naive = "".join(chr(ord("A") + node) for node in naive_order)
+    assert naive != answer
+    lines = "\n".join(
+        f"{chr(ord('A') + source)} → {chr(ord('A') + target)}" for source, target in edges
+    )
+    prompt = (
+        "Даны зависимости между задачами:\n\n"
+        f"{lines}\n\n"
+        "Задача выполняется только после всех своих зависимостей.\n\n"
+        "Среди всех допустимых порядков выбери лексикографически\n"
+        "наименьший: на каждом шаге бери доступную задачу\n"
+        "с наименьшей буквой.\n\n"
+        "Верни порядок одним словом из букв без пробелов (например, EBCADFG).\n\n"
+        "Ответь только этим словом."
+    )
+    return _task(
+        "R-15",
+        "Топологический порядок",
+        prompt,
+        answer,
+        kind="order",
+        reference=answer,
+        meta={
+            "nodes": nodes,
+            "edges": [{"from": source, "to": target} for source, target in edges],
+            "lex_smallest": answer,
+            "naive_fifo": naive,
+        },
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Generation and evaluation
 # --------------------------------------------------------------------------- #
 
@@ -623,6 +1071,11 @@ _BUILDERS: dict[str, Callable[[random.Random], core.TaskInstance]] = {
     "R-8": r8,
     "R-9": r9,
     "R-10": r10,
+    "R-11": r11,
+    "R-12": r12,
+    "R-13": r13,
+    "R-14": r14,
+    "R-15": r15,
 }
 
 
@@ -662,6 +1115,19 @@ def _compare(kind: str, token: str | None, answer: Any) -> tuple[bool, str]:
         expected = answer if isinstance(answer, Fraction) else Fraction(str(answer))
         passed = value == expected
         return passed, f"получено {token} ({value}), ожидалось {expected}"
+    if kind == "hm":
+        match = re.fullmatch(r"(\d{1,2}):([0-5]\d)", token)
+        if not match:
+            return False, f"ожидалось время HH:MM, получено {token!r}"
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if hour > 23:
+            return False, f"ожидалось время HH:MM, получено {token!r}"
+        passed = f"{hour:02d}:{minute:02d}" == str(answer)
+        return passed, f"получено {token}, ожидалось {answer}"
+    if kind == "order":
+        # Exact single token: any different (even valid) ordering is rejected.
+        passed = token.upper() == str(answer).upper()
+        return passed, f"получено {token}, ожидалось {answer}"
     if kind == "lru":
         if token.count(";") != 1:
             return False, f"ожидался формат MISSES;MRU_TO_LRU, получено {token!r}"
@@ -692,7 +1158,7 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 core.register(
     key="B",
     title="Reasoning",
-    points=20.0,
+    points=15.0,
     generate=generate,
     evaluate=evaluate,
     expected_ids=IDS,

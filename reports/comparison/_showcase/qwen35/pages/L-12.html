@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Infinite Tunnel</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #0a0612; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Configuration ---
+const CONFIG = {
+    ringCount: 34,
+    ringStep: 2.3,
+    startZ: -72.0,
+    speed: 7.000,
+    cameraZ: 8.0,
+    fogColor: 0x0a0612,
+    stripeColor1: 0x33d1c6,
+    stripeColor2: 0xe0733c,
+    endLightColor: 0xeaf2ff
+};
+
+// --- Scene Setup ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(CONFIG.fogColor);
+scene.fog = new THREE.Fog(CONFIG.fogColor, 8, 90);
+
+const camera = new THREE.PerspectiveCamera(55, 800 / 600, 0.1, 200);
+camera.position.set(0, 0, CONFIG.cameraZ);
+camera.lookAt(0, 0, -1);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+// --- Shader Material for Rings ---
+const ringVertexShader = `
+    varying vec2 vUv;
+    varying float vDepth;
+    varying float vIndex;
+    
+    void main() {
+        vUv = uv;
+        vIndex = index;
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        vDepth = -mvPosition.z; // Positive depth
+        gl_Position = projectionMatrix * mvPosition;
+    }
+`;
+
+const ringFragmentShader = `
+    uniform float uTime;
+    uniform float uIndex;
+    uniform vec3 uColor1;
+    uniform vec3 uColor2;
+    uniform vec3 uFogColor;
+    uniform vec3 uEndLightColor;
+
+    varying vec2 vUv;
+    varying float vDepth;
+    varying float vIndex;
+
+    void main() {
+        // 1. Stripes
+        // sin(vUv.x * 3.14159 * 4 + uPhase)
+        // uPhase = 0.4 * t + 0.4 * i
+        float phase = 0.4 * uTime + 0.4 * uIndex;
+        float stripe = sin(vUv.x * 3.14159 * 4.0 + phase);
+        
+        // Mix colors based on stripe sign
+        vec3 baseColor = mix(uColor2, uColor1, step(0.0, stripe));
+
+        // 2. Fade-in (close rings dim)
+        // smoothstep(0.4, 4.0, vDepth)
+        float fadeFactor = smoothstep(0.4, 4.0, vDepth);
+        baseColor *= fadeFactor;
+
+        // 3. End Light Influence (far rings brighten)
+        // far = smoothstep(40, 68, vDepth)
+        // colour = mix(colour, #eaf2ff, far * 0.30)
+        float farFactor = smoothstep(40.0, 68.0, vDepth);
+        baseColor = mix(baseColor, uEndLightColor, farFactor * 0.30);
+
+        // 4. Fog
+        // fog = 1 - exp(-0.046 * vDepth)
+        float fogFactor = 1.0 - exp(-0.046 * vDepth);
+        vec3 finalColor = mix(baseColor, uFogColor, fogFactor);
+
+        gl_FragColor = vec4(finalColor, 1.0);
+    }
+`;
+
+const ringUniforms = {
+    uTime: { value: 0.0 },
+    uIndex: { value: 0.0 },
+    uColor1: { value: new THREE.Color(CONFIG.stripeColor1) },
+    uColor2: { value: new THREE.Color(CONFIG.stripeColor2) },
+    uFogColor: { value: new THREE.Color(CONFIG.fogColor) },
+    uEndLightColor: { value: new THREE.Color(CONFIG.endLightColor) }
+};
+
+const ringMaterial = new THREE.ShaderMaterial({
+    vertexShader: ringVertexShader,
+    fragmentShader: ringFragmentShader,
+    uniforms: ringUniforms,
+    side: THREE.DoubleSide
+});
+
+const geometry = new THREE.TorusGeometry(2.0, 0.34, 10, 48);
+const rings = [];
+
+for (let i = 0; i < CONFIG.ringCount; i++) {
+    const mesh = new THREE.Mesh(geometry, ringMaterial.clone());
+    mesh.name = `ring${i}`;
+    
+    // Set initial uniform index for this specific material instance
+    mesh.material.uniforms.uIndex.value = i;
+    
+    scene.add(mesh);
+    rings.push(mesh);
+}
+
+// --- End Light ---
+const endLightGeo = new THREE.CircleGeometry(1.2, 48);
+const endLightMat = new THREE.MeshBasicMaterial({ 
+    color: CONFIG.endLightColor,
+    fog: false 
+});
+const endLight = new THREE.Mesh(endLightGeo, endLightMat);
+endLight.position.set(0, 0, -42.0);
+endLight.scale.set(5.0, 5.0, 5.0);
+scene.add(endLight);
+
+// --- State ---
+let t = 0.0;
+const objects = rings.map(r => r.name);
+objects.push(endLight.name);
+
+// --- Animation Logic ---
+window.__step = function(dt) {
+    t += dt;
+    
+    // Update uniforms globally (time)
+    rings.forEach(mesh => {
+        mesh.material.uniforms.uTime.value = t;
+        
+        const i = parseFloat(mesh.material.uniforms.uIndex.value);
+        
+        // Calculate Z: -72.0 + ((i * 2.3 + t * 7.000) mod (34 * 2.3))
+        const totalLength = CONFIG.ringCount * CONFIG.ringStep;
+        const rawZ = CONFIG.startZ + ((i * CONFIG.ringStep + t * CONFIG.speed) % totalLength);
+        
+        // Handle negative modulo result if any (JS % can be negative)
+        const z = rawZ < CONFIG.startZ ? rawZ + totalLength : rawZ;
+        
+        mesh.position.z = z;
+        
+        // Scale: max(1, (4 - z) / 12) * (1 + 0.16 * sin(i * 0.7))
+        const scaleBase = Math.max(1, (4 - z) / 12);
+        const scaleMod = 1 + 0.16 * Math.sin(i * 0.7);
+        const s = scaleBase * scaleMod;
+        
+        mesh.scale.set(s, s, s);
+    });
+
+    renderer.render(scene, camera);
+    window.__ready = true;
+};
+
+window.__probe = function() {
+    const zValues = rings.slice(0, 3).map(r => r.position.z.toFixed(4));
+    return {
+        t: parseFloat(t.toFixed(4)),
+        objects: objects,
+        speed: CONFIG.speed,
+        z: zValues
+    };
+};
+
+// Initial render at t=0
+window.__step(0);
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-12 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

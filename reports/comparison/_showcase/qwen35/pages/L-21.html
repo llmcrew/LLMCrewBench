@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Analog Cockpit Scene</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Deterministic Random ---
+let lcg = 782736;
+function rnd() {
+    lcg = (lcg * 1103515245 + 12345) % 2147483648;
+    return lcg / 2147483648;
+}
+
+// --- Globals ---
+let scene, camera, renderer;
+let time = 0;
+let objectsList = [];
+let flashMesh;
+let rainSystem, dropSystem;
+let screenMaterials = [];
+let dialMaterials = [];
+let isReady = false;
+
+// Colors
+const C_HULL = 0x2a1c4a;
+const C_GREEN = 0x57e08a;
+const C_AMBER = 0xffd166;
+const C_RAIN = 0xa8c8dc;
+const C_SKY = 0x1a2140;
+
+// --- Initialization ---
+function init() {
+    // Renderer
+    renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    renderer.autoClear = false; // We might need manual clear if doing multiple passes, but standard is fine
+    document.body.appendChild(renderer.domElement);
+
+    // Scene
+    scene = new THREE.Scene();
+    // Fog to blend night
+    scene.fog = new THREE.FogExp2(C_HULL, 0.02);
+
+    // Camera
+    // FOV calculation to match "units" roughly. 
+    // Let's assume a standard vertical FOV. 
+    // To make positioning easier based on percentages, we calculate frustum height at specific Z.
+    // Camera at (0,0,4). Looking at -Z.
+    // Let's set FOV such that at Z=0 (distance 4), height is convenient.
+    // Actually, let's just use a standard FOV and calculate positions mathematically.
+    // Vertical FOV 50 degrees.
+    const fov = 50;
+    const aspect = 800 / 600;
+    camera = new THREE.PerspectiveCamera(fov, aspect, 0.1, 1000);
+    camera.position.set(0, 0, 4);
+    camera.lookAt(0, 0, -1);
+
+    // Helper to get frustum height at distance d from camera
+    const vFOV = THREE.MathUtils.degToRad(fov);
+    const getFrustumHeight = (dist) => 2 * Math.tan(vFOV / 2) * dist;
+    const getFrustumWidth = (dist) => getFrustumHeight(dist) * aspect;
+
+    // --- Objects ---
+
+    // 1. Night Background (z = -45)
+    // Distance from camera: 4 - (-45) = 49
+    const distNight = 49;
+    const hNight = getFrustumHeight(distNight);
+    const wNight = getFrustumWidth(distNight);
+    const nightGeo = new THREE.PlaneGeometry(wNight * 1.5, hNight * 1.5);
+    const nightMat = new THREE.MeshBasicMaterial({ color: C_HULL });
+    const night = new THREE.Mesh(nightGeo, nightMat);
+    night.position.z = -45;
+    scene.add(night);
+    objectsList.push('night');
+
+    // 2. Skyline (z = -14)
+    // Distance: 18
+    const distSky = 18;
+    const hSky = getFrustumHeight(distSky);
+    const wSky = getFrustumWidth(distSky);
+    
+    const skylineGroup = new THREE.Group();
+    skylineGroup.position.z = -14;
+    // 5 silhouettes
+    for(let i=0; i<5; i++) {
+        const w = (0.1 + rnd() * 0.15) * wSky;
+        const h = (0.1 + rnd() * 0.3) * hSky;
+        const geo = new THREE.BoxGeometry(w, h, 1);
+        const mat = new THREE.MeshBasicMaterial({ color: C_SKY });
+        const mesh = new THREE.Mesh(geo, mat);
+        // Distribute across width
+        mesh.position.x = (i - 2) * (wSky / 5); 
+        mesh.position.y = -hSky/2 + h/2; // Sit on bottom
+        skylineGroup.add(mesh);
+    }
+    scene.add(skylineGroup);
+    objectsList.push('skyline');
+
+    // 3. Glass (z = -5)
+    // Distance: 9
+    const distGlass = 9;
+    const hGlassF = getFrustumHeight(distGlass);
+    const wGlassF = getFrustumWidth(distGlass);
+    
+    // Geometry: 0.78x width, 0.46x height
+    const glassW = 0.78 * wGlassF;
+    const glassH = 0.46 * hGlassF;
+    const glassGeo = new THREE.PlaneGeometry(glassW, glassH);
+    const glassMat = new THREE.MeshBasicMaterial({ 
+        color: 0xffffff, 
+        transparent: true, 
+        opacity: 0.35,
+        side: THREE.DoubleSide
+    });
+    const glass = new THREE.Mesh(glassGeo, glassMat);
+    // Top at 12% from top of frame.
+    // Frame Y range: +h/2 to -h/2.
+    // Top edge Y = h/2 - 0.12*h = 0.38*h.
+    // Center Y = Top - h_glass/2 = 0.38*h - 0.23*h = 0.15*h.
+    // Wait, standard coords: 0 is top, 1 is bottom.
+    // Y=0 (top) -> +h/2. Y=1 (bottom) -> -h/2.
+    // Top edge at 12% down from top: Y = (0.5 - 0.12) * h = 0.38 * h.
+    // Center Y = 0.38*h - (0.46*h)/2 = 0.38*h - 0.23*h = 0.15*h.
+    glass.position.y = 0.15 * hGlassF;
+    glass.position.z = -5;
+    scene.add(glass);
+    objectsList.push('glass');
+
+    // Visor above glass
+    const visorH = 0.1 * hGlassF;
+    const visorGeo = new THREE.PlaneGeometry(glassW * 1.1, visorH);
+    const visorMat = new THREE.MeshBasicMaterial({ color: C_HULL });
+    const visor = new THREE.Mesh(visorGeo, visorMat);
+    visor.position.y = glass.position.y + glassH/2 + visorH/2;
+    visor.position.z = -4.9; // Slightly in front
+    scene.add(visor);
+    objectsList.push('visor');
+
+    // 4. Rain (z = -12)
+    // Distance: 16
+    const distRain = 16;
+    const hRainF = getFrustumHeight(distRain);
+    const wRainF = getFrustumWidth(distRain);
+    
+    const rainGeo = new THREE.BufferGeometry();
+    const rainCount = 44;
+    const rainPos = new Float32Array(rainCount * 3);
+    const rainData = []; // Store speed/offset for reset logic if needed, but prompt says fixed speed
+    
+    for(let i=0; i<rainCount; i++) {
+        rainPos[i*3] = (rnd() - 0.5) * wRainF;
+        rainPos[i*3+1] = (rnd() - 0.5) * hRainF;
+        rainPos[i*3+2] = -12;
+        rainData.push({
+            x: rainPos[i*3],
+            y: rainPos[i*3+1],
+            z: -12
+        });
+    }
+    rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+    const rainMat = new THREE.PointsMaterial({
+        color: C_RAIN,
+        size: 5, // px
+        sizeAttenuation: false, // Keep 5px screen size? Prompt says "size 5 px". 
+        // In Three.js, sizeAttenuation=false makes it screen pixels.
+        blending: THREE.AdditiveBlending,
+        transparent: true
+    });
+    rainSystem = new THREE.Points(rainGeo, rainMat);
+    scene.add(rainSystem);
+    objectsList.push('rain');
+
+    // 5. Drops on Glass (z = -4.9)
+    const dropGeo = new THREE.BufferGeometry();
+    const dropCount = 58;
+    const dropPos = new Float32Array(dropCount * 3);
+    const dropData = [];
+
+    for(let i=0; i<dropCount; i++) {
+        // Within glass bounds roughly
+        const x = (rnd() - 0.5) * glassW;
+        const y = (rnd() - 0.5) * glassH + glass.position.y;
+        dropPos[i*3] = x;
+        dropPos[i*3+1] = y;
+        dropPos[i*3+2] = -4.9;
+        dropData.push({ x, y, z: -4.9 });
+    }
+    dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPos, 3));
+    const dropMat = new THREE.PointsMaterial({
+        color: C_RAIN,
+        size: 6,
+        sizeAttenuation: false,
+        transparent: true,
+        opacity: 0.8
+    });
+    dropSystem = new THREE.Points(dropGeo, dropMat);
+    scene.add(dropSystem);
+    objectsList.push('drops');
+
+    // 6. Panel (z approx 0)
+    // Distance: 4
+    const distPanel = 4;
+    const hPanelF = getFrustumHeight(distPanel);
+    const wPanelF = getFrustumWidth(distPanel);
+
+    const panelW = 0.84 * wPanelF;
+    const panelH = 0.14 * hPanelF;
+    
+    const panelGeo = new THREE.BoxGeometry(panelW, panelH, 0.5);
+    const panelMat = new THREE.MeshStandardMaterial({ 
+        color: C_HULL, 
+        roughness: 0.4,
+        emissive: 0x110522,
+        emissiveIntensity: 0.5
+    });
+    const panel = new THREE.Mesh(panelGeo, panelMat);
+    // Center u=0.5, v=0.3
+    // Y = (0.5 - 0.3) * hPanelF = 0.2 * hPanelF. (Remember Y is up, v=0 is top)
+    // Wait: v=0 (top) -> +h/2. v=1 (bottom) -> -h/2.
+    // v=0.3 -> y = (0.5 - 0.3) * h = 0.2 * h.
+    panel.position.y = 0.2 * hPanelF;
+    panel.position.z = 0;
+    panel.rotation.x = 0.25; // Tilted
+    scene.add(panel);
+    objectsList.push('panel');
+
+    // Light for panel
+    const panelLight = new THREE.PointLight(C_AMBER, 1, 10);
+    panelLight.position.set(0, panel.position.y + 0.5, 2);
+    scene.add(panelLight);
+    objectsList.push('panelLight');
+
+    // 7. Screens (4 screens)
+    // u = 0.20..0.80 across panel width.
+    // Panel width in world units: panelW.
+    // Panel center X = 0.
+    // Screen width = 0.11 * wPanelF (Prompt: 0.11x0.10 кадра). 
+    // Wait, prompt says "0.11x0.10 кадра". This refers to frame dimensions.
+    const screenW = 0.11 * wPanelF;
+    const screenH = 0.10 * hPanelF;
+    
+    const screenGeo = new THREE.PlaneGeometry(screenW, screenH);
+    
+    for(let i=0; i<4; i++) {
+        // Distribute u=0.20 to 0.80.
+        // Total span 0.60. 4 screens.
+        // Centers at 0.275, 0.425, 0.575, 0.725 roughly?
+        // Let's just space them evenly within that range relative to panel.
+        // Panel spans roughly u=0.08 to u=0.92 (centered 0.5, width 0.84).
+        // We need screens at u=0.20, 0.40, 0.60, 0.80 approx.
+        
+        const uTarget = 0.20 + (i / 3) * 0.60;
+        // Convert u to World X relative to camera at z=0
+        // x = (u - 0.5) * wPanelF
+        const x = (uTarget - 0.5) * wPanelF;
+        
+        // Y relative to panel center. Panel is tilted.
+        // Screens are "on the panel".
+        // Let's attach them to the panel mesh to handle tilt automatically.
+        const mat = new THREE.MeshBasicMaterial({ color: C_GREEN });
+        screenMaterials.push(mat);
+        const screen = new THREE.Mesh(screenGeo, mat);
+        screen.position.set(x, 0, 0.26); // Slightly in front of panel box
+        panel.add(screen);
+    }
+    objectsList.push('screens');
+
+    // 8. Dials (5 amber indicators)
+    // u = 0.45..0.55 (center strip)
+    const dialGeo = new THREE.CylinderGeometry(0.02 * wPanelF, 0.02 * wPanelF, 0.1, 16);
+    dialGeo.rotateX(Math.PI/2);
+    
+    for(let i=0; i<5; i++) {
+        const u = 0.45 + (i/4)*0.10;
+        const x = (u - 0.5) * wPanelF;
+        const y = 0.05 * hPanelF; // Slightly above center line of panel
+        const mat = new THREE.MeshBasicMaterial({ color: C_AMBER });
+        dialMaterials.push(mat);
+        const dial = new THREE.Mesh(dialGeo, mat);
+        dial.position.set(x, y, 0.26);
+        panel.add(dial);
+    }
+    objectsList.push('dials');
+
+    // 9. Toggles (5 under dials)
+    const toggleGeo = new THREE.BoxGeometry(0.015 * wPanelF, 0.03 * hPanelF, 0.05);
+    for(let i=0; i<5; i++) {
+        const u = 0.45 + (i/4)*0.10;
+        const x = (u - 0.5) * wPanelF;
+        const y = -0.05 * hPanelF;
+        const toggle = new THREE.Mesh(toggleGeo, new THREE.MeshBasicMaterial({ color: C_AMBER }));
+        toggle.position.set(x, y, 0.26);
+        panel.add(toggle);
+    }
+    objectsList.push('toggles');
+
+    // 10. Floor (from 52% down)
+    // v=0.52 -> y = (0.5 - 0.52) * hPanelF = -0.02 * hPanelF.
+    // But floor is at bottom of scene, likely z < 0.
+    // Let's make a huge plane.
+    const floorY = -0.02 * hPanelF; 
+    const floorGeo = new THREE.PlaneGeometry(100, 100);
+    floorGeo.rotateX(-Math.PI/2);
+    const floorMat = new THREE.MeshStandardMaterial({ color: C_HULL, roughness: 0.8 });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.position.y = floorY - 2; // Push down a bit so it's below camera view mostly
+    floor.position.z = -10;
+    scene.add(floor);
+    objectsList.push('floor');
+
+    // 11. Flash (Lightning)
+    // Additive spot behind glass (z=-14), u=0.34, v=0.34
+    const flashW = 0.5 * wSky; // Relative to skyline distance roughly
+    const flashH = 0.4 * hSky;
+    const flashGeo = new THREE.PlaneGeometry(flashW, flashH);
+    const flashMat = new THREE.MeshBasicMaterial({ 
+        color: C_RAIN, 
+        transparent: true, 
+        opacity: 0, 
+        blending: THREE.AdditiveBlending 
+    });
+    flashMesh = new THREE.Mesh(flashGeo, flashMat);
+    // Position at z=-14 (skyline depth)
+    const xFlash = (0.34 - 0.5) * wSky;
+    const yFlash = (0.5 - 0.34) * hSky;
+    flashMesh.position.set(xFlash, yFlash, -14);
+    scene.add(flashMesh);
+    objectsList.push('flash');
+
+    isReady = true;
+    window.__ready = true;
+    
+    // Initial render
+    renderer.render(scene, camera);
+}
+
+// --- Animation Step ---
+window.__step = function(dt) {
+    if (!isReady) return { t: 0, objects: [], flash: 0 };
+
+    time += dt;
+
+    // Camera Drift
+    // Drifts 0.059 per second on x
+    camera.position.x = time * 0.059;
+
+    // Rain Animation
+    // Speed 1.80 units/s. 
+    // "Units" likely refers to world units or % of screen? 
+    // Given "size 5px", speed 1.80 units/s is ambiguous. 
+    // Let's assume world units relative to the frustum height at that depth.
+    // Or simpler: move Y by speed * dt.
+    // Let's interpret "units" as percentage of screen height for consistency with "size 5px" (screen space).
+    // But Three.js Points with sizeAttenuation=false are screen pixels.
+    // If I move world Y, I need to know scale.
+    // Let's assume speed is in "fraction of screen height per second".
+    // Screen Height at Rain Z (dist 16) is hRainF.
+    // Speed = 1.80 * hRainF ? That's very fast (almost 2 screens per sec).
+    // Or maybe 1.80 is just world units.
+    // Let's try world units. 1.80 world units/sec.
+    
+    const rainPositions = rainSystem.geometry.attributes.position.array;
+    const hRainF = getFrustumHeight(16);
+    
+    for(let i=0; i<44; i++) {
+        rainPositions[i*3+1] -= 1.80 * dt;
+        // Reset if below view
+        if (rainPositions[i*3+1] < -hRainF/2) {
+            rainPositions[i*3+1] = hRainF/2;
+            rainPositions[i*3] = (rnd() - 0.5) * getFrustumWidth(16);
+        }
+    }
+    rainSystem.geometry.attributes.position.needsUpdate = true;
+
+    // Drops Animation
+    const dropPositions = dropSystem.geometry.attributes.position.array;
+    const hGlassF = getFrustumHeight(9);
+    
+    for(let i=0; i<58; i++) {
+        dropPositions[i*3+1] -= 1.80 * dt; // Same speed
+        if (dropPositions[i*3+1] < -hGlassF/2) {
+            dropPositions[i*3+1] = hGlassF/2;
+            dropPositions[i*3] = (rnd() - 0.5) * (0.78 * getFrustumWidth(9));
+        }
+    }
+    dropSystem.geometry.attributes.position.needsUpdate = true;
+
+    // Flash Animation
+    // Brightness oscillates 0.94 Hz
+    // Base opacity 0, peak 1? Or just intensity.
+    // "яркость качается" -> brightness oscillates.
+    const flashVal = (Math.sin(time * 2 * Math.PI * 0.94) + 1) / 2; // 0..1
+    flashMesh.material.opacity = flashVal * 0.8; // Max 0.8 opacity
+
+    // Screen/Dial Flicker (subtle)
+    const flicker = 0.8 + 0.2 * Math.sin(time * 5);
+    screenMaterials.forEach(m => {
+        m.color.setHSL(0.33, 1, 0.5 * flicker); // Green
+    });
+    dialMaterials.forEach(m => {
+        m.color.setHSL(0.11, 1, 0.5 * flicker); // Amber
+    });
+
+    renderer.render(scene, camera);
+
+    return window.__probe();
+};
+
+// --- Probe ---
+window.__probe = function() {
+    return {
+        t: parseFloat(time.toFixed(4)),
+        objects: objectsList,
+        flash: parseFloat(flashMesh.material.opacity.toFixed(4))
+    };
+};
+
+// Start
+init();
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-21 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Galaxy Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Configuration & Constants ---
+const SEED = 800660;
+const WIDTH = 800;
+const HEIGHT = 600;
+const FOV = 45;
+const ASPECT = WIDTH / HEIGHT;
+const NEAR = 0.1;
+const FAR = 200;
+const CAMERA_Z = 10.0;
+
+// Colors
+const COLOR_CORE = new THREE.Color('#ffbf00');
+const COLOR_ARM = new THREE.Color('#ff0080');
+const COLOR_EDGE = new THREE.Color('#0cb7f0');
+const COLOR_SKY = new THREE.Color('#1d1638');
+
+// Counts
+const COUNT_ARMS = 7000;
+const COUNT_CORE = 2500;
+const COUNT_HALO = 1500;
+
+// --- LCG Random Generator ---
+class LCG {
+    constructor(seed) {
+        this.s = seed >>> 0;
+    }
+    next() {
+        this.s = (1664525 * this.s + 1013904223) >>> 0;
+        return this.s / 4294967296;
+    }
+}
+
+// --- Global State ---
+let scene, camera, renderer;
+let starsCore, starsArm, starsEdge, coreGlow;
+let time = 0;
+let spin = 0;
+const rng = new LCG(SEED);
+
+// --- Geometry Generation ---
+
+function createCoreTexture() {
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    
+    const gradient = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+    gradient.addColorStop(0, '#ffbf00');
+    gradient.addColorStop(0.4, '#ff8800');
+    gradient.addColorStop(1, 'rgba(255, 191, 0, 0)');
+    
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, size, size);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    return texture;
+}
+
+function generateGalaxy() {
+    // Calculate Galaxy Radius based on camera parameters
+    // half-height at distance 10 with FOV 45:
+    // tan(FOV/2) = tan(22.5) ≈ 0.4142
+    // halfHeight = 10 * tan(22.5) ≈ 4.142
+    const halfHeight = CAMERA_Z * Math.tan(THREE.MathUtils.degToRad(FOV) / 2);
+    const R = 0.44 * halfHeight;
+
+    // --- 1. Arms (7000 points) ---
+    const armGeo = new THREE.BufferGeometry();
+    const armPos = new Float32Array(COUNT_ARMS * 3);
+    const armCol = new Float32Array(COUNT_ARMS * 3);
+    const armData = []; // Store r for animation
+
+    for (let i = 0; i < COUNT_ARMS; i++) {
+        const u = rng.next();
+        const v = rng.next();
+        const w = rng.next();
+        const g = rng.next(); // u1+u2+u3-1.5 logic is abstracted as just a random input here per prompt "four numbers in a row"
+
+        const q = 0.14 + 0.86 * Math.pow(u, 0.62);
+        const r = 0.44 * halfHeight * q;
+        
+        // Two branches: floor(v * 2) gives 0 or 1
+        const branchOffset = Math.floor(v * 2) * Math.PI;
+        const twist = g * 0.50 * (1 - 0.45 * q);
+        const theta = 1.60 * 2 * Math.PI * q + branchOffset + twist;
+
+        const z = (w - 0.5) * 0.10 * r * (0.4 + q);
+
+        const x = r * Math.cos(theta);
+        const y = r * Math.sin(theta);
+
+        armPos[i * 3] = x;
+        armPos[i * 3 + 1] = y;
+        armPos[i * 3 + 2] = z;
+
+        // Color based on q
+        let color;
+        if (q <= 0.38) {
+            color = COLOR_CORE;
+        } else if (q <= 0.70) {
+            color = COLOR_ARM;
+        } else {
+            color = COLOR_EDGE;
+        }
+        armCol[i * 3] = color.r;
+        armCol[i * 3 + 1] = color.g;
+        armCol[i * 3 + 2] = color.b;
+
+        armData.push({ r: r, index: i });
+    }
+
+    armGeo.setAttribute('position', new THREE.BufferAttribute(armPos, 3));
+    armGeo.setAttribute('color', new THREE.BufferAttribute(armCol, 3));
+    
+    starsArm = new THREE.Points(armGeo, new THREE.PointsMaterial({
+        size: 2.8,
+        sizeAttenuation: false,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        vertexColors: true
+    }));
+    starsArm.name = 'stars_arm';
+    starsArm.userData = { type: 'arm', data: armData, R: R };
+
+    // --- 2. Core (2500 points) ---
+    const coreGeo = new THREE.BufferGeometry();
+    const corePos = new Float32Array(COUNT_CORE * 3);
+    const coreCol = new Float32Array(COUNT_CORE * 3);
+    const coreData = [];
+
+    for (let i = 0; i < COUNT_CORE; i++) {
+        const u = rng.next();
+        const a = 2 * Math.PI * u;
+        // Note: prompt says r = 0.22 * R * u^0.55. 
+        // But u is used for angle too. Need another random for radius? 
+        // Prompt says: "2500 points core-cluster (a = 2*pi*u, r = 0.22 * R * u^0.55...)"
+        // This implies reusing u or taking next. Usually in these tasks, if variables are listed sequentially, they might imply sequential RNG calls or reusing.
+        // Given "four numbers in a row" for arms, let's assume standard sequential consumption.
+        // However, the formula uses 'u' for both angle and radius power. 
+        // Let's assume we need a new random for radius if 'u' was consumed for angle, OR 'u' is the same variable.
+        // Re-reading: "For each point take four numbers... then...". For core: "(a=..., r=...)".
+        // It likely means: take u, calculate a. Take next u (let's call it u2), calculate r.
+        // Let's stick to strict sequential consumption to ensure determinism matches expected "noise".
+        
+        const u_rad = rng.next(); 
+        const r = 0.22 * R * Math.pow(u_rad, 0.55);
+        const w = rng.next();
+        const z = (w - 0.5) * 0.09 * R;
+
+        const x = r * Math.cos(a);
+        const y = r * Math.sin(a);
+
+        corePos[i * 3] = x;
+        corePos[i * 3 + 1] = y;
+        corePos[i * 3 + 2] = z;
+
+        coreCol[i * 3] = COLOR_CORE.r;
+        coreCol[i * 3 + 1] = COLOR_CORE.g;
+        coreCol[i * 3 + 2] = COLOR_CORE.b;
+
+        coreData.push({ r: r, index: i });
+    }
+
+    coreGeo.setAttribute('position', new THREE.BufferAttribute(corePos, 3));
+    coreGeo.setAttribute('color', new THREE.BufferAttribute(coreCol, 3));
+
+    starsCore = new THREE.Points(coreGeo, new THREE.PointsMaterial({
+        size: 3.2,
+        sizeAttenuation: false,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        vertexColors: true
+    }));
+    starsCore.name = 'stars_core';
+    starsCore.userData = { type: 'core', data: coreData, R: R };
+
+    // --- 3. Halo (1500 points) ---
+    const haloGeo = new THREE.BufferGeometry();
+    const haloPos = new Float32Array(COUNT_HALO * 3);
+    const haloCol = new Float32Array(COUNT_HALO * 3);
+    const haloData = [];
+
+    for (let i = 0; i < COUNT_HALO; i++) {
+        const u = rng.next();
+        const u2 = rng.next(); // for angle
+        
+        const r = R * (0.60 + 0.85 * u);
+        const a = 2 * Math.PI * u2;
+        // Halo is usually flat or slightly puffed, prompt doesn't specify Z for halo, assuming flat disk or minimal Z
+        // "dust halo on periphery". Let's give it slight Z spread similar to arms but wider or just flat.
+        // Prompt doesn't give Z formula for halo. Assuming z=0 or small random. 
+        // Let's use a small random Z to make it 3D.
+        const w = rng.next();
+        const z = (w - 0.5) * 0.15 * R; 
+
+        const x = r * Math.cos(a);
+        const y = r * Math.sin(a);
+
+        haloPos[i * 3] = x;
+        haloPos[i * 3 + 1] = y;
+        haloPos[i * 3 + 2] = z;
+
+        haloCol[i * 3] = COLOR_EDGE.r;
+        haloCol[i * 3 + 1] = COLOR_EDGE.g;
+        haloCol[i * 3 + 2] = COLOR_EDGE.b;
+
+        haloData.push({ r: r, index: i });
+    }
+
+    haloGeo.setAttribute('position', new THREE.BufferAttribute(haloPos, 3));
+    haloGeo.setAttribute('color', new THREE.BufferAttribute(haloCol, 3));
+
+    starsEdge = new THREE.Points(haloGeo, new THREE.PointsMaterial({
+        size: 2.4,
+        sizeAttenuation: false,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        vertexColors: true
+    }));
+    starsEdge.name = 'stars_edge';
+    starsEdge.userData = { type: 'edge', data: haloData, R: R };
+
+    // --- 4. Core Glow ---
+    const glowGeo = new THREE.PlaneGeometry(0.55 * R, 0.55 * R);
+    const glowMat = new THREE.MeshBasicMaterial({
+        map: createCoreTexture(),
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        opacity: 0.8
+    });
+    coreGlow = new THREE.Mesh(glowGeo, glowMat);
+    coreGlow.name = 'core_glow';
+    coreGlow.rotation.x = -Math.PI / 2; // Face camera if camera is looking down, but camera is at (0,0,10) looking at (0,0,0).
+    // Galaxy is "flat" (plasmia). Usually means in XY plane. Camera looks down Z.
+    // So PlaneGeometry needs to be in XY plane. Default PlaneGeometry is in XY.
+    // So no rotation needed if camera is at Z looking at origin.
+    coreGlow.rotation.x = 0; 
+    coreGlow.rotation.y = 0;
+}
+
+// --- Initialization ---
+
+function init() {
+    // Scene
+    scene = new THREE.Scene();
+    scene.background = COLOR_SKY;
+
+    // Camera
+    camera = new THREE.PerspectiveCamera(FOV, ASPECT, NEAR, FAR);
+    camera.position.set(0, 0, CAMERA_Z);
+    camera.lookAt(0, 0, 0);
+
+    // Renderer
+    renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(WIDTH, HEIGHT, false);
+    document.body.appendChild(renderer.domElement);
+
+    // Generate Objects
+    generateGalaxy();
+
+    scene.add(starsCore);
+    scene.add(starsArm);
+    scene.add(starsEdge);
+    scene.add(coreGlow);
+
+    // Initial Render
+    renderer.render(scene, camera);
+    window.__ready = true;
+}
+
+// --- Animation Logic ---
+
+function updateRotation(dt) {
+    const updatePoints = (pointsObj) => {
+        const positions = pointsObj.geometry.attributes.position.array;
+        const data = pointsObj.userData.data;
+        const R = pointsObj.userData.R;
+
+        for (let i = 0; i < data.length; i++) {
+            const item = data[i];
+            const r = item.r;
+            const idx = item.index * 3;
+            
+            // Current angle from position
+            // x = r * cos(theta), y = r * sin(theta)
+            // We need to update theta.
+            // Formula: theta += 0.55 * dt / (0.25 + r/R)
+            
+            // To avoid accumulating float errors or recalculating atan2 every frame (slow),
+            // we can store current angle in userData or recalculate. 
+            // Given strict determinism requirements, recalculating from position is risky due to float drift.
+            // Better: Store initial theta in data during generation.
+            
+            if (item.initialTheta === undefined) {
+                item.initialTheta = Math.atan2(positions[idx + 1], positions[idx]);
+            }
+            
+            // Accumulate spin based on global time or per-step?
+            // Prompt: "time t grows by dt". "theta += ...".
+            // We need to track total rotation for each point.
+            if (item.totalRotation === undefined) item.totalRotation = 0;
+            
+            const speedFactor = 0.55 / (0.25 + r / R);
+            item.totalRotation += speedFactor * dt;
+            
+            const newTheta = item.initialTheta + item.totalRotation;
+            
+            // We also need to preserve Z.
+            const z = positions[idx + 2];
+            
+            positions[idx] = r * Math.cos(newTheta);
+            positions[idx + 1] = r * Math.sin(newTheta);
+            // Z remains constant relative to the point's local logic, but prompt says "thin disk", Z is fixed per point generation.
+        }
+        pointsObj.geometry.attributes.position.needsUpdate = true;
+    };
+
+    updatePoints(starsCore);
+    updatePoints(starsArm);
+    updatePoints(starsEdge);
+    
+    // Core glow doesn't rotate in this specific differential model usually, 
+    // but if it's part of the disk, it might. Prompt says "disk rotates". 
+    // Glow is "core cluster". Let's rotate it slowly or not at all. 
+    // Usually core glow is static or slow. Let's leave it static or match core speed.
+    // Given "differential rotation", center moves fastest. 
+    // Let's rotate the glow mesh slightly to match visual flow, or keep static as a background glow.
+    // Prompt: "disk rotates". Glow is "core cluster". Let's rotate it.
+    // Speed at r=0 is 0.55/0.25 = 2.2 rad/s.
+    if (coreGlow.userData.totalRotation === undefined) coreGlow.userData.totalRotation = 0;
+    coreGlow.userData.totalRotation += (0.55 / 0.25) * dt;
+    coreGlow.rotation.z = -coreGlow.userData.totalRotation; // Rotate around Z
+}
+
+window.__step = function(dt) {
+    time += dt;
+    spin += 0.55 * dt;
+    updateRotation(dt);
+    renderer.render(scene, camera);
+    return window.__probe();
+};
+
+window.__probe = function() {
+    // Calculate rings for probe
+    // 4 ring zones of radius. 
+    // R is approx 1.8 (0.44 * 4.14).
+    // Let's define zones: 0-0.25R, 0.25-0.5R, 0.5-0.75R, 0.75-R+
+    const R = 0.44 * (CAMERA_Z * Math.tan(THREE.MathUtils.degToRad(FOV) / 2));
+    const zones = [0, 0, 0, 0];
+    
+    const countInZones = (pointsObj) => {
+        const data = pointsObj.userData.data;
+        data.forEach(item => {
+            const r = item.r;
+            if (r < 0.25 * R) zones[0]++;
+            else if (r < 0.5 * R) zones[1]++;
+            else if (r < 0.75 * R) zones[2]++;
+            else zones[3]++;
+        });
+    };
+
+    countInZones(starsCore);
+    countInZones(starsArm);
+    countInZones(starsEdge);
+
+    return {
+        t: time.toFixed(4),
+        spin: spin,
+        objects: ['stars_core', 'stars_arm', 'stars_edge', 'core_glow'],
+        rings: zones
+    };
+};
+
+// Start
+init();
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-6 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

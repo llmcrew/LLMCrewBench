@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Particle Flow Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Configuration & State ---
+        const CONFIG = {
+            width: 800,
+            height: 600,
+            particleCount: 36,
+            particleRadius: 0.3,
+            domain: { x: [0, 8.0], y: [0, 6.0] },
+            field: { A: 1.5, B: 1.5 },
+            colors: {
+                backdrop: 0x22303f,
+                particle: 0xffa64d
+            }
+        };
+
+        let steps = 0;
+        let lcgState = 2070952145;
+
+        // --- LCG Implementation ---
+        function nextU() {
+            // s = (1664525 * s + 1013904223) % 4294967296
+            lcgState = (1664525 * lcgState + 1013904223) % 4294967296;
+            return lcgState / 4294967296;
+        }
+
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+
+        // Camera
+        const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+        camera.position.set(4.0, 3.0, 18.0);
+        camera.lookAt(4.0, 3.0, 0.0);
+
+        // Renderer
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(CONFIG.width, CONFIG.height, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.8);
+        dirLight.position.set(6.0, 10.0, 10.0);
+        scene.add(dirLight);
+
+        // Backdrop
+        const backdropGeo = new THREE.PlaneGeometry(40, 40);
+        const backdropMat = new THREE.MeshBasicMaterial({ color: CONFIG.colors.backdrop });
+        const backdrop = new THREE.Mesh(backdropGeo, backdropMat);
+        backdrop.name = 'backdrop';
+        backdrop.position.z = -2;
+        scene.add(backdrop);
+
+        // Particles
+        const particleGeo = new THREE.SphereGeometry(CONFIG.particleRadius, 16, 16);
+        const particleMat = new THREE.MeshStandardMaterial({ color: CONFIG.colors.particle });
+        const particlesMesh = new THREE.InstancedMesh(particleGeo, particleMat, CONFIG.particleCount);
+        particlesMesh.name = 'particles';
+        scene.add(particlesMesh);
+
+        // Particle State Storage
+        const particleData = [];
+        const dummy = new THREE.Object3D();
+
+        // Initialize Particles
+        for (let i = 0; i < CONFIG.particleCount; i++) {
+            const u = nextU();
+            const x = CONFIG.domain.x[1] * u; // 8.0 * u
+            const y = CONFIG.domain.y[1] * u; // 6.0 * u
+            
+            particleData.push({ x, y, z: 0 });
+
+            dummy.position.set(x, y, 0);
+            dummy.updateMatrix();
+            particlesMesh.setMatrixAt(i, dummy.matrix);
+        }
+        particlesMesh.instanceMatrix.needsUpdate = true;
+
+        // --- Simulation Logic ---
+        window.__step = function(dt) {
+            const { A, B } = CONFIG.field;
+            const PI = Math.PI;
+
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                const p = particleData[i];
+                
+                // Calculate velocity field
+                const vx = A * Math.sin(PI * p.y / 6.0);
+                const vy = B * Math.cos(PI * p.x / 8.0);
+
+                // Update position
+                p.x += vx * dt;
+                p.y += vy * dt;
+
+                // Update Mesh
+                dummy.position.set(p.x, p.y, p.z);
+                dummy.updateMatrix();
+                particlesMesh.setMatrixAt(i, dummy.matrix);
+            }
+            particlesMesh.instanceMatrix.needsUpdate = true;
+            
+            steps++;
+            renderer.render(scene, camera);
+        };
+
+        // --- Probe API ---
+        window.__probe = function() {
+            return {
+                steps: steps,
+                field: { A: CONFIG.field.A, B: CONFIG.field.B },
+                particles: particleData.map(p => ({
+                    x: parseFloat(p.x.toFixed(4)),
+                    y: parseFloat(p.y.toFixed(4))
+                })),
+                camera: [4.0, 3.0, 18.0],
+                objects: ["backdrop", "particles"]
+            };
+        };
+
+        // --- Initial Render & Ready Flag ---
+        renderer.render(scene, camera);
+        window.__ready = true;
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-11 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

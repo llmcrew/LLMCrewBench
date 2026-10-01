@@ -6,6 +6,7 @@
     python -m dailybench selfcheck
     python -m dailybench run --base-url http://127.0.0.1:1234/v1 --model qwen3.8-27b \\
         --quant "Q4_K_M" --name qwen-plain --speed
+    python -m dailybench bench --config qwen3.8-27b-ud-q3-k-xl --speed
     python -m dailybench report runs/qwen-plain runs/qwen-gsq
 """
 
@@ -51,9 +52,9 @@ def _provider_from(cfg: RunConfig) -> Provider:
 
 def _config_from(args: argparse.Namespace) -> RunConfig:
     cfg = RunConfig(
-        base_url=getattr(args, "base_url", RunConfig.base_url),
-        model=getattr(args, "model", RunConfig.model),
-        api_key=getattr(args, "api_key", "not-needed"),
+        base_url=getattr(args, "base_url", "") or None,
+        model=getattr(args, "model", "") or None,
+        api_key=getattr(args, "api_key", "") or None,
         request_timeout=getattr(args, "timeout", 1800.0),
         seed=args.seed,
         quant=getattr(args, "quant", "") or "",
@@ -93,7 +94,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     gpus = gpu_inventory()
     info["gpus"] = gpus
     info["vram_used_mib_now"] = used_mib()
-    info["go"] = shutil.which("go") or shutil.which("go.exe") or "missing"
+    from .tasks.coding_go import _go_binary
+
+    info["go"] = _go_binary() or "missing"
     info["docker"] = shutil.which("docker") or "missing"
     try:
         import sqlite3
@@ -101,6 +104,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         info["sqlite"] = sqlite3.sqlite_version
     except Exception as exc:  # pragma: no cover
         info["sqlite"] = f"unavailable: {exc}"
+
+    try:
+        from . import browser, visual
+
+        usable, reason = browser.availability()
+        info["visual_block"] = {
+            "usable": usable,
+            "reason": reason or "ok",
+            "three": str(browser.VENDOR / "three.module.js"),
+            "cache": str(visual.cache_dir()),
+        }
+    except Exception as exc:  # pragma: no cover - depends on the machine
+        info["visual_block"] = {"usable": False, "reason": f"{exc.__class__.__name__}: {exc}"}
 
     cfg = _config_from(args)
     endpoint: dict[str, object] = {"base_url": cfg.base_url, "model": cfg.model}
@@ -132,8 +148,20 @@ def cmd_list(args: argparse.Namespace) -> int:
             f"{entry['id']:6} {entry['max_points']:>6.0f} {entry['prompt_chars']:>9} "
             f"{(entry['estimated_tokens'] or 0):>9}  {entry['title']}"
         )
-    total = sum(task.max_points for task in tasks)
-    print(f"\nЗаданий: {len(tasks)}, сумма баллов: {total:.0f}, seed={cfg.seed}")
+    total = sum(task.max_points for task in tasks if task.category in core.SCORED_CATEGORIES)
+    showcase = [task for task in tasks if task.category in core.VISUAL_CATEGORIES]
+    note = f", витрина: {len(showcase)} заданий ({sum(t.max_points for t in showcase):.0f} вне счёта)" if showcase else ""
+    print(f"\nЗаданий: {len(tasks)}, сумма баллов: {total:.0f}{note}, seed={cfg.seed}")
+    if args.prompts:
+        for task in tasks:
+            print("\n" + "-" * 78)
+            title = task.title
+            for prefix in (f"{task.id} — ", f"{task.id} - "):
+                if title.startswith(prefix):
+                    title = title[len(prefix):]
+                    break
+            print(f"{task.id} — {title} ({task.max_points:.0f} баллов)")
+            print(task.prompt)
     return 0
 
 
@@ -246,6 +274,128 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bench(args: argparse.Namespace) -> int:
+    """One command for the whole cycle: runtime up, preflight, run, report.
+
+    ``run`` assumes a model is already serving; this composes the steps the
+    reference workflow needs in order, so a single model can be measured with
+    one command and the same code path the sweep uses.
+    """
+    from . import launch, reference
+
+    cfg = _config_from(args)
+    entry: dict = {}
+    if args.config:
+        entry = dict(reference.resolve(args.config, args.configs_path or None).entry)
+
+    if entry and not args.no_launch:
+        ok, note, key = launch.up(entry)
+        print(f"runtime: {note}", flush=True)
+        if not ok:
+            print(
+                f"не удалось поднять рантайм; продолжаю с endpoint'ом {cfg.base_url}",
+                file=sys.stderr,
+            )
+        elif key and not args.api_key:
+            args.api_key = key
+
+    if args.config and not args.no_preflight:
+        report = reference.preflight(reference.resolve(args.config, args.configs_path or None))
+        print(report.render(), flush=True)
+        if not report.ok:
+            print("preflight отклонил конфигурацию: прогон не начат", file=sys.stderr)
+            return 1
+
+    return cmd_run(build_parser().parse_args(_bench_run_argv(args)))
+
+
+def _bench_run_argv(args: argparse.Namespace) -> list[str]:
+    """Translate the bench namespace into the equivalent ``run`` arguments.
+
+    The run itself stays in one place: ``bench`` only decides which arguments
+    reach it, so the two commands can never drift apart in behaviour.
+    """
+    argv = [
+        "run",
+        "--base-url", args.base_url,
+        "--model", args.model,
+        "--api-key", args.api_key,
+        "--timeout", str(args.timeout),
+        "--seed", str(args.seed),
+        "--sql-backend", args.sql_backend,
+        "--context-window", str(args.context_window),
+        "--max-new-tokens", str(args.max_new_tokens),
+        "--offload", args.offload,
+    ]
+    for flag, value in (
+        ("--quant", args.quant),
+        ("--runtime", args.runtime),
+        ("--kv-type", args.kv_type),
+        ("--weights", args.weights),
+        ("--only", args.only),
+        ("--name", args.name),
+        ("--out-dir", args.out_dir),
+        ("--unsupported", args.unsupported),
+        ("--config", args.config),
+        ("--configs-path", args.configs_path),
+    ):
+        if value:
+            argv += [flag, str(value)]
+    if args.limit:
+        argv += ["--limit", str(args.limit)]
+    if args.speed:
+        argv += ["--speed", "--speed-long", str(args.speed_long), "--speed-repeats", str(args.speed_repeats)]
+    if not args.calibrate:
+        argv += ["--no-calibrate"]
+    if args.no_system_prompt:
+        argv += ["--no-system-prompt"]
+    return argv
+
+
+def cmd_visual(args: argparse.Namespace) -> int:
+    """Render one candidate page exactly as the visual check would.
+
+    The debugging loop for the visual block: point it at an HTML file a model
+    produced (or at a reference page) and read back the probe, the frame after
+    the requested number of steps, and the frame statistics the image check
+    looks at.
+    """
+    from . import browser, visual
+
+    if not args.stdout_input and not args.page:
+        print("укажи HTML-файл или --stdin", file=sys.stderr)
+        return 2
+    try:
+        payload = sys.stdin.read() if args.stdout_input else Path(args.page).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"не читается {args.page}: {exc}", file=sys.stderr)
+        return 2
+    usable, reason = browser.availability()
+    if not usable:
+        print(f"браузер недоступен: {reason}", file=sys.stderr)
+        return 2
+    html = visual.extract_html(payload) or payload
+    static_ok, static_detail = visual.looks_like_document(html)
+    print(f"документ: {'ок' if static_ok else 'нет'} — {static_detail}")
+    result = browser.render(html, steps=args.steps, dt=args.dt)
+    print(f"рендер: {'ок' if result.ok else 'ошибка'} {result.reason}".rstrip())
+    for line in result.errors[:5]:
+        print(f"  ошибка страницы: {line}")
+    for line in result.external[:5]:
+        print(f"  внешний запрос: {line}")
+    print("probe:", json.dumps(result.probe, ensure_ascii=False, sort_keys=True))
+    if args.steps:
+        print("после шагов:", json.dumps(browser.probe_of(result, True), ensure_ascii=False, sort_keys=True))
+    print("кадр:", json.dumps(result.pixels, ensure_ascii=False, sort_keys=True))
+    print(f"воспроизводимость кадра: {'да' if result.same_frame else 'нет'}")
+    if args.shot:
+        path = Path(args.shot)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(result.shot or b"")
+        print(f"снимок: {path}")
+    return 0
+
+
 def cmd_speed(args: argparse.Namespace) -> int:
     cfg = _config_from(args)
     provider = _provider_from(cfg)
@@ -257,8 +407,33 @@ def cmd_speed(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_publish(args: argparse.Namespace) -> int:
+    """Собрать витринный отчёт в git-каталог: графика и three.js внутри, runs/ вне.
+
+    ``runs/`` воспроизводим и в git не нужен, но отчёт должен быть воспроизводим
+    из репозитория как артефакт: ``publish`` кладёт в ``reports/<имя>/`` готовый
+    ``index.html``, библиотеку three.js, plotly и копии страниц и кадров, ничего
+    не читая из ``runs/`` после сборки.
+    """
+    from .htmlreport import write_html
+
+    runs = [Path(directory) for directory in args.directories]
+    for directory in runs:
+        if not (directory / "tasks.json").is_file():
+            raise FileNotFoundError(f"{directory}: нет tasks.json (прогон не сохранён)")
+    out = Path(args.out) if args.out else Path("reports") / (runs[0].name if len(runs) == 1 else "comparison")
+    page = write_html(runs, out / "index.html")
+    print(f"отчёт: {page}")
+    print(f"каталог: {out} — его и коммитить; runs/ остаётся локальным")
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     paths = write_reports(args.directories)
+    if not getattr(args, "no_html", False):
+        from .htmlreport import write_html
+
+        paths.append(write_html(args.directories, Path(args.html) if args.html else None))
     for path in paths:
         print(path)
     for directory in args.directories:
@@ -370,7 +545,10 @@ def _load_for_render(directory: Path) -> dict:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="dailybench", description="LLMCrew DailyBench-16")
+    parser = argparse.ArgumentParser(
+        prog="dailybench",
+        description="LLMCrew DailyBench-16 — generated, programmatically scored local-LLM suite",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_common(target: argparse.ArgumentParser, *, endpoint: bool = False) -> None:
@@ -379,9 +557,11 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument("--limit", type=int, default=0, help="ограничить число заданий (для дымового прогона)")
         target.add_argument("--sql-backend", default="sqlite", choices=("sqlite", "postgres"))
         if endpoint:
-            target.add_argument("--base-url", default="http://127.0.0.1:1234/v1")
-            target.add_argument("--model", default="local-model")
-            target.add_argument("--api-key", default="not-needed")
+            # Empty default = "take it from the environment" (see RunConfig),
+            # so a clone never has to pass its endpoint on every command.
+            target.add_argument("--base-url", default="")
+            target.add_argument("--model", default="")
+            target.add_argument("--api-key", default="")
             target.add_argument("--timeout", type=float, default=1800.0)
             target.add_argument("--quant", default="", help="метка кванта для отчёта, напр. IQ4_XS")
             target.add_argument("--runtime", default="", help="runtime и версия, напр. llama.cpp b4321")
@@ -400,16 +580,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     listing = sub.add_parser("list", help="показать задания сьюта без запуска")
     add_common(listing)
+    listing.add_argument("--prompts", action="store_true", help="напечатать промпты целиком")
+    listing.add_argument("--config", default="", help="id эталонной конфигурации (окно, бюджеты, политика)")
+    listing.add_argument("--configs-path", default="")
     listing.set_defaults(func=cmd_list)
 
     generate = sub.add_parser("generate", help="записать fixtures сьюта в каталог")
     add_common(generate)
     generate.add_argument("--out", required=True)
+    generate.add_argument("--config", default="", help="id эталонной конфигурации (окно влияет на long-context)")
+    generate.add_argument("--configs-path", default="")
     generate.set_defaults(func=cmd_generate)
 
     check = sub.add_parser("selfcheck", help="проверить генераторы и evaluator'ы без GPU")
     add_common(check)
     check.add_argument("--report", default="")
+    check.add_argument("--config", default="", help="id эталонной конфигурации (окно влияет на long-context)")
+    check.add_argument("--configs-path", default="")
     check.set_defaults(func=cmd_selfcheck)
 
     run = sub.add_parser("run", help="прогнать сьют на модели")
@@ -425,6 +612,29 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--speed-long", type=int, default=0)
     run.add_argument("--speed-repeats", type=int, default=3)
     run.set_defaults(func=cmd_run)
+
+    bench = sub.add_parser("bench", help="один запуск целиком: runtime, preflight, сьют, отчёт")
+    add_common(bench, endpoint=True)
+    bench.add_argument("--config", default="", help="id эталонной конфигурации из configs/reference.json")
+    bench.add_argument("--configs-path", default="", help="путь к файлу эталонных конфигураций")
+    bench.add_argument("--unsupported", default="", help="категории, которые эта конфигурация не проверяет")
+    bench.add_argument("--name", default="")
+    bench.add_argument("--out-dir", default="")
+    bench.add_argument("--speed", action="store_true", help="снять профиль скорости и VRAM")
+    bench.add_argument("--speed-long", type=int, default=0)
+    bench.add_argument("--speed-repeats", type=int, default=3)
+    bench.add_argument("--no-calibrate", dest="calibrate", action="store_false")
+    bench.add_argument("--no-launch", action="store_true", help="не поднимать рантайм, работать с запущенным")
+    bench.add_argument("--no-preflight", action="store_true", help="не проверять конфигурацию перед прогоном")
+    bench.set_defaults(func=cmd_bench)
+
+    visual = sub.add_parser("visual", help="отрисовать одну страницу так же, как это делает проверка K")
+    visual.add_argument("page", nargs="?", default="", help="HTML-файл (или --stdin)")
+    visual.add_argument("--stdin", dest="stdout_input", action="store_true", help="читать ответ со стандартного ввода")
+    visual.add_argument("--steps", type=int, default=0, help="сколько шагов симуляции сделать перед снимком")
+    visual.add_argument("--dt", type=float, default=1 / 60)
+    visual.add_argument("--shot", default="", help="куда сохранить PNG")
+    visual.set_defaults(func=cmd_visual)
 
     configs = sub.add_parser("configs", help="показать эталонные конфигурации и политику")
     configs.add_argument("--configs-path", default="")
@@ -449,7 +659,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     report = sub.add_parser("report", help="пересобрать отчёты и сравнение")
     report.add_argument("directories", nargs="+")
+    report.add_argument("--html", default="", help="куда положить HTML-отчёт (по умолчанию comparison.html рядом с прогонами)")
+    report.add_argument("--no-html", action="store_true", help="только markdown, без HTML")
     report.set_defaults(func=cmd_report)
+
+    publish = sub.add_parser(
+        "publish",
+        help="собрать отчёт-артефакт в git-каталог (reports/): страницы, кадры и библиотеки внутри",
+    )
+    publish.add_argument("directories", nargs="+")
+    publish.add_argument("--out", default="", help="каталог отчёта (по умолчанию reports/<имя прогона>)")
+    publish.set_defaults(func=cmd_publish)
 
     rescore = sub.add_parser(
         "rescore", help="пересчитать баллы сохранённого прогона текущими evaluator'ами (без вызова модели)"

@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body{margin:0;background:#000;display:flex;justify-content:center;align-items:center;height:100vh}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+let lcg = 238931;
+function rnd(){lcg=(lcg*1103515245+12345)%2147483648;return lcg/2147483648;}
+
+const renderer=new THREE.WebGLRenderer({preserveDrawingBuffer:true});
+renderer.setPixelRatio(1);
+renderer.setSize(800,600,false);
+document.body.appendChild(renderer.domElement);
+
+const FOV=50;
+const camera=new THREE.PerspectiveCamera(FOV,800/600,0.1,200);
+camera.position.set(0,0,4);
+camera.lookAt(0,0,-1);
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x1b1a2a);
+
+const th=Math.tan(FOV*Math.PI/360);
+const asp=800/600;
+
+function wUV(u,v,z){const d=4-z;return{x:(u-0.5)*2*d*th*asp,y:(0.5-v)*2*d*th};}
+
+// night z=-45
+const night=new THREE.Mesh(new THREE.PlaneGeometry(120,90),new THREE.MeshBasicMaterial({color:0x1b1a2a}));
+night.position.set(0,0,-45);night.name='night';scene.add(night);
+
+// wall z=-16
+const wall=new THREE.Mesh(new THREE.PlaneGeometry(60,50),new THREE.MeshBasicMaterial({color:0x1b1a2a}));
+wall.position.set(0,0,-16);wall.name='wall';scene.add(wall);
+
+// floor z=-8, from v=0.4 down
+const d8=12;
+const visH8=2*d8*th;
+const floorTopY=(0.5-0.4)*visH8;
+const floorH=visH8*1.2;
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(30,floorH),new THREE.MeshBasicMaterial({color:0x14121f}));
+floor.position.set(0,floorTopY-floorH/2,-8);floor.name='floor';scene.add(floor);
+
+// sign z=-15.99
+const sp=wUV(0.28,0.16,-16);
+const sW=0.30*2*20*th*asp;
+const sH=0.12*2*20*th;
+const signMat=new THREE.MeshBasicMaterial({color:0xff2f7a});
+const sign=new THREE.Mesh(new THREE.PlaneGeometry(sW,sH),signMat);
+sign.position.set(sp.x,sp.y,-15.99);sign.name='sign';scene.add(sign);
+
+// robot z=-7.99
+const rp=wUV(0.44,0.66,-8);
+const rW=0.20*2*d8*th*asp;
+const rH=3.0;
+const bH=0.55*rH,hH=0.30*rH,lH=0.35*rH,aH=0.45*rH;
+const rMat=new THREE.MeshBasicMaterial({color:0x1b1a2a});
+const robotGroup=new THREE.Group();robotGroup.name='robot';
+
+const bW=rW*0.7;
+const bodyCY=rp.y-rH/2+lH+bH/2;
+const body=new THREE.Mesh(new THREE.PlaneGeometry(bW,bH),rMat);
+body.position.set(rp.x,bodyCY,-7.99);robotGroup.add(body);
+
+const hW=rW*0.5;
+const headCY=rp.y-rH/2+lH+bH+hH/2;
+const head=new THREE.Mesh(new THREE.PlaneGeometry(hW,hH),rMat);
+head.position.set(rp.x,headCY,-7.99);robotGroup.add(head);
+
+const lW=rW*0.18;
+const leg1=new THREE.Mesh(new THREE.PlaneGeometry(lW,lH),rMat);
+leg1.position.set(rp.x-rW*0.15,rp.y-rH/2+lH/2,-7.99);robotGroup.add(leg1);
+const leg2=new THREE.Mesh(new THREE.PlaneGeometry(lW,lH),rMat);
+leg2.position.set(rp.x+rW*0.15,rp.y-rH/2+lH/2,-7.99);robotGroup.add(leg2);
+
+const aW=rW*0.12;
+const arm1=new THREE.Mesh(new THREE.PlaneGeometry(aW,aH),rMat);
+arm1.position.set(rp.x-bW/2-aW/2,bodyCY,-7.99);robotGroup.add(arm1);
+const arm2=new THREE.Mesh(new THREE.PlaneGeometry(aW,aH),rMat);
+arm2.position.set(rp.x+bW/2+aW/2,bodyCY,-7.99);robotGroup.add(arm2);
+
+const eW=0.12*rW,eH=eW*0.5;
+const eye=new THREE.Mesh(new THREE.PlaneGeometry(eW,eH),new THREE.MeshBasicMaterial({color:0xa8c8dc}));
+eye.position.set(rp.x,headCY,-7.98);robotGroup.add(eye);
+
+const lS=rW*0.09;
+const lamp=new THREE.Mesh(new THREE.PlaneGeometry(lS,lS),new THREE.MeshBasicMaterial({color:0xffd94a}));
+lamp.position.set(rp.x+bW/2,bodyCY+bH/2-lS/2,-7.98);robotGroup.add(lamp);
+
+scene.add(robotGroup);
+
+// wet strip z=-7.97
+const wW=0.96*2*d8*th*asp;
+const wH=0.06*2*d8*th;
+const wY=(0.5-0.945)*visH8;
+const wet=new THREE.Mesh(new THREE.PlaneGeometry(wW,wH),new THREE.MeshBasicMaterial({color:0xa8c8dc,transparent:true,opacity:0.35,depthWrite:false}));
+wet.position.set(0,wY,-7.97);wet.name='wet';scene.add(wet);
+
+// puddles z=-7.96
+const pW=0.20*2*d8*th*asp;
+const pH=0.05*2*d8*th;
+const pY=(0.5-0.88)*visH8;
+const pMat=new THREE.MeshBasicMaterial({color:0xff2f7a,transparent:true,opacity:0.4,depthWrite:false});
+[-3.5,0,3.5].forEach((px,i)=>{
+  const p=new THREE.Mesh(new THREE.PlaneGeometry(pW,pH),pMat);
+  p.position.set(px,pY,-7.96);p.name='puddle'+i;scene.add(p);
+});
+
+// drops z=-3.9
+const dC=54;
+const dPos=new Float32Array(dC*3);
+const dVel=new Float32Array(dC);
+const dVH=2*7.9*th;
+const dVW=dVH*asp;
+for(let i=0;i<dC;i++){
+  dPos[i*3]=(rnd()-0.5)*dVW;
+  dPos[i*3+1]=(rnd()-0.5)*dVH;
+  dPos[i*3+2]=-3.9;
+  dVel[i]=1.93;
+}
+const dGeo=new THREE.BufferGeometry();
+dGeo.setAttribute('position',new THREE.BufferAttribute(dPos,3));
+const drops=new THREE.Points(dGeo,new THREE.PointsMaterial({color:0xa8c8dc,size:8,sizeAttenuation:false}));
+drops.name='drops';scene.add(drops);
+
+// sparks z=-6
+const sC=22;
+const sPos=new Float32Array(sC*3);
+const sVel=new Float32Array(sC);
+const shX=rp.x+bW/2+aW/2;
+const shY=bodyCY-aH/2;
+const sRange=2.5;
+for(let i=0;i<sC;i++){
+  sPos[i*3]=shX+(rnd()-0.5)*0.8;
+  sPos[i*3+1]=shY+(rnd()-0.5)*sRange;
+  sPos[i*3+2]=-6;
+  sVel[i]=3.0+rnd()*1.5;
+}
+const sGeo=new THREE.BufferGeometry();
+sGeo.setAttribute('position',new THREE.BufferAttribute(sPos,3));
+const sparks=new THREE.Points(sGeo,new THREE.PointsMaterial({color:0xffd94a,size:6,sizeAttenuation:false,blending:THREE.AdditiveBlending,transparent:true,depthWrite:false}));
+sparks.name='sparks';scene.add(sparks);
+
+// state
+let t=0,camZ=4;
+const camSpd=1.06,camMin=0.8,blinkP=1.4;
+
+renderer.render(scene,camera);
+window.__ready=true;
+
+window.__step=function(dt){
+  t+=dt;
+  camZ=Math.max(camMin,camZ-camSpd*dt);
+  camera.position.z=camZ;
+  camera.lookAt(0,0,-1);
+
+  const ph=(t%blinkP)/blinkP;
+  signMat.color.setHex(ph<0.75?0xff2f7a:0x1a000d);
+
+  const dp=dGeo.attributes.position.array;
+  for(let i=0;i<dC;i++){
+    dp[i*3+1]-=dVel[i]*dt;
+    if(dp[i*3+1]<-dVH/2)dp[i*3+1]+=dVH;
+  }
+  dGeo.attributes.position.needsUpdate=true;
+
+  const sp=sGeo.attributes.position.array;
+  for(let i=0;i<sC;i++){
+    sp[i*3+1]-=sVel[i]*dt;
+    if(sp[i*3+1]<shY-sRange/2){
+      sp[i*3+1]+=sRange;
+      sp[i*3]=shX+(rnd()-0.5)*0.8;
+    }
+  }
+  sGeo.attributes.position.needsUpdate=true;
+
+  renderer.render(scene,camera);
+  return window.__probe();
+};
+
+window.__probe=function(){
+  const sp=sGeo.attributes.position.array;
+  return{
+    t:Math.round(t*10000)/10000,
+    objects:scene.children.map(c=>c.name).filter(Boolean),
+    spark:[Math.round(sp[0]*10000)/10000,Math.round(sp[1]*10000)/10000],
+    camera:[Math.round(camera.position.x*10000)/10000,Math.round(camZ*10000)/10000]
+  };
+};
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-22 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

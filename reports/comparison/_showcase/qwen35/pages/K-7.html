@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Particle Fountain</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Configuration ---
+        const NUM_PARTICLES = 24;
+        const GRAVITY = 12.00;
+        const LCG_MODULUS = 4294967296;
+        
+        // --- State ---
+        let lcgState = 1804069101;
+        let stepsCount = 0;
+        const particles = []; // { x, y, vx, vy, alive }
+        
+        // --- Three.js Globals ---
+        let scene, camera, renderer, particlesMesh;
+
+        // --- LCG Helper ---
+        function nextU() {
+            // s = (1664525 * s + 1013904223) % 4294967296
+            lcgState = (1664525 * lcgState + 1013904223) % LCG_MODULUS;
+            return lcgState / LCG_MODULUS;
+        }
+
+        // --- Initialization ---
+        function init() {
+            // 1. Scene
+            scene = new THREE.Scene();
+
+            // 2. Camera
+            // PerspectiveCamera(50, 800/600, 0.1, 200)
+            camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+            camera.position.set(0.0, 4.0, 14.0);
+            camera.lookAt(0.0, 3.0, 0.0);
+
+            // 3. Renderer
+            renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+            renderer.setPixelRatio(1);
+            renderer.setSize(800, 600, false);
+            document.body.appendChild(renderer.domElement);
+
+            // 4. Lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+            dirLight.position.set(6.0, 12.0, 8.0);
+            scene.add(dirLight);
+
+            // 5. Ground
+            // Plane 80x80, y=0, color 0x2b3a4a, name 'ground'
+            const groundGeo = new THREE.PlaneGeometry(80, 80);
+            const groundMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a });
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.name = 'ground';
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = 0;
+            scene.add(ground);
+
+            // 6. Particles
+            // InstancedMesh, 24 spheres, radius 0.25, color 0xff8a3d, name 'particles'
+            const sphereGeo = new THREE.SphereGeometry(0.25, 16, 16);
+            const sphereMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+            particlesMesh = new THREE.InstancedMesh(sphereGeo, sphereMat, NUM_PARTICLES);
+            particlesMesh.name = 'particles';
+            scene.add(particlesMesh);
+
+            // 7. Initialize Particle Physics
+            const dummy = new THREE.Object3D();
+            
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                // Order: vx then vy
+                const u1 = nextU();
+                const vx = -3 + 6 * u1;
+                
+                const u2 = nextU();
+                const vy = 5 + 4 * u2;
+
+                particles.push({
+                    x: 0,
+                    y: 0.25,
+                    vx: vx,
+                    vy: vy,
+                    alive: true
+                });
+
+                // Set initial position in mesh
+                dummy.position.set(0, 0.25, 0);
+                dummy.updateMatrix();
+                particlesMesh.setMatrixAt(i, dummy.matrix);
+            }
+            particlesMesh.instanceMatrix.needsUpdate = true;
+
+            // 8. Initial Render
+            renderer.render(scene, camera);
+            window.__ready = true;
+        }
+
+        // --- Simulation Step ---
+        window.__step = function(dt) {
+            stepsCount++;
+            const dummy = new THREE.Object3D();
+            
+            for (let i = 0; i < NUM_PARTICLES; i++) {
+                const p = particles[i];
+                if (!p.alive) continue;
+
+                // Semi-implicit Euler
+                p.vy -= GRAVITY * dt;
+                p.y += p.vy * dt;
+                p.x += p.vx * dt;
+
+                // Collision / Death
+                if (p.y < 0) {
+                    p.y = 0;
+                    p.alive = false;
+                }
+
+                // Update Mesh
+                dummy.position.set(p.x, p.y, 0);
+                dummy.updateMatrix();
+                particlesMesh.setMatrixAt(i, dummy.matrix);
+            }
+            particlesMesh.instanceMatrix.needsUpdate = true;
+            
+            // Re-render to show changes
+            renderer.render(scene, camera);
+        };
+
+        // --- Probe ---
+        window.__probe = function() {
+            let aliveCount = 0;
+            let totalHeight = 0;
+
+            particles.forEach(p => {
+                if (p.alive) {
+                    aliveCount++;
+                    totalHeight += p.y;
+                }
+            });
+
+            const meanHeight = aliveCount > 0 ? totalHeight / aliveCount : 0;
+
+            // Helper to format numbers to 4 decimal places
+            const fmt = (n) => parseFloat(n.toFixed(4));
+
+            return {
+                steps: stepsCount,
+                alive: aliveCount,
+                mean_height: fmt(meanHeight),
+                particles: particles.slice(0, 3).map(p => ({
+                    x: fmt(p.x),
+                    y: fmt(p.y)
+                })),
+                camera: [
+                    fmt(camera.position.x),
+                    fmt(camera.position.y),
+                    fmt(camera.position.z)
+                ],
+                objects: ["ground", "particles"]
+            };
+        };
+
+        // Run
+        init();
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-7 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

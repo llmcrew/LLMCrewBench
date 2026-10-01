@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <style>body { margin: 0; overflow: hidden; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+  <script type="module">
+    const THREE = window.THREE;
+
+    // --- LCG & Initial State ---
+    let s = 694576027;
+    const MOD = 4294967296;
+    function nextU() {
+      s = (1664525 * s + 1013904223) % MOD;
+      return s / MOD;
+    }
+
+    const N = 12;
+    const px = new Float32Array(N);
+    const py = new Float32Array(N);
+    const vx = new Float32Array(N);
+    const vy = new Float32Array(N);
+    let steps = 0;
+
+    for (let i = 0; i < N; i++) {
+      px[i] = -4 + 8 * nextU();
+      py[i] = -4 + 8 * nextU();
+      vx[i] = -1.5 + 3 * nextU();
+      vy[i] = -1.5 + 3 * nextU();
+    }
+
+    // --- Three.js Setup ---
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+    camera.position.set(0, 0, 18);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    document.body.appendChild(renderer.domElement);
+
+    // Backdrop
+    const backdrop = new THREE.Mesh(
+      new THREE.PlaneGeometry(40, 40),
+      new THREE.MeshStandardMaterial({ color: 0x22303f })
+    );
+    backdrop.name = 'backdrop';
+    backdrop.position.z = -2;
+    scene.add(backdrop);
+
+    // Agents
+    const agentGeo = new THREE.SphereGeometry(0.3, 32, 32);
+    const agentMat = new THREE.MeshStandardMaterial({ color: 0xffb03a });
+    const agentMeshes = [];
+    for (let i = 0; i < N; i++) {
+      const mesh = new THREE.Mesh(agentGeo, agentMat);
+      mesh.name = `agent-${i}`;
+      mesh.position.set(px[i], py[i], 0);
+      scene.add(mesh);
+      agentMeshes.push(mesh);
+    }
+
+    // Lights
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.8);
+    dirLight.position.set(5, 5, 10);
+    scene.add(dirLight);
+
+    // --- Simulation Step ---
+    function simulate(dt) {
+      const w_c = 0.4, w_s = 1.0, w_a = 0.3, r_sep = 2.5, max_speed = 2.5;
+      const r_sep_sq = r_sep * r_sep;
+      const ax = new Float32Array(N);
+      const ay = new Float32Array(N);
+
+      // Calculate accelerations based on state at the beginning of the step
+      for (let i = 0; i < N; i++) {
+        let com_x = 0, com_y = 0, avg_vx = 0, avg_vy = 0;
+        let sep_x = 0, sep_y = 0;
+
+        for (let j = 0; j < N; j++) {
+          if (i === j) continue;
+          com_x += px[j]; com_y += py[j];
+          avg_vx += vx[j]; avg_vy += vy[j];
+
+          const dx = px[i] - px[j];
+          const dy = py[i] - py[j];
+          const distSq = dx * dx + dy * dy;
+          if (distSq > 0 && distSq < r_sep_sq) {
+            const dist = Math.sqrt(distSq);
+            sep_x += dx / dist;
+            sep_y += dy / dist;
+          }
+        }
+
+        com_x /= 11; com_y /= 11;
+        avg_vx /= 11; avg_vy /= 11;
+
+        ax[i] = w_c * (com_x - px[i]) + w_s * sep_x + w_a * (avg_vx - vx[i]);
+        ay[i] = w_c * (com_y - py[i]) + w_s * sep_y + w_a * (avg_vy - vy[i]);
+      }
+
+      // Update state simultaneously
+      for (let i = 0; i < N; i++) {
+        vx[i] += ax[i] * dt;
+        vy[i] += ay[i] * dt;
+        const speed = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
+        if (speed > max_speed) {
+          const inv = max_speed / speed;
+          vx[i] *= inv;
+          vy[i] *= inv;
+        }
+        px[i] += vx[i] * dt;
+        py[i] += vy[i] * dt;
+      }
+      steps++;
+    }
+
+    // --- Exposed API ---
+    window.__step = function(dt) {
+      simulate(dt);
+      for (let i = 0; i < N; i++) {
+        agentMeshes[i].position.set(px[i], py[i], 0);
+      }
+      return window.__probe();
+    };
+
+    window.__probe = function() {
+      const round4 = v => Math.round(v * 10000) / 10000;
+      const agents = [];
+      for (let i = 0; i < N; i++) {
+        agents.push({ x: round4(px[i]), y: round4(py[i]), vx: round4(vx[i]), vy: round4(vy[i]) });
+      }
+      return {
+        steps: steps,
+        agents: agents,
+        camera: [round4(camera.position.x), round4(camera.position.y), round4(camera.position.z)],
+        objects: ["backdrop", ...Array.from({ length: 12 }, (_, i) => `agent-${i}`)]
+      };
+    };
+
+    // --- First Render ---
+    renderer.render(scene, camera);
+    window.__ready = true;
+  </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · K-9 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

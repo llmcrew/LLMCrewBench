@@ -34,6 +34,8 @@ class OracleProvider:
     def __init__(self, task: core.TaskInstance) -> None:
         self.task = task
         self.pending = [dict(call) for call in task.oracle.get("golden_calls", [])]
+        self.answers = [str(text) for text in (task.oracle.get("turn_answers") or [])]
+        self.last = ""
         self.calls = 0
 
     def chat(self, messages, tools=None, **kwargs: Any) -> core.ModelReply:
@@ -52,7 +54,9 @@ class OracleProvider:
                 prompt_tokens=None,
                 completion_tokens=0,
             )
-        text = self.task.oracle.get("final_answer") or self.task.oracle.get("reference", "")
+        if self.answers:
+            self.last = self.answers.pop(0)
+        text = self.last or self.task.oracle.get("final_answer") or self.task.oracle.get("reference", "")
         return core.ModelReply(text=str(text), prompt_tokens=None, completion_tokens=0)
 
     def tokenize(self, text: str) -> int | None:
@@ -97,6 +101,9 @@ class SelfCheckReport:
             "| --- | ---: | ---: | --- |",
         ]
         for row in self.rows:
+            if row.get("skipped"):
+                lines.append(f"| {row['id']} | н/п | н/п | не проверялось |")
+                continue
             status = "ok" if row["oracle"] == row["max"] and row["garbage"] == 0 else "ПРОБЛЕМА"
             lines.append(
                 f"| {row['id']} | {row['oracle']:.0f}/{row['max']:.0f} | {row['garbage']:.0f} | {status} |"
@@ -118,8 +125,9 @@ def selfcheck(cfg: RunConfig, tasks: list[core.TaskInstance] | None = None) -> S
     report.warnings.extend(validate_suite(tasks))
 
     total = sum(task.max_points for task in tasks)
-    if tasks and abs(total - core.FULL_TOTAL) > 1e-9 and not cfg.only:
-        report.errors.append(f"сумма баллов сьюта {total} != {core.FULL_TOTAL}")
+    scored = sum(t.max_points for t in tasks if t.category in core.SCORED_CATEGORIES)
+    if tasks and abs(scored - core.FULL_TOTAL) > 1e-9 and not cfg.only:
+        report.errors.append(f"сумма баллов сьюта {scored} != {core.FULL_TOTAL}")
 
     digest_a = suite_digest(build_suite(cfg))
     digest_b = suite_digest(build_suite(cfg))
@@ -147,6 +155,13 @@ def selfcheck(cfg: RunConfig, tasks: list[core.TaskInstance] | None = None) -> S
 
         if oracle_run.transcript.error:
             report.errors.append(f"{task.id}: прогон эталона упал: {oracle_run.transcript.error}")
+            continue
+        if oracle_run.score.skipped:
+            # Not verified is not a failed evaluator: an unavailable toolchain
+            # or a declared-unsupported capability leaves the row unscored, and
+            # the self-check reports it as a warning rather than an error.
+            row["skipped"] = oracle_run.score.skipped
+            report.warnings.append(f"{task.id}: не проверялось — {oracle_run.score.skipped}")
             continue
         expected_checks = 0
         if abs(oracle_run.score.possible - task.max_points) > 1e-9:
@@ -187,7 +202,8 @@ def save_suite(cfg: RunConfig, out_dir: Path | str) -> dict[str, Path]:
         json.dumps(public_prompts(tasks), ensure_ascii=False, indent=2), encoding="utf-8"
     )
     written["oracles"].write_text(
-        json.dumps(grading_material(tasks), ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+        json.dumps(grading_material(tasks), ensure_ascii=False, indent=2, default=core.json_default),
+        encoding="utf-8",
     )
     written["digest"].write_text(
         json.dumps(suite_digest(tasks), ensure_ascii=False, indent=2), encoding="utf-8"

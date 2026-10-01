@@ -18,6 +18,11 @@ from pathlib import Path
 from typing import Any
 
 from .. import core
+
+
+#: Points per hidden check; three scenarios share the constant so a check
+#: weighs the same wherever it is earned.
+_POINTS_PER_CHECK = 0.8
 from .coding_python import extract_code
 
 CHECK_ORDER = (
@@ -467,7 +472,7 @@ def generate(rng: random.Random, cfg: Any) -> core.TaskInstance:
         category="C",
         title="Go Worker Pool",
         prompt=_PROMPT.replace("__TARGET__", TARGET_FILE).replace("__STUB__", _STUB),
-        max_points=10.0,
+        max_points=8.0,
         workspace=_workspace(),
         oracle={
             "reference": _REFERENCE,
@@ -481,8 +486,28 @@ def generate(rng: random.Random, cfg: Any) -> core.TaskInstance:
     )
 
 
+#: Where a Go toolchain may live when it is not on PATH (a user-local SDK, the
+#: usual install prefixes). A benchmark box may have it without exporting PATH.
+GO_CANDIDATES = (
+    Path.home() / "go-sdk" / "go" / "bin" / "go",
+    Path("/usr/local/go/bin/go"),
+    Path("/opt/homebrew/bin/go"),
+    Path("C:/Go/bin/go.exe"),
+    Path.home() / "sdk",  # найденные версии: ~/sdk/go*/bin/go
+)
+
+
 def _go_binary() -> str | None:
-    return shutil.which("go") or shutil.which("go.exe")
+    found = shutil.which("go") or shutil.which("go.exe")
+    if found:
+        return found
+    for candidate in GO_CANDIDATES:
+        if candidate.is_file():
+            return str(candidate)
+    for candidate in sorted(Path.home().glob("sdk/go*/bin/go"), reverse=True):
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def _run_go_tests(repo: Path, timeout: int = 300) -> tuple[dict[str, tuple[bool, str]], str]:
@@ -555,10 +580,19 @@ def _go_env() -> dict[str, str]:
 
 def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     score = core.Score(task_id=task.id, category="C")
+    if not _go_binary():
+        # Unverifiable, never a zero: without the toolchain the hidden tests
+        # cannot run at all, so the scenario is reported as not verified and
+        # leaves both the numerator and the denominator untouched.
+        score.skipped = "go toolchain недоступен — сценарий C-2 не мог быть проверен на этой машине"
+        score.notes.append(score.skipped)
+        for name, _ in CHECK_ORDER:
+            score.add(name, False, _POINTS_PER_CHECK, "go toolchain unavailable")
+        return score
     code = extract_code(tr.final_text)
     if not code:
         for name, _ in CHECK_ORDER:
-            score.add(name, False, 1.0, "ответ не содержит кода файла")
+            score.add(name, False, _POINTS_PER_CHECK, "ответ не содержит кода файла")
         score.notes.append("не удалось извлечь файл из ответа")
         return score
 
@@ -576,11 +610,9 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     results, output = _run_go_tests(repo)
     for name, test in CHECK_ORDER:
         passed, detail = results[name]
-        score.add(name, passed, 1.0, detail)
+        score.add(name, passed, _POINTS_PER_CHECK, detail)
 
-    if not _go_binary():
-        score.notes.append("go toolchain недоступен — сценарий C-2 не мог быть проверен на этой машине")
-    elif "not implemented" in output:
+    if "not implemented" in output:
         score.notes.append("реализация осталась заглушкой (panic \"not implemented\")")
     if "class AsyncTTLCache" in code or "def get_or_load" in code:
         score.notes.append("в ответе оказался Python-код, а не Go")

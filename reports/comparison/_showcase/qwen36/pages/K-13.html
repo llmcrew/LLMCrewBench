@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>body { margin: 0; overflow: hidden; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+  <script type="module">
+    const THREE = window.THREE;
+
+    // Сцена, камера, рендерер
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, 800/600, 0.1, 500);
+    camera.position.set(0.0, 50.0, 46.0);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    document.body.appendChild(renderer.domElement);
+
+    // Освещение
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+    dirLight.position.set(16.0, 46.0, 18.0);
+    scene.add(dirLight);
+
+    // Состояние сетки
+    const SIZE = 40;
+    const grid = Array.from({ length: SIZE }, () => Array(SIZE).fill(0));
+    let steps = 0;
+
+    // Линейный конгруэнтный генератор
+    let seed = 1920875681;
+    function next() {
+      seed = (seed * 1664525 + 1013904223) % 4294967296;
+      return seed / 4294967296;
+    }
+
+    // Заполнение сетки деревьями
+    for (let i = 0; i < SIZE; i++) {
+      for (let j = 0; j < SIZE; j++) {
+        if (next() < 0.7) grid[i][j] = 1;
+      }
+    }
+    // Начальная горящая клетка
+    grid[20][20] = 2;
+
+    // InstancedMesh
+    const geometry = new THREE.BoxGeometry(0.9, 0.6, 0.9);
+    const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
+    const mesh = new THREE.InstancedMesh(geometry, material, SIZE * SIZE);
+    mesh.name = 'forest';
+    scene.add(mesh);
+
+    const dummy = new THREE.Object3D();
+    const stateColors = { 0: 0x0f1620, 1: 0x2f8f46, 2: 0xff5a1e, 3: 0x4a3a2a };
+
+    // Установка позиций и начальных цветов
+    for (let i = 0; i < SIZE; i++) {
+      for (let j = 0; j < SIZE; j++) {
+        const idx = i * SIZE + j;
+        dummy.position.set(j - 19.5, 0.3, i - 19.5);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(idx, dummy.matrix);
+        mesh.setColorAt(idx, new THREE.Color(stateColors[grid[i][j]]));
+      }
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor.needsUpdate = true;
+
+    // Шаг симуляции
+    window.__step = (dt) => {
+      const newGrid = grid.map(row => [...row]);
+      for (let i = 0; i < SIZE; i++) {
+        for (let j = 0; j < SIZE; j++) {
+          if (grid[i][j] === 2) {
+            newGrid[i][j] = 3;
+          } else if (grid[i][j] === 1) {
+            let neighborsBurning = false;
+            for (let di = -1; di <= 1; di++) {
+              for (let dj = -1; dj <= 1; dj++) {
+                if (di === 0 && dj === 0) continue;
+                const ni = i + di, nj = j + dj;
+                if (ni >= 0 && ni < SIZE && nj >= 0 && nj < SIZE && grid[ni][nj] === 2) {
+                  neighborsBurning = true;
+                  break;
+                }
+              }
+              if (neighborsBurning) break;
+            }
+            if (neighborsBurning) newGrid[i][j] = 2;
+          }
+        }
+      }
+      grid = newGrid;
+      steps++;
+    };
+
+    // Снимок состояния и рендер
+    window.__probe = () => {
+      for (let i = 0; i < SIZE; i++) {
+        for (let j = 0; j < SIZE; j++) {
+          const idx = i * SIZE + j;
+          mesh.setColorAt(idx, new THREE.Color(stateColors[grid[i][j]]));
+        }
+      }
+      mesh.instanceColor.needsUpdate = true;
+      renderer.render(scene, camera);
+
+      let trees = 0, burning = 0, burned = 0;
+      for (let i = 0; i < SIZE; i++) {
+        for (let j = 0; j < SIZE; j++) {
+          if (grid[i][j] === 1) trees++;
+          else if (grid[i][j] === 2) burning++;
+          else if (grid[i][j] === 3) burned++;
+        }
+      }
+      return { trees, burning, burned, steps };
+    };
+
+    // Первая отрисовка и флаг готовности
+    window.__probe();
+    window.__ready = true;
+  </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · K-13 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

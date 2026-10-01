@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Greenhouse Station</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // LCG Setup
+        let lcg = 160488;
+        function rnd() {
+            lcg = (lcg * 1103515245 + 12345) % 2147483648;
+            return lcg / 2147483648;
+        }
+
+        // Scene Setup
+        const scene = new THREE.Scene();
+        // Orthographic Camera to match frame coordinates (u, v)
+        // Frame 800x600. Aspect 4/3.
+        // Frustum: x:-0.5..0.5, y:-0.375..0.375 matches u:0..1, v:0..1
+        const frustumHeight = 0.75;
+        const frustumWidth = 1.0;
+        const camera = new THREE.OrthographicCamera(
+            -frustumWidth / 2, frustumWidth / 2,
+            frustumHeight / 2, -frustumHeight / 2,
+            0.1, 100
+        );
+        camera.position.set(0, 0, 4);
+        camera.lookAt(0, 0, -1);
+
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Helper to map u,v to x,y
+        function uvToWorld(u, v) {
+            return {
+                x: (u - 0.5) * frustumWidth,
+                y: (0.5 - v) * frustumHeight
+            };
+        }
+
+        // Colors
+        const C_GLASS = 0x123038;
+        const C_LEAF = 0x7fd054;
+        const C_LAMP = 0xffc06a;
+        const C_METEOR = 0xa8c8dc;
+
+        const objects = [];
+
+        // 1. Dome Back
+        const domeBackGeo = new THREE.PlaneGeometry(0.71, 0.72);
+        const domeBackMat = new THREE.MeshBasicMaterial({ color: C_GLASS, opacity: 0.85, transparent: true });
+        const domeBack = new THREE.Mesh(domeBackGeo, domeBackMat);
+        domeBack.position.z = -14.8;
+        scene.add(domeBack);
+        objects.push('dome_back');
+
+        // 2. Side Panels
+        const sidePanelGeo = new THREE.PlaneGeometry(0.2, 0.75);
+        const sidePanelMat = new THREE.MeshBasicMaterial({ color: C_GLASS, side: THREE.DoubleSide });
+        
+        const pos1 = uvToWorld(0.16, 0.5);
+        const panel1 = new THREE.Mesh(sidePanelGeo, sidePanelMat);
+        panel1.position.set(pos1.x, pos1.y, -12);
+        panel1.rotation.y = 0.6;
+        scene.add(panel1);
+        objects.push('side_panel_1');
+
+        const pos2 = uvToWorld(0.84, 0.5);
+        const panel2 = new THREE.Mesh(sidePanelGeo, sidePanelMat);
+        panel2.position.set(pos2.x, pos2.y, -12);
+        panel2.rotation.y = -0.6;
+        scene.add(panel2);
+        objects.push('side_panel_2');
+
+        // 3. Floor
+        // From 62% height down. v=0.62 to v=1.0.
+        const floorYStart = uvToWorld(0, 0.62).y; // -0.09
+        const floorYEnd = -frustumHeight / 2; // -0.375
+        const floorHeight = floorYStart - floorYEnd; // 0.285
+        
+        const floorGeo = new THREE.PlaneGeometry(1.0, floorHeight);
+        const floorMat = new THREE.MeshBasicMaterial({ color: C_GLASS });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.position.set(0, floorYStart - floorHeight/2, -8);
+        scene.add(floor);
+        objects.push('floor');
+
+        // Floor Rim (Warm)
+        const rimGeo = new THREE.PlaneGeometry(1.0, 0.02);
+        const rimMat = new THREE.MeshBasicMaterial({ color: C_LAMP });
+        const rim = new THREE.Mesh(rimGeo, rimMat);
+        rim.position.set(0, floorYStart, -7.9);
+        scene.add(rim);
+        objects.push('floor_rim');
+
+        // 4. Ribs
+        const ribGeo = new THREE.PlaneGeometry(0.012, 1.0);
+        const ribMat = new THREE.MeshBasicMaterial({ color: 0x0a1a20 });
+        
+        const rib1 = new THREE.Mesh(ribGeo, ribMat);
+        rib1.rotation.z = Math.PI / 4;
+        rib1.position.z = -14.7;
+        scene.add(rib1);
+        objects.push('rib_1');
+
+        const rib2 = new THREE.Mesh(ribGeo, ribMat);
+        rib2.rotation.z = -Math.PI / 4;
+        rib2.position.z = -14.7;
+        scene.add(rib2);
+        objects.push('rib_2');
+        
+        const rib3 = new THREE.Mesh(ribGeo, ribMat);
+        rib3.rotation.z = Math.PI / 2;
+        rib3.scale.x = 0.5;
+        rib3.position.z = -14.7;
+        scene.add(rib3);
+        objects.push('rib_3');
+
+        const rib4 = new THREE.Mesh(ribGeo, ribMat);
+        rib4.rotation.z = 0;
+        rib4.scale.x = 0.5;
+        rib4.position.z = -14.7;
+        scene.add(rib4);
+        objects.push('rib_4');
+
+        // 5. Lamps
+        const lampGeo = new THREE.PlaneGeometry(0.09, 0.0525);
+        const lampMat = new THREE.MeshBasicMaterial({ color: C_LAMP, opacity: 0.75, transparent: true });
+        
+        const lampUs = [0.28, 0.39, 0.50, 0.61, 0.72];
+        const lampY = uvToWorld(0, 0.1).y;
+        
+        lampUs.forEach((u, i) => {
+            const lamp = new THREE.Mesh(lampGeo, lampMat);
+            const pos = uvToWorld(u, 0.1);
+            lamp.position.set(pos.x, lampY, -10);
+            scene.add(lamp);
+            objects.push(`lamp_${i}`);
+        });
+
+        // 6. Plants
+        const plantUs = [0.12, 0.30, 0.68, 0.86];
+        
+        plantUs.forEach((u, i) => {
+            const z = -4 - rnd() * 5;
+            const hFrame = 0.30 + rnd() * 0.25;
+            const hWorld = hFrame * frustumHeight;
+            
+            const baseV = 0.7; 
+            const pos = uvToWorld(u, baseV);
+            const posX = pos.x;
+            const posY = pos.y;
+
+            const trunkGeo = new THREE.CylinderGeometry(0.02, 0.02, hWorld * 0.4, 8);
+            const trunkMat = new THREE.MeshBasicMaterial({ color: C_GLASS });
+            const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+            trunk.position.set(posX, posY + hWorld * 0.2, z);
+            scene.add(trunk);
+            
+            const leafGeo = new THREE.PlaneGeometry(0.1, 0.15);
+            const leafMat = new THREE.MeshBasicMaterial({ color: C_LEAF, side: THREE.DoubleSide });
+            
+            for(let j=0; j<3; j++) {
+                const leaf = new THREE.Mesh(leafGeo, leafMat);
+                leaf.position.set(posX, posY + hWorld * (0.5 + j*0.15), z);
+                leaf.rotation.y = (j / 3) * Math.PI * 2;
+                leaf.rotation.x = Math.PI / 4;
+                scene.add(leaf);
+            }
+            objects.push(`plant_${i}`);
+        });
+
+        // 7. Meteors
+        const meteorCount = 26;
+        const meteorGeo = new THREE.BufferGeometry();
+        const meteorPositions = new Float32Array(meteorCount * 3);
+        const meteorSpeeds = [];
+
+        for(let i=0; i<meteorCount; i++) {
+            const x = (rnd() - 0.5) * 2;
+            const y = (rnd() - 0.5) * 1;
+            meteorPositions[i*3] = x;
+            meteorPositions[i*3+1] = y;
+            meteorPositions[i*3+2] = -22;
+
+            const speed = 6 + rnd() * 3;
+            const angle = -Math.PI/2 + (rnd() - 0.5) * 0.5;
+            meteorSpeeds.push({
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                baseSpeed: speed
+            });
+        }
+        meteorGeo.setAttribute('position', new THREE.BufferAttribute(meteorPositions, 3));
+        const meteorMat = new THREE.PointsMaterial({ color: C_METEOR, size: 5, sizeAttenuation: false, blending: THREE.AdditiveBlending });
+        const meteors = new THREE.Points(meteorGeo, meteorMat);
+        scene.add(meteors);
+        objects.push('meteors');
+
+        // 8. Drops
+        const dropCount = 64;
+        const dropGeo = new THREE.BufferGeometry();
+        const dropPositions = new Float32Array(dropCount * 3);
+        const dropSpeeds = [];
+
+        for(let i=0; i<dropCount; i++) {
+            const x = (rnd() - 0.5) * 1.2;
+            const y = (rnd() - 0.5) * 1.2;
+            dropPositions[i*3] = x;
+            dropPositions[i*3+1] = y;
+            dropPositions[i*3+2] = -13.5;
+            
+            dropSpeeds.push(2.00);
+        }
+        dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPositions, 3));
+        const dropMat = new THREE.PointsMaterial({ color: C_METEOR, size: 5, sizeAttenuation: false, opacity: 0.6, transparent: true });
+        const drops = new THREE.Points(dropGeo, dropMat);
+        scene.add(drops);
+        objects.push('drops');
+
+        // Animation State
+        let t = 0;
+        let cameraZ = 4;
+        let cameraX = 0;
+
+        window.__step = function(dt) {
+            t += dt;
+
+            // Camera Move
+            if (cameraZ > 1.0) {
+                cameraZ -= 2.32 * dt;
+                if (cameraZ < 1.0) cameraZ = 1.0;
+            }
+            cameraX = 0.6 * Math.sin(t * 0.5);
+            
+            camera.position.set(cameraX, 0, cameraZ);
+
+            // Meteors Move
+            const mPos = meteorGeo.attributes.position.array;
+            for(let i=0; i<meteorCount; i++) {
+                mPos[i*3] += meteorSpeeds[i].vx * dt;
+                mPos[i*3+1] += meteorSpeeds[i].vy * dt;
+                
+                if (mPos[i*3+1] < -0.5) {
+                    mPos[i*3+1] = 0.5;
+                    mPos[i*3] = (rnd() - 0.5);
+                }
+                mPos[i*3] += Math.sin(t + i) * 0.5 * dt;
+            }
+            meteorGeo.attributes.position.needsUpdate = true;
+
+            // Drops Move
+            const dPos = dropGeo.attributes.position.array;
+            for(let i=0; i<dropCount; i++) {
+                dPos[i*3+1] -= dropSpeeds[i] * dt;
+                if (dPos[i*3+1] < -0.4) {
+                    dPos[i*3+1] = 0.4;
+                    dPos[i*3] = (rnd() - 0.5);
+                }
+            }
+            dropGeo.attributes.position.needsUpdate = true;
+
+            renderer.render(scene, camera);
+            return window.__probe();
+        };
+
+        window.__probe = function() {
+            const mPos = meteorGeo.attributes.position.array;
+            return {
+                t: parseFloat(t.toFixed(4)),
+                objects: objects,
+                meteor: [parseFloat(mPos[0].toFixed(4)), parseFloat(mPos[1].toFixed(4))],
+                camera: [parseFloat(camera.position.x.toFixed(4)), parseFloat(camera.position.z.toFixed(4))]
+            };
+        };
+
+        window.__ready = true;
+        
+        renderer.render(scene, camera);
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-20 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

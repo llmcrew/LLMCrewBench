@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Затухающий маятник</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #10141a; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// ---------- Константы симуляции ----------
+const g = 9.81;
+const L = 2.28;
+const c = 0.12;
+
+// ---------- Состояние ----------
+let theta = 1.068;
+let omega = 0.0;
+let steps = 0;
+let t = 0.0;
+
+// ---------- Рендерер ----------
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+// ---------- Сцена ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x10141a);
+
+// ---------- Камера ----------
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+camera.position.set(0.0, 1.8, 9.0);
+camera.lookAt(0.0, 1.4, 0.0);
+
+// ---------- Свет ----------
+const ambient = new THREE.AmbientLight(0xffffff, 0.45);
+scene.add(ambient);
+
+const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+dirLight.position.set(5.0, 10.0, 9.0);
+scene.add(dirLight);
+
+// ---------- Объекты сцены ----------
+
+// Земля
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.MeshStandardMaterial({ color: 0x2b3a4a })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.set(0, -1.2, 0);
+ground.name = 'ground';
+scene.add(ground);
+
+// Опора
+const support = new THREE.Mesh(
+  new THREE.BoxGeometry(3.5, 0.3, 0.5),
+  new THREE.MeshStandardMaterial({ color: 0x8a93a6 })
+);
+support.position.set(0, 3.15, 0);
+support.name = 'support';
+scene.add(support);
+
+// Точка подвеса
+const pivot = new THREE.Vector3(0, 3, 0);
+
+// Стержень (цилиндр вдоль +Y по умолчанию, длина L)
+const rod = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.07, 0.07, L, 24, 1),
+  new THREE.MeshStandardMaterial({ color: 0x5b6472 })
+);
+rod.name = 'rod';
+scene.add(rod);
+
+// Шар
+const bob = new THREE.Mesh(
+  new THREE.SphereGeometry(0.3, 32, 24),
+  new THREE.MeshStandardMaterial({ color: 0xff8a3d })
+);
+bob.name = 'bob';
+scene.add(bob);
+
+// ---------- Обновление геометрии по theta ----------
+const _up = new THREE.Vector3(0, 1, 0);
+const _dir = new THREE.Vector3();
+const _mid = new THREE.Vector3();
+const _q = new THREE.Quaternion();
+
+function updateScene() {
+  const bx = L * Math.sin(theta);
+  const by = 3 - L * Math.cos(theta);
+  const bz = 0;
+
+  bob.position.set(bx, by, bz);
+
+  // Стержень: от подвеса до центра шара
+  _dir.set(bx - pivot.x, by - pivot.y, bz - pivot.z).normalize();
+  _mid.copy(pivot).add(_dir).multiplyScalar(0.5);
+  rod.position.copy(_mid);
+  _q.setFromUnitVectors(_up, _dir);
+  rod.quaternion.copy(_q);
+}
+
+// ---------- Округление ----------
+function r4(x) {
+  return Math.round(x * 10000) / 10000;
+}
+
+// ---------- Имена объектов сцены ----------
+function objectNames() {
+  const names = [];
+  scene.traverse((o) => {
+    if (o.name) names.push(o.name);
+  });
+  return names;
+}
+
+// ---------- Шаг симуляции ----------
+window.__step = function (dt) {
+  // Полунеявный Эйлер, строго в заданном порядке
+  omega += (-g / L * Math.sin(theta) - c * omega) * dt;
+  theta += omega * dt;
+
+  steps += 1;
+  t += dt;
+
+  updateScene();
+  renderer.render(scene, camera);
+
+  return {
+    steps: steps,
+    t: r4(t),
+    theta: r4(theta),
+    omega: r4(omega)
+  };
+};
+
+// ---------- Проба состояния ----------
+window.__probe = function () {
+  return {
+    steps: steps,
+    t: r4(t),
+    objects: objectNames(),
+    camera: [0, 1.8, 9],
+    theta: r4(theta),
+    omega: r4(omega),
+    L: L
+  };
+};
+
+// ---------- Первая отрисовка ----------
+updateScene();
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · K-3 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

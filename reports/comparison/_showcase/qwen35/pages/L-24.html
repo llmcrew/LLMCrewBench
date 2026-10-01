@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Neon Bus Stop</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Deterministic Randomness ---
+let lcg = 140149;
+function rnd() {
+    lcg = (lcg * 1103515245 + 12345) % 2147483648;
+    return lcg / 2147483648;
+}
+
+// --- Scene Setup ---
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, 800 / 600, 0.1, 1000);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+// --- Palette ---
+const C_NIGHT = 0x1c1236;
+const C_BOARD = 0x22d3c5;
+const C_LAMP = 0xffa83c;
+const C_NEON = 0xff4d9d;
+const C_DROPS = 0xa8c8dc;
+
+// --- Geometry Helpers ---
+// u, v are 0..1 relative to canvas 800x600.
+// To convert to Three.js world coordinates (assuming FOV 60, aspect 4/3):
+// At z=0, height is approx 2 * tan(30deg) * dist. 
+// But simpler: map u,v to a fixed orthographic-like projection or calculate frustum size.
+// Let's calculate frustum height at z=0.
+const fov = 60 * Math.PI / 180;
+const aspect = 800 / 600;
+// We are looking at z=-1 from z=4. Distance = 5.
+// Height at z=-1: 2 * 5 * tan(fov/2) = 10 * 0.577 = 5.77.
+// Width at z=-1: 5.77 * 1.33 = 7.69.
+// Center is (0,0,-1).
+// Top = 0 + 5.77/2 = 2.88. Bottom = -2.88.
+// Right = 0 + 7.69/2 = 3.84. Left = -3.84.
+
+function getFrustumBounds(z) {
+    const dist = 4 - z; // Camera is at z=4
+    const h = 2 * dist * Math.tan(fov / 2);
+    const w = h * aspect;
+    return { top: h / 2, bottom: -h / 2, right: w / 2, left: -w / 2 };
+}
+
+function uvToWorld(u, v, z) {
+    const bounds = getFrustumBounds(z);
+    const x = bounds.left + u * (bounds.right - bounds.left);
+    const y = bounds.top - v * (bounds.top - bounds.bottom); // v=0 is top
+    return new THREE.Vector3(x, y, z);
+}
+
+function createPlane(w_uv, h_uv, u_center, v_center, z, color, opacity = 1.0) {
+    const geometry = new THREE.PlaneGeometry(w_uv, h_uv); // Dimensions in UV space initially? No, let's use world units.
+    // Actually, easier to create geometry in UV units (0..1) and scale it.
+    // But let's just calculate world width/height.
+    const bounds = getFrustumBounds(z);
+    const worldW = (bounds.right - bounds.left) * w_uv;
+    const worldH = (bounds.top - bounds.bottom) * h_uv;
+    
+    const geo = new THREE.PlaneGeometry(worldW, worldH);
+    const mat = new THREE.MeshBasicMaterial({ color: color, opacity: opacity, transparent: opacity < 1.0, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    
+    const pos = uvToWorld(u_center, v_center, z);
+    mesh.position.copy(pos);
+    return mesh;
+}
+
+// --- Objects ---
+
+// 1. Night (Background)
+// z = -45. Covers everything.
+const nightMesh = createPlane(2.0, 2.0, 0.5, 0.5, -45, C_NIGHT); 
+// Scale up to ensure coverage at z=-45
+const boundsNight = getFrustumBounds(-45);
+nightMesh.scale.set(10, 10, 1); 
+scene.add(nightMesh);
+
+// 2. Floor (Asphalt)
+// z = -8. From 62% height down.
+// 62% height means v=0.62 to v=1.0.
+const floorMesh = createPlane(1.0, 0.38, 0.5, 0.81, -8, C_NIGHT);
+scene.add(floorMesh);
+
+// 3. Canopy
+// z = -5. Top 0..16%.
+const canopyMesh = createPlane(1.0, 0.16, 0.5, 0.08, -5, C_NIGHT);
+scene.add(canopyMesh);
+
+// 4. Posts
+// z = -5. 0.02 width. Edges of glass (glass is 62% width, centered).
+// Glass u: (1 - 0.62)/2 = 0.19 to 0.19+0.62 = 0.81.
+// Posts at edges of glass? "по краям стекла".
+const postW = 0.02;
+const postH = 0.44; // Same as glass height
+const postLeft = createPlane(postW, postH, 0.19, 0.38, -5, C_NIGHT);
+const postRight = createPlane(postW, postH, 0.81, 0.38, -5, C_NIGHT);
+scene.add(postLeft);
+scene.add(postRight);
+
+// 5. Glass
+// z = -5. 62% x 44%. Top at 16%.
+// Center v: 0.16 + 0.44/2 = 0.38.
+const glassMesh = createPlane(0.62, 0.44, 0.5, 0.38, -5, C_NIGHT, 0.32);
+// Glass needs to be slightly transparent but colored #1c1236 per spec? 
+// Spec says "glass ... color #1c1236". Wait, spec says "glass panel ... opacity 0.32".
+// And palette says #1c1236 is night/asphalt. 
+// But geometry section says `glass` ... color #1c1236. Okay.
+scene.add(glassMesh);
+
+// 6. Board (Holo-schedule)
+// z = -4.9 (in front of glass). u=0.32, v=0.30. 0.22x0.14.
+// We need a canvas texture for scrolling text.
+const boardCanvas = document.createElement('canvas');
+boardCanvas.width = 256;
+boardCanvas.height = 128;
+const boardCtx = boardCanvas.getContext('2d');
+const boardTex = new THREE.CanvasTexture(boardCanvas);
+boardTex.minFilter = THREE.NearestFilter;
+
+const boardMesh = createPlane(0.22, 0.14, 0.32, 0.30, -4.9, 0xffffff);
+boardMesh.material.map = boardTex;
+boardMesh.material.transparent = true;
+boardMesh.material.opacity = 1.0;
+// Override color to #22d3c5 via emissive or just draw on canvas?
+// Spec: color #22d3c5. Let's make material basic color that, and draw white text? 
+// Or draw cyan text on black.
+boardMesh.material.color.setHex(C_BOARD);
+scene.add(boardMesh);
+
+// 7. Lamp
+// z = -4.9. u=0.62, v=0.14. 0.13x0.06.
+const lampMesh = createPlane(0.13, 0.06, 0.62, 0.14, -4.9, C_LAMP, 0.9);
+scene.add(lampMesh);
+// Halo: 0.20x0.10.
+const haloMesh = createPlane(0.20, 0.10, 0.62, 0.14, -4.91, C_LAMP, 0.3);
+scene.add(haloMesh);
+
+// 8. Neon (Background sign)
+// z = -45. 0.30x0.06. u=0.58, v=0.24.
+const neonMesh = createPlane(0.30, 0.06, 0.58, 0.24, -45, C_NEON);
+scene.add(neonMesh);
+
+// 9. Bench
+// z = -4.9. 0.30x0.05. v=0.66.
+const benchMesh = createPlane(0.30, 0.05, 0.5, 0.66, -4.9, C_NIGHT);
+scene.add(benchMesh);
+
+// 10. Puddles
+// z = -7.9 (on floor). 3 puddles. 0.18x0.04. v=0.90. Color #ff4d9d, opacity 0.35.
+// Spread them horizontally? Spec doesn't say u, just "three puddles". 
+// Let's distribute: 0.3, 0.5, 0.7.
+const puddleGeo = new THREE.PlaneGeometry(0, 0); // Will set scale
+const puddleMat = new THREE.MeshBasicMaterial({ color: C_NEON, opacity: 0.35, transparent: true });
+const puddles = [];
+for(let i=0; i<3; i++) {
+    const mesh = new THREE.Mesh(puddleGeo, puddleMat);
+    const u = 0.3 + i * 0.2;
+    const pos = uvToWorld(u, 0.90, -7.9);
+    mesh.position.copy(pos);
+    // Scale based on UV size at z=-7.9
+    const b = getFrustumBounds(-7.9);
+    mesh.scale.set((b.right-b.left)*0.18, (b.top-b.bottom)*0.04, 1);
+    scene.add(mesh);
+    puddles.push(mesh);
+}
+
+// 11. Drops (Front)
+// z = -4.9. 56 drops. 6px size.
+// We need to manage positions manually for animation.
+const dropsData = [];
+const dropGeo = new THREE.PlaneGeometry(1, 1); // Will scale to 6px
+const dropMat = new THREE.MeshBasicMaterial({ color: C_DROPS });
+const dropsMeshes = [];
+
+// 6px in world units at z=-4.9 (dist=8.9)
+// Height at z=-4.9: 2 * 8.9 * tan(30) = 10.27.
+// 600px = 10.27 units. 1px = 0.0171 units. 6px = 0.102 units.
+const dropSize = 0.102;
+
+for(let i=0; i<56; i++) {
+    const mesh = new THREE.Mesh(dropGeo, dropMat);
+    mesh.scale.set(dropSize, dropSize * 2, 1); // Elongated
+    // Random start pos within glass area roughly? Or whole screen?
+    // "drops ... before glass". Let's scatter over the glass area.
+    // Glass u: 0.19..0.81, v: 0.16..0.60
+    const u = 0.19 + rnd() * 0.62;
+    const v = 0.16 + rnd() * 0.44;
+    const pos = uvToWorld(u, v, -4.9);
+    mesh.position.copy(pos);
+    mesh.position.z = -4.9;
+    
+    // Store speed and offset for animation
+    dropsData.push({
+        mesh: mesh,
+        speed: 1.90,
+        startY: pos.y,
+        offset: rnd() * 100
+    });
+    scene.add(mesh);
+    dropsMeshes.push(mesh);
+}
+
+// 12. Rain (Back)
+// z = -12. Same points, 1/3 speed.
+const rainData = [];
+const rainGeo = new THREE.PlaneGeometry(1, 1);
+const rainMat = new THREE.MeshBasicMaterial({ color: C_DROPS, opacity: 0.5, transparent: true });
+const rainMeshes = [];
+
+for(let i=0; i<56; i++) {
+    const mesh = new THREE.Mesh(rainGeo, rainMat);
+    mesh.scale.set(dropSize * 1.5, dropSize * 4, 1); // Longer streaks
+    // Reuse drop logic for positions but mapped to z=-12
+    // To keep "same points", we use the same u,v logic but different z
+    const u = 0.19 + rnd() * 0.62; // Note: rnd() is deterministic, so this matches drops if called in order
+    const v = 0.16 + rnd() * 0.44;
+    const pos = uvToWorld(u, v, -12);
+    mesh.position.copy(pos);
+    mesh.position.z = -12;
+    
+    rainData.push({
+        mesh: mesh,
+        speed: 1.90 / 3.0,
+        startY: pos.y,
+        offset: rnd() * 100
+    });
+    scene.add(mesh);
+    rainMeshes.push(mesh);
+}
+
+// --- Animation State ---
+let time = 0;
+let boardPhase = 0;
+
+// --- Functions ---
+
+function drawBoard() {
+    const ctx = boardCtx;
+    const w = boardCanvas.width;
+    const h = boardCanvas.height;
+    
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, w, h);
+    
+    ctx.fillStyle = '#22d3c5';
+    ctx.font = 'bold 20px monospace';
+    
+    // Header blinking
+    if (Math.floor(time * 2) % 2 === 0) {
+        ctx.fillText("BUS STOP 42", 10, 30);
+    }
+    
+    // Scrolling lines
+    const lines = ["14A: 2 min", "05B: 15 min", "NIGHT: 40 min", "EXP: 5 min", "LOCAL: 12 min"];
+    const lineHeight = 24;
+    const offset = (boardPhase * 50) % (lines.length * lineHeight);
+    
+    for(let i=0; i<lines.length + 1; i++) {
+        const y = 50 + i * lineHeight - offset;
+        if (y > 10 && y < h) {
+            ctx.fillText(lines[i % lines.length], 10, y);
+        }
+    }
+    boardTex.needsUpdate = true;
+}
+
+window.__step = function(dt) {
+    time += dt;
+    boardPhase += dt;
+    
+    // Update drops
+    const boundsDrops = getFrustumBounds(-4.9);
+    const totalH = boundsDrops.top - boundsDrops.bottom;
+    
+    dropsData.forEach(d => {
+        d.mesh.position.y -= d.speed * dt;
+        if (d.mesh.position.y < boundsDrops.bottom) {
+            d.mesh.position.y = boundsDrops.top;
+        }
+    });
+    
+    // Update rain
+    const boundsRain = getFrustumBounds(-12);
+    rainData.forEach(d => {
+        d.mesh.position.y -= d.speed * dt;
+        if (d.mesh.position.y < boundsRain.bottom) {
+            d.mesh.position.y = boundsRain.top;
+        }
+    });
+    
+    // Camera wobble
+    camera.position.x = Math.sin(time * 0.5) * 0.034;
+    camera.lookAt(0, 0, -1);
+    
+    drawBoard();
+    renderer.render(scene, camera);
+    
+    return window.__probe();
+};
+
+window.__probe = function() {
+    return {
+        t: time.toFixed(4),
+        objects: [
+            'night', 'floor', 'canopy', 'glass', 'post', 'board', 
+            'lamp', 'neon', 'bench', 'puddle', 'drops', 'rain'
+        ],
+        board_phase: boardPhase.toFixed(4)
+    };
+};
+
+// Initial render
+window.__ready = true;
+drawBoard();
+renderer.render(scene, camera);
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-24 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

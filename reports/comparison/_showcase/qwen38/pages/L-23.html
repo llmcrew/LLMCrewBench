@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+*{margin:0;padding:0}
+body{background:#000;display:flex;justify-content:center;align-items:center;min-height:100vh}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// === Deterministic LCG ===
+let lcg = 865521;
+function rnd() {
+  lcg = (lcg * 1103515245 + 12345) % 2147483648;
+  return lcg / 2147483648;
+}
+
+// === Renderer ===
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+// === Scene & Camera ===
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x241644);
+
+const FOV = 60;
+const ASPECT = 800 / 600;
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 200);
+camera.position.set(0, 0, 4);
+camera.lookAt(-0.3, 0, -1);
+
+// === Screen-to-world helper (v=0 top, v=1 bottom) ===
+function s2w(u, v, z) {
+  const d = 4 - z;
+  const halfH = d * Math.tan(FOV * Math.PI / 360);
+  const halfW = halfH * ASPECT;
+  return new THREE.Vector3((2*u-1)*halfW, (1-2*v)*halfH, z);
+}
+function frameWH(z) {
+  const d = 4 - z;
+  const halfH = d * Math.tan(FOV * Math.PI / 360);
+  const halfW = halfH * ASPECT;
+  return { w: 2*halfW, h: 2*halfH };
+}
+
+// === NIGHT (z=-45) ===
+const night = new THREE.Mesh(
+  new THREE.PlaneGeometry(200, 200),
+  new THREE.MeshBasicMaterial({ color: 0x241644 })
+);
+night.position.set(0, 0, -45);
+night.name = 'night';
+scene.add(night);
+
+// === HULL (z=-18) ===
+const hull = new THREE.Mesh(
+  new THREE.PlaneGeometry(100, 60),
+  new THREE.MeshBasicMaterial({ color: 0x241644 })
+);
+hull.position.set(0, 0, -18);
+hull.name = 'hull';
+scene.add(hull);
+
+// === PAD (u=0.52, v=0.62, z=-16) ===
+const padZ = -16;
+const padPos = s2w(0.52, 0.62, padZ);
+const padFS = frameWH(padZ);
+const padW = 0.52 * padFS.w;
+const padH = 0.10 * padFS.h;
+
+// Dark base under pad
+const padBase = new THREE.Mesh(
+  new THREE.PlaneGeometry(padW + 1.0, padH + 0.4),
+  new THREE.MeshBasicMaterial({ color: 0x241644 })
+);
+padBase.position.set(padPos.x, padPos.y - 0.15, padZ - 0.02);
+scene.add(padBase);
+
+// Cyan pad (transparent)
+const padMat = new THREE.MeshBasicMaterial({ color: 0x35d5e6, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+const pad = new THREE.Mesh(new THREE.PlaneGeometry(padW, padH), padMat);
+pad.position.copy(padPos);
+pad.name = 'pad';
+scene.add(pad);
+
+// Charging strips on pad (thin cyan lines)
+const stripMat = new THREE.MeshBasicMaterial({ color: 0x35d5e6, transparent: true, opacity: 0.8 });
+for (let i = 0; i < 4; i++) {
+  const strip = new THREE.Mesh(new THREE.PlaneGeometry(padW * 0.8, 0.08), stripMat);
+  strip.position.set(padPos.x, padPos.y + (i - 1.5) * padH * 0.2, padZ + 0.01);
+  scene.add(strip);
+}
+
+// === ROVER (u=0.55, v=0.55, z=-16) ===
+const roverZ = -16;
+const roverPos = s2w(0.55, 0.55, roverZ);
+const roverFS = frameWH(roverZ);
+const roverW = 0.14 * roverFS.w;
+const roverH = 0.11 * roverFS.h;
+
+const roverGroup = new THREE.Group();
+roverGroup.name = 'rover';
+
+// Body (60% of height)
+const bodyH = 0.60 * roverH;
+const body = new THREE.Mesh(
+  new THREE.BoxGeometry(roverW, bodyH, roverW * 0.55),
+  new THREE.MeshBasicMaterial({ color: 0x241644 })
+);
+body.position.set(0, -roverH * 0.1, 0);
+roverGroup.add(body);
+
+// Cabin (30% of height)
+const cabinH = 0.30 * roverH;
+const cabin = new THREE.Mesh(
+  new THREE.BoxGeometry(roverW * 0.65, cabinH, roverW * 0.45),
+  new THREE.MeshBasicMaterial({ color: 0x241644 })
+);
+cabin.position.set(0, bodyH * 0.35, 0);
+roverGroup.add(cabin);
+
+// Cabin window (cyan glow)
+const winMat = new THREE.MeshBasicMaterial({ color: 0x35d5e6, transparent: true, opacity: 0.6 });
+const win = new THREE.Mesh(new THREE.PlaneGeometry(roverW * 0.4, cabinH * 0.5), winMat);
+win.position.set(0, bodyH * 0.35, roverW * 0.23);
+roverGroup.add(win);
+
+// Two wheels
+const wheelR = roverH * 0.14;
+const wheelGeo = new THREE.CylinderGeometry(wheelR, wheelR, roverW * 0.08, 12);
+const wheelMat = new THREE.MeshBasicMaterial({ color: 0x241644 });
+const w1 = new THREE.Mesh(wheelGeo, wheelMat);
+w1.rotation.z = Math.PI / 2;
+w1.position.set(-roverW * 0.32, -roverH * 0.42, 0);
+roverGroup.add(w1);
+const w2 = new THREE.Mesh(wheelGeo, wheelMat);
+w2.rotation.z = Math.PI / 2;
+w2.position.set(roverW * 0.32, -roverH * 0.42, 0);
+roverGroup.add(w2);
+
+// Three amber lights (0.10 width of rover)
+const lightW = 0.10 * roverW;
+const lightH = roverH * 0.07;
+const lightMat = new THREE.MeshBasicMaterial({ color: 0xffb347 });
+for (let i = 0; i < 3; i++) {
+  const lt = new THREE.Mesh(new THREE.PlaneGeometry(lightW, lightH), lightMat);
+  lt.position.set((i - 1) * roverW * 0.28, -roverH * 0.15, roverW * 0.28);
+  roverGroup.add(lt);
+}
+
+roverGroup.position.copy(roverPos);
+scene.add(roverGroup);
+
+// === TOWER (u=0.25, v=0.30, 0.05x0.46, z=-16) ===
+const towerZ = -16;
+const towerPos = s2w(0.25, 0.30, towerZ);
+const towerFS = frameWH(towerZ);
+const towerW = 0.05 * towerFS.w;
+const towerH = 0.46 * towerFS.h;
+
+const towerGroup = new THREE.Group();
+towerGroup.name = 'tower';
+
+const towerBody = new THREE.Mesh(
+  new THREE.BoxGeometry(towerW, towerH, towerW * 0.6),
+  new THREE.MeshBasicMaterial({ color: 0x241644 })
+);
+towerGroup.add(towerBody);
+
+// Tower top light (amber)
+const towerLight = new THREE.Mesh(
+  new THREE.PlaneGeometry(towerW * 0.6, towerH * 0.04),
+  new THREE.MeshBasicMaterial({ color: 0xffb347 })
+);
+towerLight.position.set(0, towerH * 0.45, towerW * 0.31);
+towerGroup.add(towerLight);
+
+// Tower mid light
+const towerLight2 = new THREE.Mesh(
+  new THREE.PlaneGeometry(towerW * 0.4, towerH * 0.03),
+  new THREE.MeshBasicMaterial({ color: 0xffb347 })
+);
+towerLight2.position.set(0, towerH * 0.1, towerW * 0.31);
+towerGroup.add(towerLight2);
+
+towerGroup.position.copy(towerPos);
+scene.add(towerGroup);
+
+// === HOSE (#35d5e6, 0.02 width, 3-segment arc) ===
+const hoseW = 0.02 * towerFS.w;
+const hoseMat = new THREE.MeshBasicMaterial({ color: 0x35d5e6, transparent: true, opacity: 0.9, side: THREE.DoubleSide });
+
+// 4 points → 3 segments
+const hp1 = new THREE.Vector3(towerPos.x + towerW * 0.5, towerPos.y + towerH * 0.35, towerZ + 0.02);
+const hp2 = new THREE.Vector3(towerPos.x + towerW * 1.5, towerPos.y + towerH * 0.25, towerZ + 0.03);
+const hp3 = new THREE.Vector3((towerPos.x + roverPos.x) * 0.5, towerPos.y + towerH * 0.05, towerZ + 0.02);
+const hp4 = new THREE.Vector3(roverPos.x - roverW * 0.5, roverPos.y + bodyH * 0.15, towerZ + 0.02);
+const hosePts = [hp1, hp2, hp3, hp4];
+
+for (let i = 0; i < 3; i++) {
+  const p1 = hosePts[i], p2 = hosePts[i + 1];
+  const dir = new THREE.Vector3().subVectors(p2, p1);
+  const len = dir.length();
+  const seg = new THREE.Mesh(new THREE.PlaneGeometry(len, hoseW), hoseMat);
+  seg.position.copy(p1).add(p2).multiplyScalar(0.5);
+  seg.rotation.z = Math.atan2(dir.y, dir.x);
+  scene.add(seg);
+}
+
+// === HOLO (3 cyan panels, 0.09x0.12, v=0.28, behind tower z=-17.5) ===
+const holoZ = -17.5;
+const holoFS = frameWH(holoZ);
+const holoW = 0.09 * holoFS.w;
+const holoH = 0.12 * holoFS.h;
+const holoMat = new THREE.MeshBasicMaterial({ color: 0x35d5e6, transparent: true, opacity: 0.7, side: THREE.DoubleSide });
+
+const holoGroup = new THREE.Group();
+holoGroup.name = 'holo';
+for (let i = 0; i < 3; i++) {
+  const holo = new THREE.Mesh(new THREE.PlaneGeometry(holoW, holoH), holoMat);
+  const hu = 0.25 + (i - 1) * 0.11;
+  const hp = s2w(hu, 0.28, holoZ);
+  holo.position.copy(hp);
+  holoGroup.add(holo);
+}
+scene.add(holoGroup);
+
+// === FOG (2 layers, #a8c8dc, opacity 0.27, v=0.72 & v=0.44) ===
+const fogZ = -14;
+const fogFS = frameWH(fogZ);
+const fogStripH = 0.09 * fogFS.h;
+const fogMat = new THREE.MeshBasicMaterial({ color: 0xa8c8dc, transparent: true, opacity: 0.27, side: THREE.DoubleSide });
+
+const fogGroup = new THREE.Group();
+fogGroup.name = 'fog';
+
+const fog1 = new THREE.Mesh(new THREE.PlaneGeometry(fogFS.w * 2, fogStripH), fogMat);
+const f1p = s2w(0.5, 0.72, fogZ);
+fog1.position.copy(f1p);
+fogGroup.add(fog1);
+
+const fog2 = new THREE.Mesh(new THREE.PlaneGeometry(fogFS.w * 2, fogStripH), fogMat);
+const f2p = s2w(0.5, 0.44, fogZ);
+fog2.position.copy(f2p);
+fogGroup.add(fog2);
+
+scene.add(fogGroup);
+
+// === DROPS (76, #a8c8dc, z=-3.9, 6px, fall 2.20 u/s) ===
+const dropsZ = -3.9;
+const dropsFS = frameWH(dropsZ);
+const dropPx = 6 / 600;
+const dropWorldH = dropPx * dropsFS.h;
+const dropWorldW = dropWorldH * 0.4;
+const dropMat = new THREE.MeshBasicMaterial({ color: 0xa8c8dc, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
+const dropGeo = new THREE.PlaneGeometry(dropWorldW, dropWorldH);
+
+const dropsGroup = new THREE.Group();
+dropsGroup.name = 'drops';
+
+const dropData = [];
+const dropMeshes = [];
+const dropsHalfH = dropsFS.h * 0.55;
+const dropsHalfW = dropsFS.w * 0.55;
+
+for (let i = 0; i < 76; i++) {
+  const dx = (rnd() * 2 - 1) * dropsHalfW;
+  const dy = (rnd() * 2 - 1) * dropsHalfH;
+  dropData.push({ x: dx, y: dy });
+  const dm = new THREE.Mesh(dropGeo, dropMat);
+  dm.position.set(dx, dy, dropsZ);
+  dropsGroup.add(dm);
+  dropMeshes.push(dm);
+}
+scene.add(dropsGroup);
+
+// === ANIMATION STATE ===
+let t = 0;
+const DROP_SPEED = 2.20;
+
+// === __step ===
+window.__step = function(dt) {
+  t += dt;
+
+  // Move drops
+  for (let i = 0; i < 76; i++) {
+    dropData[i].y -= DROP_SPEED * dt;
+    if (dropData[i].y < -dropsHalfH) {
+      dropData[i].y += dropsFS.h * 1.1;
+    }
+    dropMeshes[i].position.y = dropData[i].y;
+  }
+
+  // Blink neon
+  const phase = 2 * Math.PI * 2.0 * t;
+  padMat.opacity = 0.5 + 0.15 * Math.sin(phase);
+  stripMat.opacity = 0.7 + 0.2 * Math.sin(phase + 0.5);
+  holoMat.opacity = 0.6 + 0.25 * Math.sin(phase + 1.0);
+  hoseMat.opacity = 0.75 + 0.2 * Math.sin(phase + 1.5);
+  winMat.opacity = 0.5 + 0.2 * Math.sin(phase + 2.0);
+
+  // Camera orbit
+  const camX = 0.7 * Math.sin(2 * Math.PI * 0.25 * t);
+  const camZ = Math.max(4.0 - 1.58 * t, 2.0);
+  camera.position.set(camX, 0, camZ);
+  camera.lookAt(-0.3, 0, -1);
+
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+// === __probe ===
+window.__probe = function() {
+  return {
+    t: Math.round(t * 10000) / 10000,
+    objects: ['night', 'hull', 'pad', 'rover', 'tower', 'holo', 'fog', 'drops'],
+    camera: [
+      Math.round(camera.position.x * 10000) / 10000,
+      Math.round(camera.position.z * 10000) / 10000
+    ],
+    pad: Math.round(padMat.opacity * 10000) / 10000
+  };
+};
+
+// === Initial render ===
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-23 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

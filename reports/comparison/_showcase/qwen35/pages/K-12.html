@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Heat Diffusion Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Configuration ---
+        const GRID_SIZE = 32;
+        const TOTAL_CELLS = GRID_SIZE * GRID_SIZE;
+        const DIFFUSION_RATE = 0.2;
+        const INITIAL_HOT_TEMP = 1000;
+        const INITIAL_HOT_POS = { i: 8, j: 8 };
+
+        // --- State ---
+        let T = new Float32Array(TOTAL_CELLS);
+        let maxTemp = INITIAL_HOT_TEMP; // Track max for normalization, init with hot spot
+
+        // --- Three.js Globals ---
+        let scene, camera, renderer, plateMesh;
+        const dummy = new THREE.Object3D();
+        const colorLow = new THREE.Color(0x14306b);
+        const colorHigh = new THREE.Color(0xff5a1e);
+        const tempColor = new THREE.Color();
+
+        // --- Initialization ---
+        function init() {
+            // 1. Scene Setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000);
+
+            // 2. Camera
+            camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 500);
+            camera.position.set(0.0, 40.0, 40.0);
+            camera.lookAt(0, 0, 0);
+
+            // 3. Renderer
+            renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+            renderer.setPixelRatio(1);
+            renderer.setSize(800, 600, false);
+            document.body.appendChild(renderer.domElement);
+
+            // 4. Lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.55);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1.6);
+            dirLight.position.set(12.0, 40.0, 16.0);
+            scene.add(dirLight);
+
+            // 5. Plate Mesh (InstancedMesh)
+            const geometry = new THREE.BoxGeometry(0.92, 1, 0.92);
+            // Base height is handled in scaling, but geometry Y is 1.
+            // We will scale Y to match h.
+            const material = new THREE.MeshStandardMaterial({ vertexColors: true });
+            plateMesh = new THREE.InstancedMesh(geometry, material, TOTAL_CELLS);
+            plateMesh.name = "plate";
+            plateMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            plateMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+            scene.add(plateMesh);
+
+            // 6. Initialize Temperature State
+            T.fill(0);
+            const hotIndex = INITIAL_HOT_POS.i * GRID_SIZE + INITIAL_HOT_POS.j;
+            T[hotIndex] = INITIAL_HOT_TEMP;
+
+            // 7. Initial Render
+            window.__probe();
+            window.__ready = true;
+        }
+
+        // --- Simulation Step ---
+        window.__step = function(dt) {
+            // Explicit scheme, in-place update, row-major order (i then j)
+            // Neighbors above and left are already updated (Gauss-Seidel style implicit in the loop order)
+            
+            for (let i = 0; i < GRID_SIZE; i++) {
+                for (let j = 0; j < GRID_SIZE; j++) {
+                    const idx = i * GRID_SIZE + j;
+                    const c = T[idx];
+
+                    // Determine neighbors
+                    // Up (i-1)
+                    const up = (i > 0) ? T[(i - 1) * GRID_SIZE + j] : c;
+                    // Down (i+1)
+                    const dn = (i < GRID_SIZE - 1) ? T[(i + 1) * GRID_SIZE + j] : c;
+                    // Left (j-1)
+                    const lf = (j > 0) ? T[i * GRID_SIZE + (j - 1)] : c;
+                    // Right (j+1)
+                    const rt = (j < GRID_SIZE - 1) ? T[i * GRID_SIZE + (j + 1)] : c;
+
+                    // Update formula
+                    T[idx] = c + DIFFUSION_RATE * (up + dn + lf + rt - 4 * c);
+                }
+            }
+        };
+
+        // --- Visualization & Probe ---
+        window.__probe = function() {
+            paint();
+            renderer.render(scene, camera);
+
+            // Calculate statistics
+            let sum = 0;
+            let max = -Infinity;
+            
+            // We need specific samples: T[8][8], T[16][16], T[24][8]
+            const sampleIndices = [
+                8 * GRID_SIZE + 8,
+                16 * GRID_SIZE + 16,
+                24 * GRID_SIZE + 8
+            ];
+            const samples = [];
+
+            for (let k = 0; k < TOTAL_CELLS; k++) {
+                const val = T[k];
+                sum += val;
+                if (val > max) max = val;
+                
+                if (sampleIndices.includes(k)) {
+                    samples.push(val);
+                }
+            }
+
+            const mean = sum / TOTAL_CELLS;
+
+            return {
+                grid: GRID_SIZE,
+                mean: Number(mean.toFixed(4)),
+                max: Number(max.toFixed(4)),
+                samples: samples.map(s => Number(s.toFixed(4)))
+            };
+        };
+
+        function paint() {
+            // Find current max for normalization
+            let currentMax = 0;
+            for (let k = 0; k < TOTAL_CELLS; k++) {
+                if (T[k] > currentMax) currentMax = T[k];
+            }
+            // Avoid division by zero if all temps are 0 (though initial is 1000)
+            if (currentMax === 0) currentMax = 1;
+
+            for (let i = 0; i < GRID_SIZE; i++) {
+                for (let j = 0; j < GRID_SIZE; j++) {
+                    const idx = i * GRID_SIZE + j;
+                    const temp = T[idx];
+                    
+                    // Normalized temperature t
+                    const t = temp / currentMax;
+
+                    // Height calculation: h = 0.05 + 3 * t
+                    const h = 0.05 + 3 * t;
+
+                    // Position: (j - 15.5, h/2, i - 15.5)
+                    const x = j - 15.5;
+                    const y = h / 2;
+                    const z = i - 15.5;
+
+                    // Update Matrix
+                    dummy.position.set(x, y, z);
+                    // Scale: Base 0.92x0.92, Height h. 
+                    // Geometry is 1x1x1, so scale X/Z by 0.92, Y by h.
+                    dummy.scale.set(0.92, h, 0.92);
+                    dummy.rotation.set(0, 0, 0);
+                    dummy.updateMatrix();
+                    plateMesh.setMatrixAt(idx, dummy.matrix);
+
+                    // Update Color: lerp(0x14306b, 0xff5a1e, t)
+                    tempColor.copy(colorLow).lerp(colorHigh, t);
+                    plateMesh.setColorAt(idx, tempColor);
+                }
+            }
+
+            plateMesh.instanceMatrix.needsUpdate = true;
+            if (plateMesh.instanceColor) plateMesh.instanceColor.needsUpdate = true;
+        }
+
+        // Start
+        init();
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-12 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

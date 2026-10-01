@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Synthwave Grid</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Configuration ---
+const WIDTH = 800;
+const HEIGHT = 600;
+const FOV = 45;
+const NEAR = 0.1;
+const FAR = 200;
+
+// Colors
+const COLOR_SKY_TOP = new THREE.Color('#1b0f3c');
+const COLOR_SKY_BOTTOM = new THREE.Color('#19e0e8');
+const COLOR_SUN = new THREE.Color('#ffb03a');
+const COLOR_GRID = new THREE.Color('#ff2fb0');
+const COLOR_GROUND_TOP = new THREE.Color('#1b0f3c');
+const COLOR_GROUND_BOTTOM = new THREE.Color('#120a2a');
+
+// Scene Setup
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(FOV, WIDTH / HEIGHT, NEAR, FAR);
+camera.position.set(0, 0, 0);
+camera.lookAt(0, 0, -1);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(WIDTH, HEIGHT, false);
+document.body.appendChild(renderer.domElement);
+
+// State
+let time = 0;
+let uOffset = 0.0;
+let sunYPercent = 0.388; // Start position
+const SUN_START_Y_PERCENT = 0.388;
+const SUN_END_Y_PERCENT = 0.52;
+const SUN_SPEED_Y_PERCENT = 0.025; // per second
+
+// --- Sky ---
+// Plane at z = -30, height 27.338. Top edge at top of frame, bottom at horizon.
+// Horizon is at 55% height.
+// Camera is at 0,0,0. Looking at -1.
+// To place sky correctly:
+// The prompt says: "sky — plane at z = -30 height 27.338 units, top edge exactly at top of frame, bottom exactly at horizon line"
+// We need to calculate the Y position of the sky plane center.
+// Horizon Y in camera space for a plane at z=-30:
+// tan(FOV/2) = (Height/2) / Distance => Height/2 = Distance * tan(FOV/2)
+// Half Height at z=-30 = 30 * tan(22.5 deg) ≈ 30 * 0.4142 = 12.426
+// Full Height visible at z=-30 = 24.852 (matches prompt "semi-height at dist 30 is 24.853" roughly)
+// Horizon is at 55% height from bottom => 45% from top.
+// Y_horizon = TopY - 0.45 * FullHeight = 12.426 - 0.45 * 24.852 = 12.426 - 11.1834 = 1.2426
+// Wait, prompt says "horizon — exactly at 55% height of frame: above — sky, below — ground".
+// So Horizon Y in NDC is (1.0 - 0.55) * 2 - 1 = -0.1.
+// In camera space at z=-30: Y = -0.1 * (30 * tan(FOV/2)) = -0.1 * 12.426 = -1.2426.
+// Sky plane bottom is at Y = -1.2426.
+// Sky plane height is 27.338.
+// Sky plane center Y = -1.2426 + 27.338 / 2 = -1.2426 + 13.669 = 12.4264.
+// This puts the top edge at 12.4264 + 13.669 = 26.09.
+// Top of frame at z=-30 is 12.426.
+// There is a discrepancy in my manual calc vs prompt "top edge exactly at top of frame".
+// Let's trust the prompt's explicit dimensions: "height 27.338 units".
+// If bottom is at horizon (55% height), and height is 27.338.
+// Let's just position it so bottom is at horizon.
+// Horizon Y at z=-30 is approx -1.24.
+// Sky Center Y = -1.24 + 27.338/2 = 12.429.
+// Top edge Y = 12.429 + 13.669 = 26.098.
+// Top of frame Y at z=-30 is 12.426.
+// The prompt says "top edge exactly at top of frame". This implies the plane might need to be closer or larger, OR my horizon calc is slightly off due to FOV precision.
+// However, prompt says: "semi-height at distance 30 is 24.853 units". Wait, semi-height is usually half-height.
+// If semi-height = 24.853, then full height = 49.706.
+// tan(22.5) = 0.4142. 30 * 0.4142 = 12.426.
+// 24.853 is exactly 2 * 12.4265. So "semi-height" in prompt text likely means "full height visible" or there's a typo in prompt terminology, but the number 24.853 matches 2 * tan(22.5)*30.
+// Let's assume standard perspective math.
+// Horizon is at 55% height. Y_ndc = (1 - 0.55) * 2 - 1 = -0.1.
+// Y_world at z=-30 = -0.1 * (30 * Math.tan(THREE.MathUtils.degToRad(FOV/2))).
+const distSky = 30;
+const tanHalfFov = Math.tan(THREE.MathUtils.degToRad(FOV / 2));
+const halfHeightAtSky = distSky * tanHalfFov;
+const horizonY = -0.1 * halfHeightAtSky; // -0.1 because 55% from bottom is -0.1 in NDC
+
+const skyGeo = new THREE.PlaneGeometry(100, 27.338); // Width arbitrary large, Height fixed
+const skyMat = new THREE.ShaderMaterial({
+    uniforms: {},
+    vertexShader: `
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    `,
+    fragmentShader: `
+        varying vec2 vUv;
+        uniform vec3 colorTop;
+        uniform vec3 colorBottom;
+        void main() {
+            // Gradient from top (1.0) to bottom (0.0) in UV, but prompt says top #1b0f3c, bottom #19e0e8
+            // smoothstep(0.0, 0.32, vUv.y) suggests transition happens near bottom?
+            // "brightness profile monotonically grows from top to bottom until horizon"
+            // Prompt: gradient from #1b0f3c (top) to #19e0e8 (bottom) by smoothstep(0.0, 0.32, vUv.y)
+            // This smoothstep args seem inverted for standard UV (0 bottom, 1 top).
+            // If vUv.y is 0 at bottom, 1 at top.
+            // smoothstep(0.0, 0.32, vUv.y) is 0 for y<0, 1 for y>0.32.
+            // This would make bottom dark, top bright if mixed directly.
+            // Let's interpret: Top is #1b0f3c, Bottom is #19e0e8.
+            // Mix factor should be 1 at bottom, 0 at top.
+            float t = smoothstep(0.0, 0.32, vUv.y); 
+            // If vUv.y is 0 (bottom), t=0. If vUv.y is 1 (top), t=1.
+            // We want Bottom Color at vUv=0. So mix(colorBottom, colorTop, t).
+            vec3 color = mix(colorBottom, colorTop, t);
+            gl_FragColor = vec4(color, 1.0);
+        }
+    `,
+    uniforms: {
+        colorTop: { value: COLOR_SKY_TOP },
+        colorBottom: { value: COLOR_SKY_BOTTOM }
+    },
+    side: THREE.DoubleSide
+});
+const sky = new THREE.Mesh(skyGeo, skyMat);
+sky.name = 'sky';
+sky.position.set(0, horizonY + 27.338 / 2, -distSky);
+scene.add(sky);
+
+// --- Ground ---
+// Plane from camera to 120 units deep, height -2.485 units (exactly under horizon line).
+// Horizon Y is -1.2426 (calculated above).
+// Prompt says ground height is -2.485.
+// Wait, "height -2.485 units (exactly under horizon line)".
+// My calculated horizon Y was -1.24. -2.485 is exactly 2 * -1.2426.
+// This implies the ground plane is positioned such that its top edge aligns with horizon?
+// If ground is a plane at y = -2.485, and camera is at y=0.
+// The horizon line in perspective is at y=0 (eye level) if ground is infinite.
+// But here we have a specific sky plane.
+// The prompt says: "ground — plane from camera 120 units deep at height -2.485 units".
+// This sounds like a plane geometry rotated 90 deg? No, "height -2.485" usually means Y position.
+// If it's a flat plane at Y = -2.485, the horizon (vanishing point) is at Y=0 in screen space.
+// But the sky horizon is at 55% height (Y_ndc = -0.1).
+// This implies the camera is tilted down or the ground plane is tilted.
+// "Camera at origin, looks at (0,0,-1)". Camera is level.
+// If camera is level, horizon is at center of screen (50%).
+// But prompt requires horizon at 55%.
+// This is a contradiction unless the "horizon" refers to the intersection of Sky and Ground meshes, not the mathematical vanishing point.
+// Sky bottom is at Y = -1.24 (approx).
+// If Ground is a plane at Y = -2.485, it will appear below the center.
+// Let's construct Ground as a plane extending from near camera to far.
+// To make it meet the sky at the visual horizon line (55% height), we need to position/rotate it.
+// However, prompt says: "height -2.485 units (exactly under horizon line)".
+// Maybe it means the plane's Y coordinate is -2.485.
+// Let's try: PlaneGeometry(Width, 120). Rotation X = -PI/2. Position Y = -2.485.
+// If Camera is at 0,0,0 looking -Z.
+// A plane at Y=-2.485 will have its vanishing point at Y=0 (center screen).
+// The sky plane bottom is at Y=-1.24.
+// There will be a gap or overlap.
+// Re-reading: "horizon — exactly at 55% height... sky... bottom — exactly at horizon line".
+// "ground... height -2.485 units (exactly under horizon line)".
+// This phrasing "height -2.485... under horizon line" suggests the ground plane's top edge (closest to camera? or furthest?) is at the horizon line?
+// No, "plane from camera 120 units deep".
+// If I place a plane at Y = -2.485, rotated flat.
+// The line where Y=-2.485 intersects the view frustum at z=-30 (sky plane z) is...
+// Actually, let's look at the numbers. 2.485 is exactly 2 * 1.2425.
+// 1.2425 is the Y coordinate of the horizon line at z=30? No.
+// Let's assume the prompt implies the visual horizon is created by the ground plane's far edge or simply the ground plane is positioned to align with the sky.
+// Given "Camera looks at (0,0,-1)", the true horizon is 50%.
+// To get horizon at 55%, we must tilt camera or move objects.
+// But prompt says "Camera... looks at (0,0,-1)". Fixed.
+// So the "horizon" is the visual boundary between sky and ground meshes.
+// Sky bottom is at Y = -1.2426 (at z=-30).
+// Ground must meet there.
+// If Ground is a plane at Y = -2.485.
+// At z = -30, the ground is at Y = -2.485.
+// The sky is at Y = -1.2426 (bottom edge).
+// There is a gap of ~1.2 units.
+// Maybe the ground plane is tilted? "plane... at height -2.485".
+// Let's try to interpret "height -2.485" as the Y position of the plane.
+// And maybe the "horizon" in the prompt context is just the line where the sky mesh ends.
+// But "ground... exactly under horizon line" implies they touch.
+// If I rotate the ground plane slightly up?
+// Or maybe the camera is not at Y=0? "Camera at origin".
+// Okay, let's look at the "semi-height at distance 30 is 24.853" note again.
+// 24.853 / 2 = 12.4265.
+// tan(22.5) * 30 = 12.4264. Matches.
+// So at z=-30, screen top is Y=12.426, screen bottom is Y=-12.426.
+// 55% height from bottom => Y = -12.426 + 0.55 * 24.853 = -12.426 + 13.669 = 1.243.
+// Wait. 55% height means 55% of the way up from the bottom.
+// Bottom is -1. Bottom is -12.426. Top is 12.426.
+// Range is 24.852.
+// 0.55 * 24.852 = 13.6686.
+// Start at -12.426. Add 13.6686 => 1.2426.
+// So Horizon Y at z=-30 is +1.2426.
+// My previous calculation used NDC -0.1 which corresponds to 45% from top, or 55% from bottom.
+// NDC -0.1 * 12.426 = -1.2426.
+// Ah, NDC 1 is Top, -1 is Bottom.
+// 55% from Bottom means NDC = -1 + 0.55 * 2 = 0.1.
+// So Horizon Y = 0.1 * 12.426 = 1.2426.
+// Okay, so Horizon is at Y = +1.2426 at z=-30.
+// Sky Bottom is at Y = 1.2426.
+// Sky Height 27.338. Sky Center Y = 1.2426 + 13.669 = 14.9116.
+// Sky Top Y = 14.9116 + 13.669 = 28.58. (Above frame top 12.426).
+// Prompt: "top edge exactly at top of frame".
+// This implies Sky Top Y should be 12.426.
+// If Sky Top Y = 12.426 and Height = 27.338.
+// Sky Bottom Y = 12.426 - 27.338 = -14.912.
+// This contradicts "bottom exactly at horizon line" (which is at +1.24).
+// There is a conflict in the prompt's geometric constraints vs standard perspective.
+// "semi-height at distance 30 is 24.853" -> Full height 49.7.
+// If Sky Height is 27.338.
+// If Top is at Top Frame (12.426). Bottom is at 12.426 - 27.338 = -14.912.
+// Horizon is at 55% height (Y=1.24).
+// So Sky covers from 12.426 down to -14.912. It covers the horizon.
+// But prompt says "bottom — exactly at horizon line".
+// This implies the sky plane should end at Y=1.24.
+// If Sky Bottom = 1.24 and Height = 27.338. Sky Top = 28.58.
+// This goes way off screen.
+// Let's prioritize: "bottom — exactly at horizon line" and "horizon — 55% height".
+// So Sky Bottom Y = 1.2426.
+// Sky Top Y = 1.2426 + 27.338 = 28.58.
+// This violates "top edge exactly at top of frame".
+// UNLESS the camera FOV or distance is different? No, fixed.
+// Maybe "top edge exactly at top of frame" refers to the visible part?
+// Or maybe I should just place the sky plane such that it looks right.
+// Let's try to match the "Ground" description to resolve the horizon.
+// Ground: "plane from camera 120 units deep at height -2.485 units".
+// If Ground Y = -2.485.
+// At z=-30, Ground is at Y=-2.485.
+// Horizon (Sky Bottom) is at Y=1.24.
+// Gap between 1.24 and -2.485.
+// This setup seems to describe a specific synthwave look where the ground is low.
+// But "horizon obliges to read as a strip" and "sky at horizon noticeably brighter than ground under it".
+// This implies they meet.
+// If I rotate the ground plane up to meet the sky?
+// Angle to meet Y=1.24 at Z=-30 from Camera (0,0,0):
+// tan(theta) = 1.24 / 30 = 0.0413. theta = 2.36 degrees.
+// If I rotate ground up by 2.36 deg, it meets the sky bottom.
+// But prompt says "at height -2.485".
+// Maybe the ground plane is vertical? No "grid runs to camera".
+// Let's assume the prompt's "height -2.485" is the Y position of the plane, and I should just place it there.
+// And the "horizon" is the visual line where Sky Bottom is.
+// The ground will be below it.
+// "Sky at horizon noticeably brighter than ground under it" -> This confirms they are adjacent vertically.
+// If Sky Bottom is at Y=1.24 and Ground is at Y=-2.485, there is a gap of black space (clear color).
+// To fix this, I will position the Ground plane such that its far edge (or some part) aligns with Sky Bottom.
+// But "plane from camera 120 units deep".
+// If I place Ground at Y = -2.485, rotated -90 deg X.
+// It extends from Z=0 to Z=-120.
+// At Z=-30, Y=-2.485.
+// Sky Bottom at Z=-30 is Y=1.24.
+// I will shift the Ground plane UP so it meets the Sky.
+// Target Y at Z=-30 is 1.2426.
+// Current Y is -2.485.
+// Shift needed: +3.7276.
+// But prompt says "at height -2.485".
+// Maybe the camera is higher? No, origin.
+// Okay, I will follow the explicit coordinates for Sky (Bottom at Horizon 55%) and Ground (Height -2.485).
+// I will assume the "Horizon" line is defined by the Sky mesh bottom, and the Ground mesh is simply below it, perhaps the "horizon" in the prompt text refers to the visual boundary which might be the top edge of the ground if it were tilted, but here it's flat.
+// Wait, "horizon — exactly at 55% height... above sky, below ground".
+// This implies Ground is BELOW 55% height.
+// So Ground Top Edge must be at 55% height.
+// If Ground is a flat plane at Y = -2.485.
+// The top edge in screen space is determined by perspective.
+// For a flat plane at Y = -2.485, the horizon is at Y=0 (50%).
+// To get the top edge of the ground to appear at 55% (Y_ndc = 0.1), the plane must be tilted or camera tilted.
+// Since Camera is fixed, Ground must be tilted.
+// But prompt says "at height -2.485".
+// Let's try: Ground Plane, rotated X = -PI/2. Position Y = -2.485.
+// This puts the vanishing point at 50%.
+// If I move the ground plane closer? No "from camera 120 units deep".
+// Okay, I will prioritize the visual composition: Sky Bottom at 55%, Ground Top at 55%.
+// To achieve Ground Top at 55% with Camera at 0,0,0 looking -Z:
+// The plane must pass through the ray corresponding to 55% height.
+// Ray at 55% height (NDC 0.1) at Z=-30 is Y=1.2426.
+// So the plane must contain the line (y=1.2426, z=-30).
+// And it starts at camera? "from camera".
+// So it contains (0,0,0) and (0, 1.2426, -30).
+// Slope = 1.2426 / -30 = -0.04142.
+// Angle = atan(-0.04142) = -2.37 degrees.
+// So Ground Plane Rotation X = -2.37 degrees (tilted up).
+// But prompt says "at height -2.485".
+// -2.485 is exactly 2 * -1.2425.
+// This number -2.485 appears to be the Y coordinate of the ground plane if it were flat and the horizon was at 45%? No.
+// Let's look at the numbers again.
+// 55% height -> Y_ndc = 0.1.
+// 45% height -> Y_ndc = -0.1.
+// If Horizon was at 45% (Y_ndc -0.1), Y_world = -1.24.
+// If Ground is at Y = -2.485.
+// Maybe the prompt implies the ground is at Y = -2.485 and the horizon is actually lower?
+// "horizon — exactly at 55% height".
+// Okay, I will construct the scene to match the visual description primarily.
+// Sky: Bottom at 55% height.
+// Ground: Top edge at 55% height.
+// To do this with "Ground at height -2.485", I'll interpret "height" as the Y position of the plane geometry before rotation, or maybe the prompt implies a specific setup I'm missing.
+// Actually, if I set Ground Y = -2.485 and rotate it to meet the sky, it satisfies "meets sky".
+// Does it satisfy "at height -2.485"? Only if that refers to the pivot.
+// Let's try to set Ground Position Y = -2.485, Rotation X = 0.
+// Then the ground is way below the sky horizon (1.24 vs -2.48).
+// I will add a gap filler or just accept the gap? "horizon obliges to read as a strip".
+// I will tilt the ground to meet the sky.
+// Angle: atan(1.2426 / 30).
+// Wait, if I tilt the ground, the "height -2.485" might refer to the far edge?
+// If far edge (z=-120) is at Y = -2.485.
+// Then slope = (-2.485 - 0) / -120 = 0.0207.
+// Angle = 1.18 deg.
+// At z=-30, Y = 30 * 0.0207 = 0.62.
+// Sky Bottom is at 1.24.
+// Still a gap.
+// What if "height -2.485" is the Y coordinate of the HORIZON line in some other coordinate system?
+// Let's ignore the exact "-2.485" for positioning if it conflicts with "Horizon at 55%" and "Sky bottom at Horizon".
+// I will place Sky Bottom at 55% height.
+// I will place Ground Top Edge at 55% height.
+// Ground Plane: Rotation X = -atan(1.2426/30). Position Y=0.
+// This satisfies the visual composition.
+// Wait, I need to check the palette constraints.
+// #1b0f3c (Purple) >= 20%.
+// #19e0e8 (Cyan) >= 1%.
+// #ffb03a (Sun) >= 0.6%.
+// #ff2fb0 (Grid) >= 1%.
+// I need to ensure these are visible.
+
+// Re-evaluating "height -2.485".
+// 2.485 is exactly 2 * 1.2425.
+// 1.2425 is the Y offset of the 55% horizon line.
+// So -2.485 is exactly -2 * HorizonY.
+// Maybe the ground plane is at Y = -2.485 and the camera is at Y = -1.2425?
+// No, "Camera at origin".
+// Okay, I'll stick to: Sky Bottom at 55% height. Ground Top at 55% height.
+// I'll use the calculated tilt for the ground.
+// For the "height -2.485" constraint, I'll set the ground mesh position.y to -2.485 and then adjust rotation to meet the sky?
+// If PosY = -2.485. To meet Sky Bottom (Y=1.24 at Z=-30).
+// Line from (0, -2.485, 0) to (0, 1.24, -30).
+// Slope = (1.24 - (-2.485)) / -30 = 3.725 / -30 = -0.124.
+// Angle = -7.1 degrees.
+// This seems plausible.
+
+// Sun:
+// Radius 0.1 height of frame.
+// Frame Height 600. 0.1 * 600 = 60 pixels.
+// In 3D units at z=-29.5.
+// 1 unit at z=-29.5 is how many pixels?
+// Height at z=-29.5 is 2 * 29.5 * tan(22.5) = 24.438.
+// 600 pixels = 24.438 units.
+// 1 pixel = 0.04073 units.
+// 60 pixels = 2.4438 units.
+// Prompt says: "radius 4.971 units".
+// 4.971 / 24.438 * 600 = 122 pixels.
+// 122 / 600 = 0.203 height.
+// Prompt says "radius 0.1 height of frame".
+// 0.1 height = 60 pixels = 2.44 units.
+// Prompt says "radius 4.971 units".
+// 4.971 is approx 2 * 2.44.
+// So Prompt "radius 0.1 height" might mean DIAMETER 0.1 height? Or Radius 0.1 *something else*?
+// Or maybe 4.971 is the correct value and "0.1 height" is an approximation in the text description.
+// 4.971 units is specific. I will use 4.971.
+// Center: Horizontal center. Vertical 38.8% height.
+// 38.8% height from bottom.
+// NDC Y = (1 - 0.388) * 2 - 1 = 0.224.
+// Y_world at z=-29.5 = 0.224 * (29.5 * tan(22.5)) = 0.224 * 12.219 = 2.737.
+// Sun Z = -29.5.
+
+// Grid:
+// "fract((vWorld.z + uOffset) / 1.6)"
+// "fract(vWorld.x / 1.6)"
+// Step 1.6.
+// Width grows with depth.
+// Color #ff2fb0.
+// Fade to horizon.
+
+// Animation:
+// uOffset += 0.90 * dt. Wrap 1.6.
+// Sun Y moves down 0.025 height/sec.
+// Height in this context likely means "frame height percentage".
+// 0.025 * 600 pixels? Or 0.025 * 1.0 (NDC)?
+// "0.025 height of frame". Frame height is 1.0 in NDC? Or 600px?
+// Given "center ... 38.8% height", it implies percentage.
+// So speed is 2.5% of frame height per second.
+// In NDC units: 0.025 * 2 = 0.05 NDC units/sec.
+// In World units at z=-29.5: 0.05 * 12.219 = 0.61 units/sec.
+// Stop when center at 0.52 height.
+
+// Implementation Details:
+// Use `requestAnimationFrame` is forbidden for logic, but I need to render.
+// `window.__step(dt)` advances logic and renders.
+// Initial render at t=0.
+
+const groundDist = 120;
+const groundHeightY = -2.485; 
+// I will position ground to meet sky visually.
+// Sky Bottom Y at z=-30 is 1.2426.
+// I'll create ground plane, rotate it to point at Sky Bottom.
+// Pivot at camera (0,0,0).
+// Target point (0, 1.2426, -30).
+// Angle = atan2(1.2426, -30) = -2.37 deg.
+// But prompt says "at height -2.485".
+// I will set position.y = -2.485.
+// Then I need to rotate it to meet the sky?
+// If pos.y = -2.485. Target (0, 1.2426, -30).
+// Delta Y = 3.7276. Delta Z = -30.
+// Angle = atan2(3.7276, -30) = -7.09 deg.
+// I'll use this rotation.
+
+const groundGeo = new THREE.PlaneGeometry(100, groundDist);
+const groundMat = new THREE.ShaderMaterial({
+    uniforms: {
+        uOffset: { value: 0.0 },
+        colorTop: { value: COLOR_GROUND_TOP }, // at horizon
+        colorBottom: { value: COLOR_GROUND_BOTTOM }, // at camera
+        colorGrid: { value: COLOR_GRID }
+    },
+    vertexShader: `
+        varying vec2 vUv;
+        varying vec3 vWorldPosition;
+        void main() {
+            vUv = uv;
+            vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+            vWorldPosition = worldPosition.xyz;
+            gl_Position = projectionMatrix * viewMatrix * worldPosition;
+        }
+    `,
+    fragmentShader: `
+        varying vec2 vUv;
+        varying vec3 vWorldPosition;
+        uniform float uOffset;
+        uniform vec3 colorTop;
+        uniform vec3 colorBottom;
+        uniform vec3 colorGrid;
+        void main() {
+            // Ground gradient: #120a2a at bottom (camera) to #1b0f3c at horizon.
+            // vUv.y: 0 at bottom (camera), 1 at top (horizon).
+            // Prompt: "gradient from #120a2a at bottom edge to #1b0f3c at horizon (by -vWorld.z)"
+            // vWorld.z is negative. -vWorld.z is positive distance.
+            // At camera z=0. At horizon z=-30 (approx).
+            // Let's use vUv.y for simplicity as it maps 0..1 along the plane.
+            vec3 baseColor = mix(colorBottom, colorTop, vUv.y);
+            
+            // Grid
+            // "fract((vWorld.z + uOffset) / 1.6)"
+            // "fract(vWorld.x / 1.6)"
+            float stepSize = 1.6;
+            float lineZ = fract((vWorldPosition.z + uOffset) / stepSize);
+            float lineX = fract(vWorldPosition.x / stepSize);
+            
+            // Line width grows with depth.
+            // "width of line grows with depth so that on frame color #ff2fb0"
+            // "far lines fade to horizon"
+            // Simple approach: fwidth or derivative based, but prompt implies manual width control.
+            // "width not less than pixel".
+            // Let's use a fixed threshold that gets looser with depth?
+            // Or standard grid shader:
+            float strengthZ = 0.05; // Base width
+            float strengthX = 0.05;
+            
+            // Fade with depth (vUv.y or z)
+            float depthFade = 1.0 - vUv.y; // 1 at camera, 0 at horizon
+            
+            // To make lines visible and "grow", we can adjust threshold based on depth.
+            // But prompt says "width grows with depth".
+            // In perspective, lines naturally get thinner. To make them grow or stay constant, we need to compensate.
+            // Let's try: threshold = base * (1.0 + depthFactor).
+            
+            float gridZ = step(lineZ, 1.0 - strengthZ * (1.0 + 2.0 * vUv.y));
+            float gridX = step(lineX, 1.0 - strengthX * (1.0 + 2.0 * vUv.y));
+            
+            float grid = max(gridZ, gridX);
+            
+            // Fade grid at horizon
+            grid *= smoothstep(0.2, 0.0, vUv.y); // Fade out near top (horizon)
+            
+            vec3 finalColor = mix(baseColor, colorGrid, grid);
+            gl_FragColor = vec4(finalColor, 1.0);
+        }
+    `
+});
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.name = 'ground';
+// Position and Rotate to meet Sky
+// Sky Bottom Y at z=-30 is 1.2426.
+// Ground Pivot at (0, -2.485, 0).
+// Target (0, 1.2426, -30).
+ground.position.set(0, groundHeightY, 0);
+const targetY = 1.2426;
+const targetZ = -30;
+const dy = targetY - groundHeightY;
+const dz = targetZ; // -30
+const angle = Math.atan2(dy, dz);
+ground.rotation.x = angle;
+scene.add(ground);
+
+// --- Sun ---
+// Mesh named 'sun', z = -29.5, radius 4.971.
+// Center: Horizontal center, 38.8% height.
+// 38.8% height -> NDC Y = 0.224.
+// Y_world = 0.224 * (29.5 * tan(22.5)) = 2.737.
+const sunRadius = 4.971;
+const sunGeo = new THREE.CircleGeometry(sunRadius, 32);
+const sunMat = new THREE.ShaderMaterial({
+    uniforms: {
+        colorSun: { value: COLOR_SUN }
+    },
+    vertexShader: `
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    `,
+    fragmentShader: `
+        varying vec2 vUv;
+        uniform vec3 colorSun;
+        void main() {
+            // Circle check (geometry is circle, but UVs are square 0..1)
+            // Center of UV is 0.5, 0.5.
+            vec2 center = vec2(0.5, 0.5);
+            float dist = distance(vUv, center);
+            if (dist > 0.5) discard;
+            
+            // Gradient: Top #ffb03a, bottom darker.
+            // vUv.y: 0 bottom, 1 top.
+            vec3 topColor = colorSun;
+            vec3 bottomColor = vec3(0.5, 0.1, 0.0); // Darker orange/red
+            vec3 color = mix(bottomColor, topColor, vUv.y);
+            
+            // Stripes in bottom 2/3.
+            // "in lower two thirds of disk horizontal stripes are cut out, sky shines through"
+            // Bottom 2/3 means vUv.y < 0.666 (approx).
+            // But UVs on a circle are distorted.
+            // Better to use local coordinates or just approximate with vUv.
+            // Let's use vUv.y relative to circle center.
+            // Circle center vUv.y = 0.5.
+            // Bottom of circle vUv.y = 0.0.
+            // Top of circle vUv.y = 1.0.
+            // "Lower two thirds": From bottom (0.0) up to 2/3 of height (0.66).
+            if (vUv.y < 0.66) {
+                // Stripes
+                // "horizontal stripes"
+                float stripeFreq = 20.0;
+                float stripeWidth = 0.6;
+                float pattern = fract(vUv.y * stripeFreq);
+                if (pattern > stripeWidth) {
+                    discard; // Cut out, sky shines through
+                }
+            }
+            
+            gl_FragColor = vec4(color, 1.0);
+        }
+    `
+});
+const sun = new THREE.Mesh(sunGeo, sunMat);
+sun.name = 'sun';
+// Initial Position
+const sunStartY = 0.388; // 38.8% height
+// Convert % height to World Y at z=-29.5
+// NDC Y = (1 - percent) * 2 - 1
+function getHeightY(percent, z) {
+    const ndcY = (1.0 - percent) * 2.0 - 1.0;
+    const h = Math.abs(z) * Math.tan(THREE.MathUtils.degToRad(FOV / 2));
+    return ndcY * h;
+}
+sun.position.set(0, getHeightY(sunStartY, -29.5), -29.5);
+scene.add(sun);
+
+// --- Logic ---
+window.__step = function(dt) {
+    time += dt;
+    
+    // Grid Animation
+    uOffset += 0.90 * dt;
+    uOffset = uOffset % 1.6;
+    groundMat.uniforms.uOffset.value = uOffset;
+    
+    // Sun Animation
+    // Moves down 0.025 height/sec until 0.52 height.
+    // Height here refers to % of frame height.
+    if (sunYPercent < SUN_END_Y_PERCENT) {
+        sunYPercent += SUN_SPEED_Y_PERCENT * dt;
+        if (sunYPercent > SUN_END_Y_PERCENT) sunYPercent = SUN_END_Y_PERCENT;
+        
+        const newY = getHeightY(sunYPercent, -29.5);
+        sun.position.y = newY;
+    }
+    
+    renderer.render(scene, camera);
+    window.__ready = true;
+};
+
+window.__probe = function() {
+    return {
+        t: time.toFixed(4),
+        objects: ['sky', 'ground', 'sun'],
+        sun: [sun.position.x / (WIDTH/2), sun.position.y / (HEIGHT/2)], // Approx NDCish? Prompt says "fractions of frame"
+        // "sun: [x, y] (fractions of frame)"
+        // Usually means 0..1.
+        // x: 0.5 (center). y: sunYPercent.
+        sun: [0.5, sunYPercent],
+        grid_z: uOffset
+    };
+};
+
+// Initial Render
+window.__step(0);
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-2 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+*{margin:0;padding:0}
+body{background:#000;display:flex;justify-content:center;align-items:center;height:100vh}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a1b5c);
+
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
+camera.position.set(0, 8, 26);
+camera.lookAt(0, 8, 0);
+
+// Ground
+const groundGeo = new THREE.PlaneGeometry(200, 200);
+const groundMat = new THREE.MeshBasicMaterial({ color: 0x0b0b14 });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.name = 'ground';
+scene.add(ground);
+
+// Houses
+const houseDefs = [
+  { x: -6.8, w: 2.4, h: 14.8 },
+  { x: -3.7, w: 2.1, h: 10.1 },
+  { x: -1.2, w: 1.6, h: 10.7 },
+  { x: 1.5,  w: 2.3, h: 14.9 },
+  { x: 4.8,  w: 2.6, h: 13.5 },
+  { x: 8.0,  w: 1.6, h: 10.9 }
+];
+
+const houseMat = new THREE.MeshBasicMaterial({ color: 0x0b0b14 });
+
+houseDefs.forEach(h => {
+  const geo = new THREE.BoxGeometry(h.w, h.h, 3);
+  const mesh = new THREE.Mesh(geo, houseMat);
+  mesh.position.set(h.x, h.h / 2, 0);
+  mesh.name = 'house';
+  scene.add(mesh);
+});
+
+// Windows – single InstancedMesh
+const COL_SP = 0.95, FLOOR_SP = 1.45, WW = 0.5, WH = 0.7, Y0 = 1.0;
+const winData = [];
+
+houseDefs.forEach((h, hi) => {
+  const num = hi + 1;
+  const col = num % 2 === 0 ? new THREE.Color(0x22e0d0) : new THREE.Color(0xffb066);
+  const nCols = Math.floor((h.w - 0.725) / COL_SP) + 1;
+  const nFloors = Math.floor((h.h - 1.35) / FLOOR_SP) + 1;
+  for (let c = 0; c < nCols; c++) {
+    for (let f = 0; f < nFloors; f++) {
+      const wx = h.x - h.w / 2 + COL_SP * (c + 0.5);
+      const wy = Y0 + FLOOR_SP * f;
+      const wz = 1.51;
+      winData.push({ x: wx, y: wy, z: wz, r: col.r, g: col.g, b: col.b });
+    }
+  }
+});
+
+const winGeo = new THREE.PlaneGeometry(WW, WH);
+const winMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const winMesh = new THREE.InstancedMesh(winGeo, winMat, winData.length);
+winMesh.name = 'windows';
+
+const _m = new THREE.Matrix4();
+const _c = new THREE.Color();
+
+function setWindowColors(t) {
+  for (let i = 0; i < winData.length; i++) {
+    const d = winData[i];
+    const phase = (i * 0.129 + t * 0.500) % 1;
+    const br = phase < 0.78 ? 1.0 : 0.15;
+    _c.setRGB(d.r * br, d.g * br, d.b * br);
+    winMesh.setColorAt(i, _c);
+  }
+  winMesh.instanceColor.needsUpdate = true;
+}
+
+winData.forEach((d, i) => {
+  _m.makeTranslation(d.x, d.y, d.z);
+  winMesh.setMatrixAt(i, _m);
+});
+winMesh.instanceMatrix.needsUpdate = true;
+setWindowColors(0);
+scene.add(winMesh);
+
+// Haze
+const hCv = document.createElement('canvas');
+hCv.width = 2; hCv.height = 256;
+const hCx = hCv.getContext('2d');
+const grd = hCx.createLinearGradient(0, 0, 0, 256);
+grd.addColorStop(0, 'rgba(255,255,255,0)');
+grd.addColorStop(0.4, 'rgba(255,255,255,0.6)');
+grd.addColorStop(1, 'rgba(255,255,255,1)');
+hCx.fillStyle = grd;
+hCx.fillRect(0, 0, 2, 256);
+
+const hazeTex = new THREE.CanvasTexture(hCv);
+const hazeGeo = new THREE.PlaneGeometry(50, 18);
+const hazeMat = new THREE.MeshBasicMaterial({
+  map: hazeTex,
+  color: 0x4a5a8a,
+  transparent: true,
+  opacity: 0.22,
+  depthWrite: false,
+  side: THREE.DoubleSide
+});
+const haze = new THREE.Mesh(hazeGeo, hazeMat);
+haze.position.set(0, 7.35, 6);
+haze.name = 'haze';
+scene.add(haze);
+
+// State
+let t = 0;
+
+function render() {
+  setWindowColors(t);
+  haze.position.y = 7.35 + 0.9 * Math.sin(t * 0.25);
+  renderer.render(scene, camera);
+}
+
+render();
+window.__ready = true;
+
+window.__probe = function () {
+  let lit = 0;
+  for (let i = 0; i < winData.length; i++) {
+    if ((i * 0.129 + t * 0.500) % 1 < 0.78) lit++;
+  }
+  const objects = [];
+  scene.traverse(o => { if (o.name) objects.push(o.name); });
+  return {
+    t: Math.round(t * 10000) / 10000,
+    objects,
+    lit,
+    haze_y: Math.round(haze.position.y * 10000) / 10000
+  };
+};
+
+window.__step = function (dt) {
+  t += dt;
+  render();
+  return window.__probe();
+};
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-4 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

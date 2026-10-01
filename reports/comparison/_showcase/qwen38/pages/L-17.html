@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+*{margin:0;padding:0}
+body{background:#000;display:flex;justify-content:center;align-items:center;min-height:100vh}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// === LCG (deterministic) ===
+let lcg = 232350;
+function rnd() {
+  lcg = (lcg * 1103515245 + 12345) % 2147483648;
+  return lcg / 2147483648;
+}
+
+// === Constants ===
+const W = 800, H = 600;
+const FOV = 50 * Math.PI / 180;
+const ASPECT = W / H;
+const TH = Math.tan(FOV / 2);
+const CAM_Z0 = 4;
+const CAM_Z_END = -3.6;
+const CAM_SPEED = 1.64;
+const RAIN_SPEED = 2.4;
+
+// === Pre-generate random positions (fixed LCG order) ===
+const cityWinPos = [];
+for (let i = 0; i < 26; i++) cityWinPos.push([rnd(), rnd()]);
+const rainPos = [];
+for (let i = 0; i < 64; i++) rainPos.push([rnd(), rnd()]);
+
+// === Renderer ===
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+document.body.appendChild(renderer.domElement);
+
+// === Scene ===
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2e1636);
+
+// === Camera ===
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 200);
+camera.position.set(0, 0, CAM_Z0);
+camera.rotation.set(0, 0, 0);
+
+// === Helper: screen (u,v) → world at z (camera at z=CAM_Z0) ===
+function s2w(u, v, z) {
+  const d = CAM_Z0 - z;
+  const hh = d * TH;
+  const hw = hh * ASPECT;
+  return { x: (u - 0.5) * 2 * hw, y: (0.5 - v) * 2 * hh };
+}
+function frameAt(z) {
+  const d = CAM_Z0 - z;
+  const hh = d * TH;
+  return { h: hh * 2, w: hh * 2 * ASPECT };
+}
+
+// === Colors ===
+const C_WALL = 0x2e1636;
+const C_WARM = 0xffa83c;
+const C_LEAF = 0x7bbf6a;
+const C_CYAN = 0x7fe3e0;
+const C_RAIN = 0xa8c8dc;
+
+// === wall_top ===
+{
+  const f = frameAt(-6);
+  const h = 0.11 * f.h;
+  const y = (0.5 - 0.055) * f.h;
+  const geo = new THREE.PlaneGeometry(f.w, h);
+  const mat = new THREE.MeshBasicMaterial({ color: C_WALL });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(0, y, -6);
+  m.name = 'wall_top';
+  scene.add(m);
+}
+
+// === glass ===
+{
+  const p1 = s2w(0.11, 0.11, -6);
+  const p2 = s2w(0.89, 0.45, -6);
+  const w = p2.x - p1.x;
+  const h = p1.y - p2.y;
+  const cx = (p1.x + p2.x) / 2;
+  const cy = (p1.y + p2.y) / 2;
+  const geo = new THREE.PlaneGeometry(w, h);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x88ccff, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(cx, cy, -6);
+  m.name = 'glass';
+  m.renderOrder = 10;
+  scene.add(m);
+}
+
+// === city ===
+{
+  const group = new THREE.Group();
+  group.name = 'city';
+  const f = frameAt(-20);
+
+  // Dark sky background
+  const bgGeo = new THREE.PlaneGeometry(f.w, f.h);
+  const bgMat = new THREE.MeshBasicMaterial({ color: 0x0c0818 });
+  const bg = new THREE.Mesh(bgGeo, bgMat);
+  bg.position.set(0, 0, -20);
+  group.add(bg);
+
+  // Skyscrapers (deterministic positions)
+  const bData = [
+    { u: 0.15, hFrac: 0.35, wFrac: 0.06 },
+    { u: 0.28, hFrac: 0.42, wFrac: 0.05 },
+    { u: 0.42, hFrac: 0.28, wFrac: 0.07 },
+    { u: 0.55, hFrac: 0.45, wFrac: 0.05 },
+    { u: 0.68, hFrac: 0.32, wFrac: 0.06 },
+    { u: 0.82, hFrac: 0.38, wFrac: 0.05 }
+  ];
+  for (const bd of bData) {
+    const bw = bd.wFrac * f.w;
+    const bh = bd.hFrac * f.h;
+    const bx = (bd.u - 0.5) * f.w;
+    const by = -f.h / 2 + bh / 2;
+    const bGeo = new THREE.PlaneGeometry(bw, bh);
+    const bMat = new THREE.MeshBasicMaterial({ color: 0x1a1030 });
+    const b = new THREE.Mesh(bGeo, bMat);
+    b.position.set(bx, by, -19.9);
+    group.add(b);
+  }
+
+  // 26 additive windows (#7fe3e0)
+  const ws = 0.012 * f.w;
+  const wsH = 0.012 * f.h;
+  for (let i = 0; i < 26; i++) {
+    const wx = (cityWinPos[i][0] - 0.5) * f.w * 0.8;
+    const wy = (cityWinPos[i][1] - 0.3) * f.h * 0.6;
+    const wGeo = new THREE.PlaneGeometry(ws, wsH);
+    const wMat = new THREE.MeshBasicMaterial({
+      color: C_CYAN, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false
+    });
+    const w = new THREE.Mesh(wGeo, wMat);
+    w.position.set(wx, wy, -19.8);
+    w.renderOrder = 5;
+    group.add(w);
+  }
+  scene.add(group);
+}
+
+// === rain ===
+let rainGeo;
+{
+  const f = frameAt(-12);
+  const gTop = s2w(0.5, 0.11, -6).y;
+  const gBot = s2w(0.5, 0.45, -6).y;
+  const gLeft = s2w(0.11, 0.5, -6).x;
+  const gRight = s2w(0.89, 0.5, -6).x;
+  const yMin = gBot - 0.5;
+  const yMax = gTop + 0.5;
+  const xMin = gLeft - 0.5;
+  const xMax = gRight + 0.5;
+
+  const positions = new Float32Array(64 * 3);
+  for (let i = 0; i < 64; i++) {
+    positions[i * 3]     = xMin + rainPos[i][0] * (xMax - xMin);
+    positions[i * 3 + 1] = yMin + rainPos[i][1] * (yMax - yMin);
+    positions[i * 3 + 2] = -12;
+  }
+  rainGeo = new THREE.BufferGeometry();
+  rainGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+  const mat = new THREE.PointsMaterial({
+    color: C_RAIN, size: 10, sizeAttenuation: false,
+    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false
+  });
+  const pts = new THREE.Points(rainGeo, mat);
+  pts.name = 'rain';
+  pts.renderOrder = 6;
+  scene.add(pts);
+}
+
+// Rain wrap bounds
+const rainYMin = s2w(0.5, 0.45, -6).y - 0.5;
+const rainYMax = s2w(0.5, 0.11, -6).y + 0.5;
+const rainYRange = rainYMax - rainYMin;
+
+// === plant ===
+{
+  const group = new THREE.Group();
+  group.name = 'plant';
+  const z = -5.9;
+  const f = frameAt(z);
+  const base = s2w(0.16, 0.45, z);
+
+  // Pot
+  const potW = 0.04 * f.w;
+  const potH = 0.035 * f.h;
+  const potGeo = new THREE.PlaneGeometry(potW, potH);
+  const potMat = new THREE.MeshBasicMaterial({ color: C_WALL });
+  const pot = new THREE.Mesh(potGeo, potMat);
+  pot.position.set(base.x, base.y + potH / 2, z);
+  group.add(pot);
+
+  // Three leaves
+  const leaves = [
+    { w: 0.09, h: 0.15, dx: 0, dy: 0.07, rz: 0 },
+    { w: 0.08, h: 0.12, dx: -0.025, dy: 0.04, rz: -0.35 },
+    { w: 0.07, h: 0.10, dx: 0.025, dy: 0.03, rz: 0.35 }
+  ];
+  for (const ld of leaves) {
+    const lw = ld.w * f.w;
+    const lh = ld.h * f.h;
+    const lGeo = new THREE.PlaneGeometry(lw, lh);
+    const lMat = new THREE.MeshBasicMaterial({ color: C_LEAF, side: THREE.DoubleSide });
+    const leaf = new THREE.Mesh(lGeo, lMat);
+    leaf.position.set(base.x + ld.dx * f.w, base.y + ld.dy * f.h, z);
+    leaf.rotation.z = ld.rz;
+    group.add(leaf);
+  }
+  scene.add(group);
+}
+
+// === desk ===
+{
+  const group = new THREE.Group();
+  group.name = 'desk';
+  const z = -5.9;
+  const f = frameAt(z);
+  const dp = s2w(0.73, 0.72, z);
+
+  // Desk surface
+  const dW = 0.28 * f.w;
+  const dH = 0.06 * f.h;
+  const dGeo = new THREE.PlaneGeometry(dW, dH);
+  const dMat = new THREE.MeshBasicMaterial({ color: 0x3d2040 });
+  const dMesh = new THREE.Mesh(dGeo, dMat);
+  dMesh.position.set(dp.x, dp.y, z);
+  group.add(dMesh);
+
+  // Monitor (#7fe3e0, 14% width)
+  const mW = 0.14 * f.w;
+  const mH = 0.10 * f.h;
+  const mGeo = new THREE.PlaneGeometry(mW, mH);
+  const mMat = new THREE.MeshBasicMaterial({ color: C_CYAN });
+  const mMesh = new THREE.Mesh(mGeo, mMat);
+  mMesh.position.set(dp.x, dp.y + dH / 2 + mH / 2 + 0.01 * f.h, z);
+  group.add(mMesh);
+
+  // Warm spot on desk
+  const sW = 0.06 * f.w;
+  const sH = 0.015 * f.h;
+  const sGeo = new THREE.PlaneGeometry(sW, sH);
+  const sMat = new THREE.MeshBasicMaterial({ color: C_WARM });
+  const sMesh = new THREE.Mesh(sGeo, sMat);
+  sMesh.position.set(dp.x + 0.06 * f.w, dp.y + dH / 2 + 0.005 * f.h, z);
+  group.add(sMesh);
+
+  scene.add(group);
+}
+
+// === lamp ===
+{
+  const z = -5.9;
+  const f = frameAt(z);
+  const lp = s2w(0.25, 0.06, z);
+  const lW = 0.05 * f.w;
+  const lH = 0.04 * f.h;
+  const geo = new THREE.PlaneGeometry(lW, lH);
+  const mat = new THREE.MeshBasicMaterial({ color: C_WARM });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(lp.x, lp.y, z);
+  m.name = 'lamp';
+  scene.add(m);
+}
+
+// === windowsill ===
+{
+  const z = -5.95;
+  const f = frameAt(z);
+  const top = s2w(0.5, 0.45, z).y;
+  const bot = s2w(0.5, 0.50, z).y;
+  const h = top - bot;
+  const w = 0.78 * f.w;
+  const cy = (top + bot) / 2;
+  const geo = new THREE.PlaneGeometry(w, h);
+  const mat = new THREE.MeshBasicMaterial({ color: C_WARM });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(0, cy, z);
+  m.name = 'windowsill';
+  scene.add(m);
+}
+
+// === Animation state ===
+let t = 0;
+let camZ = CAM_Z0;
+
+// === Render ===
+function render() {
+  camera.position.set(0, 0, camZ);
+  camera.rotation.set(0, 0, 0);
+  renderer.render(scene, camera);
+}
+
+// Initial render (t=0)
+render();
+window.__ready = true;
+
+// === Step ===
+window.__step = function(dt) {
+  t += dt;
+
+  // Camera
+  camZ -= CAM_SPEED * dt;
+  if (camZ < CAM_Z_END) camZ = CAM_Z_END;
+
+  // Rain
+  const pos = rainGeo.attributes.position.array;
+  for (let i = 0; i < 64; i++) {
+    pos[i * 3 + 1] -= RAIN_SPEED * dt;
+    if (pos[i * 3 + 1] < rainYMin) {
+      pos[i * 3 + 1] += rainYRange;
+    }
+  }
+  rainGeo.attributes.position.needsUpdate = true;
+
+  render();
+  return window.__probe();
+};
+
+// === Probe ===
+window.__probe = function() {
+  const objects = [];
+  scene.traverse(function(obj) {
+    if (obj.name) objects.push(obj.name);
+  });
+  return {
+    t: Math.round(t * 10000) / 10000,
+    objects: objects,
+    camera: [
+      Math.round(camera.position.x * 10000) / 10000,
+      Math.round(camera.position.z * 10000) / 10000
+    ]
+  };
+};
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-17 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

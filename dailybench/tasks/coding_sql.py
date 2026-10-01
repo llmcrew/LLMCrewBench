@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import Any
 
 from .. import core, text
+
+
+#: Points per hidden check; three scenarios share the constant so a check
+#: weighs the same wherever it is earned.
+_POINTS_PER_CHECK = 0.8
 from .coding_python import extract_code
 
 DATABASES = 5
@@ -407,7 +412,7 @@ def generate(rng: random.Random, cfg: Any) -> core.TaskInstance:
         category="C",
         title="SQL",
         prompt=_PROMPT.replace("__DIALECT__", dialect),
-        max_points=5.0,
+        max_points=4.0,
         oracle={
             "reference": reference,
             "expected": [[[month, value] for month, value in rows] for rows in expected],
@@ -428,7 +433,7 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     statement, error = _statement_or_error(tr.final_text)
     if statement is None:
         for index, name in enumerate(names):
-            score.add(name, False, 1.0, error)
+            score.add(name, False, _POINTS_PER_CHECK, error)
         score.notes.append(f"SQL не принят к исполнению: {error}")
         return score
 
@@ -441,21 +446,21 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
             score.error = "postgres backend unavailable"
             score.notes.append("Docker/PostgreSQL недоступен — сценарий C-3 не мог быть выполнен")
             for name in names:
-                score.add(name, False, 1.0, "postgres backend unavailable")
+                score.add(name, False, _POINTS_PER_CHECK, "postgres backend unavailable")
             return score
         try:
             for index, (name, database, want) in enumerate(zip(names, oracle["databases"], expected)):
                 database_name = f"bench{index + 1}"
                 if not postgres.load(database_name, database):
-                    score.add(name, False, 1.0, "не удалось загрузить данные в PostgreSQL")
+                    score.add(name, False, _POINTS_PER_CHECK, "не удалось загрузить данные в PostgreSQL")
                     continue
                 result = postgres.query(database_name, statement)
                 if not result.get("ok"):
-                    score.add(name, False, 1.0, (result.get("stderr") or "ошибка выполнения").strip()[:300])
+                    score.add(name, False, _POINTS_PER_CHECK, (result.get("stderr") or "ошибка выполнения").strip()[:300])
                     continue
                 got = _normalise_rows(result.get("rows") or [])
                 want_rows = [(str(month), int(value)) for month, value in want]
-                score.add(name, got == want_rows, 1.0, f"получено {got}, ожидалось {want_rows}")
+                score.add(name, got == want_rows, _POINTS_PER_CHECK, f"получено {got}, ожидалось {want_rows}")
         finally:
             postgres.stop()
         return score
@@ -464,12 +469,12 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
         try:
             rows = _sqlite_rows(database, statement)
         except sqlite3.Error as exc:
-            score.add(name, False, 1.0, f"ошибка SQLite: {exc}")
+            score.add(name, False, _POINTS_PER_CHECK, f"ошибка SQLite: {exc}")
             continue
         except Exception as exc:  # pragma: no cover - defensive
-            score.add(name, False, 1.0, f"ошибка выполнения: {exc}")
+            score.add(name, False, _POINTS_PER_CHECK, f"ошибка выполнения: {exc}")
             continue
         got = _normalise_rows(rows)
         want_rows = [(str(month), int(value)) for month, value in want]
-        score.add(name, got == want_rows, 1.0, f"получено {got}, ожидалось {want_rows}")
+        score.add(name, got == want_rows, _POINTS_PER_CHECK, f"получено {got}, ожидалось {want_rows}")
     return score

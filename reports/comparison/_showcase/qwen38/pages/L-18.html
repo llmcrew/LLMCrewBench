@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+*{margin:0;padding:0}
+body{background:#000;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden}
+canvas{display:block}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+let lcg = 23268;
+function rnd(){lcg=(lcg*1103515245+12345)%2147483648;return lcg/2147483648;}
+
+const renderer=new THREE.WebGLRenderer({preserveDrawingBuffer:true});
+renderer.setPixelRatio(1);
+renderer.setSize(800,600,false);
+document.body.appendChild(renderer.domElement);
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x1e1145);
+
+const camera=new THREE.PerspectiveCamera(60,800/600,0.1,200);
+camera.position.set(0,0,4);
+camera.lookAt(0,0,-1);
+
+const TF=Math.tan(30*Math.PI/180);
+const AS=800/600;
+
+function uv2w(u,v,z){const d=4-z;return[(u-0.5)*2*d*TF*AS,(0.5-v)*2*d*TF,z];}
+function fsz(fw,fh,z){const d=4-z;return[fw*2*d*TF*AS,fh*2*d*TF];}
+
+function mkP(w,h,col,x,y,z,op,nm,ro){
+  const g=new THREE.PlaneGeometry(w,h);
+  const m=new THREE.MeshBasicMaterial({color:col,transparent:op<1,opacity:op,side:THREE.DoubleSide,depthWrite:op>=1});
+  const ms=new THREE.Mesh(g,m);
+  ms.position.set(x,y,z);
+  if(nm)ms.name=nm;
+  if(ro!==undefined)ms.renderOrder=ro;
+  return ms;
+}
+
+// sky z=-45
+scene.add(mkP(120,90,0x1e1145,0,0,-45,1,'sky',0));
+
+// wall z=-12 (upper 62%)
+{const p=uv2w(0.5,0.31,-12);const s=fsz(1.2,0.62,-12);scene.add(mkP(s[0],s[1],0x1e1145,p[0],p[1],-12,1,'wall',0));}
+
+// floor z=-8 (lower 38%)
+{const p=uv2w(0.5,0.81,-8);const s=fsz(1.2,0.38,-8);scene.add(mkP(s[0],s[1],0x1e1145,p[0],p[1],-8,1,'floor',0));}
+
+// kiosk body z=-10
+{const p=uv2w(0.24,0.47,-10);const s=fsz(0.20,0.20,-10);scene.add(mkP(s[0],s[1],0x1e1145,p[0],p[1],-10,1,'kiosk',1));}
+
+// kiosk counter z=-10
+{const p=uv2w(0.24,0.62,-10);const s=fsz(0.26,0.05,-10);scene.add(mkP(s[0],s[1],0xffb347,p[0],p[1],-10,1,'kiosk_counter',1));}
+
+// board z=-10
+{const p=uv2w(0.37,0.40,-10);const s=fsz(0.19,0.07,-10);scene.add(mkP(s[0],s[1],0x12c7d4,p[0],p[1],-10,1,'board',1));}
+// board bars
+for(let i=0;i<4;i++){
+  const bv=0.40-0.015+i*0.015;
+  const p=uv2w(0.37,bv,-9.98);const s=fsz(0.14,0.01,-9.98);
+  scene.add(mkP(s[0],s[1],0x1e1145,p[0],p[1],-9.98,1,'board_bar'+i,1));
+}
+
+// sign z=-10 (vertical neon)
+const signMat=new THREE.MeshBasicMaterial({color:0x12c7d4,transparent:true,opacity:1,side:THREE.DoubleSide});
+{const p=uv2w(0.12,0.26,-10);const s=fsz(0.06,0.28,-10);
+const sg=new THREE.Mesh(new THREE.PlaneGeometry(s[0],s[1]),signMat);
+sg.position.set(p[0],p[1],-10);sg.name='sign';sg.renderOrder=1;scene.add(sg);}
+// sign glow
+{const p=uv2w(0.12,0.26,-10.01);const s=fsz(0.09,0.32,-10.01);
+scene.add(mkP(s[0],s[1],0x12c7d4,p[0],p[1],-10.01,0.25,'sign_glow',1));}
+
+// holo panels z=-10
+const holoMats=[];
+for(let i=0;i<2;i++){
+  const hv=0.30+i*0.02;
+  const p=uv2w(0.14,hv,-10);const s=fsz(0.08,0.14,-10);
+  const hm=new THREE.MeshBasicMaterial({color:0xff5fa8,transparent:true,opacity:0.85,side:THREE.DoubleSide});
+  const hp=new THREE.Mesh(new THREE.PlaneGeometry(s[0],s[1]),hm);
+  hp.position.set(p[0],p[1],-10);hp.name='holo_'+i;hp.renderOrder=1;scene.add(hp);
+  holoMats.push(hm);
+}
+// holo scan lines
+const holoScans=[];
+for(let p=0;p<2;p++){
+  for(let i=0;i<6;i++){
+    const hv=0.30+p*0.02-0.06+i*0.02;
+    const pos=uv2w(0.14,hv,-9.97);const s=fsz(0.07,0.004,-9.97);
+    const lm=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.4,side:THREE.DoubleSide});
+    const lp=new THREE.Mesh(new THREE.PlaneGeometry(s[0],s[1]),lm);
+    lp.position.set(pos[0],pos[1],-9.97);lp.name='holo_scan_'+p+'_'+i;lp.renderOrder=2;scene.add(lp);
+    holoScans.push({mesh:lp,panel:p,idx:i});
+  }
+}
+
+// lamps z=-10
+const lampUs=[0.18,0.26,0.34];
+for(let i=0;i<3;i++){
+  const p=uv2w(lampUs[i],0.12,-10);const s=fsz(0.035,0.035,-10);
+  scene.add(mkP(s[0],s[1],0xffb347,p[0],p[1],-10,1,'lamp_'+i,1));
+  // lamp glow
+  const gs=fsz(0.06,0.06,-10.01);
+  scene.add(mkP(gs[0],gs[1],0xffb347,p[0],p[1],-10.01,0.3,'lamp_glow_'+i,1));
+}
+
+// puddles z=-7.9
+const pudUs=[0.20,0.40,0.60,0.78];
+const pudRings=[];
+for(let i=0;i<4;i++){
+  const p=uv2w(pudUs[i],0.82,-7.9);const s=fsz(0.16,0.05,-7.9);
+  scene.add(mkP(s[0],s[1],0xa8c8dc,p[0],p[1],-7.9,0.55,'puddle_'+i,2));
+  for(let r=0;r<3;r++){
+    const rs=fsz(0.12-r*0.025,0.035-r*0.005,-7.88);
+    const rm=new THREE.MeshBasicMaterial({color:0xa8c8dc,transparent:true,opacity:0.3,side:THREE.DoubleSide});
+    const rp=new THREE.Mesh(new THREE.PlaneGeometry(rs[0],rs[1]),rm);
+    rp.position.set(p[0],p[1],-7.88);rp.name='puddle_ring_'+i+'_'+r;rp.renderOrder=2;scene.add(rp);
+    pudRings.push({mesh:rp,pi:i,ri:r});
+  }
+}
+
+// glass z=-4
+{const p=uv2w(0.5,0.5,-4);const s=fsz(0.80,0.80,-4);
+scene.add(mkP(s[0],s[1],0xa8c8dc,p[0],p[1],-4,0.06,'glass',4));}
+
+// Generate 64 UV positions
+const dropUV=[];
+for(let i=0;i<64;i++){dropUV.push({u:rnd(),v:rnd()});}
+
+// drops z=-3.9
+const dropMeshes=[];
+const dropD=4-(-3.9);
+const dropYH=dropD*TF;
+const dropXH=dropD*TF*AS;
+for(let i=0;i<64;i++){
+  const x=(dropUV[i].u-0.5)*2*dropXH;
+  const y=(0.5-dropUV[i].v)*2*dropYH;
+  const ds=fsz(6/800,6/600,-3.9);
+  const dm=new THREE.MeshBasicMaterial({color:0xa8c8dc,transparent:true,opacity:0.9,side:THREE.DoubleSide});
+  const dp=new THREE.Mesh(new THREE.PlaneGeometry(ds[0],ds[1]),dm);
+  dp.position.set(x,y,-3.9);dp.name='drop_'+i;dp.renderOrder=5;scene.add(dp);
+  dropMeshes.push({mesh:dp,x,y});
+}
+
+// rain z=-12
+const rainMeshes=[];
+const rainD=4-(-12);
+const rainYH=rainD*TF;
+const rainXH=rainD*TF*AS;
+for(let i=0;i<64;i++){
+  const x=(dropUV[i].u-0.5)*2*rainXH;
+  const y=(0.5-dropUV[i].v)*2*rainYH;
+  const rs=fsz(4/800,14/600,-12);
+  const rm=new THREE.MeshBasicMaterial({color:0xa8c8dc,transparent:true,opacity:0.45,side:THREE.DoubleSide});
+  const rp=new THREE.Mesh(new THREE.PlaneGeometry(rs[0],rs[1]),rm);
+  rp.position.set(x,y,-12);rp.name='rain_'+i;rp.renderOrder=3;scene.add(rp);
+  rainMeshes.push({mesh:rp,x,y});
+}
+
+// steam z=-10
+const steamUs=[0.20,0.24,0.28];
+const steamMeshes=[];
+for(let i=0;i<3;i++){
+  const p=uv2w(steamUs[i],0.40,-10);const s=fsz(0.04,0.12,-10);
+  const sm=new THREE.MeshBasicMaterial({color:0xffb347,transparent:true,opacity:0.5,side:THREE.DoubleSide});
+  const sp=new THREE.Mesh(new THREE.PlaneGeometry(s[0],s[1]),sm);
+  sp.position.set(p[0],p[1],-10);sp.name='steam_'+i;sp.renderOrder=6;scene.add(sp);
+  steamMeshes.push(sp);
+}
+// extra steam puffs
+for(let i=0;i<3;i++){
+  for(let j=1;j<=2;j++){
+    const p=uv2w(steamUs[i],0.40+j*0.03,-10);const s=fsz(0.03+j*0.01,0.04,-10);
+    const sm=new THREE.MeshBasicMaterial({color:0xffb347,transparent:true,opacity:0.3,side:THREE.DoubleSide});
+    const sp=new THREE.Mesh(new THREE.PlaneGeometry(s[0],s[1]),sm);
+    sp.position.set(p[0],p[1],-10);sp.name='steam_puff_'+i+'_'+j;sp.renderOrder=6;scene.add(sp);
+    steamMeshes.push(sp);
+  }
+}
+
+// state
+let t=0;
+const D_SPD=2.10;
+const R_SPD=D_SPD/3;
+const S_FRQ=0.77;
+const C_FRQ=0.25;
+const C_AMP=0.057;
+
+function steamOp(){return 0.25+0.45*(0.5+0.5*Math.sin(2*Math.PI*S_FRQ*t));}
+
+renderer.render(scene,camera);
+window.__ready=true;
+
+window.__probe=function(){
+  const objs=[];
+  scene.traverse(o=>{if(o.name)objs.push(o.name);});
+  return{
+    t:Math.round(t*10000)/10000,
+    objects:objs,
+    drops:[Math.round(dropMeshes[0].x*10000)/10000,Math.round(dropMeshes[0].y*10000)/10000],
+    steam:Math.round(steamOp()*10000)/10000
+  };
+};
+
+window.__step=function(dt){
+  t+=dt;
+
+  // camera drift
+  camera.position.x=C_AMP*Math.sin(2*Math.PI*C_FRQ*t);
+  camera.lookAt(0,0,-1);
+
+  // drops
+  for(let i=0;i<64;i++){
+    dropMeshes[i].y-=D_SPD*dt;
+    if(dropMeshes[i].y<-dropYH)dropMeshes[i].y+=2*dropYH;
+    dropMeshes[i].mesh.position.y=dropMeshes[i].y;
+  }
+
+  // rain
+  for(let i=0;i<64;i++){
+    rainMeshes[i].y-=R_SPD*dt;
+    if(rainMeshes[i].y<-rainYH)rainMeshes[i].y+=2*rainYH;
+    rainMeshes[i].mesh.position.y=rainMeshes[i].y;
+  }
+
+  // steam
+  const so=steamOp();
+  for(let i=0;i<steamMeshes.length;i++){
+    const base=i<3?so:so*0.6;
+    steamMeshes[i].material.opacity=base;
+  }
+
+  // sign blink
+  const sb=Math.sin(2*Math.PI*1.5*t);
+  signMat.opacity=sb>-0.4?1.0:0.2;
+
+  // holo scan
+  for(let i=0;i<holoScans.length;i++){
+    const hs=holoScans[i];
+    const ph=(t*0.6+hs.idx*0.17)%1.0;
+    const pv=0.30+hs.panel*0.02-0.07+ph*0.14;
+    const pp=uv2w(0.14,pv,-9.97);
+    hs.mesh.position.y=pp[1];
+    hs.mesh.material.opacity=0.2+0.5*Math.sin(ph*Math.PI);
+  }
+
+  // puddle rings
+  for(let i=0;i<pudRings.length;i++){
+    const pr=pudRings[i];
+    const ph=(t*0.25+pr.ri*0.33)%1.0;
+    const sc=0.4+ph*0.6;
+    pr.mesh.scale.set(sc,sc,1);
+    pr.mesh.material.opacity=0.35*(1-ph);
+  }
+
+  renderer.render(scene,camera);
+  return window.__probe();
+};
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-18 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

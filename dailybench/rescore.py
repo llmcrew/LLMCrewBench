@@ -33,6 +33,7 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
     saved = json.loads(tasks_path.read_text(encoding="utf-8"))
 
     scores: list[core.Score] = []
+    replays: list[Any] = []
     changed: list[dict[str, Any]] = []
     for entry in saved:
         task_id = (entry.get("task") or {}).get("id")
@@ -40,14 +41,17 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
         if task is None:
             # The current suite no longer generates this task: keep the old score.
             scores.append(core.Score.from_dict(entry["score"]))
+            replays.append(None)
             changed.append({"task_id": task_id, "status": "нет задания в текущем сьюте"})
             continue
         transcript = transcript_from_dict(entry.get("transcript") or {}, task)
         module = core.REGISTRY.get(task.category)
         if module is None:
             scores.append(core.Score.from_dict(entry["score"]))
+            replays.append(None)
             continue
         fresh = module.evaluate(task, transcript)
+        replays.append(transcript)
         if transcript.error:
             fresh.error = transcript.error
         before = float((entry.get("score") or {}).get("earned", 0.0))
@@ -64,6 +68,19 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
             )
         scores.append(fresh)
 
+    # Пересчёт обновляет и записи ответов: наблюдения сцены (кадр, метрики)
+    # живут в transcript.extra, а витрина читает их именно оттуда.
+    for entry, replay in zip(saved, replays):
+        if replay is None:
+            continue
+        transcript = entry.get("transcript")
+        if not isinstance(transcript, dict):
+            continue
+        for key, value in replay.extra.items():
+            transcript.setdefault("extra", {})[key] = value
+    (directory / "tasks.json").write_text(
+        json.dumps(saved, ensure_ascii=False, indent=2, default=core.json_default), encoding="utf-8"
+    )
     (directory / "scores.json").write_text(
         json.dumps([score.as_dict() for score in scores], ensure_ascii=False, indent=2, default=core.json_default),
         encoding="utf-8",

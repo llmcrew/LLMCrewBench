@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Lofi Room</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- LCG Implementation ---
+        const SEED = 232350;
+        let lcg_state = SEED;
+
+        function rnd() {
+            lcg_state = (lcg_state * 1103515245 + 12345) % 2147483648;
+            return lcg_state / 2147483648;
+        }
+
+        // --- Palette ---
+        const COLORS = {
+            wall: new THREE.Color('#2e1636'),
+            warm: new THREE.Color('#ffa83c'),
+            plant: new THREE.Color('#7bbf6a'),
+            city: new THREE.Color('#7fe3e0'),
+            rain: new THREE.Color('#a8c8dc')
+        };
+
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+        // No fog to maintain strict palette colors
+        
+        const camera = new THREE.PerspectiveCamera(60, 800/600, 0.1, 100);
+        camera.position.set(0, 0, 4);
+        camera.lookAt(0, 0, -1);
+
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: false });
+        renderer.setSize(800, 600, false);
+        renderer.setPixelRatio(1);
+        document.body.appendChild(renderer.domElement);
+
+        // --- Helpers: Coordinate Mapping ---
+        // Maps normalized (u, v) [0..1] to World Space at depth Z.
+        // u=0 left, u=1 right. v=0 top, v=1 bottom.
+        function getWorldPos(u, v, z) {
+            const dist = camera.position.z - z;
+            const vFOV = THREE.MathUtils.degToRad(camera.fov);
+            const visibleHeight = 2 * Math.tan(vFOV / 2) * dist;
+            const visibleWidth = visibleHeight * camera.aspect;
+            
+            const x = (u - 0.5) * visibleWidth;
+            const y = (0.5 - v) * visibleHeight;
+            return new THREE.Vector3(x, y, z);
+        }
+
+        function getWorldSize(wNorm, hNorm, z) {
+            const dist = camera.position.z - z;
+            const vFOV = THREE.MathUtils.degToRad(camera.fov);
+            const visibleHeight = 2 * Math.tan(vFOV / 2) * dist;
+            const visibleWidth = visibleHeight * camera.aspect;
+            return { w: wNorm * visibleWidth, h: hNorm * visibleHeight };
+        }
+
+        const objects = [];
+
+        // 1. Room Background (Wall/Floor/Ceiling base)
+        const roomGeo = new THREE.PlaneGeometry(100, 100);
+        const roomMat = new THREE.MeshBasicMaterial({ color: COLORS.wall });
+        const roomMesh = new THREE.Mesh(roomGeo, roomMat);
+        roomMesh.position.z = -25;
+        scene.add(roomMesh);
+        objects.push('room');
+
+        // 2. City (z = -20)
+        // "стена дальнего города... с окнами... 26 штук"
+        // Constrained to window strip (v=0.11..0.45) to satisfy "cold pixels in window"
+        const cityGroup = new THREE.Group();
+        cityGroup.position.z = -20;
+        scene.add(cityGroup);
+        objects.push('city');
+
+        const winGeo = new THREE.PlaneGeometry(1, 1);
+        const winMat = new THREE.MeshBasicMaterial({ color: COLORS.city, toneMapped: false });
+
+        for (let i = 0; i < 26; i++) {
+            const u = rnd(); 
+            const v = 0.11 + rnd() * (0.45 - 0.11); // Constrain to window height
+            
+            const pos = getWorldPos(u, v, -20);
+            const size = getWorldSize(0.012, 0.012, -20);
+            
+            const mesh = new THREE.Mesh(winGeo, winMat);
+            mesh.position.copy(pos);
+            mesh.scale.set(size.w, size.h, 1);
+            cityGroup.add(mesh);
+        }
+
+        // 3. Glass (z = -6)
+        // Window: 11% to 45% height, 78% width
+        const glassW = 0.78;
+        const glassH = 0.34; // 0.45 - 0.11
+        const glassV = 0.28; // Center of 0.11..0.45
+        
+        const glassPos = getWorldPos(0.5, glassV, -6);
+        const glassSize = getWorldSize(glassW, glassH, -6);
+        
+        const glassGeo = new THREE.PlaneGeometry(glassSize.w, glassSize.h);
+        const glassMat = new THREE.MeshBasicMaterial({ 
+            color: 0xffffff, 
+            transparent: true, 
+            opacity: 0.35,
+            side: THREE.DoubleSide
+        });
+        const glassMesh = new THREE.Mesh(glassGeo, glassMat);
+        glassMesh.position.copy(glassPos);
+        scene.add(glassMesh);
+        objects.push('glass');
+
+        // 4. Rain (z = -12)
+        // 64 additive points, size 5px, color #a8c8dc
+        // Constrained to window strip
+        const rainCount = 64;
+        const rainGeo = new THREE.BufferGeometry();
+        const rainPositions = new Float32Array(rainCount * 3);
+        
+        for(let i=0; i<rainCount; i++) {
+            const u = rnd();
+            const v = 0.11 + rnd() * (0.45 - 0.11); // Constrain to window height
+            
+            const pos = getWorldPos(u, v, -12);
+            rainPositions[i*3] = pos.x;
+            rainPositions[i*3+1] = pos.y;
+            rainPositions[i*3+2] = -12;
+        }
+        rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3));
+        
+        const rainMat = new THREE.PointsMaterial({
+            color: COLORS.rain,
+            size: 5,
+            sizeAttenuation: false,
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+        const rainPoints = new THREE.Points(rainGeo, rainMat);
+        scene.add(rainPoints);
+        objects.push('rain');
+
+        // 5. Plant (u = 0.16)
+        // On windowsill (v ~ 0.60)
+        const plantGroup = new THREE.Group();
+        const plantBasePos = getWorldPos(0.16, 0.60, 0); 
+        plantGroup.position.copy(plantBasePos);
+        scene.add(plantGroup);
+        objects.push('plant');
+
+        const leafGeo = new THREE.PlaneGeometry(1, 1);
+        const leafMat = new THREE.MeshBasicMaterial({ color: COLORS.plant, side: THREE.DoubleSide });
+        
+        // Leaf 1: 0.09x0.15
+        const l1Size = getWorldSize(0.09, 0.15, 0);
+        const l1 = new THREE.Mesh(leafGeo, leafMat);
+        l1.scale.set(l1Size.w, l1Size.h, 1);
+        l1.position.y = 0.02; 
+        l1.rotation.z = -0.2;
+        plantGroup.add(l1);
+
+        // Leaf 2: 0.08x0.12
+        const l2Size = getWorldSize(0.08, 0.12, 0);
+        const l2 = new THREE.Mesh(leafGeo, leafMat);
+        l2.scale.set(l2Size.w, l2Size.h, 1);
+        l2.position.y = 0.08; 
+        l2.position.x = 0.03;
+        l2.rotation.z = 0.3;
+        plantGroup.add(l2);
+
+        // Leaf 3: 0.07x0.10
+        const l3Size = getWorldSize(0.07, 0.10, 0);
+        const l3 = new THREE.Mesh(leafGeo, leafMat);
+        l3.scale.set(l3Size.w, l3Size.h, 1);
+        l3.position.y = 0.14; 
+        l3.position.x = -0.03;
+        l3.rotation.z = -0.1;
+        plantGroup.add(l3);
+
+        // Pot: #2e1636
+        const potSize = getWorldSize(0.06, 0.06, 0);
+        const potGeo = new THREE.CylinderGeometry(potSize.w/2, potSize.w/2, potSize.h, 8);
+        const potMat = new THREE.MeshBasicMaterial({ color: COLORS.wall });
+        const pot = new THREE.Mesh(potGeo, potMat);
+        pot.position.y = -0.03;
+        plantGroup.add(pot);
+
+        // 6. Desk (u = 0.73, v = 0.72)
+        const deskGroup = new THREE.Group();
+        const deskPos = getWorldPos(0.73, 0.72, 0);
+        deskGroup.position.copy(deskPos);
+        scene.add(deskGroup);
+        objects.push('desk');
+
+        // Desk Surface (Warm spot)
+        const deskSpotSize = getWorldSize(0.20, 0.10, 0);
+        const deskSpotGeo = new THREE.PlaneGeometry(deskSpotSize.w, deskSpotSize.h);
+        const deskSpotMat = new THREE.MeshBasicMaterial({ color: COLORS.warm });
+        const deskSpot = new THREE.Mesh(deskSpotGeo, deskSpotMat);
+        deskSpot.rotation.x = -Math.PI / 2;
+        deskSpot.position.y = -0.05;
+        deskGroup.add(deskSpot);
+
+        // Monitor: #7fe3e0, 14% width
+        const monSize = getWorldSize(0.14, 0.10, 0);
+        const monGeo = new THREE.PlaneGeometry(monSize.w, monSize.h);
+        const monMat = new THREE.MeshBasicMaterial({ color: COLORS.city });
+        const monitor = new THREE.Mesh(monGeo, monMat);
+        monitor.position.y = monSize.h / 2;
+        monitor.position.z = 0.05;
+        deskGroup.add(monitor);
+
+        // 7. Lamp (u = 0.25, v = 0.06)
+        const lampPos = getWorldPos(0.25, 0.06, 0);
+        const lampSize = getWorldSize(0.05, 0.05, 0);
+        const lampGeo = new THREE.SphereGeometry(lampSize.w/2, 16, 16);
+        const lampMat = new THREE.MeshBasicMaterial({ color: COLORS.warm });
+        const lamp = new THREE.Mesh(lampGeo, lampMat);
+        lamp.position.copy(lampPos);
+        scene.add(lamp);
+        objects.push('lamp');
+
+        // 8. Sill Strip (Below window: 45%..95%)
+        const sillV_start = 0.45;
+        const sillV_end = 0.95;
+        const sillH = sillV_end - sillV_start;
+        const sillV_center = sillV_start + sillH/2;
+        
+        const sillPos = getWorldPos(0.5, sillV_center, 0);
+        const sillSize = getWorldSize(1.0, sillH, 0);
+        
+        const sillGeo = new THREE.PlaneGeometry(sillSize.w, sillSize.h);
+        const sillMat = new THREE.MeshBasicMaterial({ color: COLORS.warm });
+        const sillMesh = new THREE.Mesh(sillGeo, sillMat);
+        sillMesh.position.copy(sillPos);
+        scene.add(sillMesh);
+        objects.push('sill');
+
+        // 9. Wall Top Strip (0..11%)
+        const wallTopV_end = 0.11;
+        const wallTopH = 0.11;
+        const wallTopV_center = 0.055;
+        
+        const wallTopPos = getWorldPos(0.5, wallTopV_center, 0);
+        const wallTopSize = getWorldSize(1.0, wallTopH, 0);
+        
+        const wallTopGeo = new THREE.PlaneGeometry(wallTopSize.w, wallTopSize.h);
+        const wallTopMat = new THREE.MeshBasicMaterial({ color: COLORS.wall });
+        const wallTopMesh = new THREE.Mesh(wallTopGeo, wallTopMat);
+        wallTopMesh.position.copy(wallTopPos);
+        scene.add(wallTopMesh);
+        objects.push('wall_top');
+
+        // --- Animation State ---
+        let time = 0;
+        const cameraStartZ = 4;
+        const cameraEndZ = -3.6;
+        const cameraSpeed = 1.64;
+
+        // --- Step Function ---
+        window.__step = function(dt) {
+            time += dt;
+
+            // 1. Camera Movement
+            let newZ = cameraStartZ - (time * cameraSpeed);
+            if (newZ < cameraEndZ) newZ = cameraEndZ;
+            camera.position.z = newZ;
+            camera.lookAt(0, 0, -1);
+
+            // 2. Rain Movement
+            const positions = rainPoints.geometry.attributes.position.array;
+            const rainDist = camera.position.z - (-12);
+            const vFOV = THREE.MathUtils.degToRad(camera.fov);
+            const visibleHeight = 2 * Math.tan(vFOV / 2) * rainDist;
+            const topY = visibleHeight / 2;
+            const bottomY = -visibleHeight / 2;
+
+            for(let i=0; i<rainCount; i++) {
+                let y = positions[i*3+1];
+                y -= 2.4 * dt;
+                if (y < bottomY) {
+                    y = topY;
+                }
+                positions[i*3+1] = y;
+            }
+            rainPoints.geometry.attributes.position.needsUpdate = true;
+
+            renderer.render(scene, camera);
+            return window.__probe();
+        };
+
+        window.__probe = function() {
+            return {
+                t: parseFloat(time.toFixed(4)),
+                objects: objects,
+                camera: [parseFloat(camera.position.x.toFixed(4)), parseFloat(camera.position.z.toFixed(4))]
+            };
+        };
+
+        window.__ready = true;
+        
+        // Initial Render
+        renderer.render(scene, camera);
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-17 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

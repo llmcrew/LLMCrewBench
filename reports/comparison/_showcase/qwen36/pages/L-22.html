@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <style>body { margin: 0; overflow: hidden; background: #000; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
+</script>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Renderer & Camera ---
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, 800/600, 0.1, 100);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
+
+// --- Deterministic RNG ---
+let lcg = 238931;
+function rnd() {
+  lcg = (lcg * 1103515245 + 12345) % 2147483648;
+  return lcg / 2147483648;
+}
+
+// --- Frustum Helpers ---
+function getFrustum(z) {
+  const dist = 4 - z;
+  const h = 2 * dist * Math.tan(30 * Math.PI / 180);
+  return { w: h * (800/600), h };
+}
+
+function placeAtUV(u, v, z, wFrac, hFrac) {
+  const { w, h } = getFrustum(z);
+  return {
+    x: (u - 0.5) * w,
+    y: (v - 0.5) * h,
+    w: wFrac * w,
+    h: hFrac * h
+  };
+}
+
+// --- Materials ---
+const matNight = new THREE.MeshBasicMaterial({ color: 0x1b1a2a });
+const matWall = new THREE.MeshBasicMaterial({ color: 0x1b1a2a });
+const matFloor = new THREE.MeshBasicMaterial({ color: 0x14121f });
+const matSign = new THREE.MeshBasicMaterial({ color: 0xff2f7a, transparent: true, opacity: 1 });
+const matRobot = new THREE.MeshBasicMaterial({ color: 0x1b1a2a });
+const matEye = new THREE.MeshBasicMaterial({ color: 0xa8c8dc });
+const matLamp = new THREE.MeshBasicMaterial({ color: 0xffd94a });
+const matWet = new THREE.MeshBasicMaterial({ color: 0xa8c8dc });
+const matPuddle = new THREE.MeshBasicMaterial({ color: 0xff2f7a, transparent: true, opacity: 0.4 });
+
+// --- Static Geometry ---
+const night = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), matNight);
+night.position.z = -45;
+scene.add(night);
+
+const wall = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), matWall);
+wall.position.z = -16;
+scene.add(wall);
+
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), matFloor);
+floor.position.z = -8;
+scene.add(floor);
+
+// Sign
+const signPos = placeAtUV(0.28, 0.16, -16, 0.30, 0.12);
+const sign = new THREE.Mesh(new THREE.PlaneGeometry(signPos.w, signPos.h), matSign);
+sign.position.set(signPos.x, signPos.y, -16);
+scene.add(sign);
+
+// Robot
+const robotGroup = new THREE.Group();
+const robotPos = placeAtUV(0.44, 0.66, -8, 0.20, 0.15);
+robotGroup.position.set(robotPos.x, robotPos.y, -8);
+const rw = robotPos.w;
+const rh = robotPos.h;
+
+const body = new THREE.Mesh(new THREE.BoxGeometry(rw*0.8, rh*0.55, rw*0.5), matRobot);
+body.position.y = rh*0.55/2;
+robotGroup.add(body);
+
+const head = new THREE.Mesh(new THREE.BoxGeometry(rw*0.6, rh*0.30, rw*0.5), matRobot);
+head.position.y = rh*0.55/2 + rh*0.30/2 + 0.05;
+robotGroup.add(head);
+
+const eye = new THREE.Mesh(new THREE.BoxGeometry(rw*0.12, rh*0.15, rw*0.1), matEye);
+eye.position.set(0, head.position.y, rw*0.25);
+robotGroup.add(eye);
+
+const lamp = new THREE.Mesh(new THREE.BoxGeometry(rw*0.1, rh*0.1, rw*0.1), matLamp);
+lamp.position.set(rw*0.4, head.position.y - rh*0.1, rw*0.25);
+robotGroup.add(lamp);
+
+const leg1 = new THREE.Mesh(new THREE.BoxGeometry(rw*0.2, rh*0.35, rw*0.3), matRobot);
+leg1.position.set(-rw*0.2, -rh*0.55/2 - rh*0.35/2, 0);
+robotGroup.add(leg1);
+
+const leg2 = new THREE.Mesh(new THREE.BoxGeometry(rw*0.2, rh*0.35, rw*0.3), matRobot);
+leg2.position.set(rw*0.2, -rh*0.55/2 - rh*0.35/2, 0);
+robotGroup.add(leg2);
+
+const arm1 = new THREE.Mesh(new THREE.BoxGeometry(rw*0.4, rh*0.15, rw*0.2), matRobot);
+arm1.position.set(-rw*0.5, 0, 0);
+robotGroup.add(arm1);
+
+const arm2 = new THREE.Mesh(new THREE.BoxGeometry(rw*0.4, rh*0.15, rw*0.2), matRobot);
+arm2.position.set(rw*0.5, 0, 0);
+robotGroup.add(arm2);
+
+scene.add(robotGroup);
+
+// Wet strip
+const wetPos = placeAtUV(0.5, 0.945, -8, 0.96, 0.06);
+const wet = new THREE.Mesh(new THREE.PlaneGeometry(wetPos.w, wetPos.h), matWet);
+wet.position.set(wetPos.x, wetPos.y, -8);
+scene.add(wet);
+
+// Puddles
+const puddles = [];
+for(let i = 0; i < 3; i++) {
+  const pPos = placeAtUV(0.3 + i*0.2, 0.88, -8, 0.20, 0.05);
+  const p = new THREE.Mesh(new THREE.PlaneGeometry(pPos.w, pPos.h), matPuddle);
+  p.position.set(pPos.x, pPos.y, -8);
+  scene.add(p);
+  puddles.push(p);
+}
+
+// Drops
+const DROP_COUNT = 54;
+const dropsGeo = new THREE.BufferGeometry();
+const dropsPos = new Float32Array(DROP_COUNT * 3);
+const dropsData = [];
+const fDropInit = getFrustum(-3.9);
+for(let i = 0; i < DROP_COUNT; i++) {
+  dropsPos[i*3] = (rnd()-0.5) * fDropInit.w;
+  dropsPos[i*3+1] = (rnd()-0.5) * fDropInit.h;
+  dropsPos[i*3+2] = -3.9;
+  dropsData.push({ vy: 1.93 });
+}
+dropsGeo.setAttribute('position', new THREE.BufferAttribute(dropsPos, 3));
+const dropsMat = new THREE.PointsMaterial({ color: 0xa8c8dc, size: 0.12, sizeAttenuation: true });
+const drops = new THREE.Points(dropsGeo, dropsMat);
+scene.add(drops);
+
+// Sparks
+const SPARK_COUNT = 22;
+const sparksGeo = new THREE.BufferGeometry();
+const sparksPos = new Float32Array(SPARK_COUNT * 3);
+const sparksData = [];
+const sparkStartX = robotPos.x + rw*0.5;
+const sparkStartY = robotPos.y;
+for(let i = 0; i < SPARK_COUNT; i++) {
+  sparksPos[i*3] = sparkStartX + (rnd()-0.5)*0.5;
+  sparksPos[i*3+1] = sparkStartY + (rnd()-0.5)*0.5;
+  sparksPos[i*3+2] = -6;
+  sparksData.push({ vy: 3 + rnd()*1.5, vx: (rnd()-0.5)*2 });
+}
+sparksGeo.setAttribute('position', new THREE.BufferAttribute(sparksPos, 3));
+const sparksMat = new THREE.PointsMaterial({ color: 0xffd94a, size: 0.12, sizeAttenuation: true, blending: THREE.AdditiveBlending, depthWrite: false });
+const sparks = new THREE.Points(sparksGeo, sparksMat);
+scene.add(sparks);
+
+// --- Animation State ---
+let t = 0;
+let cameraZ = 4;
+
+function update(dt) {
+  t += dt;
+  cameraZ = Math.max(0.8, 4 - 1.06 * t);
+  camera.position.z = cameraZ;
+
+  // Sign blink (period 1.4s)
+  matSign.opacity = Math.sin(t * Math.PI / 0.7) > 0 ? 1 : 0.1;
+
+  // Drops
+  const fDrop = getFrustum(-3.9);
+  const dArr = dropsGeo.attributes.position.array;
+  for(let i = 0; i < DROP_COUNT; i++) {
+    dArr[i*3+1] -= dropsData[i].vy * dt;
+    if(dArr[i*3+1] < -fDrop.h/2) {
+      dArr[i*3+1] = fDrop.h/2;
+      dArr[i*3] = (rnd()-0.5) * fDrop.w;
+    }
+  }
+  dropsGeo.attributes.position.needsUpdate = true;
+
+  // Sparks
+  const fSpark = getFrustum(-6);
+  const sArr = sparksGeo.attributes.position.array;
+  for(let i = 0; i < SPARK_COUNT; i++) {
+    sArr[i*3+1] -= sparksData[i].vy * dt;
+    sArr[i*3] += sparksData[i].vx * dt;
+    if(sArr[i*3+1] < -fSpark.h/2) {
+      sArr[i*3+1] = fSpark.h/2;
+      sArr[i*3] = sparkStartX + (rnd()-0.5)*0.5;
+    }
+  }
+  sparksGeo.attributes.position.needsUpdate = true;
+}
+
+function render() {
+  renderer.render(scene, camera);
+}
+
+// --- API ---
+window.__step = function(dt) {
+  update(dt);
+  render();
+  return window.__probe();
+};
+
+window.__probe = function() {
+  const sArr = sparksGeo.attributes.position.array;
+  return {
+    t: parseFloat(t.toFixed(4)),
+    objects: ['night', 'wall', 'floor', 'sign', 'robot', 'wet', 'puddle', 'drops', 'sparks'],
+    spark: [parseFloat(sArr[0].toFixed(4)), parseFloat(sArr[1].toFixed(4))],
+    camera: [parseFloat(camera.position.x.toFixed(4)), parseFloat(camera.position.z.toFixed(4))]
+  };
+};
+
+// Initial frame
+update(0);
+render();
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-22 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

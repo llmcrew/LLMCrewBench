@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <style>body { margin: 0; overflow: hidden; background: #0b1424; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+  <script type="module">
+    const THREE = window.THREE;
+
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#0b1424');
+
+    const camera = new THREE.OrthographicCamera(-4/3, 4/3, 1, -1, 0.1, 10);
+    camera.position.set(0, 0, 2);
+    camera.lookAt(0, 0, 0);
+
+    const geometry = new THREE.PlaneGeometry(1, 1);
+    const material = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, side: THREE.DoubleSide });
+    const mesh = new THREE.InstancedMesh(geometry, material, 1500);
+    mesh.name = 'flow_particles';
+    scene.add(mesh);
+
+    const NUM = 1500;
+    const particles = [];
+    let seed = 765555113;
+    let t = 0;
+    let currentSpeed = 0;
+
+    function lcg() {
+        seed = (1664525 * seed + 1013904223) & 0xFFFFFFFF;
+        return seed;
+    }
+
+    function getVelocity(x, y, time) {
+        let vx = 0, vy = 0;
+        const waves = [
+            {a: 0.50, k: 1.40, m: 0.90, w: 0.70, p: 0.987},
+            {a: 0.35, k: 0.80, m: -1.70, w: 1.10, p: 3.087}
+        ];
+        for (let i = 0; i < waves.length; i++) {
+            const w = waves[i];
+            const phase = w.k * x + w.m * y - w.w * time + w.p;
+            const c = Math.cos(phase);
+            vx += w.a * c * w.m;
+            vy += w.a * c * (-w.k);
+        }
+        return [vx, vy];
+    }
+
+    function updateMesh() {
+        const m = new THREE.Matrix4();
+        const c = new THREE.Color();
+        const q = new THREE.Quaternion();
+        const s = new THREE.Vector3();
+        const pos = new THREE.Vector3();
+        let totalSpeed = 0;
+
+        for (let i = 0; i < NUM; i++) {
+            const p = particles[i];
+            const angle = Math.atan2(p.vy, p.vx);
+            const length = 0.090 - p.age * 0.050;
+            const brightness = 1.0 - p.age * 0.75;
+
+            q.setFromAxisAngle(new THREE.Vector3(0, 0, 1), angle);
+            s.set(0.010, length, 1);
+            pos.set(p.x, p.y, 0);
+            m.compose(pos, q, s);
+            mesh.setMatrixAt(i, m);
+
+            let angleDeg = angle * 180 / Math.PI;
+            if (angleDeg < -60) c.set('#28d7e8');
+            else if (angleDeg > 60) c.set('#f2c53d');
+            else c.set('#e8399b');
+
+            c.multiplyScalar(brightness);
+            mesh.setColorAt(i, c);
+
+            totalSpeed += Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+        }
+        mesh.instanceMatrix.needsUpdate = true;
+        mesh.instanceColor.needsUpdate = true;
+        currentSpeed = totalSpeed / NUM;
+    }
+
+    function initParticles() {
+        for (let i = 0; i < NUM; i++) {
+            lcg();
+            const x = ((seed / 4294967296) * 2 - 1) * (4/3);
+            const y = (seed / 4294967296) * 2 - 1;
+            const [vx, vy] = getVelocity(x, y, t);
+            particles.push({ x, y, vx, vy, age: 0 });
+        }
+        updateMesh();
+    }
+
+    initParticles();
+    renderer.render(scene, camera);
+    window.__ready = true;
+
+    window.__step = function(dt) {
+        t += dt;
+        for (let i = 0; i < NUM; i++) {
+            const p = particles[i];
+            const [vx, vy] = getVelocity(p.x, p.y, t);
+            p.vx = vx;
+            p.vy = vy;
+            p.x += vx * 0.18 * dt;
+            p.y += vy * 0.18 * dt;
+            p.age += dt / 2.6;
+
+            if (p.age >= 1.0 || p.x < -4/3 || p.x > 4/3 || p.y < -1 || p.y > 1) {
+                lcg();
+                p.x = ((seed / 4294967296) * 2 - 1) * (4/3);
+                p.y = (seed / 4294967296) * 2 - 1;
+                p.age = 0;
+                const [nvx, nvy] = getVelocity(p.x, p.y, t);
+                p.vx = nvx;
+                p.vy = nvy;
+            }
+        }
+        updateMesh();
+        renderer.render(scene, camera);
+        return window.__probe();
+    };
+
+    window.__probe = function() {
+        return {
+            t: t.toFixed(4),
+            objects: scene.children.map(o => o.name),
+            particles: particles.slice(0, 8).map(p => [p.x.toFixed(4), p.y.toFixed(4)]),
+            speed: parseFloat(currentSpeed.toFixed(4))
+        };
+    };
+  </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-15 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

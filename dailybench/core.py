@@ -21,19 +21,23 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Protocol, Sequence
+from typing import Any, Callable, Protocol, Sequence
 
 # --------------------------------------------------------------------------- #
 # Scoring constants
 # --------------------------------------------------------------------------- #
 
 CATEGORY_POINTS: dict[str, float] = {
-    "A": 15.0,  # instruction following
-    "B": 20.0,  # reasoning
-    "C": 25.0,  # coding
-    "D": 15.0,  # tool calling / agentic
-    "E": 15.0,  # long context
-    "F": 10.0,  # hallucination resistance
+    "A": 10.0,  # instruction following
+    "B": 15.0,  # reasoning
+    "C": 20.0,  # coding
+    "D": 14.0,  # tool calling / agentic
+    "E": 10.0,  # long context
+    "F": 8.0,  # hallucination resistance
+    "G": 8.0,  # structured output
+    "H": 6.0,  # multi-turn dialogue
+    "I": 4.0,  # retrieval over workspace files
+    "J": 5.0,  # code review
 }
 
 CATEGORY_TITLES: dict[str, str] = {
@@ -43,12 +47,70 @@ CATEGORY_TITLES: dict[str, str] = {
     "D": "Tool calling",
     "E": "Long context",
     "F": "Hallucination resistance",
+    "G": "Structured output",
+    "H": "Multi-turn dialogue",
+    "I": "Retrieval over files",
+    "J": "Code review",
 }
 
-# Categories that can still be scored when the long-context admission fails.
-ADMISSION_CATEGORIES = ("A", "B", "C", "D", "F")
-SHORT_TOTAL = sum(CATEGORY_POINTS[k] for k in ADMISSION_CATEGORIES)  # 85.0
+# Categories that can still be scored when the long-context admission fails:
+# every category except E, whose scenarios need the full window admitted.
+ADMISSION_CATEGORIES = tuple(key for key in CATEGORY_POINTS if key != "E")
+SHORT_TOTAL = sum(CATEGORY_POINTS[k] for k in ADMISSION_CATEGORIES)  # 90.0
 FULL_TOTAL = sum(CATEGORY_POINTS.values())  # 100.0
+
+SCORED_CATEGORIES = tuple(CATEGORY_POINTS)
+"""Categories that add up to the leaderboard verdict."""
+
+SHOWCASE_POINTS: dict[str, float] = {
+    "K": 80.0,  # 20 visual scenarios, 4 checks of 1.0 each
+}
+"""Categories that are measured and reported but never enter the verdict.
+
+The visual block answers "умеет ли модель собрать работающую сцену" with
+pictures, not with points: mixing it into the 100-point total would make the
+score depend on a browser build, so it is kept out of numerator and
+denominator and shown on its own screen of the report. For K the checks are
+objective (coordinates against a Python recomputation), so it keeps its points.
+"""
+
+ART_CATEGORY = "L"
+"""Арт-блок баллов не получает: он рисуется для людей.
+
+Сцены L свободны по форме — модель выбирает материалы, свет и построение
+кадра, а проверки лишь описывают, что вышло. Отчёт поэтому показывает кадр,
+живую сцену и наблюдения (палитра, композиция, детали, движение, объём), но
+не выносит решение «решено / не решено»: это делает человек, глядя на кадры
+рядом. Полный прогон по-прежнему требует ответа на каждую сцену.
+"""
+
+#: Категории, которые рисуются все, но оцениваются глазами.
+ART_CATEGORIES = (ART_CATEGORY,)
+
+SHOWCASE_TITLES: dict[str, str] = {
+    "K": "Visual simulations (Three.js)",
+    "L": "Art visualisations (Three.js)",
+}
+
+SHOWCASE_CATEGORIES = tuple(SHOWCASE_POINTS)  # категории витрины (без арт-блока)
+
+#: Все категории, которые показываются кадрами, включая оценку глазами.
+VISUAL_CATEGORIES = SHOWCASE_CATEGORIES + ART_CATEGORIES
+
+
+def points_for(key: str) -> float | None:
+    """Declared points of a category, if it has any.
+
+    ``None`` for the art block: it is drawn, not scored — the sum of its checks
+    is written next to the frame for information only.
+    """
+    if key in CATEGORY_POINTS:
+        return CATEGORY_POINTS[key]
+    return SHOWCASE_POINTS.get(key)
+
+
+def category_title(key: str) -> str:
+    return CATEGORY_TITLES.get(key) or SHOWCASE_TITLES.get(key) or key
 
 
 # --------------------------------------------------------------------------- #
@@ -88,6 +150,15 @@ class TaskInstance:
 
     tools: list[dict[str, Any]] | None = None
     """OpenAI function-calling schemas, for multi-turn tool scenarios."""
+
+    dialogue: list[str] | None = None
+    """Follow-up user messages, for scripted multi-turn scenarios.
+
+    The runner sends ``prompt`` first and, after every assistant reply that
+    carries no tool calls, the next entry of this list. The task ends when the
+    dialogue is exhausted, so a category can score a correction the model had to
+    apply mid-conversation. Categories that need no follow-ups leave it ``None``.
+    """
 
     meta: dict[str, Any] = field(default_factory=dict)
     """Driver hints: ``{"driver": "tools", "target_tokens": 16384, ...}``."""
@@ -199,6 +270,45 @@ class Transcript:
                 total += n
                 seen = True
         return total if seen else None
+
+    # -- spend (documented, not capped) ------------------------------------ #
+
+    def spend(self) -> dict[str, Any]:
+        """What the task cost, in the same fields for every model.
+
+        The run does not cap generation any more: the limit is the window, so
+        the numbers below are the honest record of what a model chose to spend
+        instead of how much it was allowed to.
+        """
+        answer = think = 0
+        ttft: float | None = None
+        total = 0.0
+        turns_with_tokens = 0
+        for turn in self.turns:
+            reply = turn.reply
+            if reply.reasoning_tokens is not None:
+                think += reply.reasoning_tokens
+            else:
+                think += len(reply.reasoning or "") // 3
+            if reply.completion_tokens is not None:
+                turns_with_tokens += 1
+                answer += max(0, reply.completion_tokens - (reply.reasoning_tokens or 0))
+            total += reply.total_s or 0.0
+            if ttft is None and reply.ttft_s is not None:
+                ttft = reply.ttft_s
+        return {
+            "turns": len(self.turns),
+            "tool_calls": len(self.tool_log),
+            "prompt_tokens_last": self.prompt_tokens(),
+            "answer_tokens": answer if turns_with_tokens else None,
+            "reasoning_tokens": think if turns_with_tokens or self.turns else None,
+            "answer_chars": sum(len(t.reply.text or "") for t in self.turns),
+            "reasoning_chars": sum(len(t.reply.reasoning or "") for t in self.turns),
+            "ttft_s": round(ttft, 3) if ttft is not None else None,
+            "generate_s": round(total, 3) or None,
+            "tokens_per_s": round((answer + think) / total, 2) if total > 0.5 else None,
+            "finish_reasons": [t.reply.finish_reason for t in self.turns],
+        }
 
     def first_turn_text(self) -> str:
         return self.turns[0].reply.text if self.turns else ""
@@ -313,10 +423,9 @@ def register(
     """Register a category module. Called at import time by ``tasks/*``."""
     if key in REGISTRY:
         raise RuntimeError(f"category {key!r} registered twice")
-    if abs(points - CATEGORY_POINTS.get(key, points)) > 1e-9:
-        raise RuntimeError(
-            f"category {key!r} declares {points} points, expected {CATEGORY_POINTS.get(key)}"
-        )
+    declared = points_for(key)
+    if declared is not None and abs(points - declared) > 1e-9:
+        raise RuntimeError(f"category {key!r} declares {points} points, expected {declared}")
     REGISTRY[key] = CategoryModule(
         key=key,
         title=title,
@@ -350,14 +459,12 @@ def json_default(value: Any) -> Any:
         return str(value)
     if isinstance(value, (set, frozenset, tuple)):
         return list(value)
+    if callable(value):
+        # Visual scenarios keep their checks as callables; a published oracle
+        # must stay readable and byte-stable, so it carries the label instead of
+        # a memory address.
+        return f"<проверка: {getattr(value, 'check_label', None) or getattr(value, '__qualname__', 'callable')}>"
     return str(value)
-
-
-def parse_json_object(text: str) -> Any:
-    """Tiny helper for fixture JSON round-tripping in tests."""
-    import json
-
-    return json.loads(text)
 
 
 # --------------------------------------------------------------------------- #
@@ -399,19 +506,3 @@ def register_tool_driver(
         raise RuntimeError(f"tool driver for {category!r} registered twice")
     TOOL_DRIVERS[category] = factory
 
-
-def merge_scores(scores: Iterable[Score]) -> dict[str, dict[str, float]]:
-    """Aggregate per-category totals, honouring the admission rule."""
-    totals: dict[str, dict[str, float]] = {}
-    for s in scores:
-        row = totals.setdefault(
-            s.category,
-            {"earned": 0.0, "possible": 0.0, "admitted": 1.0, "tasks": 0.0},
-        )
-        row["tasks"] += 1
-        row["possible"] += s.possible
-        if s.admission is False:
-            row["admitted"] = 0.0
-        else:
-            row["earned"] += s.earned
-    return totals

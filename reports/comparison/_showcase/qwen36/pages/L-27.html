@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>Epic Planetary Collision</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- LCG Randomness ---
+let lcgState = 160717;
+function lcg() {
+    lcgState = (lcgState * 1103515245 + 12345) % 2147483648;
+    return lcgState / 2147483648;
+}
+
+// --- Scene Setup ---
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1920 / 1080, 0.1, 1000);
+camera.position.set(0, 0.6, 8);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
+
+// Lighting
+scene.add(new THREE.AmbientLight(0x333333));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(5, 3, 5);
+scene.add(sun);
+
+// --- GLSL Noise ---
+const noiseGLSL = `
+    float hash(float n) { return fract(sin(n) * 43758.5453123); }
+    float noise(vec3 x) {
+        vec3 p = floor(x);
+        vec3 f = fract(x);
+        f = f*f*(3.0-2.0*f);
+        float n = p.x + p.y*57.0 + 113.0*p.z;
+        return mix(mix(mix(hash(n+0.0), hash(n+1.0),f.x),
+                       mix(hash(n+57.0), hash(n+58.0),f.x),f.y),
+                   mix(mix(hash(n+113.0), hash(n+114.0),f.x),
+                       mix(hash(n+170.0), hash(n+171.0),f.x),f.y),f.z);
+    }
+`;
+
+// --- Earth ---
+const earthMat = new THREE.ShaderMaterial({
+    uniforms: { time: { value: 0 } },
+    vertexShader: `
+        ${noiseGLSL}
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        void main() {
+            vNormal = normalize(normalMatrix * normal);
+            vPosition = position;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    `,
+    fragmentShader: `
+        ${noiseGLSL}
+        uniform float time;
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        void main() {
+            float n = noise(vPosition * 2.0 + time * 0.05);
+            vec3 sea = vec3(0.0745, 0.1922, 0.3686);
+            vec3 land = vec3(0.1843, 0.4196, 0.2745);
+            vec3 city = vec3(1.0, 0.8157, 0.8157);
+            vec3 col = mix(sea, land, smoothstep(0.4, 0.6, n));
+            col = mix(col, city, smoothstep(0.85, 0.95, n) * 0.6);
+            vec3 lightDir = normalize(vec3(1.0, 0.5, 1.0));
+            float diff = max(dot(vNormal, lightDir), 0.0);
+            col *= 0.3 + 0.7 * diff;
+            gl_FragColor = vec4(col, 1.0);
+        }
+    `
+});
+const earth = new THREE.Mesh(new THREE.SphereGeometry(3.2, 64, 64), earthMat);
+earth.position.set(2.6, -1.4, -11);
+earth.name = 'earth';
+scene.add(earth);
+
+// --- Atmosphere ---
+const atmosphere = new THREE.Mesh(
+    new THREE.SphereGeometry(3.4, 32, 32),
+    new THREE.MeshBasicMaterial({ color: 0x6fb6ff, transparent: true, opacity: 0.3, side: THREE.BackSide })
+);
+atmosphere.position.copy(earth.position);
+atmosphere.name = 'atmosphere';
+scene.add(atmosphere);
+
+// --- Planet A ---
+const planetAMat = new THREE.ShaderMaterial({
+    uniforms: { time: { value: 0 }, impact: { value: 0 } },
+    vertexShader: `
+        ${noiseGLSL}
+        varying vec2 vUv;
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        void main() {
+            vUv = uv;
+            vNormal = normalize(normalMatrix * normal);
+            vPosition = position;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    `,
+    fragmentShader: `
+        ${noiseGLSL}
+        uniform float time;
+        uniform float impact;
+        varying vec2 vUv;
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        void main() {
+            float n = noise(vPosition * 3.0);
+            float crack = smoothstep(0.6, 0.65, n) * impact;
+            vec3 base = vec3(0.5412, 0.4157, 0.3216);
+            vec3 lava = vec3(1.0, 0.4784, 0.2353);
+            vec3 col = mix(base, lava, crack);
+            vec3 lightDir = normalize(vec3(1.0, 0.5, 1.0));
+            float diff = max(dot(vNormal, lightDir), 0.0);
+            col *= 0.2 + 0.8 * diff;
+            col += lava * crack * 0.8;
+            gl_FragColor = vec4(col, 1.0);
+        }
+    `
+});
+const planet_a = new THREE.Mesh(new THREE.SphereGeometry(2.0, 32, 32), planetAMat);
+planet_a.position.set(-4.17, 0.65, -7);
+planet_a.name = 'planet_a';
+scene.add(planet_a);
+
+// --- Planet B ---
+const planetBMat = new THREE.MeshStandardMaterial({ color: 0x6d5a72, roughness: 0.8 });
+const planet_b = new THREE.Mesh(new THREE.SphereGeometry(1.7, 32, 32), planetBMat);
+planet_b.position.set(-1.95, -0.60, -9);
+planet_b.name = 'planet_b';
+scene.add(planet_b);
+
+// --- Shards ---
+const shardsGeo = new THREE.BufferGeometry();
+const shardsPos = new Float32Array(160 * 3);
+const shardsVel = new Float32Array(160 * 3);
+for (let i = 0; i < 160; i++) {
+    shardsPos[i * 3] = planet_a.position.x;
+    shardsPos[i * 3 + 1] = planet_a.position.y;
+    shardsPos[i * 3 + 2] = planet_a.position.z;
+    shardsVel[i * 3] = (lcg() - 0.5) * 2.0;
+    shardsVel[i * 3 + 1] = (lcg() - 0.5) * 2.0;
+    shardsVel[i * 3 + 2] = (lcg() - 0.5) * 2.0;
+}
+shardsGeo.setAttribute('position', new THREE.BufferAttribute(shardsPos, 3));
+const shards = new THREE.Points(shardsGeo, new THREE.PointsMaterial({
+    color: 0xff7a3c, size: 0.15, blending: THREE.AdditiveBlending, transparent: true
+}));
+shards.name = 'shards';
+scene.add(shards);
+
+// --- Dust ---
+const dustGeo = new THREE.BufferGeometry();
+const dustPos = new Float32Array(90 * 3);
+const dustVel = new Float32Array(90 * 3);
+for (let i = 0; i < 90; i++) {
+    dustPos[i * 3] = planet_a.position.x;
+    dustPos[i * 3 + 1] = planet_a.position.y;
+    dustPos[i * 3 + 2] = planet_a.position.z;
+    dustVel[i * 3] = (lcg() - 0.5) * 0.5;
+    dustVel[i * 3 + 1] = (lcg() - 0.5) * 0.5;
+    dustVel[i * 3 + 2] = (lcg() - 0.5) * 0.5;
+}
+dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
+const dust = new THREE.Points(dustGeo, new THREE.PointsMaterial({
+    color: 0xd8b18a, size: 0.3, transparent: true
+}));
+dust.name = 'dust';
+scene.add(dust);
+
+// --- Station ---
+const station = new THREE.Group();
+const sBody = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.2, 1.0), new THREE.MeshStandardMaterial({ color: 0x888888 }));
+const sWing1 = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.05, 0.3), new THREE.MeshStandardMaterial({ color: 0xaaaaaa }));
+sWing1.position.set(0, 0, 0.5);
+const sWing2 = sWing1.clone();
+sWing2.position.set(0, 0, -0.5);
+station.add(sBody, sWing1, sWing2);
+station.position.set(6, -3, -4);
+station.name = 'station';
+scene.add(station);
+
+// --- Stars ---
+const starsGeo = new THREE.BufferGeometry();
+const starsPos = new Float32Array(2200 * 3);
+for (let i = 0; i < 2200; i++) {
+    starsPos[i * 3] = (lcg() - 0.5) * 100;
+    starsPos[i * 3 + 1] = (lcg() - 0.5) * 100;
+    starsPos[i * 3 + 2] = (lcg() - 0.5) * 100;
+}
+starsGeo.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+const stars = new THREE.Points(starsGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.1 }));
+stars.name = 'stars';
+scene.add(stars);
+
+// --- Animation & Logic ---
+let t = 0;
+
+window.__step = function(dt) {
+    t += dt;
+    const dir = new THREE.Vector3().subVectors(planet_b.position, planet_a.position).normalize();
+    const dist = planet_a.position.distanceTo(planet_b.position);
+    const speed = dist / 2.87;
+
+    if (t < 2.87) {
+        planet_a.position.addScaledVector(dir, speed * dt);
+        planet_b.position.addScaledVector(dir, -speed * dt);
+    } else {
+        const impact = Math.min(1.0, (t - 2.87) * 0.5);
+        
+        // Planet A growth & deformation
+        planet_a.scale.setScalar(1.0 + 0.2 * impact);
+        planet_a.scale.x *= (1.0 - 0.4 * impact);
+        planet_a.material.uniforms.impact.value = impact;
+        planet_a.material.uniforms.time.value = t;
+        
+        // Earth reaction (storms & atmosphere distortion)
+        earth.material.uniforms.time.value = t * (1.0 + impact * 2.0);
+        atmosphere.material.opacity = 0.3 + impact * 0.5;
+        atmosphere.scale.setScalar(1.0 + impact * 0.15);
+
+        // Shards explosion
+        const sPos = shards.geometry.attributes.position.array;
+        for (let i = 0; i < 160; i++) {
+            sPos[i * 3] += shardsVel[i * 3] * dt * 2.0;
+            sPos[i * 3 + 1] += shardsVel[i * 3 + 1] * dt * 2.0;
+            sPos[i * 3 + 2] += shardsVel[i * 3 + 2] * dt * 2.0;
+        }
+        shards.geometry.attributes.position.needsUpdate = true;
+
+        // Dust cloud
+        const dPos = dust.geometry.attributes.position.array;
+        for (let i = 0; i < 90; i++) {
+            dPos[i * 3] += dustVel[i * 3] * dt * 0.2;
+            dPos[i * 3 + 1] += dustVel[i * 3 + 1] * dt * 0.2;
+            dPos[i * 3 + 2] += dustVel[i * 3 + 2] * dt * 0.2;
+        }
+        dust.geometry.attributes.position.needsUpdate = true;
+    }
+
+    // Station rotation
+    station.rotation.z = Math.min(0.53, t / 4.0 * 0.53);
+
+    // Camera movement
+    camera.position.z = 8 + 0.055 * t;
+    const mid = new THREE.Vector3().addVectors(planet_a.position, planet_b.position).multiplyScalar(0.5);
+    camera.lookAt(mid);
+
+    const gap = planet_a.position.distanceTo(planet_b.position);
+    renderer.render(scene, camera);
+    return { t: t.toFixed(4), objects: ['earth', 'atmosphere', 'planet_a', 'planet_b', 'shards', 'dust', 'station', 'stars'], gap: gap.toFixed(4) };
+};
+
+// Initial render
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-27 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

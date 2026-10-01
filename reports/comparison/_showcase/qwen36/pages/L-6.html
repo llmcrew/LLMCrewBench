@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Galaxy Particles</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #000; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Constants & Setup ---
+const HALF_HEIGHT = 10 * Math.tan(45 * Math.PI / 360);
+const RADIUS = 0.44 * HALF_HEIGHT;
+const R = RADIUS;
+
+// --- LCG ---
+let s = 800660;
+function nextU() {
+  s = (1664525 * s + 1013904223) % 4294967296;
+  return s / 4294967296;
+}
+
+// --- Point Generation ---
+const armPos = [], armCol = [], armR = [], armTheta0 = [];
+const corePos = [], coreCol = [], coreR = [], coreTheta0 = [];
+const edgePos = [], edgeCol = [], edgeR = [], edgeTheta0 = [];
+const rings = [0, 0, 0, 0];
+
+function countRing(r) {
+  const q = r / R;
+  if (q < 0.25) return 0;
+  if (q < 0.5) return 1;
+  if (q < 0.75) return 2;
+  return 3;
+}
+
+// Arms (7000)
+for (let i = 0; i < 7000; i++) {
+  const u = nextU();
+  const v = nextU();
+  const w = nextU();
+  const g = u + v + w - 1.5;
+  const q = 0.14 + 0.86 * Math.pow(u, 0.62);
+  const r = R * q;
+  const theta = 1.60 * 2 * Math.PI * q + Math.PI * Math.floor(v * 2) + g * 0.50 * (1 - 0.45 * q);
+  const z = (w - 0.5) * 0.10 * r * (0.4 + q);
+  armPos.push(Math.cos(theta) * r, Math.sin(theta) * r, z);
+  armR.push(r);
+  armTheta0.push(theta);
+
+  let c;
+  if (q <= 0.38) c = new THREE.Color(0xffbf00);
+  else if (q <= 0.70) c = new THREE.Color(0xff0080);
+  else c = new THREE.Color(0x0cb7f0);
+  armCol.push(c.r, c.g, c.b);
+  rings[countRing(r)]++;
+}
+
+// Core (2500)
+for (let i = 0; i < 2500; i++) {
+  const u = nextU();
+  const a = 2 * Math.PI * u;
+  const r = 0.22 * R * Math.pow(u, 0.55);
+  const z = (u - 0.5) * 0.09 * R;
+  corePos.push(Math.cos(a) * r, Math.sin(a) * r, z);
+  coreR.push(r);
+  coreTheta0.push(a);
+  coreCol.push(1.0, 0.749, 0.0);
+  rings[countRing(r)]++;
+}
+
+// Halo (1500)
+for (let i = 0; i < 1500; i++) {
+  const u = nextU();
+  const r = R * (0.60 + 0.85 * u);
+  const a = 2 * Math.PI * u;
+  const z = 0;
+  edgePos.push(Math.cos(a) * r, Math.sin(a) * r, z);
+  edgeR.push(r);
+  edgeTheta0.push(a);
+  edgeCol.push(0.047, 0.718, 0.941);
+  rings[countRing(r)]++;
+}
+
+// --- Geometries & Materials ---
+function createPoints(pos, col, size, name) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  const mat = new THREE.PointsMaterial({
+    size, sizeAttenuation: false, transparent: true,
+    blending: THREE.AdditiveBlending, depthTest: false, vertexColors: true
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.name = name;
+  return pts;
+}
+
+const starsArm = createPoints(armPos, armCol, 2.8, 'stars_arm');
+const starsCore = createPoints(corePos, coreCol, 3.2, 'stars_core');
+const starsEdge = createPoints(edgePos, edgeCol, 2.4, 'stars_edge');
+
+// Core Glow
+const canvas = document.createElement('canvas');
+canvas.width = 256; canvas.height = 256;
+const ctx = canvas.getContext('2d');
+const grad = ctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+grad.addColorStop(0, 'rgba(255, 191, 0, 0.9)');
+grad.addColorStop(1, 'rgba(255, 191, 0, 0)');
+ctx.fillStyle = grad;
+ctx.fillRect(0, 0, 256, 256);
+const glowTex = new THREE.CanvasTexture(canvas);
+const glowMat = new THREE.MeshBasicMaterial({
+  map: glowTex, transparent: true, blending: THREE.AdditiveBlending,
+  depthTest: false, side: THREE.DoubleSide
+});
+const coreGlow = new THREE.Mesh(new THREE.PlaneGeometry(0.55 * R, 0.55 * R), glowMat);
+coreGlow.name = 'core_glow';
+
+// --- Scene & Camera ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1d1638);
+
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
+camera.position.set(0, 0, 10.0);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+scene.add(starsCore);
+scene.add(starsArm);
+scene.add(starsEdge);
+scene.add(coreGlow);
+
+// --- Animation State ---
+let t = 0;
+let spin = 0;
+
+function updatePositions() {
+  const pA = starsArm.geometry.attributes.position.array;
+  for (let i = 0; i < 7000; i++) {
+    const r = armR[i];
+    const th = armTheta0[i] + spin / (0.25 + r / R);
+    pA[i * 3] = Math.cos(th) * r;
+    pA[i * 3 + 1] = Math.sin(th) * r;
+  }
+  starsArm.geometry.attributes.position.needsUpdate = true;
+
+  const pC = starsCore.geometry.attributes.position.array;
+  for (let i = 0; i < 2500; i++) {
+    const r = coreR[i];
+    const th = coreTheta0[i] + spin / (0.25 + r / R);
+    pC[i * 3] = Math.cos(th) * r;
+    pC[i * 3 + 1] = Math.sin(th) * r;
+  }
+  starsCore.geometry.attributes.position.needsUpdate = true;
+
+  const pE = starsEdge.geometry.attributes.position.array;
+  for (let i = 0; i < 1500; i++) {
+    const r = edgeR[i];
+    const th = edgeTheta0[i] + spin / (0.25 + r / R);
+    pE[i * 3] = Math.cos(th) * r;
+    pE[i * 3 + 1] = Math.sin(th) * r;
+  }
+  starsEdge.geometry.attributes.position.needsUpdate = true;
+}
+
+// --- API ---
+window.__step = function(dt) {
+  t += dt;
+  spin += 0.55 * dt;
+  updatePositions();
+  return window.__probe();
+};
+
+window.__probe = function() {
+  return {
+    t: parseFloat(t.toFixed(4)),
+    spin: spin,
+    objects: ['stars_core', 'stars_arm', 'stars_edge', 'core_glow'],
+    rings: rings
+  };
+};
+
+// --- Initial Render ---
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-6 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

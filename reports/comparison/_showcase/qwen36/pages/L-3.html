@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; overflow: hidden; background: #0a0a24; }
+    canvas { display: block; }
+  </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// Константы сцены
+const H = 6.627;
+const R_core = 0.06 * H;
+const R_out = 0.34 * H;
+const R_in = 0.1 * H;
+const R_mid = 0.2 * H;
+const W1 = 0.03 * H;
+const W2 = 0.042 * H;
+const R_tip = 0.022 * H;
+const R_ring1 = 0.16 * H;
+const R_ring2 = 0.34 * H;
+const T_ring1 = 0.012 * H;
+const T_ring2 = 0.006 * H;
+
+const L1 = R_out - R_in;
+const L2 = R_mid - R_in;
+const Y1 = R_in + L1 / 2;
+const Y2 = R_in + L2 / 2;
+const Y_tip = R_out;
+
+// Сцена и камера
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a24);
+
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 100);
+camera.position.set(0, 0, 8);
+camera.lookAt(0, 0, 0);
+
+// Рендерер
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+// Группа мандалы
+const wheel = new THREE.Group();
+wheel.name = 'wheel';
+
+// Материалы (без света используем Basic)
+const matGold = new THREE.MeshBasicMaterial({ color: 0xffd257, side: THREE.DoubleSide });
+const matPink = new THREE.MeshBasicMaterial({ color: 0xff3aa8, side: THREE.DoubleSide });
+const matCyan = new THREE.MeshBasicMaterial({ color: 0x2ee6ff, side: THREE.DoubleSide });
+
+// Ядро
+const coreMesh = new THREE.Mesh(new THREE.CircleGeometry(R_core, 32), matGold.clone());
+coreMesh.name = 'core';
+wheel.add(coreMesh);
+
+const coreTorus = new THREE.Mesh(new THREE.TorusGeometry(R_core, 0.03, 16, 32), matGold.clone());
+wheel.add(coreTorus);
+
+// Группа лучей
+const petals = new THREE.Group();
+petals.name = 'petals';
+
+const geo1 = new THREE.PlaneGeometry(W1, L1);
+const geo2 = new THREE.PlaneGeometry(W2, L2);
+const geoTip = new THREE.CircleGeometry(R_tip, 16);
+
+for (let i = 0; i < 12; i++) {
+  const angle1 = (i * 30) * Math.PI / 180;
+  const mat1 = (i % 2 === 0) ? matPink.clone() : matCyan.clone();
+
+  const p1 = new THREE.Mesh(geo1, mat1);
+  p1.position.y = Y1;
+  p1.rotation.z = angle1;
+  petals.add(p1);
+
+  const tip1 = new THREE.Mesh(geoTip, mat1);
+  tip1.position.y = Y_tip;
+  tip1.rotation.z = angle1;
+  petals.add(tip1);
+
+  const angle2 = (i * 30 + 15) * Math.PI / 180;
+  const p2 = new THREE.Mesh(geo2, matGold.clone());
+  p2.position.y = Y2;
+  p2.rotation.z = angle2;
+  petals.add(p2);
+}
+wheel.add(petals);
+
+// Кольца
+const ring1 = new THREE.Mesh(new THREE.TorusGeometry(R_ring1, T_ring1, 16, 64), matGold.clone());
+wheel.add(ring1);
+const ring2 = new THREE.Mesh(new THREE.TorusGeometry(R_ring2, T_ring2, 16, 64), matCyan.clone());
+wheel.add(ring2);
+
+scene.add(wheel);
+
+// Анимация и состояние
+let t = 0;
+
+window.__step = function(dt) {
+  t += dt;
+  wheel.rotation.z = 0.2014 * t;
+  return window.__probe();
+};
+
+window.__probe = function() {
+  const angle = ((wheel.rotation.z * 180 / Math.PI) % 360 + 360) % 360;
+  const objects = [];
+  scene.traverse(obj => { if (obj.name) objects.push(obj.name); });
+  return {
+    t: parseFloat(t.toFixed(4)),
+    objects: objects,
+    angle: parseFloat(angle.toFixed(4))
+  };
+};
+
+function render() {
+  renderer.render(scene, camera);
+  window.__ready = true;
+}
+
+// Первый кадр (t = 0)
+render();
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-3 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

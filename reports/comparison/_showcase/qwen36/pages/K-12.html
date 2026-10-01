@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Heat Diffusion</title>
+  <style>body { margin: 0; overflow: hidden; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+  <script type="module">
+    const THREE = window.THREE;
+
+    // Scene & Camera
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 500);
+    camera.position.set(0.0, 40.0, 40.0);
+    camera.lookAt(0, 0, 0);
+
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    document.body.appendChild(renderer.domElement);
+
+    // Lights
+    const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+    scene.add(ambient);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.6);
+    dirLight.position.set(12.0, 40.0, 16.0);
+    dirLight.target.position.set(0, 0, 0);
+    scene.add(dirLight);
+    scene.add(dirLight.target);
+
+    // Instanced Mesh
+    const geometry = new THREE.BoxGeometry(0.92, 1, 0.92);
+    const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
+    const mesh = new THREE.InstancedMesh(geometry, material, 1024);
+    mesh.name = 'plate';
+    scene.add(mesh);
+
+    // Simulation State
+    const T = new Float32Array(1024);
+    T[8 * 32 + 8] = 1000;
+
+    const a = 0.2;
+    const dummy = new THREE.Object3D();
+    const color = new THREE.Color();
+    const c1 = new THREE.Color(0x14306b);
+    const c2 = new THREE.Color(0xff5a1e);
+
+    // Step Function
+    window.__step = function(dt) {
+      for (let i = 0; i < 32; i++) {
+        for (let j = 0; j < 32; j++) {
+          const idx = i * 32 + j;
+          const c = T[idx];
+          const up = (i > 0) ? T[(i - 1) * 32 + j] : c;
+          const dn = (i < 31) ? T[(i + 1) * 32 + j] : c;
+          const lf = (j > 0) ? T[i * 32 + (j - 1)] : c;
+          const rt = (j < 31) ? T[i * 32 + (j + 1)] : c;
+          T[idx] = c + a * (up + dn + lf + rt - 4 * c);
+        }
+      }
+      return T;
+    };
+
+    // Probe Function
+    window.__probe = function() {
+      // paint
+      let maxT = 0;
+      for (let k = 0; k < 1024; k++) {
+        if (T[k] > maxT) maxT = T[k];
+      }
+      if (maxT === 0) maxT = 1;
+
+      for (let i = 0; i < 32; i++) {
+        for (let j = 0; j < 32; j++) {
+          const idx = i * 32 + j;
+          const t = T[idx] / maxT;
+          const h = 0.05 + 3 * t;
+
+          dummy.position.set(j - 15.5, h / 2, i - 15.5);
+          dummy.scale.set(0.92, h, 0.92);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(idx, dummy.matrix);
+
+          color.lerpColors(c1, c2, t);
+          mesh.setColorAt(idx, color);
+        }
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.instanceColor.needsUpdate = true;
+
+      renderer.render(scene, camera);
+
+      let sum = 0;
+      let maxVal = 0;
+      for (let k = 0; k < 1024; k++) {
+        sum += T[k];
+        if (T[k] > maxVal) maxVal = T[k];
+      }
+      const mean = sum / 1024;
+
+      const res = {
+        grid: 32,
+        mean: Number(mean.toFixed(4)),
+        max: Number(maxVal.toFixed(4)),
+        samples: [
+          Number(T[8 * 32 + 8].toFixed(4)),
+          Number(T[16 * 32 + 16].toFixed(4)),
+          Number(T[24 * 32 + 8].toFixed(4))
+        ]
+      };
+
+      if (!window.__ready) {
+        window.__ready = true;
+      }
+      return res;
+    };
+
+    // Initial render
+    __probe();
+  </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · K-12 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

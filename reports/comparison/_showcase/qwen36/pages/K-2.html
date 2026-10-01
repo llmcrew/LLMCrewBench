@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Spring Mass Simulation</title>
+  <style>body { margin: 0; overflow: hidden; } canvas { display: block; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+  <script type="module">
+    const THREE = window.THREE;
+
+    // Сцена и камера
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+    camera.position.set(0.0, 3.5, 15.0);
+    camera.lookAt(0.0, 0.2, 0.0);
+
+    // Рендерер
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    document.body.appendChild(renderer.domElement);
+
+    // Свет
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+    dirLight.position.set(8.0, 14.0, 10.0);
+    scene.add(dirLight);
+
+    // Материалы
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a });
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x8a93a6 });
+    const massMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+    const springMat = new THREE.MeshStandardMaterial({ color: 0xd8dde6 });
+
+    // Объекты сцены
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.3;
+    ground.name = 'ground';
+    scene.add(ground);
+
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(0.8, 3.2, 3.2), wallMat);
+    wall.position.set(-7, 0.9, 0);
+    wall.name = 'wall';
+    scene.add(wall);
+
+    const mass = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 1.2), massMat);
+    mass.position.set(1.21, 0.3, 0);
+    mass.name = 'mass';
+    scene.add(mass);
+
+    const spring = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 1, 16), springMat);
+    spring.name = 'spring';
+    scene.add(spring);
+
+    // Состояние симуляции
+    let x = 1.21;
+    let v = 1.32;
+    let steps = 0;
+    let t = 0;
+    const k = 10.07;
+    const m = 1.0;
+    const c = 0.27;
+
+    // Обновление трансформации пружины
+    function updateSpring() {
+      const startX = -6.6;
+      const startY = 0.3;
+      const startZ = 0;
+      const endX = x;
+      const endY = 0.3;
+      const endZ = 0;
+
+      const dx = endX - startX;
+      const dy = endY - startY;
+      const dz = endZ - startZ;
+      const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+      spring.position.set((startX + endX) / 2, (startY + endY) / 2, (startZ + endZ) / 2);
+      spring.lookAt(endX, endY, endZ);
+      spring.scale.set(1, len, 1);
+    }
+
+    // Инициализация пружины
+    updateSpring();
+
+    // Функция шага симуляции
+    window.__step = function(dt) {
+      v += (-k / m * x - c * v) * dt;
+      x += v * dt;
+      steps++;
+      t += dt;
+
+      mass.position.x = x;
+      updateSpring();
+    };
+
+    // Функция зондирования состояния
+    window.__probe = function() {
+      return {
+        steps: steps,
+        t: Number(t.toFixed(4)),
+        objects: ["ground", "wall", "mass", "spring"],
+        camera: [0, 3.5, 15],
+        x: Number(x.toFixed(4)),
+        v: Number(v.toFixed(4)),
+        k: Number(k.toFixed(4)),
+        m: Number(m.toFixed(4))
+      };
+    };
+
+    // Первая отрисовка
+    renderer.render(scene, camera);
+    window.__ready = true;
+  </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · K-2 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

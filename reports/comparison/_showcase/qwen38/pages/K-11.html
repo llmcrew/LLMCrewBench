@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ── ЛЦГ ── */
+let s = 2070952145;
+function lcg() {
+  s = (1664525 * s + 1013904223) % 4294967296;
+  return s / 4294967296;
+}
+
+/* ── Сцена ── */
+const scene = new THREE.Scene();
+
+/* ── Backdrop ── */
+const backdropGeo = new THREE.PlaneGeometry(40, 40);
+const backdropMat = new THREE.MeshBasicMaterial({ color: 0x22303f });
+const backdrop = new THREE.Mesh(backdropGeo, backdropMat);
+backdrop.position.set(0, 0, -2);
+backdrop.name = 'backdrop';
+scene.add(backdrop);
+
+/* ── Частицы ── */
+const N = 36;
+const sphereGeo = new THREE.SphereGeometry(0.3, 16, 12);
+const sphereMat = new THREE.MeshStandardMaterial({ color: 0xffa64d });
+const particles = new THREE.InstancedMesh(sphereGeo, sphereMat, N);
+particles.name = 'particles';
+
+const px = new Float64Array(N);
+const py = new Float64Array(N);
+
+for (let i = 0; i < N; i++) {
+  const ux = lcg();
+  px[i] = 8.0 * ux;
+  const uy = lcg();
+  py[i] = 6.0 * uy;
+}
+
+const dummy = new THREE.Object3D();
+function updateInstances() {
+  for (let i = 0; i < N; i++) {
+    dummy.position.set(px[i], py[i], 0);
+    dummy.updateMatrix();
+    particles.setMatrixAt(i, dummy.matrix);
+  }
+  particles.instanceMatrix.needsUpdate = true;
+}
+updateInstances();
+scene.add(particles);
+
+/* ── Камера ── */
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+camera.position.set(4.0, 3.0, 18.0);
+camera.lookAt(4.0, 3.0, 0.0);
+
+/* ── Свет ── */
+const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(ambient);
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.8);
+dirLight.position.set(6.0, 10.0, 10.0);
+scene.add(dirLight);
+
+/* ── Рендерер ── */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+/* ── Симуляция ── */
+let steps = 0;
+const A = 1.5;
+const B = 1.5;
+
+window.__step = function (dt) {
+  for (let i = 0; i < N; i++) {
+    const vx = A * Math.sin(Math.PI * py[i] / 6.0);
+    const vy = B * Math.cos(Math.PI * px[i] / 8.0);
+    px[i] += vx * dt;
+    py[i] += vy * dt;
+  }
+  steps++;
+  updateInstances();
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+/* ── Probe ── */
+function r4(v) { return Math.round(v * 10000) / 10000; }
+
+window.__probe = function () {
+  const parts = [];
+  for (let i = 0; i < N; i++) {
+    parts.push({ x: r4(px[i]), y: r4(py[i]) });
+  }
+  const objects = [];
+  scene.traverse(function (obj) {
+    if (obj.name) objects.push(obj.name);
+  });
+  return {
+    steps: steps,
+    field: { A: A, B: B },
+    particles: parts,
+    camera: [r4(camera.position.x), r4(camera.position.y), r4(camera.position.z)],
+    objects: objects
+  };
+};
+
+/* ── Первая отрисовка ── */
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · K-11 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

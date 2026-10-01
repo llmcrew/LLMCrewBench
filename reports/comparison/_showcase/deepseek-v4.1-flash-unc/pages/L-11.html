@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>liquid metal &amp; glass</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0a0714; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ------------------------------------------------------------------ */
+/*  renderer / scene / camera                                          */
+/* ------------------------------------------------------------------ */
+const W = 800, H = 600;
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x0a0714, 14, 45);
+
+const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 200);
+camera.position.set(0, 0.8, 4.6);
+camera.lookAt(0, 0.35, 0.4);
+
+/* ------------------------------------------------------------------ */
+/*  gradient helpers (no external files)                               */
+/* ------------------------------------------------------------------ */
+function hex2rgb(hex) {
+  const h = hex[0] === '#' ? hex.slice(1) : hex;
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+function sampleStops(stops, t) {
+  if (t <= stops[0][0]) return hex2rgb(stops[0][1]);
+  for (let i = 0; i < stops.length - 1; i++) {
+    const p0 = stops[i][0], c0 = hex2rgb(stops[i][1]);
+    const p1 = stops[i + 1][0], c1 = hex2rgb(stops[i + 1][1]);
+    if (t <= p1) {
+      const f = (t - p0) / (p1 - p0);
+      return [c0[0] + (c1[0] - c0[0]) * f,
+              c0[1] + (c1[1] - c0[1]) * f,
+              c0[2] + (c1[2] - c0[2]) * f];
+    }
+  }
+  return hex2rgb(stops[stops.length - 1][1]);
+}
+function makeGradTex(w, h, stops) {
+  const data = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const t = h > 1 ? y / (h - 1) : 0;          // row 0 = bottom (flipY = false)
+    const c = sampleStops(stops, t);
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      data[i]     = Math.round(c[0]);
+      data[i + 1] = Math.round(c[1]);
+      data[i + 2] = Math.round(c[2]);
+      data[i + 3] = 255;
+    }
+  }
+  const tex = new THREE.DataTexture(data, w, h, THREE.RGBAFormat);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/* ------------------------------------------------------------------ */
+/*  environment map : DataTexture 8x64, equirectangular                */
+/* ------------------------------------------------------------------ */
+const envTex = makeGradTex(8, 64, [
+  [0.00, '#0a0714'],
+  [0.50, '#0d1b2e'],
+  [0.82, '#1b4a5e'],
+  [1.00, '#8fd3ff']
+]);
+envTex.mapping = THREE.EquirectangularReflectionMapping;
+envTex.needsUpdate = true;
+scene.environment = envTex;
+
+/* ------------------------------------------------------------------ */
+/*  background plane (same gradient family, dark)                      */
+/* ------------------------------------------------------------------ */
+const bgTex = makeGradTex(4, 256, [
+  [0.00, '#0a0714'],
+  [0.50, '#0d1b2e'],
+  [0.80, '#1b4a5e'],
+  [1.00, '#4d7fa8']
+]);
+bgTex.wrapS = THREE.ClampToEdgeWrapping;
+bgTex.wrapT = THREE.ClampToEdgeWrapping;
+bgTex.repeat.set(1, 2.5);
+bgTex.offset.set(0, -0.75);
+bgTex.needsUpdate = true;
+
+const background = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshBasicMaterial({ map: bgTex, fog: true })
+);
+background.position.set(0, 0, -6);
+background.name = 'background';
+scene.add(background);
+
+/* ------------------------------------------------------------------ */
+/*  floor                                                              */
+/* ------------------------------------------------------------------ */
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshPhysicalMaterial({ color: 0x121a2e, metalness: 0.85, roughness: 0.30 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = -1.20;
+floor.name = 'floor';
+scene.add(floor);
+
+/* ------------------------------------------------------------------ */
+/*  sphere (liquid metal)                                              */
+/* ------------------------------------------------------------------ */
+const sphere = new THREE.Mesh(
+  new THREE.SphereGeometry(0.8, 48, 32),
+  new THREE.MeshPhysicalMaterial({
+    color: 0x33d1c6,
+    metalness: 1.0,
+    roughness: 0.18,
+    clearcoat: 0.6,
+    envMapIntensity: 3.0
+  })
+);
+sphere.position.set(0, 0.40, 0.60);
+sphere.name = 'sphere';
+scene.add(sphere);
+
+/* ------------------------------------------------------------------ */
+/*  torus (glass)                                                      */
+/* ------------------------------------------------------------------ */
+const torus = new THREE.Mesh(
+  new THREE.TorusGeometry(0.80, 0.28, 16, 64),
+  new THREE.MeshPhysicalMaterial({
+    color: 0xe0733c,
+    metalness: 0.15,
+    roughness: 0.06,
+    clearcoat: 1.0
+  })
+);
+torus.position.set(-1.45, -0.25, -0.6);
+torus.name = 'torus';
+scene.add(torus);
+
+/* ------------------------------------------------------------------ */
+/*  lights                                                             */
+/* ------------------------------------------------------------------ */
+const dirLight = new THREE.DirectionalLight(0xffffff, 4.0);
+dirLight.position.set(2.0, 4.0, 3.0);
+dirLight.name = 'dirLight';
+scene.add(dirLight);
+
+const spark = new THREE.PointLight(0xf2f6fb, 120, 25);
+spark.position.set(0.6, 2.6, 2.2);
+spark.name = 'spark';
+scene.add(spark);
+
+const orbitA = new THREE.PointLight(0x33d1c6, 45, 25);
+orbitA.name = 'orbitA';
+scene.add(orbitA);
+
+const orbitB = new THREE.PointLight(0xe0733c, 45, 25);
+orbitB.name = 'orbitB';
+scene.add(orbitB);
+
+const ambient = new THREE.AmbientLight(0x223044, 0.3);
+ambient.name = 'ambient';
+scene.add(ambient);
+
+/* ------------------------------------------------------------------ */
+/*  deterministic state                                                */
+/* ------------------------------------------------------------------ */
+let t = 0;
+
+function applyState() {
+  sphere.rotation.y = 1.100 * t;
+  sphere.rotation.x = 0.4 * t;
+  torus.rotation.y = 0.7 * t;
+
+  const a = 0.900 * t + 0.052;
+  orbitA.position.set(3.2 * Math.cos(a), 1.5, 3.2 * Math.sin(a) + 2.0);
+  const b = a + Math.PI;
+  orbitB.position.set(3.2 * Math.cos(b), 1.5, 3.2 * Math.sin(b) + 2.0);
+}
+
+function draw() {
+  renderer.render(scene, camera);
+}
+
+/* ------------------------------------------------------------------ */
+/*  public API                                                         */
+/* ------------------------------------------------------------------ */
+window.__probe = function () {
+  return {
+    t: +t.toFixed(4),
+    objects: scene.children.map(o => o.name).filter(n => n),
+    angle: +sphere.rotation.y.toFixed(4),
+    light: [
+      +orbitA.position.x.toFixed(4),
+      +orbitA.position.y.toFixed(4),
+      +orbitA.position.z.toFixed(4)
+    ]
+  };
+};
+
+window.__step = function (dt) {
+  t += dt;
+  applyState();
+  draw();
+  return window.__probe();
+};
+
+applyState();
+draw();
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-11 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

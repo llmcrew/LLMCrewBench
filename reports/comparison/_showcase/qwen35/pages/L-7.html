@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Ночной фейерверк</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Конфигурация и Константы ---
+const SEED = 571619;
+const WIDTH = 800;
+const HEIGHT = 600;
+const FOV = 45;
+const DISTANCE = 12.0;
+const ASPECT = WIDTH / HEIGHT;
+
+// Физика и Тайминг
+const GRAVITY = 1.10;
+const LIFE_TIME = 1.90;
+const PERIOD = 2.00;
+const PARTICLE_COUNT = 320;
+const BASE_SPEED = 2.20;
+const PARTICLE_SIZE = 6.0;
+
+// Точки запуска (доли кадра: x от левого, y от верхнего)
+const LAUNCH_POINTS_FRACTION = [
+    { fx: 0.343, fy: 0.287 },
+    { fx: 0.373, fy: 0.329 },
+    { fx: 0.448, fy: 0.334 }
+];
+
+// Задержки залпов
+const DELAYS = [0.0, 0.3, 0.7];
+
+// Цвета
+const COLORS = [
+    0xff0051, // Красный
+    0xffc300, // Золотой
+    0x19cdff  // Голубой
+];
+const BG_COLOR = 0x280f54;
+
+// --- Генератор Случайных Чисел (LCG) ---
+let lcgState = SEED;
+
+function nextRandom() {
+    lcgState = (1664525 * lcgState + 1013904223) % 4294967296;
+    return lcgState / 4294967296;
+}
+
+function resetRandom() {
+    lcgState = SEED;
+}
+
+// --- Инициализация Сцены ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(BG_COLOR);
+
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 200);
+camera.position.set(0, 0, DISTANCE);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(WIDTH, HEIGHT, false);
+document.body.appendChild(renderer.domElement);
+
+// Расчет полувысоты кадра для конвертации координат
+// halfHeight = distance * tan(fov / 2)
+const halfHeight = DISTANCE * Math.tan(THREE.MathUtils.degToRad(FOV) / 2);
+const aspectRatio = WIDTH / HEIGHT;
+
+// Функция перевода долей экрана в мировые координаты
+function getWorldPosition(fx, fy) {
+    // x = (fx - 0.5) * 2 * полувысота * 800/600
+    const x = (fx - 0.5) * 2 * halfHeight * aspectRatio;
+    // y = (0.5 - fy) * 2 * полувысота
+    const y = (0.5 - fy) * 2 * halfHeight;
+    return new THREE.Vector3(x, y, 0);
+}
+
+// --- Создание Залпов ---
+const bursts = [];
+const burstObjects = [];
+
+// Сбрасываем генератор перед генерацией геометрии, чтобы было детерминировано
+resetRandom();
+
+for (let i = 0; i < 3; i++) {
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(PARTICLE_COUNT * 3);
+    const velocities = new Float32Array(PARTICLE_COUNT * 3); // Храним начальные скорости
+    
+    const launchPos = getWorldPosition(LAUNCH_POINTS_FRACTION[i].fx, LAUNCH_POINTS_FRACTION[i].fy);
+
+    for (let j = 0; j < PARTICLE_COUNT; j++) {
+        // Генерация направления сферы
+        const u = nextRandom();
+        const v = nextRandom();
+        const w = nextRandom();
+
+        const z = 1 - 2 * u;
+        const phi = 2 * Math.PI * v;
+        const rr = Math.sqrt(1 - z * z);
+        
+        // Скорость V = 2.20 * (0.65 + 0.5*w)
+        const V = BASE_SPEED * (0.65 + 0.5 * w);
+        
+        // Вектор скорости (rr*cos(phi)*V, z*V, rr*sin(phi)*V*0.5)
+        const vx = rr * Math.cos(phi) * V;
+        const vy = z * V;
+        const vz = rr * Math.sin(phi) * V * 0.5;
+
+        velocities[j * 3] = vx;
+        velocities[j * 3 + 1] = vy;
+        velocities[j * 3 + 2] = vz;
+
+        // Начальная позиция (будет обновляться в шейдере/цикле, но здесь задаем базу)
+        positions[j * 3] = launchPos.x;
+        positions[j * 3 + 1] = launchPos.y;
+        positions[j * 3 + 2] = launchPos.z;
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    // Сохраняем скорости в userData геометрии или отдельном массиве для доступа в цикле
+    geometry.userData.velocities = velocities;
+    geometry.userData.launchPos = launchPos;
+
+    const material = new THREE.PointsMaterial({
+        size: PARTICLE_SIZE,
+        sizeAttenuation: false,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        color: COLORS[i],
+        opacity: 0
+    });
+
+    const points = new THREE.Points(geometry, material);
+    points.name = `burst_${i + 1}`;
+    scene.add(points);
+    
+    burstObjects.push(points);
+    bursts.push({
+        object: points,
+        delay: DELAYS[i],
+        geometry: geometry,
+        material: material
+    });
+}
+
+// --- Логика Анимации ---
+let currentTime = 0;
+
+window.__step = function(dt) {
+    currentTime += dt;
+
+    let totalRadius = 0;
+    let totalBright = 0;
+    let activeBursts = 0;
+
+    bursts.forEach((burst, index) => {
+        const tau = (currentTime - burst.delay) % PERIOD;
+        const positions = burst.geometry.attributes.position.array;
+        const velocities = burst.geometry.userData.velocities;
+        const launchPos = burst.geometry.userData.launchPos;
+
+        if (tau > LIFE_TIME) {
+            // Скрыть частицы
+            burst.material.opacity = 0;
+        } else {
+            // Обновить позиции
+            const brightness = Math.max(0, 1 - tau / LIFE_TIME);
+            burst.material.opacity = brightness;
+
+            let currentBurstRadiusSum = 0;
+
+            for (let j = 0; j < PARTICLE_COUNT; j++) {
+                const vx = velocities[j * 3];
+                const vy = velocities[j * 3 + 1];
+                const vz = velocities[j * 3 + 2];
+
+                // p = точка + вектор * tau
+                let px = launchPos.x + vx * tau;
+                let py = launchPos.y + vy * tau;
+                let pz = launchPos.z + vz * tau;
+
+                // y -= 0.5 * 1.10 * tau^2
+                py -= 0.5 * GRAVITY * tau * tau;
+
+                positions[j * 3] = px;
+                positions[j * 3 + 1] = py;
+                positions[j * 3 + 2] = pz;
+
+                // Для статистики радиуса (расстояние от центра взрыва)
+                const dx = px - launchPos.x;
+                const dy = py - launchPos.y;
+                const dz = pz - launchPos.z;
+                currentBurstRadiusSum += Math.sqrt(dx*dx + dy*dy + dz*dz);
+            }
+
+            burst.geometry.attributes.position.needsUpdate = true;
+            
+            // Накопление данных для __probe
+            totalRadius += currentBurstRadiusSum / PARTICLE_COUNT;
+            totalBright += brightness;
+            activeBursts++;
+        }
+    });
+
+    renderer.render(scene, camera);
+};
+
+// --- Probe API ---
+window.__probe = function() {
+    const objects = burstObjects.map(o => o.name);
+    
+    // Расчет средних значений для probe
+    // Примечание: в реальном времени мы можем взять последние рассчитанные значения, 
+    // но так как __step вызывается перед рендером, а __probe после, 
+    // нам нужно либо хранить состояние, либо пересчитывать. 
+    // Для простоты и соответствия требованию "растет tau", мы можем просто вернуть текущее время 
+    // и имена объектов. Детальные r и bright требуют доступа к состоянию внутри цикла.
+    // Чтобы не усложнять глобальными переменными состояния внутри цикла, 
+    // сделаем легкий пересчет или сохраним последние значения в замыкании.
+    // Но проще всего: __step обновляет глобальные переменные статистики.
+    
+    return {
+        t: currentTime.toFixed(4),
+        objects: objects,
+        // Эти поля будут заполнены в __step через замыкание или глобальные переменные, 
+        // но так как JS однопоточный, мы можем сохранить их при последнем вызове __step.
+        // Однако, чтобы код был чистым, добавим переменные состояния.
+        r: lastAvgRadius.toFixed(4),
+        bright: lastAvgBright.toFixed(4)
+    };
+};
+
+let lastAvgRadius = 0;
+let lastAvgBright = 0;
+
+// Переопределяем __step для сохранения статистики
+const originalStep = window.__step;
+window.__step = function(dt) {
+    currentTime += dt;
+
+    let sumRadius = 0;
+    let sumBright = 0;
+    let countActive = 0;
+
+    bursts.forEach((burst) => {
+        const tau = (currentTime - burst.delay) % PERIOD;
+        const positions = burst.geometry.attributes.position.array;
+        const velocities = burst.geometry.userData.velocities;
+        const launchPos = burst.geometry.userData.launchPos;
+
+        if (tau > LIFE_TIME) {
+            burst.material.opacity = 0;
+        } else {
+            const brightness = Math.max(0, 1 - tau / LIFE_TIME);
+            burst.material.opacity = brightness;
+            sumBright += brightness;
+            countActive++;
+
+            let burstRadiusSum = 0;
+
+            for (let j = 0; j < PARTICLE_COUNT; j++) {
+                const vx = velocities[j * 3];
+                const vy = velocities[j * 3 + 1];
+                const vz = velocities[j * 3 + 2];
+
+                let px = launchPos.x + vx * tau;
+                let py = launchPos.y + vy * tau;
+                let pz = launchPos.z + vz * tau;
+
+                py -= 0.5 * GRAVITY * tau * tau;
+
+                positions[j * 3] = px;
+                positions[j * 3 + 1] = py;
+                positions[j * 3 + 2] = pz;
+
+                const dx = px - launchPos.x;
+                const dy = py - launchPos.y;
+                const dz = pz - launchPos.z;
+                burstRadiusSum += Math.sqrt(dx*dx + dy*dy + dz*dz);
+            }
+            sumRadius += burstRadiusSum / PARTICLE_COUNT;
+            burst.geometry.attributes.position.needsUpdate = true;
+        }
+    });
+
+    if (countActive > 0) {
+        lastAvgRadius = sumRadius / countActive;
+        lastAvgBright = sumBright / countActive;
+    } else {
+        lastAvgRadius = 0;
+        lastAvgBright = 0;
+    }
+
+    renderer.render(scene, camera);
+};
+
+// Первый рендер (t=0)
+window.__step(0);
+window.__ready = true;
+
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-7 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

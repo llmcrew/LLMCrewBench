@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <style>body { margin: 0; overflow: hidden; background: #000; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <script type="module">
+    const THREE = window.THREE;
+
+    // PRNG
+    let s = 219090;
+    function nextU() {
+      s = (1664525 * s + 1013904223) % 4294967296;
+      return s / 4294967296;
+    }
+
+    // Constants from camera & frame
+    const half_h = 4.142;
+    const scale_x = 2 * half_h * (800 / 600);
+    const scale_y = 2 * half_h;
+    const W = scale_x;
+    const H = scale_y;
+    const bottom_y = -half_h;
+    const pxToWorld = H / 600;
+
+    // Renderer
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    canvas.style.width = '800px';
+    canvas.style.height = '600px';
+    document.body.appendChild(canvas);
+
+    // Scene & Camera
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
+    camera.position.set(0, 0, 10.0);
+    camera.lookAt(0, 0, 0);
+
+    // Sky
+    const skyGeo = new THREE.PlaneGeometry(W, H);
+    const skyMat = new THREE.ShaderMaterial({
+      vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `varying vec2 vUv; void main() {
+        vec3 top = vec3(0.0353, 0.0275, 0.1333);
+        vec3 bot = vec3(0.0824, 0.0431, 0.2196);
+        gl_FragColor = vec4(mix(bot, top, vUv.y), 1.0);
+      }`,
+      depthWrite: false
+    });
+    const sky = new THREE.Mesh(skyGeo, skyMat);
+    sky.name = 'sky';
+    scene.add(sky);
+
+    // Mountains
+    const shape = new THREE.Shape();
+    const heights = [0.395, 0.367, 0.438, 0.144, 0.242, 0.229, 0.420, 0.260, 0.363];
+    for (let i = 0; i < 9; i++) {
+      const x = (i / 8) * W - W / 2;
+      const y = bottom_y + heights[i] * H;
+      if (i === 0) shape.moveTo(x, y);
+      else shape.lineTo(x, y);
+    }
+    shape.lineTo(W / 2, bottom_y);
+    shape.lineTo(-W / 2, bottom_y);
+    shape.closePath();
+    const ridgeGeo = new THREE.ShapeGeometry(shape);
+    const ridgeMat = new THREE.MeshBasicMaterial({ color: 0x00b1d9 });
+    const ridge = new THREE.Mesh(ridgeGeo, ridgeMat);
+    ridge.name = 'ridge';
+    scene.add(ridge);
+
+    // Stars
+    const starCount = 620;
+    const starGeo = new THREE.PlaneGeometry(1, 1);
+    const starMat = new THREE.MeshBasicMaterial({
+      color: 0xf2f6ff,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false
+    });
+    const stars = new THREE.InstancedMesh(starGeo, starMat, starCount);
+    stars.name = 'stars';
+    scene.add(stars);
+
+    const starPhases = new Float32Array(starCount);
+    const starXs = new Float32Array(starCount);
+    const starYs = new Float32Array(starCount);
+    const starSizes = new Float32Array(starCount);
+    const dummy = new THREE.Object3D();
+
+    for (let i = 0; i < starCount; i++) {
+      const u2 = nextU();
+      const u3 = nextU();
+      const u4 = nextU();
+      const fx = u2;
+      const fy = u3 * 0.72;
+      const ph = 6.283 * u4;
+      const x = (fx - 0.5) * W;
+      const y = (0.5 - fy) * H;
+      const szPx = 2.0 + 2.6 * u2;
+      starPhases[i] = ph;
+      starXs[i] = x;
+      starYs[i] = y;
+      starSizes[i] = szPx * pxToWorld;
+      dummy.position.set(x, y, 0);
+      dummy.scale.set(starSizes[i], starSizes[i], 1);
+      dummy.updateMatrix();
+      stars.setMatrixAt(i, dummy.matrix);
+    }
+    stars.instanceMatrix.needsUpdate = true;
+
+    // Moon
+    const moonR = 0.075 * H;
+    const moonGeo = new THREE.CircleGeometry(moonR, 32);
+    const moonMat = new THREE.MeshBasicMaterial({ color: 0xffd699 });
+    const moon = new THREE.Mesh(moonGeo, moonMat);
+    moon.name = 'moon';
+    const moonFx = 0.664;
+    const moonFy = 0.340;
+    moon.position.set((moonFx - 0.5) * W, (0.5 - moonFy) * H, 0);
+    scene.add(moon);
+
+    // Moon glow
+    const glowGeo = new THREE.CircleGeometry(moonR * 2.5, 32);
+    const glowMat = new THREE.MeshBasicMaterial({
+      color: 0xffd699,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      opacity: 0.4
+    });
+    const glow = new THREE.Mesh(glowGeo, glowMat);
+    glow.position.copy(moon.position);
+    scene.add(glow);
+
+    // Initial render
+    renderer.render(scene, camera);
+    window.__ready = true;
+
+    // Animation & API
+    let t = 0;
+    const moonSpeed = 0.02 * W;
+
+    window.__step = function(dt) {
+      t += dt;
+      moon.position.x += moonSpeed * dt;
+      glow.position.x = moon.position.x;
+
+      for (let i = 0; i < starCount; i++) {
+        const scale = 0.5 + 0.5 * Math.sin(starPhases[i] + 1.7 * t);
+        dummy.position.set(starXs[i], starYs[i], 0);
+        dummy.scale.set(starSizes[i] * scale, starSizes[i] * scale, 1);
+        dummy.updateMatrix();
+        stars.setMatrixAt(i, dummy.matrix);
+      }
+      stars.instanceMatrix.needsUpdate = true;
+    };
+
+    window.__probe = function() {
+      const moonXFraction = (moon.position.x / W) + 0.5;
+      return {
+        t: parseFloat(t.toFixed(4)),
+        objects: scene.children.map(c => c.name),
+        moon: parseFloat(moonXFraction.toFixed(4))
+      };
+    };
+  </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-9 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

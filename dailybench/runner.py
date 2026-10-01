@@ -25,6 +25,25 @@ from .rng import derived_seed
 SYSTEM_SENTINEL = "<<system>>"
 
 
+def _prompt_tokens(messages: list[dict[str, Any]]) -> int:
+    """Rough size of the request in tokens, for the window-aware budget.
+
+    Deliberately cheap and conservative: it decides how much room the answer
+    gets, and the provider's own count is recorded afterwards. The last real
+    prompt_tokens is used when the runtime reported one, so the estimate only
+    matters for the first call.
+    """
+    from .providers import estimate_tokens
+
+    total = 0
+    for message in messages:
+        content = message.get("content") or ""
+        total += estimate_tokens(content if isinstance(content, str) else str(content))
+        for call in message.get("tool_calls") or []:
+            total += estimate_tokens(str(call.get("function", {}).get("arguments") or ""))
+    return total
+
+
 @dataclass
 class TaskRun:
     task: core.TaskInstance
@@ -53,6 +72,7 @@ def transcript_to_dict(transcript: core.Transcript) -> dict[str, Any]:
         "duration_s": transcript.duration_s,
         "prompt_tokens": transcript.prompt_tokens(),
         "generated_tokens": transcript.generated_tokens(),
+        "spend": transcript.spend(),
         "tool_log": transcript.tool_log,
         "workspace_before": transcript.workspace_before,
         "workspace_after": transcript.workspace_after,
@@ -127,6 +147,11 @@ class Runner:
     # -- one task ---------------------------------------------------------- #
 
     def run_task(self, task: core.TaskInstance) -> TaskRun:
+        # A task built outside the suite (tests, the visual debug loop, a single
+        # reused fixture) must still find its evaluator.
+        from .tasks import load_all
+
+        load_all()
         if task.category in self.cfg.unsupported:
             reason = (
                 f"категория {task.category} объявлена неприменимой для этой конфигурации "
@@ -162,12 +187,13 @@ class Runner:
         sampler_before = self.sampler.peak_mib
         tool_calls = 0
         generated = 0
+        followups = list(task.dialogue or [])
         try:
             while True:
                 reply = self.provider.chat(
                     messages,
                     task.tools,
-                    max_new_tokens=self.cfg.budget_for(task.category),
+                    max_new_tokens=self.cfg.budget_for(task.category, _prompt_tokens(messages)),
                     temperature=self.cfg.temperature,
                     top_p=self.cfg.top_p,
                     seed=derived_seed(self.cfg.seed, task.id, str(len(transcript.turns))),
@@ -176,7 +202,21 @@ class Runner:
                 transcript.turns.append(core.Turn(messages=_copy_messages(messages), reply=reply))
                 generated += reply.generated_tokens or 0
 
-                if driver is None or not reply.tool_calls:
+                if reply.tool_calls and driver is None:
+                    # Nothing can execute the calls: stop on the reply as it is.
+                    break
+                if not reply.tool_calls and followups:
+                    # Scripted dialogue: hand the next user message to the model
+                    # and keep every earlier constraint in the history.
+                    messages.append({"role": "assistant", "content": reply.text or ""})
+                    messages.append({"role": "user", "content": followups.pop(0)})
+                    if generated > self.cfg.max_total_tokens:
+                        transcript.extra.setdefault("notes", []).append(
+                            f"бюджет генерации исчерпан ({self.cfg.max_total_tokens} токенов)"
+                        )
+                        break
+                    continue
+                if not reply.tool_calls:
                     break
                 if tool_calls + len(reply.tool_calls) > self.cfg.max_tool_calls:
                     transcript.extra.setdefault("notes", []).append(

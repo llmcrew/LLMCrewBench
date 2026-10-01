@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>String Vibration</title>
+  <style>body { margin: 0; overflow: hidden; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const N = 64;
+const A = 0.8;
+const center = 18;
+const sigma = 7.0;
+const c2 = 0.25;
+
+let u = new Float64Array(N);
+let u_prev = new Float64Array(N);
+
+// Initial condition: bell curve
+for (let i = 0; i < N; i++) {
+  u[i] = A * Math.exp(-Math.pow((i - center) / sigma, 2));
+}
+u[0] = 0;
+u[63] = 0;
+u_prev.set(u);
+
+// Scene setup
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 500);
+camera.position.set(0, 0, 60);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambientLight);
+
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.6);
+dirLight.position.set(0, 20, 40);
+scene.add(dirLight);
+
+// InstancedMesh for spheres
+const sphereGeo = new THREE.SphereGeometry(0.55, 16, 16);
+const sphereMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.1 });
+const instancedMesh = new THREE.InstancedMesh(sphereGeo, sphereMat, N);
+instancedMesh.name = 'string';
+scene.add(instancedMesh);
+
+// Line for profile
+const lineGeo = new THREE.BufferGeometry();
+const linePositions = new Float32Array(N * 3);
+lineGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+const lineMat = new THREE.LineBasicMaterial({ color: 0xffd27f });
+const line = new THREE.Line(lineGeo, lineMat);
+scene.add(line);
+
+// Color helpers
+const color1 = new THREE.Color(0x1d3f7a);
+const color2 = new THREE.Color(0xffd27f);
+const tempColor = new THREE.Color();
+const matrix = new THREE.Matrix4();
+
+function updateVisuals() {
+  for (let i = 0; i < N; i++) {
+    const x = (i - 31.5) * 0.7;
+    const y = u[i] * 4.5;
+    matrix.setPosition(x, y, 0);
+    instancedMesh.setMatrixAt(i, matrix);
+
+    const t = Math.min(1, Math.abs(u[i]) / A);
+    tempColor.copy(color1).lerp(color2, t);
+    instancedMesh.setColorAt(i, tempColor);
+
+    linePositions[i * 3] = x;
+    linePositions[i * 3 + 1] = y;
+    linePositions[i * 3 + 2] = 0;
+  }
+  instancedMesh.instanceMatrix.needsUpdate = true;
+  instancedMesh.instanceColor.needsUpdate = true;
+  line.geometry.attributes.position.needsUpdate = true;
+}
+
+// Simulation step
+window.__step = function(dt) {
+  const next = new Float64Array(N);
+  next[0] = 0;
+  next[63] = 0;
+  for (let i = 1; i <= 62; i++) {
+    next[i] = 2 * u[i] - u_prev[i] + c2 * (u[i-1] - 2 * u[i] + u[i+1]);
+  }
+  u_prev.set(u);
+  u.set(next);
+};
+
+// Probe & Render
+window.__probe = function() {
+  updateVisuals();
+  renderer.render(scene, camera);
+
+  let energy = 0;
+  for (let i = 1; i <= 62; i++) {
+    energy += 0.5 * Math.pow(u[i] - u_prev[i], 2) + 0.5 * c2 * Math.pow(u[i+1] - u[i], 2);
+  }
+
+  if (!window.__ready) {
+    window.__ready = true;
+  }
+
+  return {
+    samples: [
+      Number(u[16].toFixed(4)),
+      Number(u[32].toFixed(4)),
+      Number(u[48].toFixed(4))
+    ],
+    energy: Number(energy.toFixed(4))
+  };
+};
+
+// Initial render to satisfy __ready requirement
+window.__probe();
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · K-15 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

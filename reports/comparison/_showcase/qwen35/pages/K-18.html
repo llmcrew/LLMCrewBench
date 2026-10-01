@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Orrery Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Configuration ---
+        const PLANETS_DATA = [
+            { name: "Mercury", R: 2.04, T: 7.81, theta0: 150.00, color: 0x3d6bff },
+            { name: "Venus", R: 3.77, T: 16.36, theta0: 175.06, color: 0x22b3a0 },
+            { name: "Mars", R: 5.19, T: 8.84, theta0: 116.62, color: 0xff5566 }
+        ];
+
+        // --- State ---
+        const state = {
+            steps: 0,
+            t: 0.0,
+            planets: [] // Will hold references and dynamic data
+        };
+
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+        
+        // Camera: PerspectiveCamera(50, 800/600, 0.1, 200)
+        const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+        camera.position.set(0.0, 10.0, 13.0);
+        camera.lookAt(0.0, 0.0, 0.0);
+
+        // Renderer
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 2.2);
+        directionalLight.position.set(7.0, 13.0, 7.0);
+        scene.add(directionalLight);
+
+        // --- Objects ---
+
+        // Star (Sun)
+        const sunGeo = new THREE.SphereGeometry(0.6, 32, 32);
+        const sunMat = new THREE.MeshStandardMaterial({ color: 0xffcf5c });
+        const sun = new THREE.Mesh(sunGeo, sunMat);
+        sun.position.set(0, 0.6, 0);
+        sun.name = "sun";
+        scene.add(sun);
+
+        // Planets and Orbits
+        PLANETS_DATA.forEach((data, index) => {
+            // Orbit Ring
+            // RingGeometry(innerRadius, outerRadius, thetaSegments)
+            const orbitGeo = new THREE.RingGeometry(data.R - 0.03, data.R + 0.03, 96);
+            const orbitMat = new THREE.MeshBasicMaterial({ color: 0x2f4a63, side: THREE.DoubleSide });
+            const orbit = new THREE.Mesh(orbitGeo, orbitMat);
+            // Rotate to horizontal plane (X-Z)
+            orbit.rotation.x = -Math.PI / 2;
+            orbit.position.y = 0.3;
+            orbit.name = `orbit-${index}`;
+            scene.add(orbit);
+
+            // Planet Sphere
+            const planetGeo = new THREE.SphereGeometry(0.3, 32, 32);
+            const planetMat = new THREE.MeshStandardMaterial({ color: data.color });
+            const planet = new THREE.Mesh(planetGeo, planetMat);
+            planet.name = data.name;
+            
+            // Initial Position Calculation
+            const thetaRad = data.theta0 * Math.PI / 180;
+            const x = data.R * Math.cos(thetaRad);
+            const z = data.R * Math.sin(thetaRad);
+            
+            planet.position.set(x, 0.3, z);
+            scene.add(planet);
+
+            // Store simulation data
+            state.planets.push({
+                mesh: planet,
+                name: data.name,
+                R: data.R,
+                T: data.T,
+                theta: data.theta0
+            });
+        });
+
+        // --- Simulation Logic ---
+
+        window.__step = function(dt) {
+            state.steps++;
+            state.t += dt;
+
+            state.planets.forEach(p => {
+                // Update theta
+                p.theta += 360 / p.T * dt;
+                p.theta = p.theta % 360;
+                // Ensure theta stays in [0, 360) strictly if modulo returns negative (unlikely with positive dt)
+                if (p.theta < 0) p.theta += 360;
+
+                // Update Position
+                const rad = p.theta * Math.PI / 180;
+                p.mesh.position.x = p.R * Math.cos(rad);
+                p.mesh.position.z = p.R * Math.sin(rad);
+                p.mesh.position.y = 0.3;
+            });
+
+            renderer.render(scene, camera);
+        };
+
+        // --- Probe Logic ---
+
+        function round4(num) {
+            return Number(num.toFixed(4));
+        }
+
+        window.__probe = function() {
+            const objects = scene.children.map(c => c.name);
+            
+            const planetsInfo = state.planets.map(p => ({
+                name: p.name,
+                theta: round4(p.theta),
+                x: round4(p.mesh.position.x),
+                z: round4(p.mesh.position.z)
+            }));
+
+            return {
+                steps: state.steps,
+                t: round4(state.t),
+                camera: [0, 10, 13], // Fixed as per spec
+                objects: objects,
+                planets: planetsInfo
+            };
+        };
+
+        // --- Initialization ---
+        // Initial render
+        renderer.render(scene, camera);
+        window.__ready = true;
+
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-18 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

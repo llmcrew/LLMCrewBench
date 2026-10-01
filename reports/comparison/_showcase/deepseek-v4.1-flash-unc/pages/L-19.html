@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Трамвай сквозь дождливый город</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ================= deterministic LCG ================= */
+let lcg = 488641;
+function rnd() {
+  lcg = (lcg * 1103515245 + 12345) % 2147483648;
+  return lcg / 2147483648;
+}
+
+/* ================= renderer / scene / camera ================= */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
+renderer.setPixelRatio(1);
+renderer.setSize(800, 600, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 300);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
+
+/* helpers: world half-extents of the frustum at a given z */
+const TAN = Math.tan(25 * Math.PI / 180);
+const halfH = z => (4 - z) * TAN;
+const halfW = z => halfH(z) * 4 / 3;
+
+const COL_NIGHT = 0x1a1230;
+const COL_NEON  = 0x12c7d4;
+const COL_WARM  = 0xffa63c;
+const COL_DROP  = 0xa8c8dc;
+
+function mkPlane(w, h, color, opts) {
+  const mat = new THREE.MeshBasicMaterial(Object.assign(
+    { color, depthTest: false, depthWrite: false }, opts || {}
+  ));
+  return new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+}
+
+/* ================= night backdrop ================= */
+const night = mkPlane(90, 70, COL_NIGHT);
+night.position.set(0, 0, -45);
+night.name = 'night';
+night.renderOrder = 0;
+scene.add(night);
+
+/* ================= neon blobs behind the glass ================= */
+const BLOB_Z = -14;
+const BLOB_HALF_W = 0.78 * halfW(BLOB_Z);
+const BLOB_PX = 2 * halfH(BLOB_Z) / 600;   // world units per pixel at z = -14
+
+const blobs = [];
+for (let i = 0; i < 22; i++) {
+  const px = 7 + rnd() * 6;                // 7..13 px
+  const s = px * BLOB_PX;
+  const m = mkPlane(s, s, COL_NEON, { transparent: true, blending: THREE.AdditiveBlending });
+  const x = (rnd() * 2 - 1) * BLOB_HALF_W;
+  const y = (-0.40 + rnd() * 0.95) * halfH(BLOB_Z);   // ndc y in [-0.40, 0.55]
+  m.position.set(x, y, BLOB_Z);
+  m.name = 'blob_' + i;
+  m.renderOrder = 1;
+  scene.add(m);
+  blobs.push({ mesh: m, speed: 2 + rnd() * 2 });       // 2..4 units/s
+}
+
+/* ================= glass pane ================= */
+const GLASS_Z = -4;
+const glass = mkPlane(0.78 * 2 * halfW(GLASS_Z), 0.62 * 2 * halfH(GLASS_Z), COL_NIGHT,
+                      { transparent: true, opacity: 0.30 });
+glass.position.set(0, 0.18 * halfH(GLASS_Z), GLASS_Z);
+glass.name = 'glass';
+glass.renderOrder = 2;
+scene.add(glass);
+
+/* ================= city reflection rail on the glass ================= */
+const RAIL_Z = -3.88;
+const rail = mkPlane(0.78 * 2 * halfW(RAIL_Z), 0.02 * 2 * halfH(RAIL_Z), COL_NEON,
+                     { transparent: true, opacity: 0.4 });
+rail.position.set(0, -0.16 * halfH(RAIL_Z), RAIL_Z);   // v = 0.58
+rail.name = 'rail';
+rail.renderOrder = 3;
+scene.add(rail);
+
+/* ================= warm cabin reflections on the glass ================= */
+const GT_Z = -3.86;
+const glowTop = mkPlane(0.70 * 2 * halfW(GT_Z), 0.05 * 2 * halfH(GT_Z), COL_WARM,
+                        { transparent: true, opacity: 0.9 });
+glowTop.position.set(0, 0.66 * halfH(GT_Z), GT_Z);     // v = 0.17
+glowTop.name = 'glow_top';
+glowTop.renderOrder = 4;
+scene.add(glowTop);
+
+const GL_Z = -3.84;
+const glowLow = mkPlane(0.62 * 2 * halfW(GL_Z), 0.04 * 2 * halfH(GL_Z), COL_WARM,
+                        { transparent: true, opacity: 0.9 });
+glowLow.position.set(0, -0.32 * halfH(GL_Z), GL_Z);    // v = 0.66
+glowLow.name = 'glow_low';
+glowLow.renderOrder = 4;
+scene.add(glowLow);
+
+/* ================= rain drops on the glass ================= */
+const DROP_Z = -3.9;
+const DROP_PX = 2 * halfH(DROP_Z) / 600;
+const DROP_TOP = 0.55 * halfH(DROP_Z);
+const DROP_BOT = -0.44 * halfH(DROP_Z);
+const DROP_HALF_W = 0.78 * halfW(DROP_Z);
+
+const drops = [];
+for (let i = 0; i < 60; i++) {
+  const w = 6 * DROP_PX;
+  const h = (6 + rnd() * 24) * DROP_PX;                // streaks
+  const m = mkPlane(w, h, COL_DROP, { transparent: true, opacity: 0.95 });
+  const x = (rnd() * 2 - 1) * DROP_HALF_W;
+  const y = DROP_BOT + rnd() * (DROP_TOP - DROP_BOT);
+  m.position.set(x, y, DROP_Z);
+  m.name = 'drop_' + i;
+  m.renderOrder = 5;
+  scene.add(m);
+  drops.push({ mesh: m, speed: 1.56 * (0.7 + rnd() * 0.6) });
+}
+
+/* ================= window mullions ================= */
+const MUL_Z = -3.5;
+for (const u of [0.31, 0.65]) {
+  const m = mkPlane(0.012 * 2 * halfW(MUL_Z), 0.62 * 2 * halfH(MUL_Z), COL_NIGHT);
+  m.position.set((u - 0.5) * 2 * halfW(MUL_Z), 0.18 * halfH(MUL_Z), MUL_Z);
+  m.name = 'mullion_' + u;
+  m.renderOrder = 6;
+  scene.add(m);
+}
+
+/* ================= cabin: ceiling, floor, side walls ================= */
+const CAB_Z = -3.0;
+
+const cabinTop = mkPlane(24, 2.4, COL_NIGHT);
+cabinTop.position.set(0, 0.8 * halfH(CAB_Z) + 1.2, CAB_Z);
+cabinTop.name = 'cabin_top';
+cabinTop.renderOrder = 7;
+scene.add(cabinTop);
+
+const cabinLow = mkPlane(24, 3.6, COL_NIGHT);
+cabinLow.position.set(0, -0.44 * halfH(CAB_Z) - 1.8, CAB_Z);
+cabinLow.name = 'cabin_low';
+cabinLow.renderOrder = 7;
+scene.add(cabinLow);
+
+for (const s of [-1, 1]) {
+  const w = mkPlane(6, 12, COL_NIGHT);
+  w.position.set(s * (0.39 * 2 * halfW(CAB_Z) + 3), 0, CAB_Z);
+  w.name = 'wall_' + (s < 0 ? 'l' : 'r');
+  w.renderOrder = 7;
+  scene.add(w);
+}
+
+/* ================= animation state ================= */
+let t = 0;
+
+window.__probe = function () {
+  return {
+    t: Number(t.toFixed(4)),
+    objects: scene.children.map(o => o.name),
+    blob: [
+      Number(blobs[0].mesh.position.x.toFixed(4)),
+      Number(blobs[0].mesh.position.y.toFixed(4))
+    ]
+  };
+};
+
+window.__step = function (dt) {
+  t += dt;
+
+  for (const d of drops) {
+    d.mesh.position.y -= d.speed * dt;
+    if (d.mesh.position.y < DROP_BOT) d.mesh.position.y = DROP_TOP;
+  }
+
+  for (const b of blobs) {
+    b.mesh.position.x -= b.speed * dt;
+    if (b.mesh.position.x < -BLOB_HALF_W) b.mesh.position.x = BLOB_HALF_W;
+  }
+
+  camera.position.x = 0.045 * Math.sin(t * 0.9);
+  camera.lookAt(0, 0, -1);
+
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+/* ================= first frame ================= */
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-19 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

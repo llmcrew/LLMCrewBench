@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Аналоговая рубка — дождь за стеклом</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ================= deterministic LCG ================= */
+let lcg = 782736;
+function rnd() {
+  lcg = (lcg * 1103515245 + 12345) % 2147483648;
+  return lcg / 2147483648;
+}
+
+/* ================= renderer / camera ================= */
+const W = 800, H = 600;
+const FOV = 50;
+const ASPECT = W / H;
+const TAN = Math.tan(FOV * Math.PI / 360);
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+renderer.setClearColor(0x2a1c4a, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 400);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
+
+/* frame-fraction -> world helpers (camera at z=4 looking -z) */
+function wpos(u, v, z) {
+  const d = 4 - z, hh = d * TAN, hw = hh * ASPECT;
+  return new THREE.Vector3((u - 0.5) * 2 * hw, (0.5 - v) * 2 * hh, z);
+}
+function wsize(fw, fh, z) {
+  const d = 4 - z, hh = d * TAN, hw = hh * ASPECT;
+  return { w: fw * 2 * hw, h: fh * 2 * hh };
+}
+
+/* ================= night ================= */
+const night = new THREE.Mesh(
+  new THREE.PlaneGeometry(220, 220),
+  new THREE.MeshBasicMaterial({ color: 0x2a1c4a })
+);
+night.position.set(0, 0, -45);
+night.name = 'night';
+scene.add(night);
+
+/* ================= skyline (5 silhouettes) ================= */
+const skyMat = new THREE.MeshBasicMaterial({ color: 0x1a2140 });
+for (let i = 0; i < 5; i++) {
+  const bw = 1.4 + rnd() * 1.6;
+  const bh = 1.2 + rnd() * 2.4;
+  const bx = -7.5 + i * 3.75 + (rnd() - 0.5) * 1.2;
+  const b = new THREE.Mesh(new THREE.PlaneGeometry(bw, bh), skyMat);
+  b.position.set(bx, -1.5 + bh / 2, -14);
+  b.name = 'skyline';
+  scene.add(b);
+}
+
+/* ================= glass ================= */
+const gs = wsize(0.78, 0.46, -5);
+const gp = wpos(0.5, 0.35, -5);
+const glassMat = new THREE.MeshBasicMaterial({
+  color: 0x60d8e8, transparent: true, opacity: 0.35, depthWrite: false
+});
+const glass = new THREE.Mesh(new THREE.PlaneGeometry(gs.w, gs.h), glassMat);
+glass.position.copy(gp);
+glass.name = 'glass';
+scene.add(glass);
+
+/* ================= visor above glass ================= */
+const vs = wsize(1.0, 0.14, -4.5);
+const vp = wpos(0.5, 0.06, -4.5);
+const visor = new THREE.Mesh(
+  new THREE.PlaneGeometry(vs.w, vs.h),
+  new THREE.MeshBasicMaterial({ color: 0x2a1c4a })
+);
+visor.position.copy(vp);
+visor.name = 'visor';
+scene.add(visor);
+
+/* ================= rain (44 additive points) ================= */
+const RAIN_N = 44;
+const rainGeo = new THREE.BufferGeometry();
+const rainArr = new Float32Array(RAIN_N * 3);
+const rs = wsize(1.0, 1.0, -12);
+for (let i = 0; i < RAIN_N; i++) {
+  rainArr[i * 3]     = (rnd() - 0.5) * rs.w * 0.92;
+  rainArr[i * 3 + 1] = 3.5 + rnd() * 2.3;
+  rainArr[i * 3 + 2] = -12 + (rnd() - 0.5) * 0.6;
+}
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainArr, 3));
+const rainMat = new THREE.PointsMaterial({
+  color: 0xa8c8dc, size: 5, sizeAttenuation: false,
+  transparent: true, opacity: 0.6,
+  blending: THREE.AdditiveBlending, depthWrite: false
+});
+const rain = new THREE.Points(rainGeo, rainMat);
+rain.name = 'rain';
+scene.add(rain);
+
+/* ================= drops on glass (58 points) ================= */
+const DROP_N = 58;
+const dropGeo = new THREE.BufferGeometry();
+const dropArr = new Float32Array(DROP_N * 3);
+const ds = wsize(1.0, 1.0, -4.9);
+for (let i = 0; i < DROP_N; i++) {
+  dropArr[i * 3]     = (rnd() - 0.5) * ds.w * 0.9;
+  dropArr[i * 3 + 1] = 2.0 + rnd() * 1.6;
+  dropArr[i * 3 + 2] = -4.9 + (rnd() - 0.5) * 0.15;
+}
+dropGeo.setAttribute('position', new THREE.BufferAttribute(dropArr, 3));
+const dropMat = new THREE.PointsMaterial({
+  color: 0xa8c8dc, size: 6, sizeAttenuation: false,
+  transparent: true, opacity: 0.9, depthWrite: false
+});
+const drops = new THREE.Points(dropGeo, dropMat);
+drops.name = 'drops';
+scene.add(drops);
+
+/* ================= panel ================= */
+const ps = wsize(0.84, 0.14, 0);
+const pp = wpos(0.5, 0.3, 0);
+const panel = new THREE.Mesh(
+  new THREE.PlaneGeometry(ps.w, ps.h),
+  new THREE.MeshBasicMaterial({ color: 0x2a1c4a })
+);
+panel.position.copy(pp);
+panel.rotation.x = 0.25;
+panel.name = 'panel';
+scene.add(panel);
+
+/* ================= screens + running scan ================= */
+const screenMat = new THREE.MeshBasicMaterial({ color: 0x57e08a });
+const scanMat = new THREE.MeshBasicMaterial({
+  color: 0xd8ffe8, transparent: true, opacity: 0.85,
+  blending: THREE.AdditiveBlending, depthWrite: false
+});
+const screenUs = [0.20, 0.40, 0.60, 0.80];
+const scans = [];
+for (let i = 0; i < 4; i++) {
+  const ss = wsize(0.11, 0.10, 0.12);
+  const sp = wpos(screenUs[i], 0.30, 0.12);
+  const scr = new THREE.Mesh(new THREE.PlaneGeometry(ss.w, ss.h), screenMat);
+  scr.position.copy(sp);
+  scr.name = 'screen';
+  scene.add(scr);
+
+  const sl = new THREE.Mesh(new THREE.PlaneGeometry(ss.w * 0.86, ss.h * 0.14), scanMat);
+  sl.position.set(sp.x, sp.y, sp.z + 0.01);
+  sl.name = 'scan';
+  scene.add(sl);
+  scans.push({ mesh: sl, baseY: sp.y, h: ss.h });
+}
+
+/* ================= dials (5 amber) ================= */
+const dialMats = [];
+for (let i = 0; i < 5; i++) {
+  const u = 0.455 + i * 0.0225;
+  const dsz = wsize(0.016, 0.035, 0.12);
+  const dp = wpos(u, 0.28, 0.12);
+  const m = new THREE.MeshBasicMaterial({ color: 0xffd166 });
+  const d = new THREE.Mesh(new THREE.PlaneGeometry(dsz.w, dsz.h), m);
+  d.position.copy(dp);
+  d.name = 'dial';
+  scene.add(d);
+  dialMats.push(m);
+}
+
+/* ================= toggles (5 amber) ================= */
+for (let i = 0; i < 5; i++) {
+  const u = 0.455 + i * 0.0225;
+  const tsz = wsize(0.012, 0.022, 0.12);
+  const tp = wpos(u, 0.345, 0.12);
+  const tg = new THREE.Mesh(
+    new THREE.PlaneGeometry(tsz.w, tsz.h),
+    new THREE.MeshBasicMaterial({ color: 0xffd166 })
+  );
+  tg.position.copy(tp);
+  tg.name = 'toggle';
+  scene.add(tg);
+}
+
+/* ================= floor ================= */
+const fs = wsize(1.3, 0.48, 0);
+const fp = wpos(0.5, 0.76, 0);
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(fs.w, fs.h),
+  new THREE.MeshBasicMaterial({ color: 0x2a1c4a })
+);
+floor.position.copy(fp);
+floor.name = 'floor';
+scene.add(floor);
+
+/* ================= lightning flash ================= */
+function glowTex() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.45, 'rgba(255,255,255,0.55)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+}
+const flashMat = new THREE.MeshBasicMaterial({
+  color: 0xa8c8dc, map: glowTex(), transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.2
+});
+const fls = wsize(0.5, 0.4, -13.9);
+const flp = wpos(0.34, 0.34, -13.9);
+const flash = new THREE.Mesh(new THREE.PlaneGeometry(fls.w, fls.h), flashMat);
+flash.position.copy(flp);
+flash.name = 'flash';
+scene.add(flash);
+
+/* ================= animation ================= */
+let t = 0;
+let flashVal = 0.5;
+
+function applyState() {
+  flashVal = 0.5 + 0.5 * Math.sin(2 * Math.PI * 0.94 * t);
+  flashMat.opacity = 0.05 + 0.28 * flashVal;
+
+  for (let i = 0; i < dialMats.length; i++) {
+    const b = 0.72 + 0.28 * (0.5 + 0.5 * Math.sin(2 * Math.PI * (0.6 + i * 0.11) * t + i * 1.3));
+    dialMats[i].color.setRGB(1.0 * b, 0.82 * b, 0.40 * b);
+  }
+
+  for (let i = 0; i < scans.length; i++) {
+    const s = scans[i];
+    const ph = (t * 0.9 + i * 0.25) % 1;
+    s.mesh.position.y = s.baseY + (0.5 - ph) * s.h * 0.8;
+  }
+
+  camera.position.x = 0.059 * t;
+}
+
+function step(dt) {
+  t += dt;
+
+  const rp = rain.geometry.attributes.position;
+  for (let i = 0; i < RAIN_N; i++) {
+    let y = rp.getY(i) - 1.80 * dt;
+    if (y < 3.5) y += 2.3;
+    rp.setY(i, y);
+  }
+  rp.needsUpdate = true;
+
+  const dp = drops.geometry.attributes.position;
+  for (let i = 0; i < DROP_N; i++) {
+    let y = dp.getY(i) - 1.80 * dt;
+    if (y < 2.0) y += 1.6;
+    dp.setY(i, y);
+  }
+  dp.needsUpdate = true;
+
+  applyState();
+  renderer.render(scene, camera);
+  return probe();
+}
+
+function probe() {
+  return {
+    t: Number(t.toFixed(4)),
+    objects: scene.children.map(o => o.name).filter(n => n && n.length > 0),
+    flash: Number(flashMat.opacity.toFixed(4))
+  };
+}
+
+/* ================= boot ================= */
+applyState();
+renderer.render(scene, camera);
+
+window.__probe = probe;
+window.__step = step;
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-21 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

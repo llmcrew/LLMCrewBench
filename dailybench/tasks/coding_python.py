@@ -19,6 +19,11 @@ from typing import Any
 
 from .. import core, text
 
+#: Points per hidden check; three scenarios share the constant so a check
+#: weighs the same wherever it is earned.
+_POINTS_PER_CHECK = 0.8
+
+
 CHECK_ORDER = (
     ("first_load", "test_first_load"),
     ("ttl_hit", "test_hit_within_ttl"),
@@ -429,7 +434,7 @@ def generate(rng: random.Random, cfg: Any) -> core.TaskInstance:
         category="C",
         title="Python AsyncTTLCache",
         prompt=_PROMPT.format(target=TARGET_FILE, stub=_STUB),
-        max_points=10.0,
+        max_points=8.0,
         workspace=_workspace(),
         oracle={
             "reference": _REFERENCE,
@@ -500,7 +505,7 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     code = extract_code(tr.final_text)
     if not code:
         for name, _ in CHECK_ORDER:
-            score.add(name, False, 1.0, "ответ не содержит кода файла")
+            score.add(name, False, _POINTS_PER_CHECK, "ответ не содержит кода файла")
         score.notes.append("не удалось извлечь файл из ответа")
         return score
 
@@ -516,7 +521,7 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     results = _run_hidden(sandbox, repo)
     for name, _ in CHECK_ORDER:
         passed, detail = results[name]
-        score.add(name, passed, 1.0, detail)
+        score.add(name, passed, _POINTS_PER_CHECK, detail)
 
     kept_api = "class AsyncTTLCache" in code and "get_or_load" in code
     if not kept_api:

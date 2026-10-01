@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Brownian Motion</title>
+  <style>body { margin: 0; overflow: hidden; }</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+  <script type="module">
+    const THREE = window.THREE;
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+    camera.position.set(0, 0, 16);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(800, 600, false);
+    document.body.appendChild(renderer.domElement);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambient);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.8);
+    dir.position.set(4, 6, 10);
+    scene.add(dir);
+
+    const backdropGeo = new THREE.PlaneGeometry(40, 40);
+    const backdropMat = new THREE.MeshStandardMaterial({ color: 0x22303f, side: THREE.DoubleSide });
+    const backdrop = new THREE.Mesh(backdropGeo, backdropMat);
+    backdrop.name = 'backdrop';
+    backdrop.position.z = -2;
+    scene.add(backdrop);
+
+    const particleGeo = new THREE.SphereGeometry(0.3, 16, 16);
+    const particleMat = new THREE.MeshStandardMaterial({ color: 0xffa64d });
+    const particlesMesh = new THREE.InstancedMesh(particleGeo, particleMat, 12);
+    particlesMesh.name = 'particles';
+    scene.add(particlesMesh);
+
+    let s = 2215753936;
+    let steps = 0;
+    const x = new Float32Array(12);
+    const y = new Float32Array(12);
+    const matrix = new THREE.Matrix4();
+
+    for (let i = 0; i < 12; i++) {
+      x[i] = -3 + 2 * (i % 4);
+      y[i] = 2 - 1.5 * Math.floor(i / 4);
+      matrix.setPosition(x[i], y[i], 0);
+      particlesMesh.setMatrixAt(i, matrix);
+    }
+    particlesMesh.instanceMatrix.needsUpdate = true;
+
+    window.__step = function(dt) {
+      steps++;
+      for (let i = 0; i < 12; i++) {
+        s = (1664525 * s + 1013904223) % 4294967296;
+        const u = s / 4294967296;
+        const dx = (2 * u - 1) * 0.2;
+        x[i] += dx;
+        y[i] += dx;
+        x[i] = Math.max(-6, Math.min(6, x[i]));
+        y[i] = Math.max(-4, Math.min(4, y[i]));
+        matrix.setPosition(x[i], y[i], 0);
+        particlesMesh.setMatrixAt(i, matrix);
+      }
+      particlesMesh.instanceMatrix.needsUpdate = true;
+    };
+
+    const r = n => Math.round(n * 10000) / 10000;
+    window.__probe = function() {
+      return {
+        steps: steps,
+        particles: Array.from({ length: 12 }, (_, i) => ({ x: r(x[i]), y: r(y[i]) })),
+        camera: camera.position.toArray().map(r),
+        objects: scene.children.map(c => c.name)
+      };
+    };
+
+    renderer.render(scene, camera);
+    window.__ready = true;
+  </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · K-8 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

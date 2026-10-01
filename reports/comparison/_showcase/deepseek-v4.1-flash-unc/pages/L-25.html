@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Orbital Station — Earth Detonations</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ============================================================
+   DETERMINISTIC RNG  (explicit LCG, seed = 9173)
+   ============================================================ */
+let lcg = 9173;
+function rnd() {
+  lcg = (lcg * 1103515245 + 12345) % 2147483648;
+  return lcg / 2147483648;
+}
+
+/* ============================================================
+   RENDERER / SCENE / CAMERA
+   ============================================================ */
+if (THREE.ColorManagement) THREE.ColorManagement.enabled = false;
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: false });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x02030a);
+
+const camera = new THREE.PerspectiveCamera(45, 1920 / 1080, 0.05, 4000);
+camera.position.set(0, 0.4, 6);
+camera.lookAt(0, 0, -6);
+
+/* ============================================================
+   LIGHTS
+   ============================================================ */
+const SUN_DIR = new THREE.Vector3(0.85, 0.30, 0.45).normalize();
+
+const sunLight = new THREE.DirectionalLight(0xfff0dc, 2.4);
+sunLight.position.copy(SUN_DIR).multiplyScalar(60);
+scene.add(sunLight);
+
+const fillLight = new THREE.DirectionalLight(0x4a7bd0, 0.55);
+fillLight.position.set(-0.6, -0.2, 0.8).multiplyScalar(40);
+scene.add(fillLight);
+
+scene.add(new THREE.AmbientLight(0x1a2440, 1.0));
+
+/* ============================================================
+   SHARED GLSL NOISE
+   ============================================================ */
+const NOISE_GLSL = `
+float hash13(vec3 p){
+  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+  p += dot(p, p.yxz + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+float vnoise(vec3 x){
+  vec3 i = floor(x);
+  vec3 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  float n000 = hash13(i + vec3(0.0, 0.0, 0.0));
+  float n100 = hash13(i + vec3(1.0, 0.0, 0.0));
+  float n010 = hash13(i + vec3(0.0, 1.0, 0.0));
+  float n110 = hash13(i + vec3(1.0, 1.0, 0.0));
+  float n001 = hash13(i + vec3(0.0, 0.0, 1.0));
+  float n101 = hash13(i + vec3(1.0, 0.0, 1.0));
+  float n011 = hash13(i + vec3(0.0, 1.0, 1.0));
+  float n111 = hash13(i + vec3(1.0, 1.0, 1.0));
+  return mix(
+    mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+    mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y),
+    f.z);
+}
+float fbm(vec3 p){
+  float a = 0.5;
+  float s = 0.0;
+  for (int i = 0; i < 5; i++){
+    s += a * vnoise(p);
+    p *= 2.03;
+    a *= 0.5;
+  }
+  return s;
+}
+`;
+
+/* ============================================================
+   EARTH
+   ============================================================ */
+const EARTH_POS = new THREE.Vector3(-1.2, -1.6, -14);
+const EARTH_R = 4.0;
+
+const earthUniforms = {
+  uSunDir: { value: SUN_DIR.clone() }
+};
+
+const earthMat = new THREE.ShaderMaterial({
+  uniforms: earthUniforms,
+  vertexShader: `
+    varying vec3 vNormal;
+    varying vec3 vObjPos;
+    varying vec3 vWorldPos;
+    void main(){
+      vObjPos = position;
+      vNormal = normalize(mat3(modelMatrix) * normal);
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vWorldPos = wp.xyz;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }
+  `,
+  fragmentShader: `
+    precision highp float;
+    uniform vec3 uSunDir;
+    varying vec3 vNormal;
+    varying vec3 vObjPos;
+    varying vec3 vWorldPos;
+    ${NOISE_GLSL}
+    void main(){
+      vec3 n = normalize(vNormal);
+      vec3 p = normalize(vObjPos);
+
+      float base = fbm(p * 2.0);
+      float det  = fbm(p * 5.5 + 11.0);
+      float h = base * 0.78 + det * 0.22;
+
+      float lat = abs(p.y);
+      float capN = fbm(p * 3.0 + 5.0) * 0.10;
+      float cap = smoothstep(0.70 + capN, 0.845 + capN, lat);
+
+      float land = smoothstep(0.512, 0.552, h);
+
+      vec3 sea   = vec3(0.075, 0.192, 0.369);   // #13315e
+      vec3 landA = vec3(0.115, 0.300, 0.190);
+      vec3 landB = vec3(0.290, 0.545, 0.330);   // #2f6b46-ish
+      vec3 landCol = mix(landA, landB, smoothstep(0.50, 0.74, h));
+
+      vec3 col = mix(sea, landCol, land);
+      col = mix(col, vec3(0.93, 0.95, 0.98), cap);
+
+      float ndl = dot(n, uSunDir);
+      float diff = max(ndl, 0.0);
+      float day  = smoothstep(-0.10, 0.28, ndl);
+
+      vec3 lit = col * (0.055 + 1.20 * diff);
+
+      // ---- night side city lights ----
+      float cn  = fbm(p * 16.0 + 3.0);
+      float cn2 = fbm(p * 34.0 + 7.0);
+      float cityMask = smoothstep(0.50, 0.70, cn * 0.72 + cn2 * 0.28);
+      cityMask *= land * (1.0 - cap);
+      float night = 1.0 - day;
+      vec3 city = vec3(1.0, 0.816, 0.816) * cityMask * night * 2.4;
+
+      vec3 final = lit + city;
+
+      // ---- subtle atmospheric rim on the planet itself ----
+      vec3 viewDir = normalize(cameraPosition - vWorldPos);
+      float rim = pow(1.0 - abs(dot(n, viewDir)), 3.0);
+      final += vec3(0.30, 0.55, 0.95) * rim * 0.40;
+
+      gl_FragColor = vec4(final, 1.0);
+    }
+  `
+});
+
+const earth = new THREE.Mesh(new THREE.SphereGeometry(EARTH_R, 96, 64), earthMat);
+earth.position.copy(EARTH_POS);
+earth.name = 'earth';
+scene.add(earth);
+
+/* ============================================================
+   ATMOSPHERE  (additive halo, bright at the limb)
+   ============================================================ */
+const atmoMat = new THREE.ShaderMaterial({
+  uniforms: { uColor: { value: new THREE.Color(0x6fb6ff) } },
+  vertexShader: `
+    varying vec3 vNormal;
+    varying vec3 vWorldPos;
+    void main(){
+      vNormal = normalize(mat3(modelMatrix) * normal);
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vWorldPos = wp.xyz;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }
+  `,
+  fragmentShader: `
+    precision highp float;
+    uniform vec3 uColor;
+    varying vec3 vNormal;
+    varying vec3 vWorldPos;
+    void main(){
+      vec3 viewDir = normalize(cameraPosition - vWorldPos);
+      float rim = 1.0 - abs(dot(normalize(vNormal), viewDir));
+      float i = pow(rim, 3.2);
+      gl_FragColor = vec4(uColor * i * 1.75, i);
+    }
+  `,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  side: THREE.BackSide
+});
+
+const atmosphere = new THREE.Mesh(new THREE.SphereGeometry(4.35, 64, 48), atmoMat);
+atmosphere.position.copy(EARTH_POS);
+atmosphere.name = 'atmosphere';
+scene.add(atmosphere);
+
+/* ============================================================
+   CLOUDS
+   ============================================================ */
+const cloudMat = new THREE.ShaderMaterial({
+  uniforms: { uSunDir: { value: SUN_DIR.clone() } },
+  vertexShader: `
+    varying vec3 vNormal;
+    varying vec3 vObjPos;
+    void main(){
+      vObjPos = position;
+      vNormal = normalize(mat3(modelMatrix) * normal);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    precision highp float;
+    uniform vec3 uSunDir;
+    varying vec3 vNormal;
+    varying vec3 vObjPos;
+    ${NOISE_GLSL}
+    void main(){
+      vec3 p = normalize(vObjPos);
+      float c1 = fbm(p * 3.2 + 2.0);
+      float c2 = fbm(p * 8.0 + 9.0);
+      float a = smoothstep(0.44, 0.70, c1 * 0.72 + c2 * 0.28);
+      vec3 n = normalize(vNormal);
+      float ndl = max(dot(n, uSunDir), 0.0);
+      vec3 col = vec3(1.0) * (0.16 + 1.05 * ndl);
+      gl_FragColor = vec4(col, a * 0.30);
+    }
+  `,
+  transparent: true,
+  depthWrite: false
+});
+
+const clouds = new THREE.Mesh(new THREE.SphereGeometry(4.10, 64, 48), cloudMat);
+clouds.position.copy(EARTH_POS);
+clouds.name = 'clouds';
+scene.add(clouds);
+
+/* ============================================================
+   STARS
+   ============================================================ */
+const STAR_COUNT = 2200;
+const starGeo = new THREE.BufferGeometry();
+const starPos = new Float32Array(STAR_COUNT * 3);
+const starCol = new Float32Array(STAR_COUNT * 3);
+for (let i = 0; i < STAR_COUNT; i++) {
+  const u = rnd() * 2 - 1;
+  const th = rnd() * Math.PI * 2;
+  const r = Math.sqrt(Math.max(0, 1 - u * u));
+  const R = 1000;
+  starPos[i * 3 + 0] = Math.cos(th) * r * R;
+  starPos[i * 3 + 1] = u * R;
+  starPos[i * 3 + 2] = Math.sin(th) * r * R;
+  const b = 0.35 + rnd() * 0.65;
+  starCol[i * 3 + 0] = b;
+  starCol[i * 3 + 1] = b;
+  starCol[i * 3 + 2] = Math.min(1.0, b * 1.05);
+}
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+starGeo.setAttribute('color', new THREE.BufferAttribute(starCol, 3));
+
+const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({
+  size: 2.4,
+  sizeAttenuation: false,
+  vertexColors: true,
+  transparent: true,
+  depthWrite: false
+}));
+stars.name = 'stars';
+scene.add(stars);
+
+/* ============================================================
+   STATION
+   ============================================================ */
+const station = new THREE.Group();
+station.position.set(1.058, 0.696, 0);
+station.name = 'station';
+scene.add(station);
+
+const hullMat = new THREE.MeshStandardMaterial({ color: 0xb9bec7, metalness: 0.78, roughness: 0.34 });
+const hull = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.30, 0.30), hullMat);
+station.add(hull);
+
+// hull ribs for detail
+const ribMat = new THREE.MeshStandardMaterial({ color: 0x8d939c, metalness: 0.85, roughness: 0.4 });
+for (let i = -1; i <= 1; i++) {
+  const rib = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.315, 0.315), ribMat);
+  rib.position.x = i * 0.28;
+  station.add(rib);
+}
+
+// solar panels
+const panelMat = new THREE.MeshStandardMaterial({
+  color: 0x1b2a55, metalness: 0.65, roughness: 0.22,
+  side: THREE.DoubleSide, emissive: 0x0a1430, emissiveIntensity: 0.7
+});
+const panelGeo = new THREE.PlaneGeometry(0.55, 0.16);
+const panelL = new THREE.Mesh(panelGeo, panelMat);
+panelL.position.set(-0.72, 0, 0);
+station.add(panelL);
+const panelR = new THREE.Mesh(panelGeo, panelMat);
+panelR.position.set(0.72, 0, 0);
+station.add(panelR);
+
+// panel grid lines
+const gridMat = new THREE.MeshBasicMaterial({ color: 0x3a5aa8, transparent: true, opacity: 0.55 });
+for (let s = -1; s <= 1; s += 2) {
+  for (let i = -1; i <= 1; i++) {
+    const line = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.006), gridMat);
+    line.position.set(s * 0.72, i * 0.05, 0.001);
+    station.add(line);
+  }
+}
+
+// antenna
+const antMat = new THREE.MeshStandardMaterial({ color: 0xcfd4db, metalness: 0.9, roughness: 0.25 });
+const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.5, 8), antMat);
+antenna.position.set(0.30, 0.40, 0);
+station.add(antenna);
+const antTip = new THREE.Mesh(new THREE.SphereGeometry(0.028, 10, 8), antMat);
+antTip.position.set(0.30, 0.66, 0);
+station.add(antTip);
+
+// three windows
+const winMat = new THREE.MeshBasicMaterial({ color: 0xffe2a8 });
+for (let i = -1; i <= 1; i++) {
+  const w = new THREE.Mesh(new THREE.PlaneGeometry(0.10, 0.075), winMat);
+  w.position.set(i * 0.24, 0.02, 0.151);
+  station.add(w);
+}
+
+// blinking beacons
+const blinkMats = [];
+const blinkColors = [0xff4a4a, 0x66ff88, 0xffcc44];
+for (let i = 0; i < 3; i++) {
+  const m = new THREE.MeshBasicMaterial({ color: blinkColors[i], transparent: true, opacity: 1 });
+  const s = new THREE.Mesh(new THREE.SphereGeometry(0.024, 8, 6), m);
+  s.position.set(-0.30 + i * 0.30, 0.17, 0.0);
+  station.add(s);
+  blinkMats.push(m);
+}
+
+/* ============================================================
+   EXPLOSIONS
+   ============================================================ */
+function dirFromAngles(a, e) {
+  return new THREE.Vector3(
+    Math.sin(a) * Math.cos(e),
+    Math.sin(e),
+    Math.cos(a) * Math.cos(e)
+  ).normalize();
+}
+
+function buildExplosion(dir) {
+  const g = new THREE.Group();
+  g.position.copy(EARTH_POS).addScaledVector(dir, EARTH_R);
+  g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone());
+
+  const flashMat = new THREE.MeshBasicMaterial({
+    color: 0xffd9a0, blending: THREE.AdditiveBlending,
+    transparent: true, depthWrite: false
+  });
+  const flash = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 14), flashMat);
+  g.add(flash);
+
+  const domeMat = new THREE.MeshBasicMaterial({
+    color: 0xffd9a0, transparent: true, opacity: 0.25,
+    depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending
+  });
+  const dome = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2), domeMat);
+  g.add(dome);
+
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0xffd9a0, transparent: true, opacity: 0.5,
+    depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending
+  });
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.90, 1.0, 72), ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.05;
+  g.add(ring);
+
+  const mush = new THREE.Group();
+  const colMat = new THREE.MeshBasicMaterial({
+    color: 0xffcf9a, transparent: true, opacity: 0.55,
+    depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide
+  });
+  const column = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.10, 0.5, 14, 1, true), colMat);
+  column.position.y = 0.25;
+  mush.add(column);
+
+  const capMat = new THREE.MeshBasicMaterial({
+    color: 0xffe0b0, transparent: true, opacity: 0.5,
+    depthWrite: false, blending: THREE.AdditiveBlending
+  });
+  const cap = new THREE.Mesh(new THREE.SphereGeometry(0.20, 20, 14), capMat);
+  cap.position.y = 0.50;
+  cap.scale.y = 0.68;
+  mush.add(cap);
+
+  g.add(mush);
+
+  scene.add(g);
+  return { group: g, flash, dome, ring, mushroom: mush, flashMat, domeMat, ringMat, colMat, capMat };
+}
+
+const explosions = [
+  { start: 0.0, dir: dirFromAngles(-0.136, 0.372), obj: null },
+  { start: 1.5, dir: dirFromAngles(0.331, -0.345), obj: null }
+];
+for (const ex of explosions) ex.obj = buildExplosion(ex.dir);
+
+function updateExplosion(ex, age) {
+  const o = ex.obj;
+  const visible = age >= 0 && age < 3.4;
+  o.group.visible = visible;
+  if (!visible) return;
+
+  // flash: 0.05 -> 0.34 over 0.5s, then fades
+  const fT = Math.min(age / 0.5, 1);
+  o.flash.scale.setScalar(0.05 + 0.29 * fT);
+  o.flashMat.opacity = age < 0.5 ? 1.0 : Math.max(0, 1.0 - (age - 0.5) / 0.4);
+  o.flash.visible = age < 0.9;
+
+  // dome: expands to 0.9 over 1.6s, then fades
+  const dT = Math.min(age / 1.6, 1);
+  o.dome.scale.setScalar(Math.max(0.001, 0.9 * dT));
+  o.domeMat.opacity = 0.25 * Math.max(0, 1.0 - Math.max(0, age - 1.6) / 0.9);
+  o.dome.visible = age < 2.5;
+
+  // ring: expands to 1.8 over 2.4s
+  const rT = Math.min(age / 2.4, 1);
+  o.ring.scale.setScalar(Math.max(0.001, 1.8 * rT));
+  o.ringMat.opacity = 0.5 * (1.0 - rT * rT);
+  o.ring.visible = age < 2.4;
+
+  // mushroom: rises 0.5 over 2s
+  const mT = Math.min(Math.max(age - 0.12, 0) / 2.0, 1);
+  o.mushroom.position.y = 0.5 * mT;
+  const fade = age < 0.12 ? 0 : (age > 2.4 ? Math.max(0, 1 - (age - 2.4) / 0.8) : 1);
+  o.colMat.opacity = 0.55 * fade;
+  o.capMat.opacity = 0.50 * fade;
+  o.mushroom.visible = fade > 0.01;
+  o.mushroom.scale.setScalar(0.7 + 0.5 * mT);
+}
+
+/* ============================================================
+   POST-PROCESSING
+   ============================================================ */
+const rtScene = new THREE.WebGLRenderTarget(1920, 1080, {
+  minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, type: THREE.HalfFloatType
+});
+const rtA = new THREE.WebGLRenderTarget(960, 540, {
+  minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, type: THREE.HalfFloatType
+});
+const rtB = new THREE.WebGLRenderTarget(960, 540, {
+  minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, type: THREE.HalfFloatType
+});
+
+const quadGeo = new THREE.PlaneGeometry(2, 2);
+const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+const QUAD_VS = `
+  varying vec2 vUv;
+  void main(){
+    vUv = uv;
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+  }
+`;
+
+function makePass(frag, uniforms) {
+  const mat = new THREE.ShaderMaterial({
+    uniforms, vertexShader: QUAD_VS, fragmentShader: frag,
+    depthTest: false, depthWrite: false
+  });
+  const sc = new THREE.Scene();
+  sc.add(new THREE.Mesh(quadGeo, mat));
+  return { scene: sc, mat };
+}
+
+const brightPass = makePass(`
+  precision highp float;
+  uniform sampler2D tDiffuse;
+  uniform float uThreshold;
+  varying vec2 vUv;
+  void main(){
+    vec3 c = texture2D(tDiffuse, vUv).rgb;
+    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    float k = max(0.0, l - uThreshold) / max(l, 1e-4);
+    gl_FragColor = vec4(c * k, 1.0);
+  }
+`, { tDiffuse: { value: null }, uThreshold: { value: 0.42 } });
+
+const blurPass = makePass(`
+  precision highp float;
+  uniform sampler2D tDiffuse;
+  uniform vec2 uDir;
+  varying vec2 vUv;
+  void main(){
+    vec3 s = texture2D(tDiffuse, vUv).rgb * 0.227027;
+    s += texture2D(tDiffuse, vUv + uDir * 1.3846).rgb * 0.316216;
+    s += texture2D(tDiffuse, vUv - uDir * 1.3846).rgb * 0.316216;
+    s += texture2D(tDiffuse, vUv + uDir * 3.2308).rgb * 0.070270;
+    s += texture2D(tDiffuse, vUv - uDir * 3.2308).rgb * 0.070270;
+    gl_FragColor = vec4(s, 1.0);
+  }
+`, { tDiffuse: { value: null }, uDir: { value: new THREE.Vector2() } });
+
+const compositePass = makePass(`
+  precision highp float;
+  uniform sampler2D tScene;
+  uniform sampler2D tBloom;
+  uniform float uTime;
+  uniform vec2 uRes;
+  varying vec2 vUv;
+
+  float hash21(vec2 p){
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
+
+  void main(){
+    vec2 uv = vUv;
+    vec2 d = uv - 0.5;
+    float r2 = dot(d, d);
+
+    // chromatic aberration (radial)
+    float ca = 0.0038 * r2;
+    vec3 col;
+    col.r = texture2D(tScene, uv + d * ca).r;
+    col.g = texture2D(tScene, uv).g;
+    col.b = texture2D(tScene, uv - d * ca).b;
+
+    // bloom
+    vec3 bloom = texture2D(tBloom, uv).rgb;
+    col += bloom * 1.15;
+
+    // soft rolloff + gamma
+    col = col / (1.0 + col * 0.35);
+    col = pow(max(col, 0.0), vec3(1.0 / 2.2));
+
+    // film grain
+    float g = hash21(uv * uRes + fract(uTime) * 137.0);
+    col += (g - 0.5) * 0.048;
+
+    // vignette
+    float v = smoothstep(0.98, 0.30, length(d) * 1.35);
+    col *= mix(0.42, 1.0, v);
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+`, {
+  tScene: { value: null },
+  tBloom: { value: null },
+  uTime: { value: 0 },
+  uRes: { value: new THREE.Vector2(1920, 1080) }
+});
+
+/* ============================================================
+   STATE / UPDATE
+   ============================================================ */
+let t = 0;
+
+const objectNames = ['earth', 'atmosphere', 'clouds', 'station', 'flash', 'dome', 'ring', 'mushroom', 'stars'];
+
+function update(dt) {
+  // camera slow shake
+  camera.position.x = Math.sin(t * 0.73) * 0.023;
+  camera.position.y = 0.4 + Math.sin(t * 0.51) * 0.023 * 0.6;
+  camera.lookAt(0, 0, -6);
+
+  // station spin
+  station.rotation.z += dt * 0.18;
+
+  // blinking beacons
+  for (let i = 0; i < blinkMats.length; i++) {
+    const s = Math.sin(t * 3.1 + i * 2.1);
+    blinkMats[i].opacity = s > 0.15 ? 1.0 : 0.08;
+  }
+
+  // clouds drift
+  clouds.rotation.y += dt * 0.022;
+
+  // explosions
+  for (const ex of explosions) updateExplosion(ex, t - ex.start);
+}
+
+function render() {
+  renderer.setRenderTarget(rtScene);
+  renderer.clear();
+  renderer.render(scene, camera);
+
+  // bright pass
+  brightPass.mat.uniforms.tDiffuse.value = rtScene.texture;
+  renderer.setRenderTarget(rtA);
+  renderer.render(brightPass.scene, quadCam);
+
+  // blur H
+  blurPass.mat.uniforms.tDiffuse.value = rtA.texture;
+  blurPass.mat.uniforms.uDir.value.set(1 / 960, 0);
+  renderer.setRenderTarget(rtB);
+  renderer.render(blurPass.scene, quadCam);
+
+  // blur V
+  blurPass.mat.uniforms.tDiffuse.value = rtB.texture;
+  blurPass.mat.uniforms.uDir.value.set(0, 1 / 540);
+  renderer.setRenderTarget(rtA);
+  renderer.render(blurPass.scene, quadCam);
+
+  // composite to screen
+  compositePass.mat.uniforms.tScene.value = rtScene.texture;
+  compositePass.mat.uniforms.tBloom.value = rtA.texture;
+  compositePass.mat.uniforms.uTime.value = t;
+  renderer.setRenderTarget(null);
+  renderer.render(compositePass.scene, quadCam);
+}
+
+/* ============================================================
+   PROBE / STEP
+   ============================================================ */
+window.__probe = function () {
+  let boom = 0;
+  for (const ex of explosions) {
+    if (t >= ex.start) boom = t - ex.start;
+  }
+  return {
+    t: Math.round(t * 10000) / 10000,
+    objects: objectNames.slice(),
+    camera: [
+      Math.round(camera.position.x * 10000) / 10000,
+      Math.round(camera.position.y * 10000) / 10000
+    ],
+    boom: Math.round(boom * 10000) / 10000
+  };
+};
+
+window.__step = function (dt) {
+  t += dt;
+  update(dt);
+  render();
+  return window.__probe();
+};
+
+/* ============================================================
+   FIRST FRAME
+   ============================================================ */
+update(0);
+render();
+window.__ready = true;
+</script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-25 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Damped Pendulum Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+    </style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+    <script type="module">
+        const THREE = window.THREE;
+
+        // --- Constants ---
+        const G = 9.81;
+        const L = 2.28;
+        const C = 0.12;
+        
+        // --- State ---
+        let theta = 1.068;
+        let omega = 0.0;
+        let steps = 0;
+        let t = 0.0;
+
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+        // Background black or transparent? Prompt doesn't specify, default black is fine.
+        
+        // Camera
+        const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+        camera.position.set(0.0, 1.8, 9.0);
+        camera.lookAt(0.0, 1.4, 0.0);
+
+        // Renderer
+        const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+        renderer.setPixelRatio(1);
+        renderer.setSize(800, 600, false);
+        document.body.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+        dirLight.position.set(5.0, 10.0, 9.0);
+        scene.add(dirLight);
+
+        // --- Objects ---
+
+        // Ground
+        const groundGeo = new THREE.PlaneGeometry(60, 60);
+        const groundMat = new THREE.MeshStandardMaterial({ color: 0x2b3a4a });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = -1.2;
+        ground.name = 'ground';
+        scene.add(ground);
+
+        // Support
+        const supportGeo = new THREE.BoxGeometry(3.5, 0.3, 0.5);
+        const supportMat = new THREE.MeshStandardMaterial({ color: 0x8a93a6 });
+        const support = new THREE.Mesh(supportGeo, supportMat);
+        support.position.set(0, 3.15, 0);
+        support.name = 'support';
+        scene.add(support);
+
+        // Rod
+        // Cylinder geometry is along Y axis by default.
+        const rodGeo = new THREE.CylinderGeometry(0.07, 0.07, L, 16);
+        const rodMat = new THREE.MeshStandardMaterial({ color: 0x5b6472 });
+        const rod = new THREE.Mesh(rodGeo, rodMat);
+        rod.name = 'rod';
+        // Initial position will be set by updateScene
+        scene.add(rod);
+
+        // Bob
+        const bobGeo = new THREE.SphereGeometry(0.3, 32, 32);
+        const bobMat = new THREE.MeshStandardMaterial({ color: 0xff8a3d });
+        const bob = new THREE.Mesh(bobGeo, bobMat);
+        bob.name = 'bob';
+        // Initial position will be set by updateScene
+        scene.add(bob);
+
+        // --- Logic ---
+
+        function updateScene() {
+            // Bob Position
+            // x = L * sin(theta)
+            // y = 3 - L * cos(theta)
+            const bx = L * Math.sin(theta);
+            const by = 3 - L * Math.cos(theta);
+            const bz = 0;
+            bob.position.set(bx, by, bz);
+
+            // Rod Position and Rotation
+            // Connects (0, 3, 0) to (bx, by, bz)
+            // Midpoint
+            const rx = bx / 2;
+            const ry = 3 + (by - 3) / 2; // 3 - L/2 * cos(theta)
+            const rz = 0;
+            rod.position.set(rx, ry, rz);
+
+            // Rotation
+            // We want the cylinder (initially +Y) to point from Pivot(0,3,0) to Bob.
+            // Vector V = (bx, by-3, 0) = (L sin, -L cos, 0)
+            // Angle of V from X axis: atan2(-L cos, L sin)
+            // Angle of Cylinder (+Y) from X axis: PI/2
+            // Rotation Z = Angle(V) - PI/2
+            // Simplified: theta - PI
+            rod.rotation.z = theta - Math.PI;
+        }
+
+        function render() {
+            renderer.render(scene, camera);
+        }
+
+        // Initial Render
+        updateScene();
+        render();
+        window.__ready = true;
+
+        // --- API ---
+
+        window.__step = function(dt) {
+            // Semi-implicit Euler
+            // 1. Update omega
+            omega += (-G / L * Math.sin(theta) - C * omega) * dt;
+            // 2. Update theta
+            theta += omega * dt;
+
+            steps++;
+            t += dt;
+
+            updateScene();
+            render();
+        };
+
+        window.__probe = function() {
+            // Collect object names
+            const objects = [];
+            scene.traverse((child) => {
+                if (child.isMesh && child.name) {
+                    objects.push(child.name);
+                }
+            });
+
+            return {
+                steps: steps,
+                t: parseFloat(t.toFixed(4)),
+                objects: objects,
+                camera: [0, 1.8, 9],
+                theta: parseFloat(theta.toFixed(4)),
+                omega: parseFloat(omega.toFixed(4)),
+                L: L
+            };
+        };
+    </script>
+
+<script>
+// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
+// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
+// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+(() => {
+  const DT = 1 / 60;
+  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
+  let acc = 0;
+  let last = 0;
+  window.__auto = true;
+
+  window.addEventListener('load', () => {
+    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
+    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
+    last = performance.now();
+    requestAnimationFrame(loop);
+  });
+
+  function loop(now) {
+    const elapsed = Math.min(0.2, (now - last) / 1000);
+    last = now;
+    if (window.__auto) {
+      acc += elapsed;
+      while (acc >= DT) { acc -= DT; step(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('message', (event) => {
+    const cmd = event.data;
+    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
+    else if (cmd === 'pause') { window.__auto = false; }
+    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    else if (cmd === 'reset') { window.location.reload(); }
+    else return;
+    window.dispatchEvent(new Event('dailybench-step'));
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
+    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  });
+})();
+</script>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · K-3 · пробел — пауза, → — шаг, R — сброс</div></body>
+</html>
