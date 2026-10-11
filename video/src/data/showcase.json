@@ -11,11 +11,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-1.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-1.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -30,13 +30,6 @@
     "clip": "clips/qwen38__K-1.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-1.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
   "open": 2
@@ -53,11 +46,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-2.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-2.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -72,16 +65,9 @@
     "clip": "clips/qwen38__K-2.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-2.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 4
+  "open": 2
  },
  {
   "scene": "K-3",
@@ -95,11 +81,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-3.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-3.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -114,16 +100,9 @@
     "clip": "clips/qwen38__K-3.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-3.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 2
+  "open": 3
  },
  {
   "scene": "K-4",
@@ -137,11 +116,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-4.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-4.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -156,16 +135,9 @@
     "clip": "clips/qwen38__K-4.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-4.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 3
+  "open": 1
  },
  {
   "scene": "K-5",
@@ -179,11 +151,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-5.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-5.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -198,16 +170,9 @@
     "clip": "clips/qwen38__K-5.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-5.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 1
+  "open": 0
  },
  {
   "scene": "K-6",
@@ -221,11 +186,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-6.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-6.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -240,13 +205,6 @@
     "clip": "clips/qwen38__K-6.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-6.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
   "open": 0
@@ -263,11 +221,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-7.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-7.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -282,16 +240,9 @@
     "clip": "clips/qwen38__K-7.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-7.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 4
+  "open": 0
  },
  {
   "scene": "K-8",
@@ -305,11 +256,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-8.mp4",
-    "missing": true,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-8.mp4",
+    "missing": false,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -324,13 +275,6 @@
     "clip": "clips/qwen38__K-8.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-8.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
   "open": 0
@@ -347,11 +291,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-9.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-9.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -366,16 +310,9 @@
     "clip": "clips/qwen38__K-9.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-9.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 0
+  "open": 2
  },
  {
   "scene": "K-10",
@@ -389,11 +326,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-10.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-10.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -408,16 +345,9 @@
     "clip": "clips/qwen38__K-10.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-10.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 0
+  "open": 2
  },
  {
   "scene": "K-11",
@@ -431,11 +361,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-11.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-11.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -450,16 +380,9 @@
     "clip": "clips/qwen38__K-11.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-11.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 2
+  "open": 3
  },
  {
   "scene": "K-12",
@@ -473,11 +396,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-12.mp4",
-    "missing": true,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-12.mp4",
+    "missing": false,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -492,13 +415,6 @@
     "clip": "clips/qwen38__K-12.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-12.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
   "open": 3
@@ -515,11 +431,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-13.mp4",
-    "missing": true,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-13.mp4",
+    "missing": false,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -534,16 +450,9 @@
     "clip": "clips/qwen38__K-13.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-13.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 4
+  "open": 3
  },
  {
   "scene": "K-14",
@@ -557,11 +466,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-14.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-14.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -576,16 +485,9 @@
     "clip": "clips/qwen38__K-14.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-14.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 3
+  "open": 1
  },
  {
   "scene": "K-15",
@@ -599,11 +501,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-15.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-15.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -618,16 +520,9 @@
     "clip": "clips/qwen38__K-15.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-15.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 4
+  "open": 0
  },
  {
   "scene": "K-16",
@@ -641,11 +536,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-16.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-16.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -660,13 +555,6 @@
     "clip": "clips/qwen38__K-16.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-16.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
   "open": 1
@@ -683,11 +571,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-17.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-17.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -702,16 +590,9 @@
     "clip": "clips/qwen38__K-17.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-17.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 0
+  "open": 2
  },
  {
   "scene": "K-18",
@@ -725,11 +606,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-18.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-18.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -744,16 +625,9 @@
     "clip": "clips/qwen38__K-18.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-18.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 1
+  "open": 3
  },
  {
   "scene": "K-19",
@@ -767,11 +641,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-19.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-19.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -786,13 +660,6 @@
     "clip": "clips/qwen38__K-19.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-19.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
   "open": 2
@@ -809,11 +676,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__K-20.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__K-20.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -828,16 +695,9 @@
     "clip": "clips/qwen38__K-20.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__K-20.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 3
+  "open": 2
  },
  {
   "scene": "L-1",
@@ -851,11 +711,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-1.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-1.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -870,16 +730,9 @@
     "clip": "clips/qwen38__L-1.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-1.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 2
+  "open": 3
  },
  {
   "scene": "L-2",
@@ -893,11 +746,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-2.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-2.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -912,13 +765,6 @@
     "clip": "clips/qwen38__L-2.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-2.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
   "open": 2
@@ -935,11 +781,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-3.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-3.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -954,16 +800,9 @@
     "clip": "clips/qwen38__L-3.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-3.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 3
+  "open": 2
  },
  {
   "scene": "L-4",
@@ -977,11 +816,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-4.mp4",
-    "missing": true,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-4.mp4",
+    "missing": false,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -996,16 +835,9 @@
     "clip": "clips/qwen38__L-4.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-4.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 3
+  "open": 1
  },
  {
   "scene": "L-5",
@@ -1019,11 +851,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-5.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-5.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1038,16 +870,9 @@
     "clip": "clips/qwen38__L-5.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-5.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 3
+  "open": 0
  },
  {
   "scene": "L-6",
@@ -1061,11 +886,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-6.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-6.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1080,13 +905,6 @@
     "clip": "clips/qwen38__L-6.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-6.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
   "open": 1
@@ -1103,11 +921,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-7.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-7.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1122,16 +940,9 @@
     "clip": "clips/qwen38__L-7.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-7.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "L-8",
@@ -1145,11 +956,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-8.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-8.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1164,16 +975,9 @@
     "clip": "clips/qwen38__L-8.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-8.mp4",
-    "missing": true,
-    "accent": "#ffb454"
    }
   ],
-  "open": 1
+  "open": 2
  },
  {
   "scene": "L-9",
@@ -1187,11 +991,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-9.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-9.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1206,16 +1010,9 @@
     "clip": "clips/qwen38__L-9.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-9.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 1
+  "open": 2
  },
  {
   "scene": "L-10",
@@ -1229,11 +1026,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-10.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-10.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1248,16 +1045,9 @@
     "clip": "clips/qwen38__L-10.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-10.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 2
+  "open": 3
  },
  {
   "scene": "L-11",
@@ -1271,11 +1061,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-11.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-11.mp4",
     "missing": false,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1290,16 +1080,9 @@
     "clip": "clips/qwen38__L-11.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-11.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 2
+  "open": 1
  },
  {
   "scene": "L-12",
@@ -1313,11 +1096,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-12.mp4",
-    "missing": false,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-12.mp4",
+    "missing": true,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1332,16 +1115,9 @@
     "clip": "clips/qwen38__L-12.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-12.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 4
+  "open": 0
  },
  {
   "scene": "L-13",
@@ -1355,11 +1131,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-13.mp4",
-    "missing": false,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-13.mp4",
+    "missing": true,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1374,16 +1150,9 @@
     "clip": "clips/qwen38__L-13.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-13.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 4
+  "open": 3
  },
  {
   "scene": "L-14",
@@ -1397,11 +1166,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-14.mp4",
-    "missing": false,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-14.mp4",
+    "missing": true,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1416,16 +1185,9 @@
     "clip": "clips/qwen38__L-14.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-14.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 3
+  "open": 0
  },
  {
   "scene": "L-15",
@@ -1439,11 +1201,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-15.mp4",
-    "missing": false,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-15.mp4",
+    "missing": true,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1458,16 +1220,9 @@
     "clip": "clips/qwen38__L-15.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-15.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 1
+  "open": 3
  },
  {
   "scene": "L-16",
@@ -1481,11 +1236,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-16.mp4",
-    "missing": false,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-16.mp4",
+    "missing": true,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1500,16 +1255,9 @@
     "clip": "clips/qwen38__L-16.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-16.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 0
+  "open": 2
  },
  {
   "scene": "L-17",
@@ -1523,11 +1271,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-17.mp4",
-    "missing": false,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-17.mp4",
+    "missing": true,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1542,16 +1290,9 @@
     "clip": "clips/qwen38__L-17.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-17.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 1
+  "open": 3
  },
  {
   "scene": "L-18",
@@ -1565,11 +1306,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-18.mp4",
-    "missing": false,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-18.mp4",
+    "missing": true,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1584,16 +1325,9 @@
     "clip": "clips/qwen38__L-18.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-18.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 4
+  "open": 0
  },
  {
   "scene": "L-19",
@@ -1607,11 +1341,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-19.mp4",
-    "missing": false,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-19.mp4",
+    "missing": true,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1626,16 +1360,9 @@
     "clip": "clips/qwen38__L-19.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-19.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 4
+  "open": 2
  },
  {
   "scene": "L-20",
@@ -1649,11 +1376,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-20.mp4",
-    "missing": false,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-20.mp4",
+    "missing": true,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1668,16 +1395,9 @@
     "clip": "clips/qwen38__L-20.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-20.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 1
+  "open": 3
  },
  {
   "scene": "L-21",
@@ -1691,11 +1411,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-21.mp4",
-    "missing": false,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-21.mp4",
+    "missing": true,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1710,16 +1430,9 @@
     "clip": "clips/qwen38__L-21.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-21.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 3
+  "open": 2
  },
  {
   "scene": "L-22",
@@ -1733,11 +1446,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-22.mp4",
-    "missing": false,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-22.mp4",
+    "missing": true,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1752,16 +1465,9 @@
     "clip": "clips/qwen38__L-22.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-22.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
-  "open": 3
+  "open": 0
  },
  {
   "scene": "L-23",
@@ -1775,11 +1481,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-23.mp4",
-    "missing": false,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-23.mp4",
+    "missing": true,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1794,13 +1500,6 @@
     "clip": "clips/qwen38__L-23.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-23.mp4",
-    "missing": false,
-    "accent": "#ffb454"
    }
   ],
   "open": 2
@@ -1817,11 +1516,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-24.mp4",
-    "missing": false,
-    "accent": "#7ee0ff"
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-24.mp4",
+    "missing": true,
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1836,13 +1535,6 @@
     "clip": "clips/qwen38__L-24.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-24.mp4",
-    "missing": true,
-    "accent": "#ffb454"
    }
   ],
   "open": 0
@@ -1859,11 +1551,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-25.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-25.mp4",
     "missing": true,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1878,16 +1570,9 @@
     "clip": "clips/qwen38__L-25.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-25.mp4",
-    "missing": true,
-    "accent": "#ffb454"
    }
   ],
-  "open": 3
+  "open": 0
  },
  {
   "scene": "L-26",
@@ -1901,11 +1586,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-26.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-26.mp4",
     "missing": true,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1920,13 +1605,6 @@
     "clip": "clips/qwen38__L-26.mp4",
     "missing": true,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-26.mp4",
-    "missing": true,
-    "accent": "#ffb454"
    }
   ],
   "open": 0
@@ -1943,11 +1621,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-27.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-27.mp4",
     "missing": true,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -1962,16 +1640,9 @@
     "clip": "clips/qwen38__L-27.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-27.mp4",
-    "missing": true,
-    "accent": "#ffb454"
    }
   ],
-  "open": 3
+  "open": 2
  },
  {
   "scene": "L-28",
@@ -1985,11 +1656,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-28.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-28.mp4",
     "missing": true,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -2004,13 +1675,6 @@
     "clip": "clips/qwen38__L-28.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-28.mp4",
-    "missing": true,
-    "accent": "#ffb454"
    }
   ],
   "open": 0
@@ -2027,11 +1691,11 @@
     "accent": "#4cc2ff"
    },
    {
-    "model": "qwen35",
-    "label": "Qwen 3.5 397B A17B",
-    "clip": "clips/qwen35__L-29.mp4",
+    "model": "glm-5.3",
+    "label": "GLM 5.3",
+    "clip": "clips/glm-5.3__L-29.mp4",
     "missing": true,
-    "accent": "#7ee0ff"
+    "accent": "#f4a3ff"
    },
    {
     "model": "qwen36",
@@ -2046,15 +1710,8 @@
     "clip": "clips/qwen38__L-29.mp4",
     "missing": false,
     "accent": "#b48cff"
-   },
-   {
-    "model": "minimax-m3",
-    "label": "MiniMax M3",
-    "clip": "clips/minimax-m3__L-29.mp4",
-    "missing": true,
-    "accent": "#ffb454"
    }
   ],
-  "open": 3
+  "open": 0
  }
 ]

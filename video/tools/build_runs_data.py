@@ -19,20 +19,18 @@ sys.path.insert(0, str(ROOT))
 from dailybench import core, report  # noqa: E402
 
 RUNS = ROOT / "runs"
-DIRS = ["deepseek-v4.1-flash-unc", "qwen35", "qwen36", "qwen38", "minimax-m3"]
+DIRS = ["deepseek-v4.1-flash-unc", "glm-5.3", "qwen36", "qwen38"]
 LABELS = {
     "deepseek-v4.1-flash-unc": "DeepSeek 4.1 Flash",
-    "qwen35": "Qwen 3.5 397B A17B",
+    "glm-5.3": "GLM 5.3",
     "qwen36": "Qwen 3.6 35B A3B",
     "qwen38": "Qwen 3.8",
-    "minimax-m3": "MiniMax M3",
 }
 ACCENTS = {
     "deepseek-v4.1-flash-unc": "#4cc2ff",
-    "qwen35": "#7ee0ff",
+    "glm-5.3": "#f4a3ff",
     "qwen36": "#3ddc97",
     "qwen38": "#b48cff",
-    "minimax-m3": "#ffb454",
 }
 
 

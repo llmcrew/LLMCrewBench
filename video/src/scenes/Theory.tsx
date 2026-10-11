@@ -172,10 +172,10 @@ export const Models: React.FC = () => {
   return (
     <Shell>
       <div style={{position: 'absolute', top: 74, left: 96, ...riseIn(frame, 6)}}>
-        <Title size={54}>Пять конфигураций</Title>
+        <Title size={54}>Четыре конфигурации</Title>
         <Title sub delay={16}>Разные семейства и масштабы: интересен не итог сам по себе, а профиль по категориям</Title>
       </div>
-      <div style={{position: 'absolute', top: 250, left: 84, right: 84, display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16}}>
+      <div style={{position: 'absolute', top: 250, left: 84, right: 84, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16}}>
         {MODELS.map((m, i) => (
           <div
             key={m.dir}

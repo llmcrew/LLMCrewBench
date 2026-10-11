@@ -1,4 +1,4 @@
-// Витрина: все 49 сцен подряд, каждая — пять последовательных раскрытий.
+// Витрина: все 49 сцен подряд, каждая — четыре последовательных раскрытия.
 
 import {AbsoluteFill, Sequence} from 'remotion';
 import {ShowcaseScene, type ShowcaseRun} from './Showcase';

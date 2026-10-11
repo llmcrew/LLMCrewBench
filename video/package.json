@@ -2,7 +2,7 @@
   "name": "dailybench-video",
   "version": "1.0.0",
   "private": true,
-  "description": "Видео DailyBench-16: разбор бенчмарка, пять моделей, витрина визуальных решений",
+  "description": "Видео DailyBench-16: разбор бенчмарка, четыре модели, витрина визуальных решений",
   "scripts": {
     "studio": "remotion studio",
     "render": "remotion render DailyBench out/dailybench.mp4",
