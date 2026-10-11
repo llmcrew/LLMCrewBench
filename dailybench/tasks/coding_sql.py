@@ -28,10 +28,14 @@ from .. import core, text
 #: Points per hidden check; three scenarios share the constant so a check
 #: weighs the same wherever it is earned.
 _POINTS_PER_CHECK = 0.8
-from .coding_python import extract_code
+from .coding_python import code_of, extract_code
 
 DATABASES = 5
 YEAR = 2026
+
+#: The file an agent leaves the statement in; the working copy also carries the
+#: schema and a loadable seed so the query can be written and run for real.
+ANSWER_FILE = "answer.sql"
 
 FORBIDDEN = (
     "insert",
@@ -413,6 +417,9 @@ def generate(rng: random.Random, cfg: Any) -> core.TaskInstance:
         title="SQL",
         prompt=_PROMPT.replace("__DIALECT__", dialect),
         max_points=4.0,
+        # An agent writes the query into the copy and can run it against the seed;
+        # a chat run prints it and never touches the copy.
+        workspace=_workspace(databases[0]),
         oracle={
             "reference": reference,
             "expected": [[[month, value] for month, value in rows] for rows in expected],
@@ -420,17 +427,65 @@ def generate(rng: random.Random, cfg: Any) -> core.TaskInstance:
             "backend": backend,
             "dialect": dialect,
             "checks": [f"db{i + 1}" for i in range(DATABASES)],
+            "answer_file": ANSWER_FILE,
         },
         meta={"scenario": "C-3", "backend": backend, "databases": DATABASES},
     )
     return task
 
 
+def _workspace(database: dict[str, list[tuple]]) -> dict[str, str]:
+    """The agent's copy: schema, the first database as SQL, and the answer slot.
+
+    Plain SQL rather than a binary file: it round-trips through text, so the
+    fixture is byte-identical on every machine and the agent can load it with
+    whatever database tool it prefers.
+    """
+    return {
+        "schema.sql": SCHEMA_SQLITE,
+        "seed.sql": _seed_sql(database),
+        ANSWER_FILE: "SELECT 1;\n",
+        "README.md": (
+            "# C-3\n\nThe benchmark runs the statement in "
+            f"`{ANSWER_FILE}` against generated data.\n"
+            "`schema.sql` is the schema; `seed.sql` loads the first database,"
+            " e.g. `sqlite3 db.sqlite < seed.sql`.\n"
+        ),
+    }
+
+
+def _seed_sql(database: dict[str, list[tuple]]) -> str:
+    """The first generated database as plain SQL, for the agent to load."""
+
+    def quote(value: object) -> str:
+        if value is None:
+            return "NULL"
+        if isinstance(value, (int, float)):
+            return str(value)
+        return "'" + str(value).replace("'", "''") + "'"
+
+    lines = [SCHEMA_SQLITE]
+    for table, rows in (
+        ("users", database["users"]),
+        ("orders", database["orders"]),
+        ("refunds", database["refunds"]),
+    ):
+        for row in rows:
+            lines.append(f"INSERT INTO {table} VALUES ({', '.join(quote(v) for v in row)});")
+    return "\n".join(lines) + "\n"
+
+
 def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     score = core.Score(task_id=task.id, category="C")
     oracle = task.oracle
     names = oracle["checks"]
-    statement, error = _statement_or_error(tr.final_text)
+    # The agent writes the statement into the working copy; a chat run prints it.
+    # Both end in the same validator: an `answer.sql` that came wrapped in a
+    # fence or in prose must be judged exactly as a chat reply would be.
+    from .. import agent as _agent
+
+    raw = _agent.answer_text(task, tr, tr.final_text)
+    statement, error = _statement_or_error(raw if raw.strip() else tr.final_text)
     if statement is None:
         for index, name in enumerate(names):
             score.add(name, False, _POINTS_PER_CHECK, error)

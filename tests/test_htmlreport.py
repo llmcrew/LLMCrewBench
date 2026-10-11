@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from dailybench import core, gallery
-from dailybench.htmlreport import render_html, write_html
+from dailybench.htmlreport import render_html, write_html, write_report_html
 from dailybench.report import summarise
 
 FRAME = b"\x89PNG\r\n\x1a\n"
@@ -36,7 +38,11 @@ def _run(tmp_path: Path, name: str, model: str = "тест-модель") -> Pat
         "model": model, "quant": "Q4", "base_url": "https://example.test/v1",
         "context_window": 262144, "seed": 20260915,
     }, ensure_ascii=False), encoding="utf-8")
-    (directory / "suite.json").write_text(json.dumps({"tasks": 2, "sha256": "abc"}), encoding="utf-8")
+    (directory / "suite.json").write_text(json.dumps({
+        "tasks": 2, "sha256": "abc",
+        "per_task": [{"id": "IF-1", "category": "A", "prompt_sha256": "x"},
+                     {"id": "K-1", "category": "K", "prompt_sha256": "y"}],
+    }), encoding="utf-8")
     shot = directory / "shot.png"
     shot.write_bytes(FRAME)
     page = (
@@ -131,3 +137,179 @@ def test_gallery_extracts_the_answer_and_survives_a_missing_frame(tmp_path: Path
     # кадр пропал — карточка обязана остаться рабочей, просто без картинки
     page = render_html([directory])
     assert "кадров нет" in page or "missing" in page
+
+
+# --------------------------------------------------------------------------- #
+# Per-run report and the comparison selector
+# --------------------------------------------------------------------------- #
+
+
+def test_a_per_run_report_describes_one_model(tmp_path: Path):
+    directory = _run(tmp_path, "run-a", model="одиночка")
+    page = render_html([directory], per_run=True, page_name="report.html")
+    assert "<title>DailyBench — одиночка</title>" in page
+    assert "Провенанс" in page and "p-prov" in page
+    assert "Сьюта SHA-256" in page and "Окно контекста" in page
+    assert "Прогон —" in page
+    # the comparison wording must not leak into a one-model page
+    assert "решения моделей на сьюте" not in page.split("</title>")[0]
+    assert "report.html" in page, "file://-подсказка обязана звать ту же страницу"
+
+
+def test_per_run_refuses_more_than_one_run(tmp_path: Path):
+    first = _run(tmp_path, "run-a")
+    second = _run(tmp_path, "run-b")
+    with pytest.raises(ValueError, match="один прогон"):
+        render_html([first, second], per_run=True)
+
+
+def test_write_report_html_is_self_contained(tmp_path: Path):
+    directory = _run(tmp_path, "run-a", model="одиночка")
+    page = write_report_html(directory)
+    assert page == directory / "report.html" and page.is_file()
+    text = page.read_text(encoding="utf-8")
+    assert "одиночка" in text
+    assert (directory / "_vendor" / "plotly.min.js").is_file()
+    assert list((directory / "_showcase").rglob("K-1.png")), "кадры витрины обязаны быть рядом"
+
+
+def test_compare_selects_explicit_models(tmp_path: Path):
+    first = _run(tmp_path, "run-a", model="сильная")
+    second = _run(tmp_path, "run-b", model="слабая")
+    page = render_html([first, second], compare=["слабая"])
+    assert "data-model='слабая'" in page
+    assert "data-model='сильная'" not in page
+
+
+def test_compare_keeps_the_requested_order(tmp_path: Path):
+    first = _run(tmp_path, "run-a", model="сильная")
+    second = _run(tmp_path, "run-b", model="слабая")
+    page = render_html([first, second], compare=["слабая", "сильная"])
+    assert page.index("data-model='слабая'") < page.index("data-model='сильная'")
+
+
+def test_compare_rejects_an_unknown_model(tmp_path: Path):
+    directory = _run(tmp_path, "run-a", model="сильная")
+    with pytest.raises(ValueError, match="неизвестные модели"):
+        render_html([directory], compare=["нет-такой"])
+
+
+def test_the_header_counts_come_from_the_run_not_a_constant(tmp_path: Path):
+    """A shipped count used to be hard-coded and drifted from the suite."""
+    directory = _run(tmp_path, "run-a")
+    # The fixture's suite digest names exactly two tasks: one scored, one showcase.
+    page = render_html([directory], per_run=True, page_name="report.html")
+    assert "Прогон — 2 заданий" in page
+    assert "1 балльных" in page and "1 витринных" in page
+
+
+def test_compare_accepts_the_directory_name(tmp_path: Path):
+    """``--compare qwen36`` must work: that is the name the user typed to run it."""
+    directory = _run(tmp_path, "run-a", model="метка модели")
+    page = render_html([directory], compare=["run-a"])
+    assert "метка модели" in page
+
+
+def test_a_run_of_the_suite_is_named_after_the_run_not_a_guess(tmp_path: Path):
+    """The per-run page names the run it belongs to, so two models never collide."""
+    first = _run(tmp_path, "run-a", model="модель-а")
+    second = _run(tmp_path, "run-b", model="модель-б")
+    page_a = render_html([first], per_run=True, page_name="report.html")
+    page_b = render_html([second], per_run=True, page_name="report.html")
+    assert "модель-а" in page_a and "модель-а" not in page_b
+    assert "модель-б" in page_b
+
+
+def test_publish_keeps_a_page_per_run(tmp_path: Path):
+    """A published artefact must let a reader open one model without hunting."""
+    from dailybench.cli import main
+
+    first = _run(tmp_path, "run-a", model="модель-а")
+    code = main(["publish", str(first), "--out", str(tmp_path / "pub")])
+    assert code == 0
+    own = tmp_path / "pub" / "runs" / "run-a" / "index.html"
+    assert own.is_file()
+    assert "модель-а" in own.read_text(encoding="utf-8")
+    assert "runs/run-a/index.html" in (tmp_path / "pub" / "index.html").read_text(encoding="utf-8")
+
+
+def test_a_showcase_only_run_does_not_claim_a_zero_point_suite(tmp_path: Path):
+    """``--only K,L`` must not read as "the suite is worth 0 points"."""
+    directory = _run(tmp_path, "run-show", model="витринная")
+    (directory / "suite.json").write_text(json.dumps({
+        "tasks": 1, "sha256": "abc", "per_task": [{"id": "K-1", "category": "K"}],
+    }), encoding="utf-8")
+    page = render_html([directory], per_run=True, page_name="report.html")
+    assert "балльных категорий нет" in page
+    assert f"из {core.FULL_TOTAL:.0f} баллов сьюта" in page
+
+
+def test_a_lost_frame_is_rendered_again_for_the_showcase(monkeypatch, tmp_path: Path):
+    """A purged frame cache must not silently empty the showcase.
+
+    The frame is rendered again from the raw answer — the exact page the checks
+    scored; on a machine without a browser the recorded path stays instead.
+    """
+    from dailybench import browser, visual
+
+    monkeypatch.setenv(visual.CACHE_ENV, str(tmp_path / "cache"))
+    directory = _run(tmp_path, "run-a")
+    entries = json.loads((directory / "tasks.json").read_text(encoding="utf-8"))
+    entry = entries[1]  # the K-1 entry with a page and a shot
+    entry["transcript"]["extra"]["visual"]["shot"] = str(tmp_path / "потерян.png")
+    run = {"config": {"model": "m"}, "tasks": entries}
+
+    # Без браузера: рендер не удался, карточка остаётся с записанным путём.
+    monkeypatch.setattr(
+        visual, "_cached_render",
+        lambda html, steps, dt: (browser.RenderResult(ok=False), False),
+    )
+    shot = next(i["shot"] for i in gallery.showcase_entries(run) if i["id"] == "K-1")
+    assert shot.endswith("потерян.png"), "без браузера остаётся записанный путь"
+
+    # Браузер доступен: витрина берёт восстановленный кадр, а не пустоту.
+    def fake_render(html: str, steps: int, dt: float):
+        path = visual.shot_path(html, steps, dt)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(FRAME)
+        return browser.RenderResult(ok=True, shot=FRAME), False
+
+    monkeypatch.setattr(visual, "_cached_render", fake_render)
+    item = next(i for i in gallery.showcase_entries(run) if i["id"] == "K-1")
+    assert item["shot"] == str(visual.shot_path(item["raw"], 48, 1.0 / 60))
+    assert "потерян.png" not in item["shot"]
+
+
+def test_a_frameless_timeout_keeps_its_sample_point(monkeypatch, tmp_path: Path):
+    """A run that died before ``_observe`` must still reproduce its frame.
+
+    ``extra.visual`` stays empty when the screenshot times out, but ``meta.steps``
+    holds the sample point (both blocks step at 1/60). Without that fallback the
+    page kept its live scene and silently lost its picture — 19 pages across the
+    five published runs.
+    """
+    from dailybench import browser, visual
+
+    monkeypatch.setenv(visual.CACHE_ENV, str(tmp_path / "cache"))
+    directory = _run(tmp_path, "run-a")
+    entries = json.loads((directory / "tasks.json").read_text(encoding="utf-8"))
+    entry = entries[1]
+    entry["transcript"]["extra"]["visual"] = {}
+    entry["task"]["meta"] = {"steps": 48}
+    seen: dict[str, float] = {}
+
+    def fake_render(html: str, steps: int, dt: float):
+        seen["steps"], seen["dt"] = steps, dt
+        path = visual.shot_path(html, steps, dt)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(FRAME)
+        return browser.RenderResult(ok=True, shot=FRAME), False
+
+    monkeypatch.setattr(visual, "_cached_render", fake_render)
+    item = next(
+        i for i in gallery.showcase_entries({"config": {"model": "m"}, "tasks": entries})
+        if i["id"] == "K-1"
+    )
+    assert seen == {"steps": 48, "dt": 1.0 / 60}
+    assert item["steps"] == 48 and item["dt"] == 1.0 / 60
+    assert Path(item["shot"]).is_file(), "кадр обязан восстановиться, а не потеряться"

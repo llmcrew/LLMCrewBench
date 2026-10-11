@@ -62,6 +62,10 @@ POLICY: dict[str, Any] = {
     "quantization": "the largest quant that still fits the full 32K window on the GPU without offload",
     "kv_cache": "declared per entry; measured here: q8_0 doubles generation speed at a 32K window, so it is the reference value, not a default",
     "thinking": "enabled where the model has it, with the same token budget as everything else",
+    "agent": ("categories C, K and L are solved by the pi coding agent in a working copy: the agent reads files, "
+              "edits them and runs their tests, and the artefact is graded from disk. The harness is pinned "
+              "(pi 1.0.0, tools read/bash/edit/write, --no-session, --no-context-files, --no-approve, --offline) "
+              "and the per-category answer ceiling from this policy is passed to it as the model's max output"),
     "repeat_policy": "one scored pass per task; temperature=0 is not bitwise deterministic, so a re-run disagreement is reported instead of the better attempt",
 }
 
@@ -296,6 +300,9 @@ def apply_to_run_config(cfg: RunConfig, reference: ReferenceConfig) -> RunConfig
         reference=reference.id,
         launch=reference.launch_line(),
         unsupported=reference.unsupported_categories(),
+        # An entry may opt out of the agent harness (a model whose endpoint has
+        # no tool protocol, or a comparison against earlier chat runs).
+        agent=bool(entry.get("agent", cfg.agent)),
     )
     return updated
 

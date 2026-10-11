@@ -69,15 +69,16 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
         scores.append(fresh)
 
     # Пересчёт обновляет и записи ответов: наблюдения сцены (кадр, метрики)
-    # живут в transcript.extra, а витрина читает их именно оттуда.
-    for entry, replay in zip(saved, replays):
-        if replay is None:
-            continue
-        transcript = entry.get("transcript")
-        if not isinstance(transcript, dict):
-            continue
-        for key, value in replay.extra.items():
-            transcript.setdefault("extra", {})[key] = value
+    # живут в transcript.extra, а витрина читает их именно оттуда. Там же
+    # лежит и балл: витрина берёт его из записи задачи, а не из scores.json —
+    # забытый score оставлял кадр «все проверки пройдены · 0/4».
+    for entry, replay, fresh in zip(saved, replays, scores):
+        if replay is not None:
+            transcript = entry.get("transcript")
+            if isinstance(transcript, dict):
+                for key, value in replay.extra.items():
+                    transcript.setdefault("extra", {})[key] = value
+        entry["score"] = fresh.as_dict()
     (directory / "tasks.json").write_text(
         json.dumps(saved, ensure_ascii=False, indent=2, default=core.json_default), encoding="utf-8"
     )

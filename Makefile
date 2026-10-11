@@ -1,11 +1,13 @@
 PY ?= .venv/bin/python
 UV ?= uv
 
-.PHONY: help setup browser serve test cov selfcheck list generate run bench report publish doctor preflight visual shots clean
+.PHONY: help setup browser agent serve test cov selfcheck list generate run bench report publish doctor preflight visual shots clean
 
 help:
 	@echo "setup      создать .venv (uv) и поставить pytest/pytest-cov"
 	@echo "browser    поставить playwright + Chromium для визуального блока (категория K)"
+	@echo "agent      поставить pi — агентный рантайм категорий C/K/L"
+	@echo "            (--no-agent у run/bench оставляет C/K/L на чат-пути)"
 	@echo "test       pytest по tests/"
 	@echo "cov        pytest с покрытием dailybench/"
 	@echo "selfcheck  эталон/мусор без GPU — доказательство, что генераторы и evaluator'ы согласованы"
@@ -14,7 +16,7 @@ help:
 	@echo "doctor     проверить GPU, toolchain и endpoint"
 	@echo "run        прогон на модели: make run ARGS='--config <id> --speed'"
 	@echo "bench      один запуск целиком: preflight -> run -> отчёт"
-	@echo "report     пересобрать отчёты: make report DIRS='runs/a runs/b'"
+	@echo "report     пересобрать отчёты: make report DIRS='runs/a runs/b' [COMPARE='метка,метка']"
 	@echo "publish    собрать отчёт-артефакт в reports/ (коммитится): make publish DIRS='runs/a runs/b'"
 	@echo "preflight  проверить, что runtime совпадает с эталонной конфигурацией: make preflight CFG=<id>"
 	@echo "visual     отрисовать одну страницу визуального блока: make visual ARGS='/tmp/app.html --steps 90'"
@@ -28,6 +30,10 @@ setup:
 browser:
 	$(UV) pip install --python $(PY) -e ".[dev,visual]"
 	$(PY) -m playwright install chromium
+	$(PY) -m dailybench doctor
+
+agent:
+	$(PY) -c "from dailybench import agent; print(agent.ensure(lambda m: print(m)))"
 	$(PY) -m dailybench doctor
 
 test:
@@ -55,7 +61,7 @@ bench:
 	$(PY) -m dailybench bench $(ARGS)
 
 report:
-	$(PY) -m dailybench report $(DIRS)
+	$(PY) -m dailybench report $(DIRS) $(if $(COMPARE),--compare "$(COMPARE)",)
 
 publish:
 	$(PY) -m dailybench publish $(DIRS) $(if $(OUT),--out $(OUT),)
@@ -64,7 +70,8 @@ preflight:
 	$(PY) -m dailybench preflight --config $(CFG) --full
 
 serve:
-	@echo "открой http://127.0.0.1:8765/comparison.html"
+	@echo "открой http://127.0.0.1:8765/report.html (отчёт прогона)"
+	@echo "или   http://127.0.0.1:8765/comparison.html (сравнение, если он есть)"
 	cd $(DIR) && $(PY) -m http.server 8765 --bind 127.0.0.1
 
 visual:

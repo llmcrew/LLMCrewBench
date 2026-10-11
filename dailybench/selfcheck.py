@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -121,6 +121,12 @@ class SelfCheckReport:
 
 def selfcheck(cfg: RunConfig, tasks: list[core.TaskInstance] | None = None) -> SelfCheckReport:
     report = SelfCheckReport()
+    # Self-check drives the runner with Python fakes, not a live endpoint, so the
+    # agent cannot be reached from here: it needs a real base_url to point pi at.
+    # Agents own only their categories, so everything else is proven by exactly
+    # the same code path a run uses, and C/K/L are proven end to end by the
+    # ``agent`` tests instead.
+    cfg = replace(cfg, agent=False)
     tasks = tasks if tasks is not None else build_suite(cfg)
     report.warnings.extend(validate_suite(tasks))
 

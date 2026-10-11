@@ -50,6 +50,10 @@ DEFAULT_VIEWPORT = (800, 600)
 #: экране и в записи. Категория K остаётся на 800x600 — там важны координаты.
 ART_VIEWPORT = (1920, 1080)
 DEFAULT_TIMEOUT_MS = 20_000
+#: Скриншот не наследует таймаут запроса: под параллельной нагрузкой (догрузка
+#: сьюта рисует кадры в соседнем процессе) сцена 1920x1080 не укладывалась в
+#: дефолтные 30 с Playwright и весь рендер падал «TimeoutError: Page.screenshot».
+SCREENSHOT_TIMEOUT_MS = 90_000
 
 #: Chromium is driven headless with software GL: a benchmark may not require a
 #: display, and the same flags must hold on a headless Linux box and on a
@@ -499,8 +503,23 @@ def _page_pass(
         page.on("console", lambda msg: errors.append(f"console: {msg.text}") if msg.type == "error" else None)
         page.on("pageerror", lambda exc: errors.append(f"pageerror: {exc}"))
         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-        page.wait_for_function("() => window.__ready === true", timeout=timeout_ms)
-        probe = page.evaluate("() => (typeof window.__probe === 'function' ? window.__probe() : null)")
+        ready_failed = False
+        try:
+            page.wait_for_function("() => window.__ready === true", timeout=timeout_ms)
+        except Exception:
+            # Протокол мог не дойти: страница падает до `__ready` (L-20,
+            # pageerror в конструкторе) или вовсе его не выставляет. Исключение
+            # раньше рушило весь проход, и витрина оставалась без кадра, хотя
+            # страница уже что-то нарисовала. Теперь кадр снимается, а провал
+            # протокола остаётся вердиктом.
+            ready_failed = True
+        probe = page.evaluate(
+            # try — потому что __probe страницы может кидать (K-15: TypeError
+            # внутри probe после шага), и падение evaluate рушило весь проход
+            # вместе с кадром.
+            "() => { try { return typeof window.__probe === 'function' ? window.__probe() : null; }"
+            " catch (e) { return null; } }"
+        )
         stepped = None
         if steps:
             # Шаг оборачиваем в try: страница без __probe (частый дефект модели)
@@ -508,11 +527,12 @@ def _page_pass(
             stepped = page.evaluate(
                 "([dt, n]) => { try { for (let i = 0; i < n; i++) window.__step(dt); }"
                 " catch (e) { return null; }"
-                " return typeof window.__probe === 'function' ? window.__probe() : null; }",
+                " try { return typeof window.__probe === 'function' ? window.__probe() : null; }"
+                " catch (e) { return null; } }",
                 [dt, steps],
             )
         pixels = page.evaluate(PIXEL_PROBE)
-        shot = page.screenshot(type="png")
+        shot = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
         result: dict[str, Any] = {
             "errors": errors,
             "external": external,
@@ -520,6 +540,7 @@ def _page_pass(
             "stepped": stepped,
             "pixels": pixels,
             "shot": shot,
+            "ready_failed": ready_failed,
         }
         if mode == "time":
             # A declared animation must move; the second sample tells them apart
@@ -528,15 +549,16 @@ def _page_pass(
             # должна досчитаться до кадра, иначе витрина остаётся без картинки.
             moved = page.evaluate(
                 "([dt, n]) => { if (typeof window.__step !== 'function') return false;"
-                " const before = typeof window.__probe === 'function' ? window.__probe() : null;"
-                " for (let i = 0; i < n; i++) window.__step(dt);"
-                " const after = typeof window.__probe === 'function' ? window.__probe() : null;"
+                " const grab = () => { try { return typeof window.__probe === 'function' ? window.__probe() : null; } catch (e) { return null; } };"
+                " const before = grab();"
+                " try { for (let i = 0; i < n; i++) window.__step(dt); } catch (e) { return true; }"
+                " const after = grab();"
                 " if (before === null || after === null) return true;"
                 " return JSON.stringify(before) !== JSON.stringify(after); }",
                 [dt, max(1, steps)],
             )
             result["animated"] = bool(moved)
-            result["shot_later"] = page.screenshot(type="png")
+            result["shot_later"] = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
         return result
     finally:
         context.close()
@@ -591,9 +613,23 @@ def render(
         shot_later_sha=hashlib.sha256(later).hexdigest() if later else "",
         duration_s=time.time() - started,
     )
+    if first.get("ready_failed"):
+        # Страница нарисовала кадр, но протокол не дошёл: по контракту это
+        # провал (раньше таймаут рушил проход целиком). Кадр и pixels при этом
+        # сохранены — витрине есть что показать.
+        result.ok = False
+        if not result.reason:
+            result.reason = "страница не выставила window.__ready"
     # ``ok`` — про то, годится ли страница как ответ вообще. Кадр снимается и
     # без протокола, поэтому потерянный __probe помечаем отдельным флагом
     # (``probe_ok``), а не обнуляем весь рендер: витрина должна показать сцену.
+    # ``plain`` здесь, а не при записи: probe со ссылкой ``mesh.parent.children[0]
+    # is mesh`` ронял ``json.dumps`` кадра, и кадр терялся вместе с кэшем. Обе
+    # ветки — свежий рендер и чтение из кэша — должны видеть один и тот же
+    # JSON-safe payload.
+
+    result.probe = plain(result.probe) if result.probe is not None else None
+    result.stepped = plain(result.stepped) if result.stepped is not None else None
     if result.probe is None:
         result.probe_ok = False
         result.reason = "страница не отдала window.__probe()"
@@ -610,6 +646,34 @@ def probe_of(result: RenderResult, stepped: bool = False) -> dict[str, Any]:
     """Probe payload of a render, or an empty dict when there is none."""
     payload = result.stepped if stepped else result.probe
     return payload if isinstance(payload, dict) else {}
+
+
+def plain(value: Any, *, _path: set[int] | None = None, _depth: int = 0) -> Any:
+    """JSON-safe copy of a probe payload that keeps dict/list shape.
+
+    A page's ``__probe()`` often returns live three.js objects: in the parent
+    link ``mesh.parent.children[0]`` *is* ``mesh``, so a straight ``json.dumps``
+    of that payload dies with ``ValueError: Circular reference detected`` — and
+    the frame cache, written in the same ``try``, was lost with it. Only true
+    reference cycles are cut (path-based, not global ``seen``): shared subtrees
+    stay as they are, because predicates read them by path.
+    """
+    if _depth > 32:
+        return "<deep>"
+    if isinstance(value, (bool, int, float, str)) or value is None:
+        return value
+    if isinstance(value, (dict, list, tuple)):
+        path = _path if _path is not None else set()
+        if id(value) in path:
+            return "<cycle>"
+        path.add(id(value))
+        try:
+            if isinstance(value, dict):
+                return {str(k): plain(v, _path=path, _depth=_depth + 1) for k, v in value.items()}
+            return [plain(v, _path=path, _depth=_depth + 1) for v in value]
+        finally:
+            path.discard(id(value))
+    return str(value)
 
 
 def save_shot(result: RenderResult, path: Path) -> str:

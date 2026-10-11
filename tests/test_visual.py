@@ -9,6 +9,7 @@ never zero).
 
 from __future__ import annotations
 
+import json
 import random
 
 import pytest
@@ -223,3 +224,84 @@ def test_availability_reports_a_reason_when_usable():
 @pytest.mark.parametrize("name", ["three.module.js", "three.core.js", "PROVENANCE.md"])
 def test_the_pinned_library_is_present(name):
     assert (browser.VENDOR / name).is_file()
+
+
+# --------------------------------------------------------------------------- #
+# The frame cache
+# --------------------------------------------------------------------------- #
+
+
+def _k_frame(**overrides):
+    base = dict(
+        ok=True,
+        probe={"t": 0.0, "objects": ["ground"]},
+        stepped={"t": 1.0, "objects": ["ground"]},
+        pixels={"width": 800, "height": 600, "changed_fraction": 0.5},
+        shot=b"png",
+        shot_sha="a" * 64,
+        shot_sha_again="a" * 64,
+    )
+    base.update(overrides)
+    return browser.RenderResult(**base)
+
+
+def test_a_failed_render_does_not_poison_a_good_frame(monkeypatch, tmp_path):
+    """A retried render replaces a failed cache entry instead of keeping it.
+
+    The screenshot can time out under load while the page is fine: the entry then
+    holds no pixels, and every later run scored that page zero from the cache.
+    """
+    monkeypatch.setenv(visual.CACHE_ENV, str(tmp_path))
+    calls = {"n": 0}
+
+    def fake_render(html, **kwargs):
+        calls["n"] += 1
+        return _k_frame()
+
+    monkeypatch.setattr(browser, "render", fake_render)
+    good, hit = visual._cached_render("<html>1</html>", 30, 1 / 60)
+    assert good.ok and not hit
+
+    # A failed render lands in the cache (no frame) and is not trusted again.
+    (tmp_path / next(p.name for p in tmp_path.glob("*.json"))).write_text(
+        json.dumps({"result": {
+            "ok": False,
+            "reason": "TimeoutError: Page.screenshot",
+            "errors": [],
+            "external": [],
+            "probe": None,
+            "stepped": None,
+            "pixels": None,
+            "pixels_again": None,
+            "shot_sha": "",
+            "shot_sha_again": "",
+            "duration_s": 0.0,
+        }}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(browser, "render", fake_render)
+    healed, hit = visual._cached_render("<html>1</html>", 30, 1 / 60)
+    assert healed.ok and healed.pixels, "битая запись обязана перерисоваться"
+    assert calls["n"] == 2
+
+    again, hit = visual._cached_render("<html>1</html>", 30, 1 / 60)
+    assert calls["n"] == 2 and hit and again.ok, "исправленную запись уже можно переиспользовать"
+
+
+def test_the_frame_key_carries_the_render_version():
+    """A changed extractor must not be served a frame from the previous one.
+
+    The art block already versioned its cache; the simulation block keyed on page
+    content alone, so a bumped ``PIXEL_PROBE`` silently reused old frames.
+    """
+    from dailybench import visual
+
+    key = visual._frame_key("<html></html>", 10, 1 / 60)
+    assert key == visual._frame_key("<html></html>", 10, 1 / 60)
+    assert key != visual._frame_key("<html>other</html>", 10, 1 / 60)
+    assert str(visual.FRAME_VERSION) in (
+        f"v{visual.FRAME_VERSION}:{visual.browser.DEFAULT_VIEWPORT[0]}x"
+        f"{visual.browser.DEFAULT_VIEWPORT[1]}:10:0.016666666666666666:<html></html>"
+    )
+    # the path and the cache entry must agree on the key
+    assert visual.shot_path("<html></html>", 10, 1 / 60).stem == key

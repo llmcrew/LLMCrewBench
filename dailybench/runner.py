@@ -9,7 +9,9 @@ module owns the fixture and the scoring.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
@@ -17,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from . import core
+from . import agent
 from .config import RunConfig
 from .measure import VramSampler
 from .providers import Provider, ProviderError
@@ -25,13 +28,18 @@ from .rng import derived_seed
 SYSTEM_SENTINEL = "<<system>>"
 
 
-def _prompt_tokens(messages: list[dict[str, Any]]) -> int:
+def _prompt_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> int:
     """Rough size of the request in tokens, for the window-aware budget.
 
     Deliberately cheap and conservative: it decides how much room the answer
     gets, and the provider's own count is recorded afterwards. The last real
     prompt_tokens is used when the runtime reported one, so the estimate only
     matters for the first call.
+
+    ``tools`` MUST be counted too: the runner sends their JSON schemas on every
+    request, and on a tool scenario they outweigh the user prompt several times
+    over. Without them the budget overshoots the window and the runtime rejects
+    the request with HTTP 400.
     """
     from .providers import estimate_tokens
 
@@ -41,7 +49,30 @@ def _prompt_tokens(messages: list[dict[str, Any]]) -> int:
         total += estimate_tokens(content if isinstance(content, str) else str(content))
         for call in message.get("tool_calls") or []:
             total += estimate_tokens(str(call.get("function", {}).get("arguments") or ""))
+    if tools:
+        total += estimate_tokens(json.dumps(tools, ensure_ascii=False))
     return total
+
+
+def _request_tokens(provider: Provider, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None) -> int:
+    """Request size in tokens for the window-aware answer budget.
+
+    Exact when the runtime can tokenize its own input: a character estimate on a
+    700 KB document overshoots the window by tens of thousands of tokens and
+    collapses the answer budget to its 256-token floor, which reads as an empty
+    answer rather than a measured one. The estimate stays as the fallback and
+    covers the chat template's framing (a few hundred tokens), while the 2048 +
+    2 % reserve in ``budget_for`` covers the estimate error on the way back.
+    """
+    text = "\n".join(str(message.get("content") or "") for message in messages)
+    if tools:
+        text += "\n" + json.dumps(tools, ensure_ascii=False)
+    estimate = _prompt_tokens(messages, tools)
+    try:
+        exact = provider.tokenize(text)
+    except Exception:  # pragma: no cover - transport dependent
+        exact = None
+    return exact if exact is not None else estimate
 
 
 @dataclass
@@ -164,25 +195,35 @@ class Runner:
                 score=core.Score(task_id=task.id, category=task.category, skipped=reason, notes=[reason]),
             )
 
-        work_dir = materialise(task)
+        agent_mode = self._uses_agent(task)
+        work_dir = agent.prepare_work_dir(task) if agent_mode else materialise(task)
         before = snapshot(work_dir)
-        driver_factory = core.TOOL_DRIVERS.get(task.category)
+        driver_factory = None if agent_mode else core.TOOL_DRIVERS.get(task.category)
         driver = driver_factory(task, work_dir) if driver_factory else None
 
         transcript = core.Transcript(
             task_id=task.id,
             category=task.category,
             workspace_before=before,
-            extra={"work_dir": str(work_dir)},
+            extra={"work_dir": str(work_dir), "harness": "agent" if agent_mode else "chat"},
         )
         if driver is not None:
             transcript.extra["driver"] = task.category
+
+        if agent_mode:
+            self._run_agent(task, transcript, work_dir)
+            # The working copy is temporary: record what the agent produced while
+            # it still exists, so a report rendered later shows the graded file.
+            agent.record_artefact(task, transcript)
+            transcript.workspace_after = snapshot(work_dir)
+            transcript.extra["work_dir_size"] = len(transcript.workspace_after)
+            score = self._score(task, transcript)
+            return TaskRun(task=task, transcript=transcript, score=score)
 
         messages: list[dict[str, Any]] = []
         if self.cfg.system_prompt:
             messages.append({"role": "system", "content": self.cfg.system_prompt})
         messages.append({"role": "user", "content": task.prompt})
-
         started = time.perf_counter()
         sampler_before = self.sampler.peak_mib
         tool_calls = 0
@@ -193,7 +234,7 @@ class Runner:
                 reply = self.provider.chat(
                     messages,
                     task.tools,
-                    max_new_tokens=self.cfg.budget_for(task.category, _prompt_tokens(messages)),
+                    max_new_tokens=self.cfg.budget_for(task.category, _request_tokens(self.provider, messages, task.tools)),
                     temperature=self.cfg.temperature,
                     top_p=self.cfg.top_p,
                     seed=derived_seed(self.cfg.seed, task.id, str(len(transcript.turns))),
@@ -274,6 +315,71 @@ class Runner:
 
         score = self._score(task, transcript)
         return TaskRun(task=task, transcript=transcript, score=score)
+
+    # -- the coding agent ---------------------------------------------- #
+
+    def _uses_agent(self, task: core.TaskInstance) -> bool:
+        return bool(self.cfg.agent) and task.category in tuple(self.cfg.agent_categories)
+
+    def _agent_budget(self, task: core.TaskInstance) -> int:
+        """Per-response ceiling handed to the agent.
+
+        The artefact budgets (8192) are enough for a *chat* answer, but an agent
+        spends them on thinking *and* a tool call in one response: a real C-2 run
+        produced an 8012-token response out of 8192 and was cut off before it
+        wrote anything. The agent therefore gets the room a window-aware chat run
+        already gets: the same ``budget_for`` the chat path uses, floored at the
+        category table so a tiny window cannot starve a whole-file answer.
+        """
+        table = int(self.cfg.max_new_tokens_by_category.get(task.category, self.cfg.max_new_tokens))
+        if not self.cfg.unbounded_budget:
+            return table
+        return max(table, int(self.cfg.budget_for(task.category, 0)))
+
+    def _run_agent(self, task: core.TaskInstance, transcript: core.Transcript, work_dir: Path) -> None:
+        """Hand the task to ``pi`` in its working copy and record what happened.
+
+        The agent owns its own loop, so the transcript carries the agent's own
+        report: one synthetic turn with the final words, one row per executed
+        tool call, and the usage the agent measured. The answer itself is read
+        from disk afterwards (see :func:`agent.answer_text`) — a chat reply is a
+        fallback, not the deliverable.
+        """
+        started = time.perf_counter()
+        try:
+            agent_dir = agent.config_dir(
+                work_dir.parent,
+                self.cfg,
+                budget=self._agent_budget(task),
+            )
+            prompt = agent.prompt_for(task)
+            run = agent.run(prompt, work_dir, self.cfg, agent_dir=agent_dir)
+        except Exception as exc:  # pragma: no cover - environment dependent
+            transcript.error = f"{type(exc).__name__}: {exc}"
+            transcript.duration_s = time.perf_counter() - started
+            return
+
+        transcript.extra.update(run.as_extra())
+        transcript.extra["agent"]["exit_ok"] = run.ok
+        # The suite digest hashes the *scenario* prompt; the agent gets that plus
+        # the grading contract, so the bytes actually sent are recorded here.
+        transcript.extra["agent"]["prompt_sha256"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        transcript.extra["agent"]["prompt_chars"] = len(prompt)
+        transcript.duration_s = run.duration_s
+        transcript.tool_log.extend(run.tool_calls)
+        reply = core.ModelReply(
+            text=run.text,
+            prompt_tokens=run.prompt_tokens_last,
+            completion_tokens=run.answer_tokens,
+            reasoning_tokens=run.reasoning_tokens,
+            ttft_s=run.ttft_s,
+            total_s=run.duration_s,
+            finish_reason=(run.finish_reasons or [None])[-1],
+        )
+        transcript.turns.append(core.Turn(messages=[], reply=reply))
+        transcript.extra["agent"]["turns_reported"] = run.turns
+        if run.error:
+            transcript.error = run.error
 
     def _score(self, task: core.TaskInstance, transcript: core.Transcript) -> core.Score:
         module = core.REGISTRY.get(task.category)
@@ -374,15 +480,22 @@ class RunResult:
         def dump(payload: Any) -> str:
             return json.dumps(payload, ensure_ascii=False, indent=2, default=core.json_default)
 
-        (out / "config.json").write_text(self.cfg.to_json(), encoding="utf-8")
-        (out / "suite.json").write_text(dump(self.suite_digest), encoding="utf-8")
-        (out / "provider.json").write_text(dump(self.provider_info), encoding="utf-8")
-        (out / "hardware.json").write_text(dump(self.hardware), encoding="utf-8")
+        def write(path: Path, text: str) -> None:
+            # Атомарная замена: ребут или SIGKILL посреди записи оставлял рваный
+            # файл, и resume падал на json.loads — а прогон это часы GPU.
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+
+        write(out / "config.json", self.cfg.to_json())
+        write(out / "suite.json", dump(self.suite_digest))
+        write(out / "provider.json", dump(self.provider_info))
+        write(out / "hardware.json", dump(self.hardware))
         if self.speed:
-            (out / "speed.json").write_text(dump(self.speed), encoding="utf-8")
-        (out / "scores.json").write_text(dump([score.as_dict() for score in self.scores]), encoding="utf-8")
-        (out / "tasks.json").write_text(dump([run.as_dict() for run in self.runs]), encoding="utf-8")
+            write(out / "speed.json", dump(self.speed))
+        write(out / "scores.json", dump([score.as_dict() for score in self.scores]))
+        write(out / "tasks.json", dump([run.as_dict() for run in self.runs]))
         for run in self.runs:
             path = out / "transcripts" / f"{run.task.id.replace('/', '_')}.json"
-            path.write_text(dump(run.as_dict()), encoding="utf-8")
+            write(path, dump(run.as_dict()))
         return out

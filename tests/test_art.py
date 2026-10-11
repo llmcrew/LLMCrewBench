@@ -8,6 +8,7 @@ unverified rather than a zero.
 
 from __future__ import annotations
 
+import json
 import random
 
 import pytest
@@ -238,3 +239,57 @@ def test_l1_reference_earns_five_in_the_browser():
     task = sunset.build(random.Random(20260915))[0]
     score = art.evaluate(task, _answer(task.oracle["final_answer"]))
     assert score.earned == score.possible == 5.0, score.as_dict()
+
+
+# --------------------------------------------------------------------------- #
+# The frame cache
+# --------------------------------------------------------------------------- #
+
+
+def _cache_round(monkeypatch, tmp_path, renders):
+    """Run ``cached_art_render`` with its own cache dir and scripted renders."""
+    monkeypatch.setenv(visual.CACHE_ENV, str(tmp_path))
+    calls = {"n": 0}
+
+    def fake_render(html, **kwargs):
+        result = renders[min(calls["n"], len(renders) - 1)]
+        calls["n"] += 1
+        return result
+
+    monkeypatch.setattr(browser, "render", fake_render)
+    return calls
+
+
+def test_a_failed_render_does_not_poison_a_good_frame(monkeypatch, tmp_path):
+    """A transient screenshot timeout must not become the page's verdict.
+
+    ``L-14`` seed 13 kept answering "рендер не удался" from a cache entry whose
+    ``ok`` was False and whose pixels were empty, while a fresh render of the very
+    same page took 12 s and passed.
+    """
+    html = "<html>1</html>"
+    calls = _cache_round(monkeypatch, tmp_path, [_result()])
+    first, hit = art.cached_art_render(html, 78, 1 / 60)
+    assert first.ok and not hit, "первый вызов обязан отрисовать страницу"
+    assert calls["n"] == 1
+
+    # A failed verdict lands on top of the good entry, as a transient timeout did.
+    blob = next(tmp_path.glob("*.json"))
+    payload = json.loads(blob.read_text(encoding="utf-8"))
+    payload["result"].update(ok=False, reason="TimeoutError: Page.screenshot", probe=None, pixels=None)
+    blob.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    healed, hit = art.cached_art_render(html, 78, 1 / 60)
+    assert calls["n"] == 2 and healed.ok and healed.pixels, "битая запись обязана перерисоваться"
+
+    again, hit = art.cached_art_render(html, 78, 1 / 60)
+    assert calls["n"] == 2 and hit and again.ok, "вылеченная запись переиспользуется"
+
+
+def test_a_good_cache_entry_is_reused_without_a_render(monkeypatch, tmp_path):
+    calls = _cache_round(monkeypatch, tmp_path, [_result()])
+    art.cached_art_render("<html>2</html>", 78, 1 / 60)
+    assert calls["n"] == 1
+    again, hit = art.cached_art_render("<html>2</html>", 78, 1 / 60)
+    assert calls["n"] == 1, "успешная запись не должна рендериться повторно"
+    assert hit and again.ok

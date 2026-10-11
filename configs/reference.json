@@ -10,6 +10,7 @@
     "answer_budget_note": "unbounded by default: the limit is the window minus the prompt; the per-category table below is the fallback mode",
     "reasoning_budget": 2048,
     "reasoning_budget_note": "server-side thinking cap (llama.cpp); vLLM stands keep their own default",
+    "reasoning_effort_note": "not forced: the stand decides, the spend is documented instead",
     "request_wall_clock": 1800,
     "request_wall_clock_note": "ceiling per request; a task that hits it is reported as unverified, never as a wrong answer",
     "max_total_tokens": 16384,
@@ -25,8 +26,8 @@
     "quantization": "the largest quant that still fits the full 32K window on the GPU without offload",
     "kv_cache": "declared per entry; measured here: q8_0 doubles generation speed at a 32K window, so it is the reference value, not a default",
     "thinking": "enabled where the model has it, with the same token budget as everything else",
-    "repeat_policy": "one scored pass per task; temperature=0 is not bitwise deterministic, so a re-run disagreement is reported instead of the better attempt",
-    "reasoning_effort_note": "not forced: the stand decides, the spend is documented instead"
+    "agent": "categories C, K and L are solved by the pi coding agent in a working copy: the agent reads files, edits them and runs their tests, and the artefact is graded from disk. The harness is pinned (pi 1.0.0, tools read/bash/edit/write, --no-session, --no-context-files, --no-approve, --offline) and the per-category answer ceiling from this policy is passed to it as the model's max output",
+    "repeat_policy": "one scored pass per task; temperature=0 is not bitwise deterministic, so a re-run disagreement is reported instead of the better attempt"
   },
   "runtimes": {
     "llama.cpp": {

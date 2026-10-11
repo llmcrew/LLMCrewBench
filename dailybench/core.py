@@ -352,10 +352,14 @@ class Score:
     denominator — an unverified category is not a zero."""
 
     error: str | None = None
+    """Set when the run itself broke (transport error, budget abort, agent
+    timeout). It marks the run, not a wrong answer: the checks the evaluator
+    still managed to make are objectively passed, and an artefact written
+    before the agent hit its wall clock is graded from disk like any other."""
 
     @property
     def earned(self) -> float:
-        if self.error or self.skipped:
+        if self.skipped:
             return 0.0
         return round(sum(c.points for c in self.checks if c.passed), 4)
 

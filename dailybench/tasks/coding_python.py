@@ -442,6 +442,7 @@ def generate(rng: random.Random, cfg: Any) -> core.TaskInstance:
             "hidden_tests": _HIDDEN_TESTS,
             "runner": _RUNNER,
             "target_file": TARGET_FILE,
+            "answer_file": TARGET_FILE,
             "checks": [name for name, _ in CHECK_ORDER],
         },
         meta={"scenario": "C-1"},
@@ -455,6 +456,19 @@ def extract_code(reply: str) -> str | None:
         return block
     candidate = text.strip_fence(reply)[0]
     return candidate or None
+
+
+def code_of(task: core.TaskInstance, tr: core.Transcript) -> str | None:
+    """The file the agent left, else the file it printed.
+
+    The agent harness grades what is on disk; a chat run has no working copy and
+    takes the printed block. Both paths end in the same evaluator, so a scenario
+    cannot score differently because of *how* it was answered.
+    """
+    from .. import agent
+
+    text_answer = agent.answer_text(task, tr, tr.final_text)
+    return extract_code(text_answer)
 
 
 def _run_hidden(sandbox: Path, repo: Path) -> dict[str, tuple[bool, str]]:
@@ -502,7 +516,7 @@ def _run_hidden(sandbox: Path, repo: Path) -> dict[str, tuple[bool, str]]:
 
 def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     score = core.Score(task_id=task.id, category="C")
-    code = extract_code(tr.final_text)
+    code = code_of(task, tr)
     if not code:
         for name, _ in CHECK_ORDER:
             score.add(name, False, _POINTS_PER_CHECK, "ответ не содержит кода файла")

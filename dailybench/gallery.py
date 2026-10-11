@@ -33,38 +33,166 @@ def _cell(value: Any) -> str:
 
 STEP_HOOK = """
 <script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+// Сцена играет сама: драйвер измеряет окно движения (сколько шагов подряд кадр
+// реально меняется), разворачивает его на несколько секунд и зацикливает
+// перезагрузкой. Без этого сцена выгорает за 1-2 с и стоит, как скриншот.
+// Отчёт и запись могут вмешаться сообщениями 'step', 'pause', 'play', 'reset'.
 (() => {
   const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
+  const QUIET = 90;          // столько шагов без изменений — окно кончилось
+  const MEASURE_CAP = 1200;  // предел замера в шагах
+  const MIN_WINDOW = 4;      // короче — сцена статична, повторять нечего
+  const SPAN_PER_STEP = 6;   // кадров на шаг показа (~0.1 с при 60 к/с)
+  const SPAN_MIN = 240;      // показ короче 4 с сливается
+  const SPAN_MAX = 600;      // ...а длиннее 10 с — затягивается
+  const HOLD_MS = 900;       // пауза перед повтором
+  const MEASURE_MS = 8;      // бюджет замера на кадр, чтобы не морозить вкладку
 
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
+  // three.js держит render собственным свойством экземпляра (this.render =
+  // render), поэтому обёртка прототипа его не видит: подменяем конструктор,
+  // а render перепривязываем на самом экземпляре. Так кадр обновляется, даже
+  // если страница рисует только в __probe — иначе сцена стоит, как скриншот.
+  let lastRender = null;
+  const wrap = () => {
+    const W = window.THREE && window.THREE.WebGLRenderer;
+    if (!W || W.__dbWrapped) return !!W;
+    const Wrapped = function (...args) {
+      const inst = new W(...args);
+      const orig = inst.render.bind(inst);
+      inst.render = function (scene, camera) { lastRender = [inst, scene, camera]; return orig(scene, camera); };
+      return inst;
+    };
+    Wrapped.prototype = W.prototype;
+    Object.setPrototypeOf(Wrapped, W);
+    Wrapped.__dbWrapped = true;
+    window.THREE.WebGLRenderer = Wrapped;
+    return true;
+  };
+  if (!wrap()) { let n = 0; const t = setInterval(() => { if (wrap() || ++n > 1500) clearInterval(t); }, 4); }
 
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
+  const step = () => { if (typeof window.__step === 'function') { try { window.__step(DT); } catch (e) {} } };
+  const probe = () => { if (typeof window.__probe === 'function') { try { window.__probe(); } catch (e) {} } };
+  const draw = () => { if (lastRender) { try { lastRender[0].render(lastRender[1], lastRender[2]); } catch (e) {} } };
+  // Один шаг — и сразу кадр: probe зовём всегда, часть страниц рисует в нём.
+  const beat = () => { step(); probe(); draw(); };
+
+  let oc = null, ox = null;
+  const sig = () => {  // дешёвая подпись кадра: 64x48 достаточно для «меняется/нет»
+    try {
+      const cs = document.querySelectorAll('canvas');
+      if (!cs.length) return -1;
+      if (!oc) { oc = document.createElement('canvas'); oc.width = 64; oc.height = 48; ox = oc.getContext('2d', {willReadFrequently: true}); }
+      // Сумма по ВСЕМ canvas: у L-2 их два, первый — WebGL без
+      // preserveDrawingBuffer, и подпись только по нему читалась как пустая:
+      // движущаяся сцена получала freeze=0 и показывалась статичным кадром.
+      let total = 0;
+      for (const c of cs) {
+        if (!c.width || !c.height) continue;
+        ox.clearRect(0, 0, 64, 48);
+        ox.drawImage(c, 0, 0, 64, 48);
+        const d = ox.getImageData(0, 0, 64, 48).data;
+        let s = 0;
+        for (let i = 0; i < d.length; i += 4) s = (s + d[i] + d[i + 1] * 3 + d[i + 2] * 7) % 1000003;
+        total = (total + s + cs.length * 7) % 1000003;
+      }
+      return total;
+    } catch (e) { return -2; }
+  };
+
+  // Замер должен пережить перезагрузку (её использует повтор): sessionStorage,
+  // а если он недоступен — window.name (оба живут в пределах вкладки).
+  const KEY = 'dailybench.scene:' + location.pathname;
+  const put = (v) => {
+    try { sessionStorage.setItem(KEY, JSON.stringify(v)); } catch (e) {}
+    try { window.name = 'dbscene:' + JSON.stringify(v); } catch (e) {}
+  };
+  const got = () => {
+    try { const v = sessionStorage.getItem(KEY); if (v) return JSON.parse(v); } catch (e) {}
+    try { if (window.name.indexOf('dbscene:') === 0) return JSON.parse(window.name.slice(8)); } catch (e) {}
+    return null;
+  };
+
+  let freeze = 0, span = SPAN_MAX, frames = 0, shown = 0, phase = 'measuring', holdUntil = 0, auto = true;
+  const scene = {mode: 'measuring', freeze: 0, step: 0};
+  // Ответы сами выставляют `window.__scene` (свой THREE.Scene) — у deepseek это
+  // уже занято, и модульный скрипт ответа исполняется ПОСЛЕ этого хука. Поэтому
+  // драйвер живёт под своим именем, а `__scene` остаётся странице.
+  window.__dbscene = scene;
+  window.__beat = beat;
+  const publish = () => {   // для записи и отладки: состояние драйвера наружу
+    scene.mode = phase; scene.freeze = freeze; scene.step = shown;
+    // seek(n) — ручной покадровый прогон до шага n (гарантирует первый кадр)
+    scene.seek = (n) => {
+      auto = false;
+      if (shown === 0) { beat(); shown++; }
+      while (shown < (n | 0)) { beat(); shown++; }
+      scene.step = shown;
+      return shown;
+    };
+  };
+  publish();
+
+  const play = () => {
+    const cache = got();
+    freeze = (cache && cache.freeze | 0) || 0;
+    // Окно движения разворачиваем примерно на 0.1 с на шаг: сцена из 240 шагов
+    // идёт 24 с — так движение видно, а не проскакивает за пару секунд.
+    span = Math.min(SPAN_MAX, Math.max(SPAN_MIN, freeze * SPAN_PER_STEP));
+    phase = freeze < MIN_WINDOW ? 'static' : 'play';
+    frames = 0; shown = 0;
+    publish();
+    if (phase === 'play') requestAnimationFrame(tick);
+  };
+
+  const tick = (now) => {
+    if (phase === 'play' && auto) {
+      frames++;
+      const target = Math.min(freeze, Math.round(frames * freeze / span));
+      while (shown < target) { beat(); shown++; }
+      scene.step = shown;
+      if (frames >= span) { phase = 'hold'; holdUntil = performance.now() + HOLD_MS; scene.mode = phase; }
+    } else if (phase === 'hold' && auto && performance.now() >= holdUntil) {
+      location.reload();  // сброса у страницы нет: повтор — только перезагрузкой
     }
-    requestAnimationFrame(loop);
+    requestAnimationFrame(tick);
+  };
+
+  if (got() === null) {
+    // Первый заход: дождаться кадра страницы, измерить окно движения и
+    // перезагрузиться — показ пойдёт с чистого состояния, замер уже в кэше.
+    const t0 = performance.now();
+    let prev = null, lastChange = 0, k = 0, started = false;
+    const measureFrame = () => {
+      const t1 = performance.now();
+      while (performance.now() - t1 < MEASURE_MS && k < MEASURE_CAP) {
+        beat(); k++;
+        const s = sig();
+        if (s !== prev) { lastChange = k; prev = s; }
+        else if (k - lastChange >= QUIET) break;
+      }
+      if ((k >= MEASURE_CAP || k - lastChange >= QUIET) && k > 0) {
+        put({freeze: lastChange});
+        location.reload();
+        return;
+      }
+      requestAnimationFrame(measureFrame);
+    };
+    const wait = () => {
+      if (window.__ready !== true && performance.now() - t0 < 8000) { requestAnimationFrame(wait); return; }
+      probe(); draw(); prev = sig();
+      if (!started) { started = true; requestAnimationFrame(measureFrame); }
+    };
+    requestAnimationFrame(wait);
+  } else {
+    play();
   }
 
+  const resume = () => { auto = true; if (phase !== 'play') { phase = 'play'; publish(); requestAnimationFrame(tick); } };
   window.addEventListener('message', (event) => {
     const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    if (cmd === 'step') { auto = false; beat(); shown++; scene.step = shown; }
+    else if (cmd === 'pause') { auto = false; }
+    else if (cmd === 'play') { resume(); }
     else if (cmd === 'reset') { window.location.reload(); }
     else return;
     window.dispatchEvent(new Event('dailybench-step'));
@@ -72,8 +200,8 @@ STEP_HOOK = """
 
   window.addEventListener('keydown', (event) => {
     if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === ' ') { event.preventDefault(); auto = !auto; if (auto) resume(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); auto = false; beat(); shown++; scene.step = shown; }
     if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
   });
 })();
@@ -91,7 +219,7 @@ def standalone_html(page: str, bundle: str = "./three.global.js") -> str:
     скрипт остаётся, но библиотеку уже не тянет.
     """
     import_alias = re.search(
-        r"""import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s+['"]\./vendor/three\.module\.js['"];?""",
+        r"""import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s+['"](\./vendor/three\.module\.js|three)['"];?""",
         page,
     )
     if not import_alias:
@@ -102,9 +230,18 @@ def standalone_html(page: str, bundle: str = "./three.global.js") -> str:
         page = page.replace("</head>", inject + "</head>", 1)
     else:
         page = inject + page
-    return page.replace(
-        import_alias.group(0), f"const {alias} = window.THREE;"
+    page = page.replace(import_alias.group(0), f"const {alias} = window.THREE;")
+    # Страницы с importmap тянут пакет по голому имени `three`: импорт выше
+    # заменён, но модульный скрипт всё равно остался бы ждать importmap —
+    # заменяем и его, чтобы страница грузилась и с диска (file://), и по http.
+    named = re.search(
+        r"""import\s*\{([^}]*)\}\s*from\s*['"](\./vendor/three\.module\.js|three)['"];?""",
+        page,
     )
+    if named:
+        names = ", ".join(part.strip().split(" as ")[-1] for part in named.group(1).split(",") if part.strip())
+        page = page.replace(named.group(0), f"const {{{names}}} = window.THREE;")
+    return page
 
 
 def three_bundle(vendor: Path) -> str:
@@ -163,8 +300,20 @@ def three_bundle(vendor: Path) -> str:
 
 
 def answer_html(entry: dict[str, Any]) -> str:
-    """The page a model produced for this task, straight from the transcript."""
-    turns = (entry.get("transcript") or {}).get("turns") or []
+    """The page a model produced for this task: the artefact, else its reply.
+
+    An agent run writes the page to disk and its chat reply may be empty, so the
+    transcript's recorded artefact comes first; a chat run has no artefact and
+    falls back to the fenced block in the reply.
+    """
+    transcript = entry.get("transcript") or {}
+    recorded = ((transcript.get("extra") or {}).get("artefact") or {}).get("text") or ""
+    if recorded.strip():
+        page = extract_html(recorded)
+        if page and "</body>" in page:
+            return page.replace("</body>", STEP_HOOK + "</body>", 1)
+        return page + STEP_HOOK if page else ""
+    turns = transcript.get("turns") or []
     if not turns:
         return ""
     text = (turns[-1].get("reply") or {}).get("text") or ""
@@ -188,10 +337,31 @@ def scene_page(item: dict[str, Any], target: Path, task_id: str) -> str:
         + " · пробел — пауза, → — шаг, R — сброс</div>"
     )
     page = standalone_html(item["html"], f"{depth}{ASSET_DIR}/three.global.js")
+    # Кадр сцены — 1920x1080. Ответ рисует canvas по своим числам, поэтому
+    # масштабируем его целиком под окно: без обрезки и без полей, на любом
+    # экране. `zoom` двигает и хит-тесты, поэтому он, а не transform: scale.
+    fit = """<script>
+(() => {
+  const fit = () => {
+    const canvas = document.querySelector('canvas');
+    if (!canvas) return;
+    const k = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+    document.documentElement.style.zoom = k === 1 ? '' : String(k);
+    document.body.style.overflow = 'hidden';
+    document.body.style.display = 'flex';
+    document.body.style.alignItems = 'center';
+    document.body.style.justifyContent = 'center';
+    document.body.style.height = '100vh';
+  };
+  window.addEventListener('resize', fit);
+  window.addEventListener('load', fit);
+  fit();
+})();
+</script>"""
     if "</body>" in page:
-        page = page.replace("</body>", banner + "</body>", 1)
+        page = page.replace("</body>", banner + fit + "</body>", 1)
     else:
-        page += banner
+        page += banner + fit
     return page
 
 
@@ -205,6 +375,16 @@ def showcase_entries(run: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         transcript = entry.get("transcript") or {}
         visual = ((transcript.get("extra") or {}).get("visual") or {})
+        # A render that died before ``_observe`` (screenshot timeout) leaves
+        # ``extra.visual`` empty — but the frame is still reproducible: the
+        # sample point is in the task meta and both blocks step at 1/60. Without
+        # this fallback such a page kept its live scene and lost its picture.
+        meta = task.get("meta") or {}
+        sample = {
+            "shot": visual.get("shot") or "",
+            "steps": visual.get("steps") or meta.get("steps"),
+            "dt": visual.get("dt") or 1 / 60,
+        }
         out.append(
             {
                 "id": task.get("id", "?"),
@@ -212,15 +392,65 @@ def showcase_entries(run: dict[str, Any]) -> list[dict[str, Any]]:
                 "category": category,
                 "title": task.get("title", ""),
                 "html": answer_html(entry),
-                "shot": str(visual.get("shot") or ""),
+                "raw": _raw_page(entry),
+                "shot": _shot_for(entry, sample),
                 "score": entry.get("score") or {},
                 "spend": transcript.get("spend") or {},
                 "atmosphere": visual.get("atmosphere") or [],
-                "steps": visual.get("steps"),
-                "dt": visual.get("dt"),
+                "steps": sample["steps"],
+                "dt": sample["dt"],
             }
         )
     return out
+
+
+def _raw_page(entry: dict[str, Any]) -> str:
+    """The answer page exactly as it was scored: no STEP_HOOK, no wrapping."""
+    transcript = entry.get("transcript") or {}
+    recorded = ((transcript.get("extra") or {}).get("artefact") or {}).get("text") or ""
+    if recorded.strip():
+        return extract_html(recorded)
+    raw = "".join(
+        str((turn.get("reply") or {}).get("text") or "")
+        for turn in transcript.get("turns") or []
+    )
+    return extract_html(raw)
+
+
+def _shot_for(entry: dict[str, Any], visual: dict[str, Any]) -> str:
+    """The frame of this answer, re-rendered when the cached file is gone.
+
+    The cache lives outside the run (``~/.cache/dailybench/visual``) and is keyed
+    by page content: a purged or rotated cache used to leave the showcase with the
+    live page but no picture at all, silently. The render is deterministic, so the
+    recovered frame is the same one the checks scored; a browser-less machine just
+    keeps whatever the run recorded.
+    """
+    existing = str(visual.get("shot") or "")
+    if existing and Path(existing).is_file():
+        return existing
+    steps, dt = visual.get("steps"), visual.get("dt")
+    # The frame must be rendered from the *raw* answer, not from the gallery copy:
+    # the copy carries STEP_HOOK, which auto-steps the scene from requestAnimation
+    # -Frame, so a render of it lands on a different moment (measured: 14.6 % of
+    # the pixels differed). The checks scored the raw page, and so must the frame.
+    page = str(entry.get("raw") or "") or _raw_page(entry)
+    if not steps or not dt or not page:
+        return existing
+    from . import art, visual
+
+    try:
+        if entry.get("category") in core.ART_CATEGORIES:
+            path = art.art_shot_path(page, int(steps), float(dt))
+            if not path.is_file():
+                art.cached_art_render(page, int(steps), float(dt))
+        else:
+            path = visual.shot_path(page, int(steps), float(dt))
+            if not path.is_file():
+                visual._cached_render(page, int(steps), float(dt))
+        return str(path) if path.is_file() else existing
+    except Exception:  # pragma: no cover - a broken frame must not lose the entry
+        return existing
 
 
 def materialise(run_dir: Path, target: Path) -> dict[str, Any]:
@@ -240,6 +470,8 @@ def materialise(run_dir: Path, target: Path) -> dict[str, Any]:
     data = load_run(run_dir)
     ensure_vendor(target.parent.parent)  # <report>/_showcase/<model> -> <report>
     index: list[dict[str, Any]] = []
+    kept_pages: set[str] = set()
+    kept_frames: set[str] = set()
     for item in showcase_entries(data):
         task_id = item["id"]
         record = {"id": task_id, "category": item["category"], "title": item["title"],
@@ -249,13 +481,27 @@ def materialise(run_dir: Path, target: Path) -> dict[str, Any]:
             page = pages / f"{task_id}.html"
             page.write_text(scene_page(item, target, task_id), encoding="utf-8")
             record["page"] = f"pages/{task_id}.html"
+            kept_pages.add(page.name)
         shot = Path(item["shot"]) if item["shot"] else None
         if shot and shot.is_file():
             frame = frames / f"{task_id}.png"
             shutil.copyfile(shot, frame)
             record["frame"] = f"frames/{task_id}.png"
+            kept_frames.add(frame.name)
         index.append(record)
+    # Republish must be idempotent: a scene that lost its page or frame (an
+    # artefact rotated away, a shot purged) otherwise kept the *previous*
+    # publish's file, and the gallery showed a live page the run no longer has.
+    _prune(pages, kept_pages)
+    _prune(frames, kept_frames)
     return {"model": (data.get("config") or {}).get("model", run_dir.name), "dir": run_dir.name, "tasks": index}
+
+
+def _prune(folder: Path, kept: set[str]) -> None:
+    """Drop files a republish no longer produces, leaving foreign ones alone."""
+    for path in folder.iterdir():
+        if path.is_file() and path.suffix in {".html", ".png"} and path.name not in kept:
+            path.unlink()
 
 
 def ensure_vendor(report_dir: Path) -> None:

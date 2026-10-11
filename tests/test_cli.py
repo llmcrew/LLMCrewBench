@@ -17,6 +17,7 @@ import httpstub
 from dailybench import cli
 from dailybench.config import RunConfig
 from dailybench.rng import derived_seed
+from dailybench.runner import Runner
 from dailybench.suite import build_suite
 
 SEED = 20260915
@@ -111,6 +112,145 @@ def test_run_writes_the_artefacts_and_returns_zero(endpoint, tmp_path: Path):
     assert len(httpstub.chat_payloads(server)) == 1
 
 
+def test_run_checkpoints_after_every_task(endpoint, tmp_path: Path, monkeypatch):
+    """A crash at task 2 of 2 must not lose task 1.
+
+    A real run is hours of GPU time; the process died once at task 92 of 96 under
+    a debugger and lost everything because results were only written at the end.
+    """
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    real = Runner.run_task
+    seen = {"n": 0}
+
+    def explode(self, task):
+        seen["n"] += 1
+        if seen["n"] == 2:
+            raise SystemExit(0)  # exactly how lldb's PyRun_SimpleString killed it
+        return real(self, task)
+
+    monkeypatch.setattr(Runner, "run_task", explode)
+    with pytest.raises(SystemExit):
+        _run(base_url, out, "--only", "IF-1,IF-2", "--name", "crash")
+    saved = _read(out / "crash" / "scores.json")
+    assert len(saved) == 1, "первая задача обязана лежать на диске до конца прогона"
+    assert (out / "crash" / "tasks.json").is_file()
+
+
+def test_resume_finishes_an_interrupted_run_without_replaying_it(endpoint, tmp_path: Path, monkeypatch):
+    """A crashed run must be completable in place, and the kept tasks must not be re-asked.
+
+    The reboot left 67 of 96 tasks on disk; re-running the whole suite spends GPU
+    hours twice, while re-running *nothing* ships an incomplete artefact. The
+    suite digest guard is what makes the merge legal at all.
+    """
+    base_url, server = endpoint
+    out = tmp_path / "runs"
+    real = Runner.run_task
+    seen = {"n": 0}
+
+    def explode(self, task):
+        seen["n"] += 1
+        if seen["n"] == 3:
+            raise SystemExit(0)
+        return real(self, task)
+
+    monkeypatch.setattr(Runner, "run_task", explode)
+    with pytest.raises(SystemExit):
+        _run(base_url, out, "--only", "IF-1,IF-2,IF-3", "--name", "half")
+    first = len(httpstub.chat_payloads(server))
+    assert first == 2, "два задания обязаны быть записаны до обрыва"
+
+    assert _run(base_url, out, "--only", "IF-1,IF-2,IF-3", "--name", "half", "--resume", "--no-html") == 0
+    payloads = httpstub.chat_payloads(server)
+    assert len(payloads) == 3, "догрузка обязана спросить ровно недостающее задание"
+    assert [p["messages"][-1]["content"] for p in payloads[2:]] == [_expected_prompt("IF-3")]
+    scores = _read(out / "half" / "scores.json")
+    assert [row["task_id"] for row in scores] == ["IF-1", "IF-2", "IF-3"], "порядок сьюта обязан сохраниться"
+    assert all(not row.get("error") for row in scores)
+
+
+def _expected_prompt(task_id: str) -> str:
+    cfg = RunConfig(seed=SEED, only=(task_id,))
+    return next(task.prompt for task in build_suite(cfg) if task.id == task_id)
+
+
+def test_resume_replays_a_task_whose_agent_died(endpoint, tmp_path: Path):
+    """A truncated agent record is re-run, not shipped half-empty."""
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1,IF-2", "--name", "cut") == 0
+    saved = _read(out / "cut" / "tasks.json")
+    assert len(saved) == 2
+    saved[1]["transcript"]["error"] = "агент завершился с кодом 143"
+    (out / "cut" / "tasks.json").write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+
+    from dailybench.cli import _resume_tasks
+
+    cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "cut")
+    missing, kept = _resume_tasks(cfg, build_suite(cfg))
+    assert [task.id for task in missing] == ["IF-2"], "оборванное задание обязано уйти в повтор"
+    assert [run.task.id for run in kept] == ["IF-1"]
+
+
+def test_resume_rebuilds_from_transcripts_when_tasks_json_is_corrupt(endpoint, tmp_path: Path):
+    """A reboot while tasks.json was being written must not cost the run.
+
+    tasks.json is rewritten whole at every checkpoint; the per-task mirror under
+    transcripts/ is what makes a truncated master recoverable.
+    """
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1,IF-2", "--name", "torn") == 0
+    (out / "torn" / "tasks.json").write_text('{"broken": ', encoding="utf-8")
+
+    from dailybench.cli import _resume_tasks
+
+    cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "torn")
+    missing, kept = _resume_tasks(cfg, build_suite(cfg))
+    assert [run.task.id for run in kept] == ["IF-1", "IF-2"], "записи обязаны подняться из transcripts/"
+    assert missing == []
+
+
+def test_resume_without_speed_keeps_the_saved_profile(endpoint, tmp_path: Path):
+    """`--resume` must not wipe speed.json just because the flag was omitted.
+
+    The profile is measured once (minutes of GPU time); a resumed tail pass
+    finishing the suite would otherwise blank the columns the report reads.
+    """
+    base_url, server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1", "--limit", "1", "--name", "sp") == 0
+    rows = _read(out / "sp" / "speed.json") if (out / "sp" / "speed.json").is_file() else None
+    assert rows is None, "без --speed профиля быть не должно"
+    (out / "sp" / "speed.json").write_text(
+        json.dumps([{"label": "short", "runs": 2, "ttft_s": 0.1, "generation_tok_s": 42.0}]),
+        encoding="utf-8",
+    )
+    assert _run(base_url, out, "--only", "IF-1", "--name", "sp", "--resume", "--no-html") == 0
+    kept = _read(out / "sp" / "speed.json")
+    assert kept and kept[0]["generation_tok_s"] == 42.0, "сохранённый профиль обязан пережить resume"
+
+
+def test_bench_forwards_resume_to_run():
+    """`bench --resume` must reach `run --resume`, or bench would start a second run over a live one."""
+    from dailybench.cli import _bench_run_argv, build_parser
+
+    args = build_parser().parse_args(
+        [
+            "bench",
+            "--base-url", "http://127.0.0.1:1/v1",
+            "--model", "test-model",
+            "--config", "generic-gguf",
+            "--resume",
+        ]
+    )
+    assert "--resume" in _bench_run_argv(args)
+    assert "--resume" not in _bench_run_argv(build_parser().parse_args(
+        ["bench", "--base-url", "http://127.0.0.1:1/v1", "--model", "test-model"]
+    ))
+
+
 def test_run_maps_only_limit_and_seed_onto_the_config(endpoint, tmp_path: Path):
     """The parser's selection must reach the provider, not just the exit code."""
     base_url, server = endpoint
@@ -137,6 +277,25 @@ def test_run_maps_only_limit_and_seed_onto_the_config(endpoint, tmp_path: Path):
 
     expected = next(t for t in build_suite(RunConfig(seed=SEED, only=("IF-1", "IF-3"))) if t.id == "IF-1")
     assert payload["messages"][-1]["content"] == expected.prompt, "--only выбрал IF-1, а не IF-2"
+
+
+def test_run_writes_the_html_report(endpoint, tmp_path: Path):
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1", "--limit", "1", "--name", "with-html") == 0
+    page = out / "with-html" / "report.html"
+    assert page.is_file(), "run обязан собрать HTML-отчёт прогона"
+    assert "Провенанс" in page.read_text(encoding="utf-8")
+    assert (out / "with-html" / "_vendor" / "plotly.min.js").is_file()
+
+
+def test_run_can_skip_the_html_report(endpoint, tmp_path: Path):
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1", "--limit", "1",
+                "--name", "no-html", "--no-html") == 0
+    assert not (out / "no-html" / "report.html").exists()
+    assert (out / "no-html" / "report.md").is_file()
 
 
 def test_run_maps_unsupported_onto_the_config(endpoint, tmp_path: Path):

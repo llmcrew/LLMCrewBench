@@ -76,6 +76,9 @@ class OpenAICompatibleProvider:
     # -- transport --------------------------------------------------------- #
 
     def _url(self, path: str) -> str:
+        """Absolute URLs pass through: a tokenizer can live at the server root."""
+        if path.startswith(("http://", "https://")):
+            return path
         return self.base_url.rstrip("/") + path
 
     def _request(self, path: str, payload: dict[str, Any] | None, method: str = "POST"):
@@ -281,6 +284,11 @@ class OpenAICompatibleProvider:
 
         Returns ``None`` when the endpoint is absent, so callers fall back to a
         character-based estimate and record that the count is approximate.
+
+        Two body shapes and two locations are tried: vLLM answers ``/tokenize``
+        (server root, outside the ``/v1`` prefix) to a ``prompt`` field, while
+        llama.cpp's compatibility layer takes ``content``; a stand that serves
+        only ``/v1/tokenize`` (a proxy in front of the runtime) is tried too.
         """
         if not text:
             return 0
@@ -291,11 +299,26 @@ class OpenAICompatibleProvider:
         if self._tokenize_supported is False:
             return None
         root = self.base_url.rstrip("/")
-        root = root[: -len("/v1")] if root.endswith("/v1") else root
-        body = {"content": text, "model": self.model}
-        for path in ("/tokenize", f"{root}/tokenize"):
-            if path in ("/tokenize",) and root == self.base_url.rstrip("/"):
+        if root.endswith("/v1"):
+            root = root[: -len("/v1")]
+        # A proxy can be pickier about the model spelling than the chat path
+        # (``MiniMax-M3`` is served, ``minimax-m3`` tokenizes): try both cases.
+        names = list(dict.fromkeys((self.model, self.model.lower(), self.model.capitalize())))
+        candidates = [
+            (f"{root}/tokenize", {"model": name, "prompt": text}) for name in names
+        ] + [
+            (f"{root}/tokenize", {"model": name, "content": text}) for name in names
+        ] + [
+            (f"{self.base_url.rstrip('/')}/tokenize", {"model": name, "prompt": text}) for name in names
+        ] + [
+            (f"{self.base_url.rstrip('/')}/tokenize", {"model": name, "content": text}) for name in names
+        ]
+        seen: set[tuple[str, str, tuple[str, ...]]] = set()
+        for path, body in candidates:
+            shape = (path, str(body.get("model")), tuple(sorted(body)))
+            if shape in seen:
                 continue
+            seen.add(shape)
             try:
                 with self._request(path, body) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
@@ -423,10 +446,16 @@ class RecordingProvider:
 def estimate_tokens(text: str) -> int:
     """Fallback size estimate when no tokenizer endpoint is available.
 
-    Deliberately conservative (over-counts slightly) so a context that fits by
-    this measure fits in reality.
+    Deliberately conservative (over-counts) so a context that fits by this
+    measure fits in reality.
+
+    The divisor is 2.5 rather than the usual 3.2-4: measured against the live
+    runtimes on Russian and code prompts the true ratio was 3.04 symbols per
+    token, and an estimate *below* the real count makes the answer budget
+    overshoot the window (HTTP 400 on the last token). Over-counting is safe:
+    it only leaves the answer a little more room.
     """
-    return max(1, round(len(text) / 3.2))
+    return max(1, round(len(text) / 2.5))
 
 
 def count_tokens(provider: Provider, text: str, cache: dict[str, int] | None = None) -> tuple[int, bool]:

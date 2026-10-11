@@ -63,6 +63,23 @@ class RunConfig:
     unbounded_budget: bool = True
     """Answer limit = what fits in the window (see :meth:`budget_for`)."""
 
+    agent: bool = True
+    """Solve the agentic categories with the ``pi`` coding agent, not a chat loop.
+
+    The categories that produce an *artefact* (``agent_categories``: code files
+    and the visual pages) are handed to a real agent in a working copy: it reads
+    files, edits them and runs their tests, and the result is graded from disk.
+    A bare chat endpoint is measured by the same runner, so the switch is the
+    only difference between the two regimes.
+    """
+
+    agent_categories: tuple[str, ...] = ("C", "K", "L")
+    """Which categories the agent owns when :attr:`agent` is on.
+
+    Spelled out rather than "every artefact category": adding a category later
+    must not silently move it to the other harness.
+    """
+
     max_total_tokens: int = 16384
     max_tool_calls: int = 12
     context_window: int = 32768
@@ -128,7 +145,21 @@ class RunConfig:
 
     #: Space kept between prompt + answer and the declared window, so a request
     #: is never rejected for exceeding the context by a handful of tokens.
-    context_reserve: int = 512
+    #:
+    #: The prompt is *estimated* (chars/3.2 plus tool schemas), and a runtime
+    #: tokenizer counts differently — on a short Russian prompt the estimate can
+    #: be off by hundreds of tokens. A 512-token reserve was not enough: the
+    #: request landed exactly one token over the window and the runtime answered
+    #: HTTP 400. 2048 covers the estimate error with room to spare.
+    context_reserve: int = 2048
+
+    #: Доля окна, оставляемая в запасе поверх ``context_reserve``.
+    #:
+    #: Оценка промпта — по символам, а токенизатор рантайма считает точнее и
+    #: на длинном тексте расходится сильнее: на контексте в 200k символов
+    #: промах достигал 2k токенов при фиксированном резерве. Процентный запас
+    #: масштабируется вместе с промптом и закрывает эту вилку.
+    context_reserve_share: float = 0.02
 
     def budget_for(self, category: str, prompt_tokens: int | None = None) -> int:
         """Answer budget for one task.
@@ -148,7 +179,8 @@ class RunConfig:
         if window <= 0:
             return int(self.max_new_tokens_by_category.get(category, self.max_new_tokens))
         prompt = int(prompt_tokens or 0)
-        return max(256, window - prompt - int(self.context_reserve))
+        reserve = int(self.context_reserve) + int(prompt * self.context_reserve_share)
+        return max(256, window - prompt - reserve)
 
     def to_json(self) -> str:
         data = asdict(self)

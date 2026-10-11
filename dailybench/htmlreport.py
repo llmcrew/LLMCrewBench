@@ -66,6 +66,141 @@ def _pct(earned: float, possible: float) -> float | None:
     return round(100 * earned / possible, 1) if possible else None
 
 
+def _selector_of(run: dict[str, Any]) -> set[str]:
+    """Every name a caller may plausibly use for this run."""
+    config = run.get("config") or {}
+    names = {_model_name(run), str(config.get("model") or ""), Path(str(run.get("dir") or "")).name}
+    return {name for name in names if name}
+
+
+def _select_runs(runs: list[dict[str, Any]], wanted: list[str]) -> list[dict[str, Any]]:
+    """Runs matching the selectors, in the requested order.
+
+    Accepting label, model id *and* directory name costs nothing and removes a
+    real footgun: ``--compare qwen36`` (the name of the command that produced the
+    run) used to fail because the run's label was "Qwen3.6 35B-A3B".
+    """
+    by_selector: dict[str, dict[str, Any]] = {}
+    for run in runs:
+        for selector in _selector_of(run):
+            by_selector.setdefault(selector, run)
+    missing = [name for name in wanted if name not in by_selector]
+    if missing:
+        raise ValueError(
+            f"неизвестные модели для сравнения: {missing}; есть {sorted(by_selector)}"
+        )
+    picked: list[dict[str, Any]] = []
+    for name in wanted:
+        run = by_selector[name]
+        if run not in picked:
+            picked.append(run)
+    return picked
+
+
+def _suite_facts(runs: list[dict[str, Any]]) -> dict[str, int]:
+    """Counts that describe the suite this report was built from.
+
+    Three sources, most specific first: the run's own digest, then the suite
+    rebuilt from the run's config (a full-suite run recorded before digests were
+    stored), then the live registry. Hard-coding these was wrong the moment a
+    category was added — the header claimed 83 tasks while the suite shipped 96,
+    and a 100-point suite was advertised as 559.
+    """
+    # The registry holds the per-category weights (K's block total, L's per-task
+    # weight); without it the showcase column under-counts silently.
+    from .tasks import load_all
+
+    load_all()
+    per_task: list[dict[str, Any]] = []
+    for run in runs:
+        rows = (run.get("suite") or {}).get("per_task") or []
+        if len(rows) > len(per_task):
+            per_task = rows
+    if not per_task:
+        per_task = _rebuilt_digest(runs)
+    scored = [row for row in per_task if row.get("category") in SCORED]
+    showcase = [row for row in per_task if row.get("category") in SHOWCASE]
+    return {
+        "tasks": len(per_task),
+        "scored": len(scored),
+        "showcase": len(showcase),
+        # Points belong to the *category*, not to each task: a per-task sum gave
+        # 559 "points" for a 100-point suite. ``suite_points`` is the ceiling of
+        # the whole scored half, so a showcase-only run can still say what it did
+        # not test instead of implying a 0-point suite.
+        "scored_points": int(sum(core.CATEGORY_POINTS.get(key, 0) for key in {r["category"] for r in scored})),
+        "showcase_points": int(sum(_showcase_points(key) for key in {r["category"] for r in showcase})),
+        "suite_points": int(core.FULL_TOTAL),
+    }
+
+
+def _rebuilt_digest(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The suite a run faced, rebuilt from its own recorded config.
+
+    Cheap (no model, no fixtures beyond generation) and honest about partial
+    runs: ``only`` and ``unsupported`` come from the config, so a 12-task smoke
+    run reports 12 tasks instead of today's 96.
+    """
+    from .config import RunConfig
+    from .suite import build_suite
+
+    for run in runs:
+        config = run.get("config") or {}
+        if not config:
+            continue
+        try:
+            cfg = RunConfig.from_dict(config)
+            return sorted(
+                ({"id": task.id, "category": task.category} for task in build_suite(cfg)),
+                key=lambda row: row["id"],
+            )
+        except Exception:  # pragma: no cover - a config from an older version
+            continue
+    return []
+
+
+def _showcase_points(category: str) -> float:
+    """Points a showcase category carries.
+
+    ``SHOWCASE_POINTS`` totals the whole block under ``K``; the art category
+    ``L`` has no entry of its own (no leaderboard points), so a per-category
+    lookup has to fall back to its registered weight instead of counting it as
+    zero.
+    """
+    if category in core.SHOWCASE_POINTS:
+        return float(core.SHOWCASE_POINTS[category])
+    module = core.REGISTRY.get(category)
+    return float(module.points) if module is not None else 0.0
+
+
+def _suite_line(facts: dict[str, int], *, per_run: bool) -> str:
+    """One honest sentence about the suite; identical in both report flavours.
+
+    The showcase figure is the *block ceiling*, not a sum over the tasks that ran:
+    a 2-task smoke run still faces the whole visual block's 225 frames' worth of
+    scoring scale, and saying "225 вне счёта" next to 2 tasks is exact if the
+    sentence says ceiling.
+    """
+    if not facts["tasks"]:
+        return "Сьют неизвестен: в прогоне нет ни конфигурации, ни дайджеста."
+    subject = "Прогон" if per_run else "Сьют"
+    if facts["scored"]:
+        scored = f"{facts['scored']} балльных ({facts['scored_points']} баллов качества)"
+    else:
+        # A showcase-only run has no scored task in it; "0 баллов качества"
+        # would read as a score of zero rather than as nothing scored.
+        scored = (
+            f"балльных категорий нет (из {facts['suite_points']} баллов сьюта "
+            "в этот прогон ничего не попало)"
+        )
+    showcase = (
+        f"и {facts['showcase']} витринных (потолок блока {facts['showcase_points']} вне счёта)"
+        if facts["showcase"]
+        else "витринных нет"
+    )
+    return f"{subject} — {facts['tasks']} заданий, из них {scored} {showcase}."
+
+
 def _spend_totals(run: dict[str, Any]) -> dict[str, float]:
     answer = reason = seconds = tool_calls = 0.0
     for entry in run.get("tasks") or []:
@@ -93,6 +228,13 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
         config = run.get("config") or {}
         spend = _spend_totals(run)
         rows = run["scores"]
+        # A published artefact keeps one page per run next to the comparison; link
+        # it when it is there, so a reader does not have to guess the path.
+        own = Path(str(run.get("dir") or "")).name
+        link = (
+            f"<div class='sub'><a class='link' href='runs/{_cell(own)}/index.html'>"
+            "отчёт по этой модели →</a></div>"
+        ) if own else ""
         failed = sum(1 for r in rows if r.get("earned", 0) < r.get("possible", 0) and not r.get("skipped"))
         zero = sum(1 for r in rows if not r.get("earned") and not r.get("skipped") and r.get("possible"))
         failed_cats = sorted({r["category"] for r in rows
@@ -112,6 +254,7 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
             f"(reasoning {100 * spend['reasoning_share']:.0f}%) · <b>{spend['seconds'] / 60:.0f} мин</b> "
             f"· балл/мин <b>{summary['headline_earned'] / max(spend['seconds'] / 60, 1e-9):.2f}</b></div>"
             f"<div class='sub'>{_cell(config.get('quant') or '')} · {_cell(_endpoint(config.get('base_url', '')))}</div>"
+            f"{link}"
             "</div>"
         )
     return "".join(cards)
@@ -245,6 +388,62 @@ def _task_rows(run: dict[str, Any]) -> str:
     return "".join(rows)
 
 
+def _provenance(runs: list[dict[str, Any]]) -> str:
+    """Everything needed to reproduce the numbers, in one table per run.
+
+    The markdown report carries this; the HTML used to show only the endpoint.
+    A page people quote must say which weights, which window, which agent harness
+    and which suite hash produced the score.
+    """
+    blocks: list[str] = []
+    for run in runs:
+        config = run.get("config") or {}
+        hardware = run.get("hardware") or {}
+        suite = run.get("suite") or {}
+        sizing = run.get("sizing") or {}
+        rows: list[tuple[str, str]] = [
+            ("Модель", str(config.get("model") or "—")),
+            ("Метка", str(config.get("label") or "—")),
+            ("Квант", str(config.get("quant") or "—")),
+            ("Рантайм", str(config.get("runtime") or "—")),
+            ("Endpoint", str(config.get("base_url") or "—")),
+            ("Окно контекста", str(config.get("context_window") or "—")),
+            ("KV-cache", str(config.get("kv_type") or "—")),
+            ("Offload", str(config.get("offload") or "none")),
+            ("Seed сьюта", str(config.get("seed") or "—")),
+            ("Бюджеты", f"max_new_tokens={config.get('max_new_tokens')}, "
+                        f"max_total_tokens={config.get('max_total_tokens')}, "
+                        f"max_tool_calls={config.get('max_tool_calls')}"),
+        ]
+        if config.get("agent"):
+            rows.append((
+                "Каркас артефактов",
+                "агент pi, категории " + ", ".join(config.get("agent_categories") or ())
+                + ": читает и правит рабочую копию, оценка по файлу на диске",
+            ))
+        rows.append(("Веса SHA-256", str(config.get("weights_sha256") or "не указан")))
+        if config.get("reference"):
+            rows.append(("Эталонная конфигурация", str(config["reference"])))
+        if config.get("launch"):
+            rows.append(("Строка запуска", str(config["launch"])))
+        if sizing.get("calibrated"):
+            rows.append(("Калибровка long context",
+                         f"{sizing['chars_per_token']:.2f} символов/токен ({sizing.get('how', 'измерено')})"))
+        if hardware:
+            rows.append(("Железо", str(hardware.get("gpu") or hardware.get("name") or "—")))
+        if suite.get("sha256"):
+            rows.append(("Сьюта SHA-256", str(suite["sha256"])))
+        if (run.get("rescored") or {}).get("rescored_at"):
+            rows.append(("Пересчёт", str(run["rescored"]["rescored_at"])))
+
+        body = "".join(
+            f"<tr><th>{_cell(name)}</th><td>{_cell(value)}</td></tr>" for name, value in rows
+        )
+        heading = f"<h3>{_cell(_model_name(run))}</h3>" if len(runs) > 1 else ""
+        blocks.append(f"{heading}<table class='grid prov'>{body}</table>")
+    return "".join(blocks)
+
+
 def _charts_payload(runs: list[dict[str, Any]]) -> dict[str, Any]:
     payload: dict[str, Any] = {"models": [], "scoredKeys": list(SCORED),
                                "scoredNames": [f"{k}. {core.category_title(k).split(' ')[0]}" for k in SCORED],
@@ -330,8 +529,33 @@ def _gallery(entries: list[dict[str, Any]]) -> str:
     return "".join(cards)
 
 
-def render_html(run_dirs: list[Path | str], page_dir: Path | None = None) -> str:
+def render_html(
+    run_dirs: list[Path | str],
+    page_dir: Path | None = None,
+    *,
+    per_run: bool = False,
+    compare: list[str] | None = None,
+    page_name: str = "comparison.html",
+) -> str:
+    """Two report flavours out of one renderer.
+
+    ``per_run``
+        a single model's full report — the page a run writes next to its own
+        ``report.md``. Same sections, same showcase, but the wording and the
+        header describe *this run* instead of a field of models;
+    ``compare``
+        explicit models to put in the comparison when more runs are passed
+        (``comparison.html``). A selector matches the run's label, its model id or
+        its directory name — whichever the caller happens to know — and keeps the
+        order given. An unknown selector is a loud error, because a silently
+        dropped model would make a leaderboard that lies.
+    """
+    run_dirs = list(run_dirs)
+    if per_run and len(run_dirs) != 1:
+        raise ValueError(f"per_run отчёт ждёт один прогон, получено {len(run_dirs)}")
     runs = [load_run(directory) for directory in run_dirs]
+    if compare:
+        runs = _select_runs(runs, compare)
     page_dir = page_dir or Path(run_dirs[0]).parent
 
     gallery.ensure_vendor(page_dir)
@@ -351,6 +575,27 @@ def render_html(run_dirs: list[Path | str], page_dir: Path | None = None) -> str
     summaries = [(run, summarise(run["scores"], run.get("suite"))) for run in runs]
     summaries.sort(key=lambda pair: -pair[1]["headline_earned"] / (pair[1]["headline_possible"] or 1))
 
+    facts = _suite_facts(runs)
+    single = len(runs) == 1
+    if per_run:
+        title = f"DailyBench — {_model_name(runs[0])}"
+        lead = (f"{_suite_line(facts, per_run=True)} Задания одинаковы для всех моделей; "
+                "расход токенов документируется, а не обрезается лимитом. "
+                "Живые сцены витрины открываются в новом окне.")
+    else:
+        title = "DailyBench — решения моделей на сьюте" if not single else f"DailyBench — {_model_name(runs[0])}"
+        lead = (f"{_suite_line(facts, per_run=single)} Задания одинаковы для всех моделей; "
+                "расход токенов документируется, а не обрезается лимитом.")
+
+    prov_tab = ('<div class="tab" data-panel="p-prov">Провенанс</div>' if per_run else "")
+    prov_panel = (
+        '<div class="panel" id="p-prov"><h2>Провенанс: чем именно получены числа</h2>'
+        '<p class="hint">Веса, окно, бюджеты, каркас и хеш сьюта — чтобы результат можно было '
+        'воспроизвести, а не только прочитать.</p>'
+        + _provenance([run for run, _ in summaries])
+        + "</div>"
+    ) if per_run else ""
+
     charts = json.dumps(_charts_payload([run for run, _ in summaries]), ensure_ascii=False)
     compare_rows = "".join(
         f"<label class='pick'><input type='checkbox' class='cmp' value='{_cell(item['id'])}' "
@@ -359,7 +604,7 @@ def render_html(run_dirs: list[Path | str], page_dir: Path | None = None) -> str
     )
 
     return f"""<!DOCTYPE html>
-<html lang="ru"><head><meta charset="utf-8"><title>DailyBench — решения моделей</title>
+<html lang="ru"><head><meta charset="utf-8"><title>{_cell(title)}</title>
 <style>
  :root {{ color-scheme: dark }}
  body {{ margin:0; background:#0d1117; color:#e6edf3; font:14px/1.55 -apple-system,"Segoe UI",Roboto,sans-serif }}
@@ -427,9 +672,13 @@ def render_html(run_dirs: list[Path | str], page_dir: Path | None = None) -> str
  .pane {{ flex:1; display:flex; flex-direction:column; border-right:1px solid #21262d; min-width:0 }}
  .pane:last-child {{ border-right:0 }}
  .pane iframe {{ flex:1; width:100%; border:0; background:#000 }}
- .pane.solo {{ align-items:center; justify-content:center }}
- /* Кадр сцены 800x600: масштабируем целиком под панель, без обрезки и полей */
- .pane.solo iframe {{ width:800px; height:600px; flex:none; transform-origin:center center }}
+ .pane.solo {{ align-items:center; justify-content:center; overflow:hidden }}
+ /* Кадр сцены 1920x1080: вписываем целиком под панель, без обрезки и полей.
+    Масштаб считается в JS (fitSolo) и применяется зумом обёртки — так он
+    работает и для одной сцены, и для нескольких панелей рядом. */
+ .pane.solo .stage {{ flex:none; transform-origin:center center; zoom:1 }}
+ .pane.solo iframe {{ width:1920px; height:1080px; border:0; display:block; background:#000 }}
+ .frames.many .pane iframe {{ width:100%; height:100%; }}
  .pane .cap {{ padding:6px 10px; font-size:12px; color:#8b949e; display:flex; justify-content:space-between }}
  .pick {{ display:inline-block; padding:1px 10px 1px 0; font-size:12px; color:#8b949e; white-space:nowrap }}
  .pick span {{ color:#c9d1d9 }}
@@ -443,18 +692,18 @@ def render_html(run_dirs: list[Path | str], page_dir: Path | None = None) -> str
 </style></head>
 <body>
 <header>
- <div id="filehint" class="warn" hidden>Отчёт открыт как <code>file://</code>: живые сцены витрины используют ES-модули,
- которые браузер с такого origin не грузит. Запустите <code>make serve DIR=runs</code> и откройте
- <code>http://127.0.0.1:8765/comparison.html</code>.</div>
- <h1>DailyBench — решения моделей на сьюте</h1>
- <p class="hint">Сьют — 83 задания, из них 47 балльных (100 баллов качества) и 36 витринных (кадры, вне счёта).
- Задания одинаковы для всех моделей; расход токенов документируется, а не обрезается лимитом.</p>
+ <div id="filehint" class="warn" hidden>Отчёт открыт как <code>file://</code>: живая витрина тянет ES-модули,
+ которые браузер с такого origin не грузит (кадры работают). Запустите <code>make serve DIR=runs</code>
+ и откройте <code>http://127.0.0.1:8765/{page_name}</code>.</div>
+ <h1>{title}</h1>
+ <p class="hint">{lead}</p>
 </header>
 <nav class="tabs">
  <div class="tab active" data-panel="p-summary">Решения моделей</div>
  <div class="tab" data-panel="p-suite">Решения моделей по сьюту</div>
  <div class="tab" data-panel="p-charts">Графики</div>
  <div class="tab" data-panel="p-showcase">Витрина решений</div>
+ {prov_tab}
 </nav>
 
 <div class="panel active" id="p-summary">
@@ -526,6 +775,8 @@ def render_html(run_dirs: list[Path | str], page_dir: Path | None = None) -> str
  <div id="cmp-list">{compare_rows}</div>
  <div class="gallery" id="gallery">{_gallery(sorted(index, key=lambda x: (x['category'], int(x['id'].split('-')[1]), x['model'])))}</div>
 </div>
+
+{prov_panel}
 
 <dialog id="viewer">
  <div class="dlg-head"><b id="viewer-title">решение</b>
@@ -623,28 +874,32 @@ function openViewer(items, index) {{
   framesEl.innerHTML = items.map((it, i) => `
     <div class="pane${{items.length === 1 ? ' solo' : ''}}">
       <div class="cap"><span>${{it.model}} · ${{it.id}}</span><span>${{it.score}}</span></div>
-      ${{it.page ? `<iframe data-i="${{i}}" src="${{it.page}}"></iframe>`
+      ${{it.page ? `<div class="stage"><iframe data-i="${{i}}" src="${{it.page}}"></iframe></div>`
                  : '<div class="missing">модель не дошла до HTML</div>'}}
     </div>`).join('');
   document.getElementById('viewer-title').textContent =
     items.length === 1 ? `${{items[0].model}} · ${{items[0].id}}` : `сравнение: ${{items.length}} решения`;
+  framesEl.classList.toggle('many', items.length > 1);
   viewer.showModal();
   fitSolo();
 }}
 
 function fitSolo() {{
-  // Сцена рисуется в 800x600: подгоняем её целиком под панель, чтобы кадр не
-  // обрезался. Панель уже центрирует содержимое, поэтому одного scale хватает.
+  // Сцена рисуется в 1920x1080. Масштабируем её целиком под панель, чтобы кадр
+  // не обрезался ни на маленьком ноутбуке, ни на большом мониторе: пустых
+  // полей нет, картинка занимает максимум доступного места.
   const pane = framesEl.querySelector('.pane.solo');
-  const frame = pane && pane.querySelector('iframe');
-  if (!frame) return;
-  // Вычитаем подпись панели, иначе кадр 800x600 уезжает за нижний край диалога.
+  const stage = pane && pane.querySelector('.stage');
+  if (!stage) return;
   const cap = pane.querySelector('.cap');
   const availH = pane.clientHeight - (cap ? cap.offsetHeight : 0);
-  const k = Math.min(pane.clientWidth / 800, availH / 600);
-  frame.style.transform = `scale(${{k.toFixed(4)}})`;
+  // zoom, а не scale: он сжимает и раскладку, поэтому панель не остаётся с
+  // распухшим размером 1920x1080 за пределами экрана.
+  const k = Math.min(pane.clientWidth / 1920, availH / 1080);
+  stage.style.zoom = String(Math.max(0.05, k).toFixed(4));
 }}
 window.addEventListener('resize', fitSolo);
+if (window.ResizeObserver) new ResizeObserver(fitSolo).observe(framesEl);
 
 function stepAll() {{
   framesEl.querySelectorAll('iframe').forEach(fr => {{ try {{ fr.contentWindow.postMessage('step', '*'); }} catch (e) {{}} }});
@@ -659,17 +914,26 @@ function cardItems(cards) {{
 // Живая сцена живёт в собственном окне: она играет сама и остаётся, пока в
 // отчёте листают дальше. Имя окна фиксировано задачей и моделью, поэтому
 // повторный клик переиспользует уже открытое окно, а не плодит вкладки.
+// Окно сцены — на весь экран; страница вписывает кадр 1920x1080 без обрезки.
+function sceneSize() {{
+  return {{
+    w: Math.min(screen.availWidth || 1920, 2560),
+    h: Math.max(540, (screen.availHeight || 1080) - 60),
+  }};
+}}
 function openScene(page, name) {{
   if (!page) return null;
-  const win = window.open(page, name || '', 'width=820,height=640');
+  const {{w, h}} = sceneSize();
+  const win = window.open(page, name || '', `width=${{w}},height=${{h}}`);
   if (win) {{ win.focus(); }}
   return win;
 }}
 function openScenes(items) {{
   const many = items.length > 1;
+  const {{w, h}} = sceneSize();
   items.forEach((it, i) => {{
     const place = many ? `,left=${{120 + i * 40}},top=${{80 + i * 30}}` : '';
-    const win = window.open(it.page, many ? `cmp-${{it.id}}-${{it.model}}` : (it.window || ''), `width=820,height=640${{place}}`);
+    const win = window.open(it.page, many ? `cmp-${{it.id}}-${{it.model}}` : (it.window || ''), `width=${{w}},height=${{h}}${{place}}`);
     if (win) win.focus();
   }});
 }}
@@ -747,7 +1011,30 @@ def _vendor_plotly(target: Path) -> None:
         shutil.copyfile(source, destination)
 
 
-def write_html(run_dirs: list[Path | str], target: Path | None = None) -> Path:
+def write_report_html(run_dir: Path | str, target: Path | None = None) -> Path:
+    """One model's HTML report, written next to its own ``report.md``.
+
+    The run directory is the unit that gets published, archived and linked, so the
+    page that describes it lives there too. Assets go into ``_vendor`` and
+    ``_showcase`` beside it — the same layout ``publish`` uses, so the folder can
+    be served or zipped as is.
+    """
+    run_dir = Path(run_dir)
+    out = Path(target) if target else run_dir / "report.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        render_html([run_dir], page_dir=out.parent, per_run=True, page_name=out.name),
+        encoding="utf-8",
+    )
+    return out
+
+
+def write_html(
+    run_dirs: list[Path | str],
+    target: Path | None = None,
+    *,
+    compare: list[str] | None = None,
+) -> Path:
     """Render the report next to the runs and copy the assets it needs.
 
     ``target`` — куда положить страницу: по умолчанию ``comparison.html`` рядом с
@@ -758,5 +1045,8 @@ def write_html(run_dirs: list[Path | str], target: Path | None = None) -> Path:
     runs = [Path(directory) for directory in run_dirs]
     out = Path(target) if target else runs[0].parent / "comparison.html"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render_html(runs, page_dir=out.parent), encoding="utf-8")
+    out.write_text(
+        render_html(runs, page_dir=out.parent, page_name=out.name, compare=compare),
+        encoding="utf-8",
+    )
     return out

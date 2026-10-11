@@ -39,6 +39,10 @@ from . import browser, core
 POINTS_PER_CHECK = 1.0
 CHECK_NAMES = ("html", "scene", "simulation", "image")
 
+#: The file an agent writes the page into. Graded from disk: an agent run is
+#: judged on what it produced, not on what it said.
+PAGE_FILE = "index.html"
+
 HTML_CONTRACT = """Собери одну HTML-страницу с симуляцией на Three.js.
 
 Требования к странице (общие для всех визуальных заданий):
@@ -420,9 +424,31 @@ def _predicates_report(predicates: Sequence[Predicate], payload: dict[str, Any])
     return passed, "; ".join(details)
 
 
+#: Frame-format version for the cache key. Bumped when ``PIXEL_PROBE`` or the
+#: viewport changes: without it a page keyed by content alone kept returning a
+#: frame produced by the *previous* extractor, and one report could mix frames
+#: from two versions of the checks. The art block already had this guard.
+FRAME_VERSION = 1
+
+
+def _frame_key(html: str, steps: int, dt: float) -> str:
+    return hashlib.sha256(
+        f"v{FRAME_VERSION}:{browser.DEFAULT_VIEWPORT[0]}x{browser.DEFAULT_VIEWPORT[1]}:"
+        f"{steps}:{dt}:{html}".encode("utf-8")
+    ).hexdigest()[:32]
+
+
 def _cached_render(html: str, steps: int, dt: float) -> tuple[browser.RenderResult, bool]:
-    """Render once per unique page; reuse the verdict and the frame afterwards."""
-    key = hashlib.sha256(f"{steps}:{dt}:{html}".encode("utf-8")).hexdigest()[:32]
+    """Render once per unique page; reuse the verdict and the frame afterwards.
+
+    A failed render is retried instead of being trusted forever: the screenshot
+    can time out under load, and the entry then holds ``ok=False`` with no
+    pixels, while a fresh render of the same page succeeds. `_cached_render`
+    still *writes* such a result — a page that really is broken must fail
+    quickly — but the next call re-renders it. The frame file is required too:
+    without it the entry has no picture to score.
+    """
+    key = _frame_key(html, steps, dt)
     folder = cache_dir()
     blob = folder / f"{key}.json"
     shot = folder / f"{key}.png"
@@ -431,12 +457,17 @@ def _cached_render(html: str, steps: int, dt: float) -> tuple[browser.RenderResu
             data = json.loads(blob.read_text(encoding="utf-8"))
             result = browser.RenderResult(**data["result"])
             result.shot = shot.read_bytes()
-            return result, True
+            if result.ok:
+                return result, True
         except Exception:
             pass
     result = browser.render(html, steps=steps, dt=dt)
+    folder.mkdir(parents=True, exist_ok=True)
+    # Кадр — до блоба и своим try: probe, который не сериализуется (или blob,
+    # упавший по любой причине), не должен оставлять галерею без картинки.
+    if result.shot:
+        shot.write_bytes(result.shot)
     try:
-        folder.mkdir(parents=True, exist_ok=True)
         payload = result.as_dict()
         payload["result"] = {
             "ok": result.ok,
@@ -452,8 +483,6 @@ def _cached_render(html: str, steps: int, dt: float) -> tuple[browser.RenderResu
             "duration_s": result.duration_s,
         }
         blob.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        if result.shot:
-            shot.write_bytes(result.shot)
     except Exception:
         pass
     return result, False
@@ -461,14 +490,24 @@ def _cached_render(html: str, steps: int, dt: float) -> tuple[browser.RenderResu
 
 def shot_path(html: str, steps: int, dt: float) -> Path:
     """Where the frame of this page is cached, if it rendered."""
-    key = hashlib.sha256(f"{steps}:{dt}:{html}".encode("utf-8")).hexdigest()[:32]
-    return cache_dir() / f"{key}.png"
+    return cache_dir() / f"{_frame_key(html, steps, dt)}.png"
+
+
+def page_of(task: core.TaskInstance, transcript: core.Transcript) -> str:
+    """The page the run produced: the agent's file on disk, else its printed text.
+
+    The agent harness writes `index.html` in the working copy and the checks read
+    it; a chat run has no copy and falls back to the fenced block in the reply.
+    """
+    from . import agent
+
+    return agent.answer_text(task, transcript, transcript.final_text)
 
 
 def measure(task: core.TaskInstance, transcript: core.Transcript) -> tuple[browser.RenderResult | None, str]:
     """Deterministic render of the answer, with the cache keyed by its content."""
     spec = VisualSpec(**task.oracle["spec"])
-    html = extract_html(transcript.final_text)
+    html = extract_html(page_of(task, transcript))
     static_ok, static_detail = looks_like_document(html)
     if not static_ok:
         return None, static_detail
@@ -489,7 +528,7 @@ def evaluate(task: core.TaskInstance, transcript: core.Transcript) -> core.Score
         score.notes.append(unavailable)
         return score
 
-    html = extract_html(transcript.final_text)
+    html = extract_html(page_of(task, transcript))
 
     static_ok, static_detail = looks_like_document(html)
     if not static_ok:
@@ -590,6 +629,10 @@ def build_task(
             "golden_html": golden,
             "label": title,
             "meta": meta,
+            # An agent writes the page to this file and the pinned library is
+            # staged next to it; a chat run ignores both.
+            "answer_file": PAGE_FILE,
+            "assets": ["vendor/three.module.js"],
         },
         meta=meta,
     )

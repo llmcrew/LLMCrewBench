@@ -12,6 +12,7 @@ two different quantizations face byte-identical tasks.
 
 ```
 make setup                       # .venv + pytest (uv)
+make agent                       # pi — the agent runtime for C/K/L
 make selfcheck                   # no GPU: generators and evaluators must agree
 python -m dailybench bench --config qwen3.8-27b-ud-q3-k-xl --speed
 python -m dailybench report runs/qwen3.8-27b-ud-q3-k-xl runs/qwen3.8-27b-ud-iq3-s
@@ -36,7 +37,7 @@ zero.
 |---|---|---:|---:|---|
 | A | Instruction following | 10 | 5 | Output format, exact content and ordering, parsed from the reply |
 | B | Reasoning | 15 | 15 | One exact value per task (integers, fractions, orders, makespan) |
-| C | Coding | 20 | 3 | Hidden tests: Python repo patch, Go concurrency, SQL result sets |
+| C | Coding | 20 | 3 | Built by the agent in a working copy; hidden tests decide: Python repo patch, Go concurrency, SQL result sets |
 | D | Tool calling | 14 | 7 | Tool-call log, file diffs after the run, no destructive action |
 | E | Long context | 10 | 5 | One value retrieved from a 8K–28K-token document, admission measured |
 | F | Hallucination resistance | 8 | 1 | 10 questions: 5 answerable, 5 not — inventing one scores zero |
@@ -58,12 +59,66 @@ reasoning tokens, seconds, TTFT, throughput). `reasoning_effort` is not forced:
 the stand keeps its own default, and that is part of the provenance. The old
 table-driven mode stays available with `unbounded_budget = False`.
 
+## Artefacts are built by an agent, not dictated into a chat
+
+The three categories that produce a *file* (C coding, K/L visual pages) are not
+solved by sending one prompt and parsing the reply. They are solved by
+[`pi`](https://pi.dev), a coding agent, working in a copy of the task's
+repository: it reads the files, edits them, runs the project's own tests, and the
+**artefact is graded from disk** — a model that "answered correctly" without
+writing the file has not finished the job.
+
+The chat path stays for the narrative categories (A, B, D, E, F, G, H, I, J),
+where one prompt and one parsed answer is the honest shape of the task, and is
+still available for C/K/L with `--no-agent` — so the two harnesses can be
+compared on the same suite.
+
+Harness invariants (identical for every model, asserted by tests):
+
+- **pinned agent**: `pi 1.0.0`, tools `read,bash,edit,write`;
+- **isolated from the machine**: `--no-session` (no state between tasks),
+  `--no-context-files` (this repo's `AGENTS.md` must not write itself into the
+  prompt), `--no-extensions --no-skills --no-prompt-templates` (a `.pi/` a model
+  creates cannot change the harness), `--offline` (no catalog refresh,
+  no telemetry), `--no-approve`;
+- **one endpoint, one key**: a throwaway `PI_CODING_AGENT_DIR` with a generated
+  `models.json` holding just this run's endpoint, the benchmark's `temperature=0`
+  and `top_p=1`, and the category's answer ceiling;
+- **no hidden give-away**: the working copy holds exactly the fixture (plus the
+  pinned `vendor/three.js` for K/L); the agent's own `AGENTS.md` only states where
+  the library is and which file is graded;
+- **a toolchain the agent can reach**: `PATH` is extended with the Go SDK the
+  benchmark itself locates, so an agent cannot be measured on worse information
+  than the evaluator uses;
+- **the agent's own report is the provenance**: JSON event stream → tool calls,
+  turns, token spend; a crashed agent keeps its events and its stderr tail
+  instead of being scored as an empty directory.
+- **empty stdin**: `pi` reads stdin when it is a pipe and waits for EOF, so the
+  run hands it `DEVNULL` — otherwise a run started from a shell pipeline hangs
+  for the whole wall clock without one event;
+- **the answer ceiling is the window-aware budget**, not the chat table: an agent
+  spends it on thinking *and* a tool call in the same response, and a chat-sized
+  8192 was reached (8012 tokens) with nothing written yet;
+- **no survivor outlives its task**: on a timeout the whole process tree dies
+  (group + parent-chain walk, because `pi`'s tool shells detach), and after
+  every run a sweep kills whatever still has the task's working copy as its cwd
+  — a model's own `python -m http.server 8770 &` self-check outlives a *clean*
+  exit, keeps the hard-coded port, and the next task's identical script then
+  hangs on the occupied port for the full wall clock. The same sweep sits on
+  `atexit`: an exit that skips `finally` (a debugger, `Py_Exit`) never unwinds
+  the stack, and without the hook the survivor outlives the whole run.
+
+A missing `pi` is a configuration error, not an unverified result: the run
+installs it on first use, `make agent` does it up front, and `dailybench doctor`
+reports where it is (or the command that would install it). `DAILYBENCH_AGENT_BIN`
+points the run at a specific binary.
+
 ## Visual blocks (measured, outside the score)
 
 | Key | Block | Tasks | What is actually checked |
 |---|---|---:|---|
-| K | Visual simulations (Three.js r186) | 20 | The page runs in headless Chromium, reports its scene through `window.__probe()`, advances exactly by `window.__step(dt)`, and renders a reproducible 800×600 frame |
-| L | Art visualisations + LoFi Rain Sci-Fi (Three.js r186) | 24 | Same render loop, scored on the *picture*: declared palette coverage (hue-first), composition (horizon, gradient, symmetry, radial falloff), detail (edges, colours — not a flat fill), motion (frames at two moments differ, each load reproduces its own) |
+| K | Visual simulations (Three.js r186) | 20 | The agent writes `index.html`; the page runs in headless Chromium, reports its scene through `window.__probe()`, advances exactly by `window.__step(dt)`, and renders a reproducible 800×600 frame |
+| L | Art visualisations + LoFi Rain Sci-Fi (Three.js r186) | 24 | Same render loop (agent writes the file), scored on the *picture*: declared palette coverage (hue-first), composition (horizon, gradient, symmetry, radial falloff), detail (edges, colours — not a flat fill), motion (frames at two moments differ, each load reproduces its own) |
 
 Each scenario asks one question: does the model produce a *working* page —
 ballistics, pendulums, collision boxes, particle fountains, boids, heat
@@ -119,20 +174,30 @@ without it the block is reported as unverified rather than failing. Authoring ru
 | `dailybench selfcheck` | replay every task with a perfect answer and with garbage; both must land where expected. No GPU needed |
 | `dailybench list` | show the generated suite (ids, points, sizes) |
 | `dailybench generate --out suite/<seed>` | write `prompts.json` (publishable) and `oracles.json` (answers) |
-| `dailybench doctor` | GPU, toolchain, endpoint and tokenizer reachability |
+| `dailybench doctor` | GPU, toolchain, agent runtime, endpoint and tokenizer reachability |
 | `dailybench preflight --config <id> --full` | verify a running runtime against a reference configuration |
 | `dailybench visual <page.html> --steps N` | render one page exactly as the visual checks do (probe, frame, frame statistics) |
-| `dailybench bench --config <id> --speed` | bring the runtime up, preflight, run the suite, write the report |
-| `dailybench run --base-url … --model …` | the same suite against an endpoint you started yourself |
-| `dailybench report <dirs…>` | re-render `report.md`, `comparison.md` and `comparison.html` (+ `--no-html`) |
+| `dailybench bench --config <id> --speed` | bring the runtime up, preflight, run the suite, write `report.md` + `report.html` (`--no-html` skips the page) |
+| `dailybench run --base-url … --model …` | the same suite against an endpoint you started yourself (`--no-agent` keeps C/K/L on the chat path); results hit the disk after every task, so a crash at task 90 keeps the first 89. `--resume` finishes an interrupted run in place: saved tasks are not re-asked, truncated ones (timeout, reboot) are re-run, the calibration is taken from the saved `config.json`, the suite is verified by SHA-256, and a torn `tasks.json` is rebuilt from `transcripts/` |
+| `dailybench report <dirs…>` | re-render `report.md`, one `<run>/report.html` per run, `comparison.md` and `comparison.html` (`--no-html` skips the pages, `--compare` picks the models) |
 | `dailybench rescore <dir>` | re-score saved transcripts with the current evaluators — no model call |
 | `scripts/sweep.py` | load every reference configuration in turn and run the whole suite |
 
 ## The report
 
-`dailybench report runs/*` writes `comparison.md` and a self-contained
-`comparison.html` (plotly and three.js are vendored into `runs/_vendor` and
-`runs/_showcase`, so nothing is fetched from the network). Three tabs:
+`report` writes two flavours of the same page, from one renderer:
+
+* **`<run>/report.html`** — one model's full report, next to its own `report.md`
+  (a run writes it automatically; `--no-html` skips it). Its own `_vendor` and
+  `_showcase` sit beside it, so the run directory is self-contained and can be
+  served, zipped or published as is. Extra tab: **Провенанс** — weights hash, window,
+  budgets, agent harness, suite hash.
+* **`comparison.html`** — the field of models, with `--compare label,label` to
+  pick exactly which runs to compare (label, model id or directory name; order is
+  kept).
+
+Both are offline (plotly and three.js vendored into `_vendor` and `_showcase`, so
+nothing is fetched from the network). Tabs of the comparison page:
 
 * **Решения моделей** — who scored what, model cards with per-category losses,
   and the documented spend (answer tokens, reasoning tokens, seconds);
@@ -208,11 +273,13 @@ make selfcheck
 ```
 
 Requires Python ≥ 3.10 and no third-party runtime dependencies. The tests need
-`pytest` only (`make setup`). The visual block additionally needs `playwright`
-and its Chromium (`playwright install chromium`); everything else runs without
-it. `nvidia-smi`, `go` and Docker are optional: the
-harness detects what the machine has and reports what it cannot verify instead
-of guessing.
+`pytest` only (`make setup`). Categories C, K and L need `pi` (`make agent`) and
+the visual ones additionally need `playwright` + Chromium (`make browser`);
+a chat-only run works without either, with `--no-agent`. `nvidia-smi`, `go` and
+Docker are optional: the harness detects what the machine has and reports what it
+cannot verify instead of guessing — and extends the agent's `PATH` with the
+toolchain it did find, so the agent is not measured on worse information than the
+evaluator.
 
 ## What stays local (endpoints, keys, machine paths)
 
@@ -226,7 +293,8 @@ push:
 | Endpoint and model | tracked default is `127.0.0.1:1234/v1` + `local-model` | `export DAILYBENCH_BASE_URL=…`, `export DAILYBENCH_MODEL=…` |
 | Reference configs (absolute weight paths, ports, tags) | `configs/reference.json` (tracked, 13 entries) | `export DAILYBENCH_REFERENCE=configs/reference.local.json` — that file is git-ignored |
 | Run output, server logs, sweep summary | `runs/` | git-ignored |
-| Rendered frame cache | `~/.cache/dailybench/visual` | `DAILYBENCH_VISUAL_CACHE` |
+| Rendered frame cache (versioned key) | `~/.cache/dailybench/visual` | `DAILYBENCH_VISUAL_CACHE` |
+| Agent binary | resolved from `PATH` and the usual prefixes | `export DAILYBENCH_AGENT_BIN=/path/to/pi` |
 
 `configs/reference.json` ships as a working example *and* as the fallback table
 inside `dailybench/reference.py`; a test fails if the two ever drift. Absolute

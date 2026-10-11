@@ -68,7 +68,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.server.last_payload = payload  # type: ignore[attr-defined]
 
         if self.path.endswith("/tokenize"):
-            content = payload.get("content", "")
+            content = payload.get("prompt") or payload.get("content") or ""
             body = json.dumps({"tokens": list(range(max(1, len(content) // 4)))}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -364,6 +364,34 @@ def test_tool_budget_is_enforced():
     assert "бюджет вызовов инструментов исчерпан (3)" in run.transcript.extra.get("notes", [])
 
 
+def test_the_answer_budget_counts_the_tool_schemas():
+    """The schemas go out on every request, so the window must account for them.
+
+    Without them the budget overshoots: the live runtime answered HTTP 400
+    ("requested N output tokens, the window is M") on the whole T-category, and
+    the request was rejected before the model saw a tool.
+    """
+    from dailybench.runner import _prompt_tokens
+
+    task = _tool_task("T-1")
+    messages = [{"role": "user", "content": task.prompt}]
+    without = _prompt_tokens(messages)
+    with_tools = _prompt_tokens(messages, task.tools)
+
+    assert task.tools, "у сценария обязаны быть схемы инструментов"
+    assert with_tools > without, "схемы инструментов обязаны входить в оценку входа"
+
+    cfg = RunConfig(context_window=8192, unbounded_budget=True)
+    assert cfg.budget_for("D", with_tools) < cfg.budget_for("D", without)
+
+
+def test_the_estimated_prompt_over_the_window_is_rejected_before_the_call():
+    """A prompt bigger than the window leaves the answer at the 256-token floor."""
+    cfg = RunConfig(context_window=8192, unbounded_budget=True)
+    assert cfg.budget_for("A", 1000) == 8192 - 1000 - cfg.context_reserve - 20
+    assert cfg.budget_for("A", 8192) == 256
+
+
 # --------------------------------------------------------------------------- #
 # Totals and reporting
 # --------------------------------------------------------------------------- #
@@ -602,12 +630,20 @@ def test_rescore_replays_saved_answers_without_the_model(tmp_path: Path):
     task = next(t for t in build_suite(cfg) if t.id == "LC-5")
     run = Runner(cfg, OracleProvider(task)).run_task(task)
     RunResult(cfg=cfg, runs=[run], provider_info={"provider": "oracle"}).save()
+    # A run saved by the *old* evaluator: the record on disk carries its zero.
+    saved = json.loads((tmp_path / "tasks.json").read_text(encoding="utf-8"))
+    saved[0]["score"]["earned"] = 0.0
+    (tmp_path / "tasks.json").write_text(json.dumps(saved), encoding="utf-8")
 
     marker = rescore_run(tmp_path)
     assert marker["tasks"] == 1
-    assert marker["changed"] == [], "повторный расчёт по тем же ответам должен совпасть"
+    assert [c["task_id"] for c in marker["changed"]] == ["LC-5"], "заниженный балл обязан попасть в changed"
     scores = json.loads((tmp_path / "scores.json").read_text(encoding="utf-8"))
     assert scores[0]["earned"] == task.max_points
+    # The showcase reads the per-task record, not ``scores.json``: a stale copy
+    # there showed a passed task as "0/4" after a re-score.
+    rewritten = json.loads((tmp_path / "tasks.json").read_text(encoding="utf-8"))
+    assert rewritten[0]["score"]["earned"] == task.max_points
     assert (tmp_path / "rescored.json").is_file()
 
 

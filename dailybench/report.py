@@ -177,7 +177,10 @@ def render_markdown(run: dict[str, Any]) -> str:
     provider = run.get("provider", {})
     hardware = run.get("hardware", {})
     suite = run.get("suite", {})
-    summary = summarise(run["scores"], suite.get("tasks"))
+    # The digest, not its ``tasks`` count: the count includes the visual block,
+    # which never enters the verdict, so an int would make a full run look
+    # partial (47 scored tasks "against" 96).
+    summary = summarise(run["scores"], suite)
 
     lines: list[str] = []
     model = config.get("model", "unknown")
@@ -202,6 +205,12 @@ def render_markdown(run: dict[str, Any]) -> str:
     elif config.get("chars_per_token") and abs(float(config["chars_per_token"]) - 3.2) > 1e-9:
         lines.append(f"| Калибровка long context | {float(config['chars_per_token']):.2f} символов/токен (задано, не измерено) |")
     lines.append(f"| Offload | {config.get('offload', 'n/a')} |")
+    if config.get("agent"):
+        categories = ", ".join(config.get("agent_categories") or ())
+        lines.append(
+            f"| Каркас артефактов | агент pi, категории {categories}: читает и правит рабочую копию, "
+            "оценка по файлу на диске (`--no-agent` переключает на чат) |"
+        )
     lines.append(f"| Seed | {config.get('seed')} |")
     lines.append(f"| Бюджеты | max_new_tokens={config.get('max_new_tokens')}, "
                  f"max_total_tokens={config.get('max_total_tokens')}, max_tool_calls={config.get('max_tool_calls')} |")
@@ -338,7 +347,7 @@ def compare_markdown(runs: list[dict[str, Any]]) -> str:
 
     for run in runs:
         config = run.get("config", {})
-        summary = summarise(run["scores"], (run.get("suite") or {}).get("tasks"))
+        summary = summarise(run["scores"], run.get("suite") or {})
         row = [config.get("model", "?"), config.get("quant") or "n/a", summary["verdict"]]
         for key in sorted(core.CATEGORY_POINTS):
             entry = summary["per_category"].get(key)

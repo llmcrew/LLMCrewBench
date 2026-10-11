@@ -93,7 +93,7 @@ def start(
                 if not tokenize:
                     self.send_error(404)
                     return
-                content = payload.get("content") or ""
+                content = payload.get("prompt") or payload.get("content") or ""
                 self._send_json({"tokens": list(range(max(1, len(content) // 4)))})
                 return
             if self.path.endswith("/chat/completions"):

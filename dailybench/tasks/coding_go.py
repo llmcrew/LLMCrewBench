@@ -23,7 +23,7 @@ from .. import core
 #: Points per hidden check; three scenarios share the constant so a check
 #: weighs the same wherever it is earned.
 _POINTS_PER_CHECK = 0.8
-from .coding_python import extract_code
+from .coding_python import code_of
 
 CHECK_ORDER = (
     ("concurrency_limit", "TestConcurrencyLimit"),
@@ -479,6 +479,7 @@ def generate(rng: random.Random, cfg: Any) -> core.TaskInstance:
             "solution": _REFERENCE,
             "hidden_tests": _HIDDEN_TESTS,
             "target_file": TARGET_FILE,
+            "answer_file": TARGET_FILE,
             "go_mod": _GO_MOD,
             "checks": [name for name, _ in CHECK_ORDER],
         },
@@ -589,7 +590,7 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
         for name, _ in CHECK_ORDER:
             score.add(name, False, _POINTS_PER_CHECK, "go toolchain unavailable")
         return score
-    code = extract_code(tr.final_text)
+    code = code_of(task, tr)
     if not code:
         for name, _ in CHECK_ORDER:
             score.add(name, False, _POINTS_PER_CHECK, "ответ не содержит кода файла")

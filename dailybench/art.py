@@ -32,19 +32,35 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from . import browser, core
+from . import browser, core, visual
 from .visual import (
     HTML_CONTRACT,
     _predicates_report,
     cache_dir,
     extract_html,
     looks_like_document,
+    page_of,
 )
 
 POINTS_PER_CHECK = 1.0
 CHECK_NAMES = ("html", "palette", "composition", "detail", "motion")
 
-ART_CONTRACT = """Требования к странице (общие для всех арт-заданий):
+#: The file an agent writes the scene into. Graded from disk: an agent run is
+#: judged on what it produced, not on what it said.
+PAGE_FILE = "index.html"
+
+#: The free-form part of the art contract, reused verbatim when the prompt goes
+#: to an agent instead of a chat endpoint.
+_ART_FREEDOM = """Как это оценивают. Баллов у арт-блока нет — сцены смотрит человек. Проверки
+только описывают кадр: палитра, композиция, детализация, движение. Поэтому
+форма свободна: рисуй телами (коробки, сферы, торы), ставь свет и материалы,
+строй настоящую перспективу — важно, чтобы кадр читался объёмным и со светом, а
+не как плоская заливка. Цвета задания — ориентир по тону, точный процент не
+требуется.
+"""
+
+ART_CONTRACT = (
+    """Требования к странице (общие для всех арт-заданий):
 1. Ответ — один самодостаточный документ `<html>`, без внешних ресурсов.
    Библиотека рядом: `import * as THREE from './vendor/three.module.js'`.
 2. Рендерер: `new THREE.WebGLRenderer({preserveDrawingBuffer: true})`,
@@ -61,13 +77,9 @@ ART_CONTRACT = """Требования к странице (общие для в
    перечисленные в задании.
 6. `window.__ready = true` — после первой отрисовки, когда `__probe()` отвечает.
 
-Как это оценивают. Баллов у арт-блока нет — сцены смотрит человек. Проверки
-только описывают кадр: палитра, композиция, детализация, движение. Поэтому
-форма свободна: рисуй телами (коробки, сферы, торы), ставь свет и материалы,
-строй настоящую перспективу — важно, чтобы кадр читался объёмным и со светом, а
-не как плоская заливка. Цвета задания — ориентир по тону, точный процент не
-требуется.
 """
+    + _ART_FREEDOM
+)
 
 
 @dataclass
@@ -96,7 +108,15 @@ def _frame_key(html: str, steps: int, dt: float, mode: str) -> str:
 
 
 def cached_art_render(html: str, steps: int, dt: float) -> tuple[browser.RenderResult, bool]:
-    """Render once per unique page, with the animation pass included."""
+    """Render once per unique page, with the animation pass included.
+
+    A *failed* render never overwrites a good cache entry. The screenshot can
+    time out under load while the page itself is fine, and the failure carries no
+    probe and no pixels — caching it next to the good frame from an earlier
+    attempt poisoned that page for every later run (``L-14`` seed 13 kept
+    answering "рендер не удался" from an empty entry while a fresh render of the
+    same page took 12 s and passed).
+    """
     key = _frame_key(html, steps, dt, "time")
     folder = cache_dir()
     blob = folder / f"{key}.json"
@@ -107,12 +127,17 @@ def cached_art_render(html: str, steps: int, dt: float) -> tuple[browser.RenderR
             result = browser.RenderResult(**data["result"])
             if shot.is_file():
                 result.shot = shot.read_bytes()
-            return result, True
+            if result.ok:
+                return result, True
         except Exception:
             pass
     result = browser.render(html, steps=steps, dt=dt, mode="time", viewport=browser.ART_VIEWPORT)
+    folder.mkdir(parents=True, exist_ok=True)
+    # Кадр — до блоба и своим try: probe, который не сериализуется, не должен
+    # оставлять галерею без картинки (см. тот же приём в visual._cached_render).
+    if result.shot:
+        shot.write_bytes(result.shot)
     try:
-        folder.mkdir(parents=True, exist_ok=True)
         payload = {"result": {
             "ok": result.ok,
             "reason": result.reason,
@@ -129,8 +154,6 @@ def cached_art_render(html: str, steps: int, dt: float) -> tuple[browser.RenderR
             "duration_s": result.duration_s,
         }}
         blob.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        if result.shot:
-            shot.write_bytes(result.shot)
     except Exception:
         pass
     return result, False
@@ -173,7 +196,7 @@ def evaluate(task: core.TaskInstance, transcript: core.Transcript) -> core.Score
         score.notes.append(unavailable)
         return score
 
-    html = extract_html(transcript.final_text)
+    html = extract_html(page_of(task, transcript))
     static_ok, static_detail = looks_like_document(html)
     if not static_ok:
         score.add("html", False, POINTS_PER_CHECK, static_detail)
@@ -341,6 +364,10 @@ def build_task(
             "golden_html": golden,
             "label": title,
             "meta": meta,
+            # An agent writes the page to this file and the pinned library is
+            # staged next to it; a chat run ignores both.
+            "answer_file": PAGE_FILE,
+            "assets": ["vendor/three.module.js"],
         },
         meta=meta,
     )
@@ -353,6 +380,11 @@ def spec_of(task: core.TaskInstance) -> ArtSpec:
 def shared_html_contract() -> str:
     """Both blocks state the same page rules; the art block adds nothing to them."""
     return HTML_CONTRACT
+
+
+def palette_hint() -> str:
+    """The art-only part of the contract, for the agent prompt tail."""
+    return _ART_FREEDOM.strip()
 
 
 def contracts_differ_only_by_art() -> Sequence[str]:

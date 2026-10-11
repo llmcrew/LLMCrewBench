@@ -78,6 +78,12 @@ def _config_from(args: argparse.Namespace) -> RunConfig:
         # window, budgets); transport and selection stay on the command line.
         resolved = reference.resolve(args.config, getattr(args, "configs_path", "") or None)
         cfg = reference.apply_to_run_config(cfg, resolved)
+    if getattr(args, "agent", True) is False:
+        cfg.agent = False
+    if getattr(args, "agent_categories", ""):
+        cfg.agent_categories = tuple(
+            part.strip().upper() for part in args.agent_categories.split(",") if part.strip()
+        )
     if getattr(args, "unsupported", ""):
         extra = tuple(part.strip().upper() for part in args.unsupported.split(",") if part.strip())
         cfg.unsupported = tuple(dict.fromkeys(cfg.unsupported + extra))
@@ -94,9 +100,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     gpus = gpu_inventory()
     info["gpus"] = gpus
     info["vram_used_mib_now"] = used_mib()
+    from . import agent
     from .tasks.coding_go import _go_binary
 
     info["go"] = _go_binary() or "missing"
+    info["agent"] = {
+        "pi": agent.binary() or "missing",
+        "install": agent.install_command(),
+        "categories": list(RunConfig().agent_categories),
+        "tools": list(agent.AGENT_TOOLS),
+    }
     info["docker"] = shutil.which("docker") or "missing"
     try:
         import sqlite3
@@ -209,7 +222,22 @@ def cmd_run(args: argparse.Namespace) -> int:
     cfg.out_dir = Path(args.out_dir or "runs") / name
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
-    if getattr(args, "calibrate", True):
+    resuming = getattr(args, "resume", False)
+    saved_config = cfg.out_dir / "config.json"
+    if resuming and saved_config.is_file():
+        # The calibration defines the long-context document sizes, hence the
+        # bytes of the tasks: reuse the saved numbers, or a fresh (slightly
+        # different) ratio would regenerate a different suite and the merge
+        # guard below would reject it.
+        restored = RunConfig.from_dict(json.loads(saved_config.read_text(encoding="utf-8")))
+        cfg.chars_per_token = restored.chars_per_token
+        cfg.task_ratios = dict(restored.task_ratios)
+        print(
+            f"калибровка взята из сохранённого config.json: {cfg.chars_per_token:.4f} символов/токен",
+            flush=True,
+        )
+
+    if getattr(args, "calibrate", True) and not (resuming and saved_config.is_file()):
         sizing = fit_suite_sizing(cfg, provider)
         print(f"калибровка длинного контекста: {sizing['note']}", flush=True)
         if sizing.get("calibrated"):
@@ -224,6 +252,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("нечего запускать: фильтр --only не совпал ни с одним заданием", file=sys.stderr)
         return 2
 
+    saved_runs: list = []
+    if getattr(args, "resume", False):
+        tasks, saved_runs = _resume_tasks(cfg, tasks)
+        print(
+            f"Догрузка: {len(tasks)} заданий поверх {len(saved_runs)} сохранённых"
+            if tasks
+            else f"Все задания уже сохранены ({len(saved_runs)}); только отчёт и профиль скорости",
+            flush=True,
+        )
+
     runner = Runner(cfg, provider)
     started = datetime.now()
     print(
@@ -234,12 +272,27 @@ def cmd_run(args: argparse.Namespace) -> int:
         flush=True,
     )
 
-    runs: list = []
+    runs: list = list(saved_runs)
+    result = RunResult(
+        cfg=cfg,
+        runs=runs,
+        provider_info=provider.describe(),
+        suite_digest=build_suite_digest(cfg),
+        hardware=_hardware(),
+    )
+    if getattr(args, "resume", False):
+        saved_speed = cfg.out_dir / "speed.json"
+        if saved_speed.is_file():
+            result.speed = json.loads(saved_speed.read_text(encoding="utf-8"))
     for index, task in enumerate(tasks, start=1):
         run = runner.run_task(task)
-        runs.append(run)
+        _merge_run(runs, run)
         marker = "ERR" if run.score.error else f"{run.score.earned:.0f}/{run.score.possible:.0f}"
         extra = f" tokens={run.transcript.prompt_tokens()}" if run.transcript.prompt_tokens() else ""
+        # Persist after every task, not only at the end: a single long run is
+        # hours of GPU time, and a crash (or a debugger stop) at task 90 must
+        # not lose 89 scored tasks.
+        result.save()
         print(f"[{index:>2}/{len(tasks)}] {task.id:<6} {marker}{extra}", flush=True)
 
     speed_rows: list[dict] = []
@@ -253,22 +306,32 @@ def cmd_run(args: argparse.Namespace) -> int:
                 flush=True,
             )
 
-    result = RunResult(
-        cfg=cfg,
-        runs=runs,
-        provider_info=provider.describe(),
-        suite_digest=build_suite_digest(cfg),
-        speed=speed_rows,
-        hardware=_hardware(),
-    )
+    if speed_rows or not result.speed:
+        result.speed = speed_rows
+    if resuming:
+        # Resumed tasks were appended at the tail; restore the suite order the
+        # finished run must have — the report reads this list top to bottom.
+        order = {task.id: index for index, task in enumerate(build_suite(cfg))}
+        runs.sort(key=lambda item: order.get(item.task.id, 1 << 30))
     result.save()
     report_path = cfg.out_dir / "report.md"
     report_path.write_text(render_markdown(_load_for_render(cfg.out_dir)), encoding="utf-8")
+    html_path: Path | None = None
+    if getattr(args, "html", True):
+        from .htmlreport import write_report_html
 
-    summary = summarise([score.as_dict() for score in result.scores], len(tasks))
+        try:
+            html_path = write_report_html(cfg.out_dir)
+        except Exception as exc:  # pragma: no cover - a broken frame must not lose the run
+            print(f"HTML-отчёт не собрался: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    summary = summarise([score.as_dict() for score in result.scores], result.suite_digest)
     print(f"\nИтог: {summary['verdict']}")
     print(f"Прошло: {(datetime.now() - started)}")
     print(f"Отчёт: {report_path}")
+    if html_path:
+        print(f"HTML-отчёт: {html_path}")
+        print(f"живые сцены: make serve DIR={cfg.out_dir.parent}")
     if summary["errors"]:
         print(f"Прогонов с ошибками: {summary['errors']} (см. tasks.json)", file=sys.stderr)
     return 0
@@ -349,6 +412,14 @@ def _bench_run_argv(args: argparse.Namespace) -> list[str]:
         argv += ["--no-calibrate"]
     if args.no_system_prompt:
         argv += ["--no-system-prompt"]
+    if not args.html:
+        argv += ["--no-html"]
+    if not args.agent:
+        argv += ["--no-agent"]
+    if args.agent_categories:
+        argv += ["--agent-categories", args.agent_categories]
+    if args.resume:
+        argv += ["--resume"]
     return argv
 
 
@@ -415,15 +486,23 @@ def cmd_publish(args: argparse.Namespace) -> int:
     ``index.html``, библиотеку three.js, plotly и копии страниц и кадров, ничего
     не читая из ``runs/`` после сборки.
     """
-    from .htmlreport import write_html
+    from .htmlreport import write_html, write_report_html
 
     runs = [Path(directory) for directory in args.directories]
     for directory in runs:
         if not (directory / "tasks.json").is_file():
             raise FileNotFoundError(f"{directory}: нет tasks.json (прогон не сохранён)")
-    out = Path(args.out) if args.out else Path("reports") / (runs[0].name if len(runs) == 1 else "comparison")
-    page = write_html(runs, out / "index.html")
+    out = Path(args.out) if args.out else Path("reports") / (
+        runs[0].name if len(runs) == 1 else "comparison"
+    )
+    selected = [name.strip() for name in (getattr(args, "compare", "") or "").split(",") if name.strip()]
+    page = write_html(runs, out / "index.html", compare=selected or None)
     print(f"отчёт: {page}")
+    # Every published run also gets its own page inside the artefact: a reader who
+    # wants one model must not have to open the comparison and hunt for it.
+    for directory in runs:
+        per_run = write_report_html(directory, out / "runs" / directory.name / "index.html")
+        print(f"прогон: {per_run}")
     print(f"каталог: {out} — его и коммитить; runs/ остаётся локальным")
     return 0
 
@@ -431,9 +510,21 @@ def cmd_publish(args: argparse.Namespace) -> int:
 def cmd_report(args: argparse.Namespace) -> int:
     paths = write_reports(args.directories)
     if not getattr(args, "no_html", False):
-        from .htmlreport import write_html
+        from .htmlreport import write_html, write_report_html
 
-        paths.append(write_html(args.directories, Path(args.html) if args.html else None))
+        selected = [name.strip() for name in (getattr(args, "compare", "") or "").split(",") if name.strip()]
+        for directory in args.directories:
+            try:
+                paths.append(write_report_html(directory))
+            except Exception as exc:  # pragma: no cover - defensive
+                print(f"{directory}: страница не собралась: {exc}", file=sys.stderr)
+        paths.append(
+            write_html(
+                args.directories,
+                Path(args.html) if args.html else None,
+                compare=selected or None,
+            )
+        )
     for path in paths:
         print(path)
     for directory in args.directories:
@@ -526,6 +617,120 @@ def build_suite_digest(cfg: RunConfig) -> dict:
     return suite_digest(build_suite(cfg))
 
 
+def _resume_tasks(cfg: RunConfig, tasks: list) -> tuple[list, list]:
+    """Tasks still needing a fresh attempt, plus the saved runs worth keeping.
+
+    A saved task is kept only when its transcript is *complete*: a reboot or a
+    wall-clock timeout kills the agent mid-flight and leaves a truncated record,
+    and re-running one task beats shipping half an artefact. The suite digest
+    must match, or the merged run would mix two different task generations.
+    """
+    from .report import load_run  # noqa: F401 - symmetry with the render path
+    from .runner import TaskRun, transcript_from_dict
+    from .suite import build_suite, suite_digest
+
+    directory = cfg.out_dir
+    tasks_path = directory / "tasks.json"
+    suite_path = directory / "suite.json"
+    if not tasks_path.is_file() or not suite_path.is_file():
+        return tasks, []
+
+    saved_digest = json.loads(suite_path.read_text(encoding="utf-8"))
+    full = build_suite(cfg)
+    current = suite_digest(full)
+    if saved_digest.get("sha256") != current.get("sha256"):
+        raise SystemExit(
+            f"{directory}: сьют разошёлся с сохранённым "
+            f"({str(current.get('sha256'))[:12]} ≠ {str(saved_digest.get('sha256'))[:12]}) — "
+            "догрузка смешала бы два сьюта"
+        )
+
+    by_id = {task.id: task for task in full}
+    saved = _saved_entries(directory)
+    kept: list = []
+    damaged: set[str] = set()
+    for entry in saved:
+        task_id = str((entry.get("task") or {}).get("id"))
+        task = by_id.get(task_id)
+        if task is None:
+            continue
+        transcript = transcript_from_dict(entry.get("transcript") or {}, task)
+        score = core.Score.from_dict(entry["score"])
+        if _truncated(transcript):
+            damaged.add(task_id)
+            continue
+        kept.append(TaskRun(task=task, transcript=transcript, score=score))
+
+    kept_ids = {run.task.id for run in kept}
+    missing = [task for task in tasks if task.id not in kept_ids]
+    order = {task.id: index for index, task in enumerate(full)}
+    missing.sort(key=lambda task: order.get(task.id, 1 << 30))
+    kept.sort(key=lambda run: order.get(run.task.id, 1 << 30))
+    if damaged:
+        print(f"повтор из-за обрыва: {', '.join(sorted(damaged, key=lambda i: order.get(i, 0)))}", flush=True)
+    return missing, kept
+
+
+def _saved_entries(directory: Path) -> list[dict]:
+    """Records worth merging back, from ``tasks.json`` or its per-task mirror.
+
+    ``tasks.json`` is rewritten whole at every checkpoint; a reboot exactly while
+    it was being written used to leave a truncated file and resume died on
+    ``json.loads``. Each record is also mirrored under ``transcripts/``, so a
+    corrupt master is rebuilt from there instead of losing hours of GPU time.
+    """
+    tasks_path = directory / "tasks.json"
+    entries: list[dict] = []
+    seen: set[str] = set()
+    if tasks_path.is_file():
+        try:
+            raw = json.loads(tasks_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            print(f"{tasks_path}: битый JSON ({exc}) — собираю из transcripts/", flush=True)
+        else:
+            for entry in raw:
+                task_id = str((entry.get("task") or {}).get("id"))
+                if task_id not in seen:
+                    seen.add(task_id)
+                    entries.append(entry)
+    folder = directory / "transcripts"
+    if folder.is_dir():
+        for path in sorted(folder.glob("*.json")):
+            try:
+                entry = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            task_id = str((entry.get("task") or {}).get("id"))
+            if task_id and task_id not in seen:
+                seen.add(task_id)
+                entries.append(entry)
+    return entries
+
+
+def _truncated(transcript: core.Transcript) -> bool:
+    """Was the agent killed rather than finished?
+
+    The exit code is the marker: a clean ``pi`` run says ``exit_ok``, while a
+    timeout, a SIGTERM or an aborted turn leaves it false or records the error.
+    """
+    if transcript.error:
+        return True
+    agent = (transcript.extra or {}).get("agent") or {}
+    if agent and agent.get("exit_ok") is False:
+        return True
+    reasons = transcript.spend().get("finish_reasons") or []
+    return any(str(reason) in ("error", "aborted") for reason in reasons)
+
+
+def _merge_run(runs: list, run: Any) -> None:
+    """Replace the saved result of the same task, or append the new one."""
+    for index, existing in enumerate(runs):
+        if existing.task.id == run.task.id:
+            runs[index] = run
+            return
+    runs.append(run)
+
+
 def _hardware() -> dict:
     gpus = gpu_inventory()
     if not gpus:
@@ -571,6 +776,23 @@ def build_parser() -> argparse.ArgumentParser:
             target.add_argument("--max-new-tokens", type=int, default=4096)
             target.add_argument("--weights", default="", help="путь к файлу весов для SHA-256")
             target.add_argument("--no-system-prompt", action="store_true")
+            target.add_argument(
+                "--no-html",
+                dest="html",
+                action="store_false",
+                help="не собирать HTML-отчёт прогона (остаётся только report.md)",
+            )
+            target.add_argument(
+                "--no-agent",
+                dest="agent",
+                action="store_false",
+                help="не поднимать pi для категорий C/K/L (обычный chat-цикл)",
+            )
+            target.add_argument(
+                "--agent-categories",
+                default="",
+                help="какие категории отдать агенту (по умолчанию C,K,L)",
+            )
 
     doctor = sub.add_parser("doctor", help="проверить GPU, toolchain и endpoint")
     add_common(doctor, endpoint=True)
@@ -611,6 +833,12 @@ def build_parser() -> argparse.ArgumentParser:
                      help="не калибровать chars-per-token по реальному токенизатору перед прогоном")
     run.add_argument("--speed-long", type=int, default=0)
     run.add_argument("--speed-repeats", type=int, default=3)
+    run.add_argument(
+        "--resume",
+        action="store_true",
+        help="догрузить недостающие задания в существующий каталог прогона "
+        "(прерванные задачи пере-прогоняются, сохранённые не пересъёмлются)",
+    )
     run.set_defaults(func=cmd_run)
 
     bench = sub.add_parser("bench", help="один запуск целиком: runtime, preflight, сьют, отчёт")
@@ -626,6 +854,7 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--no-calibrate", dest="calibrate", action="store_false")
     bench.add_argument("--no-launch", action="store_true", help="не поднимать рантайм, работать с запущенным")
     bench.add_argument("--no-preflight", action="store_true", help="не проверять конфигурацию перед прогоном")
+    bench.add_argument("--resume", action="store_true", help="догрузить прерванный прогон в тот же каталог")
     bench.set_defaults(func=cmd_bench)
 
     visual = sub.add_parser("visual", help="отрисовать одну страницу так же, как это делает проверка K")
@@ -661,6 +890,12 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("directories", nargs="+")
     report.add_argument("--html", default="", help="куда положить HTML-отчёт (по умолчанию comparison.html рядом с прогонами)")
     report.add_argument("--no-html", action="store_true", help="только markdown, без HTML")
+    report.add_argument(
+        "--compare",
+        default="",
+        help="какие модели сравнить в comparison.html: метки через запятую "
+             "(по умолчанию — все переданные прогоны)",
+    )
     report.set_defaults(func=cmd_report)
 
     publish = sub.add_parser(
@@ -669,6 +904,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     publish.add_argument("directories", nargs="+")
     publish.add_argument("--out", default="", help="каталог отчёта (по умолчанию reports/<имя прогона>)")
+    publish.add_argument(
+        "--compare",
+        default="",
+        help="какие модели сравнить: метки через запятую (по умолчанию — все переданные прогоны)",
+    )
     publish.set_defaults(func=cmd_publish)
 
     rescore = sub.add_parser(
