@@ -247,7 +247,20 @@ atexit.register(_close)
 
 PIXEL_PROBE = """
 () => {
-  const c = document.querySelector('canvas');
+  // Measure what the viewer sees: the largest canvas actually rendered on
+  // screen. A hidden (display:none / zero-area) canvas used to be measured
+  // all the same, so a page could pass image checks with an empty frame.
+  const visible = Array.from(document.querySelectorAll('canvas')).filter((el) => {
+    if (!el.width || !el.height) return false;
+    const style = getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || +style.opacity === 0) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 1 && rect.height > 1;
+  });
+  const c = visible.sort((a, b) => {
+    const area = (el) => el.getBoundingClientRect().width * el.getBoundingClientRect().height;
+    return area(b) - area(a);
+  })[0] || null;
   if (!c) return null;
   const off = document.createElement('canvas');
   off.width = c.width; off.height = c.height;
