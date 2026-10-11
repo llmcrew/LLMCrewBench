@@ -43,10 +43,18 @@ def _if1(rng: random.Random) -> core.TaskInstance:
     mean = rng.randrange(threshold + 100, 950)
 
     # Latencies of the selected records sum to selected_count * mean by
-    # construction, so "целое среднее" is exact.
-    deltas = rng.sample([d for d in range(-120, 121, 10) if d != 0], selected_count - 1)
+    # construction, so "целое среднее" is exact. Every deviation is bounded by
+    # the headroom above the threshold, so no seed can push a selected value
+    # out of the filter (free ±120 deltas aborted the build on ~5% of seeds
+    # when the compensating value had to absorb a large positive sum).
+    room = mean - threshold - 10
+    assert room >= 80, "mean must keep headroom above the threshold"
+    max_neg = (room // 10) * 10
+    max_pos = max(10, max_neg // (selected_count - 1))
+    pool = [d for d in range(-max_neg, max_pos + 1, 10) if d != 0]
+    deltas = [rng.choice(pool) for _ in range(selected_count - 1)]
+    deltas.append(-sum(deltas))              # deviations sum to exactly zero
     values = [mean + d for d in deltas]
-    values.append(selected_count * mean - sum(values))
     assert min(values) > threshold, "selected latency must satisfy the filter"
     rng.shuffle(values)
 
@@ -224,10 +232,18 @@ def _eval_if2(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     oracle = task.oracle
     rows = _parse_csv_rows(tr.final_text)
 
+    def _usage(value: str) -> int | None:
+        # `--1` passes `lstrip('-').isdigit()` but kills `int()`: a malformed
+        # number must be a format failure, not an evaluator crash.
+        try:
+            return int(value)
+        except ValueError:
+            return None
+
     fmt_ok = rows is not None and all(
-        name in oracle["all_names"] and usage.lstrip("-").isdigit() for name, usage in rows
+        name in oracle["all_names"] and _usage(usage) is not None for name, usage in rows
     )
-    parsed = [(name, int(usage)) for name, usage in rows] if fmt_ok else []
+    parsed = [(name, _usage(usage)) for name, usage in rows] if fmt_ok else []
     expected = oracle["rows"]
     set_ok = sorted(parsed) == sorted(expected) if fmt_ok else False
     order_ok = parsed == expected if (fmt_ok and set_ok) else False
@@ -367,9 +383,12 @@ def _eval_if4(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     value, strict = text.strict_json(tr.final_text)
     payload = value if isinstance(value, list) else text.loose_json(tr.final_text)
 
-    fmt_ok = strict and isinstance(payload, list) and all(isinstance(n, str) for n in payload)
-    set_ok = isinstance(payload, list) and sorted(payload) == sorted(oracle["files"])
-    order_ok = isinstance(payload, list) and payload == oracle["files"]
+    comparable = isinstance(payload, list) and all(isinstance(n, str) for n in payload)
+    fmt_ok = strict and comparable
+    # A mixed-type payload ([null, "x"]) is a wrong answer, not a TypeError in
+    # the evaluator: sort only what is actually sortable.
+    set_ok = comparable and sorted(payload) == sorted(oracle["files"])
+    order_ok = comparable and payload == oracle["files"]
     _format_point(score, "json_format", fmt_ok, "ожидался строгий JSON-массив строк без обвязки")
     _content_point(score, "files",
         set_ok,

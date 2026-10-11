@@ -1029,9 +1029,13 @@ def r15(rng: random.Random) -> core.TaskInstance:
     lines = "\n".join(
         f"{chr(ord('A') + source)} → {chr(ord('A') + target)}" for source, target in edges
     )
+    universe = ", ".join(chr(ord("A") + node) for node in range(nodes))
     prompt = (
         "Даны зависимости между задачами:\n\n"
         f"{lines}\n\n"
+        f"Полный список задач: {universe}. У задачи без зависимостей нет"
+        " ограничений; изолированные задачи входят в порядок на общих"
+        " основаниях.\n\n"
         "Задача выполняется только после всех своих зависимостей.\n\n"
         "Среди всех допустимых порядков выбери лексикографически\n"
         "наименьший: на каждом шаге бери доступную задачу\n"

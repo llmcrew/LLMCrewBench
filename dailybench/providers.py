@@ -133,7 +133,19 @@ class OpenAICompatibleProvider:
             if stream:
                 reply = self._chat_stream(payload, started, wall_clock)
             else:
-                reply = self._chat_blocking(payload, started)
+                # The blocking path gets the same wall-clock ceiling as the
+                # stream: urllib's timeout is per socket operation, so a slow
+                # server could otherwise hold the request far past the limit
+                # (measured: a 0.05 s ceiling finishing at 0.60 s).
+                deadline = wall_clock if wall_clock else None
+                if deadline:
+                    old_timeout = self.timeout
+                    self.timeout = min(self.timeout, deadline)
+                try:
+                    reply = self._chat_blocking(payload, started)
+                finally:
+                    if deadline:
+                        self.timeout = old_timeout
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", "replace")[:600]
             if self.include_usage and "stream_options" in body:

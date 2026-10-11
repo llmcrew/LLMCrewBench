@@ -123,9 +123,28 @@ def fit_suite_sizing(cfg: RunConfig, provider: Any) -> dict[str, Any]:
 
 
 def suite_digest(tasks: Iterable[core.TaskInstance]) -> dict[str, Any]:
-    """Public fingerprint of the generated fixtures (no answers included)."""
+    """Public fingerprint of the generated fixtures (no answers included).
+
+    The fingerprint covers everything the model actually sees: the prompt, the
+    follow-up dialogue, the workspace contents and the tool schemas. A change
+    in any of them used to leave the digest intact (the plan observed a seed
+    change re-rendering C-3 databases with the same prompt and digest).
+    """
     payload = [
-        {"id": task.id, "category": task.category, "prompt_sha256": hashlib.sha256(task.prompt.encode()).hexdigest()}
+        {
+            "id": task.id,
+            "category": task.category,
+            "prompt_sha256": hashlib.sha256(task.prompt.encode()).hexdigest(),
+            "dialogue_sha256": hashlib.sha256(
+                json.dumps(task.dialogue or [], ensure_ascii=False, sort_keys=True).encode()
+            ).hexdigest(),
+            "workspace_sha256": hashlib.sha256(
+                json.dumps(task.workspace or {}, ensure_ascii=False, sort_keys=True).encode()
+            ).hexdigest(),
+            "tools_sha256": hashlib.sha256(
+                json.dumps(task.tools or [], ensure_ascii=False, sort_keys=True).encode()
+            ).hexdigest(),
+        }
         for task in tasks
     ]
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
@@ -137,7 +156,11 @@ def suite_digest(tasks: Iterable[core.TaskInstance]) -> dict[str, Any]:
 
 
 def public_prompts(tasks: Iterable[core.TaskInstance]) -> list[dict[str, Any]]:
-    """Prompt-only view of the suite: safe to publish before/after a run."""
+    """Model-visible view of the suite: safe to publish before/after a run.
+
+    Includes the follow-up dialogue and full tool schemas, so a reader can
+    reconstruct the real task the model faced; no oracle fields are exposed.
+    """
     return [
         {
             "id": task.id,
@@ -147,8 +170,9 @@ def public_prompts(tasks: Iterable[core.TaskInstance]) -> list[dict[str, Any]]:
             "prompt": task.prompt,
             "prompt_chars": len(task.prompt),
             "estimated_tokens": task.meta.get("estimated_tokens"),
+            "dialogue": task.dialogue or [],
             "workspace_files": sorted(task.workspace) if task.workspace else [],
-            "tools": [t["function"]["name"] for t in (task.tools or [])],
+            "tools": task.tools or [],
         }
         for task in tasks
     ]

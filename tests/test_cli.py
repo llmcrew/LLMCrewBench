@@ -194,6 +194,31 @@ def test_resume_replays_a_task_whose_agent_died(endpoint, tmp_path: Path):
     assert [run.task.id for run in kept] == ["IF-1"]
 
 
+def test_resume_replays_a_task_killed_mid_generation(endpoint, tmp_path: Path):
+    """A last turn with no finish_reason is a kill, not an answer (T4).
+
+    A transport drop can kill the turn after the agent's exit marker was
+    recorded: no ``error``, ``exit_ok`` is True, only the unfinished reply
+    betrays it. Resume must replay the task instead of keeping a half-answer
+    with a near-zero latency record.
+    """
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1,IF-2", "--name", "torn") == 0
+    saved = _read(out / "torn" / "tasks.json")
+    last_reply = saved[1]["transcript"]["turns"][-1]["reply"]
+    last_reply["finish_reason"] = None
+    (out / "torn" / "tasks.json").write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+
+    from dailybench.cli import _resume_tasks
+
+    cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "torn",
+                    model="test-model", base_url=base_url)
+    missing, kept = _resume_tasks(cfg, build_suite(cfg))
+    assert [task.id for task in missing] == ["IF-2"], "убитая посреди генерации задача обязана уйти в повтор"
+    assert [run.task.id for run in kept] == ["IF-1"]
+
+
 def test_resume_rebuilds_from_transcripts_when_tasks_json_is_corrupt(endpoint, tmp_path: Path):
     """A reboot while tasks.json was being written must not cost the run.
 

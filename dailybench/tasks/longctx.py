@@ -265,7 +265,14 @@ def _lc3(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
 
 def _lc4(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     service = f"aurora-{_suffix(rng)}"
-    teams = [f"team-{rng.randrange(100, 999)}" for _ in range(4)]
+    # Owners are drawn without replacement: a repeated team could make the
+    # naive last-line answer equal the chronological one and abort the build
+    # on an admissible draw (plan T4).
+    while True:
+        pool = [f"team-{rng.randrange(100, 999)}" for _ in range(4)]
+        if len(set(pool)) == 4:
+            teams = pool
+            break
     # The final timestamp is intentionally not the final line in the document.
     events = [
         ("2026-04-11T09:15:00Z", teams[0]),
@@ -278,7 +285,10 @@ def _lc4(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     shuffled = event_lines[:]
     rng.shuffle(shuffled)
     if shuffled[-1] == event_lines[-1]:
-        shuffled[-1], shuffled[-2] = shuffled[-2], shuffled[-1]
+        # Any non-final slot works: owners are distinct, so the swap always
+        # separates the last line from the latest timestamp.
+        swapped = next(index for index in range(len(shuffled) - 1) if shuffled[index] != event_lines[-1])
+        shuffled[-1], shuffled[swapped] = shuffled[swapped], shuffled[-1]
     question = f"Текущий owner service {service} после изменений по времени? Только командой."
     # Separate event lines are chain links; the canonical final event is a
     # unique target fact, while all four events are needed to compute state.

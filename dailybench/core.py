@@ -189,10 +189,19 @@ class ModelReply:
 
     @property
     def generated_tokens(self) -> int | None:
-        """Completion plus reasoning tokens, when the runtime reports both."""
+        """Total generated tokens as the runtime counts them.
+
+        OpenAI-compatible usage includes reasoning in ``completion_tokens``
+        and exposes the reasoning share in ``completion_tokens_details``:
+        adding them on top double-counts (170 instead of the reported 100).
+        Backends that exclude reasoning from completion are recognised by
+        ``completion < reasoning`` and summed instead.
+        """
         if self.completion_tokens is None:
             return None
-        return self.completion_tokens + (self.reasoning_tokens or 0)
+        if self.reasoning_tokens is None or self.reasoning_tokens <= self.completion_tokens:
+            return self.completion_tokens
+        return self.completion_tokens + self.reasoning_tokens
 
 
 @dataclass

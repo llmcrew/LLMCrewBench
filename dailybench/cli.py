@@ -728,14 +728,20 @@ def _truncated(transcript: core.Transcript) -> bool:
 
     The exit code is the marker: a clean ``pi`` run says ``exit_ok``, while a
     timeout, a SIGTERM or an aborted turn leaves it false or records the error.
+    A dead-last-turn (``finish_reason`` is empty — generation never completed,
+    e.g. a transport drop or a kill between the exit marker and the record)
+    also counts: resume must replay it instead of shipping half an artefact
+    and near-zero latency.
     """
     if transcript.error:
         return True
     agent = (transcript.extra or {}).get("agent") or {}
     if agent and agent.get("exit_ok") is False:
         return True
-    reasons = transcript.spend().get("finish_reasons") or []
-    return any(str(reason) in ("error", "aborted") for reason in reasons)
+    reasons = [str(reason) for reason in transcript.spend().get("finish_reasons") or []]
+    if any(reason in ("error", "aborted") for reason in reasons):
+        return True
+    return bool(reasons) and reasons[-1] in ("", "None")
 
 
 def _merge_run(runs: list, run: Any) -> None:
@@ -928,7 +934,10 @@ def build_parser() -> argparse.ArgumentParser:
     publish.set_defaults(func=cmd_publish)
 
     rescore = sub.add_parser(
-        "rescore", help="пересчитать баллы сохранённого прогона текущими evaluator'ами (без вызова модели)"
+        "rescore",
+        help="пересчитать баллы сохранённого прогона текущими evaluator'ами (без вызова модели); "
+        "прогон, сделанный под другой сьют (например, до смены категории L), будет размечен "
+        "как «нет задания в текущем сьюте» — сравнивать такие прогоны с новым сьютом нельзя",
     )
     rescore.add_argument("directories", nargs="+")
     rescore.set_defaults(func=cmd_rescore)
