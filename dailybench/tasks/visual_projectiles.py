@@ -78,7 +78,7 @@ PROBE_FIELDS = """{
   "steps": <число сделанных шагов>,
   "t": <время в секундах, 4 знака>,
   "objects": ["ground", "projectile-0", "projectile-1", "projectile-2", "..."],
-  "camera": [0, 6, 14],
+  "camera": [0, 7, 16],
   "projectiles": [{"x": <x>, "y": <y>, "vy": <vy>}, ...]
 }"""
 

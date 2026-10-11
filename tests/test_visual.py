@@ -296,6 +296,47 @@ def test_live_render_of_a_hung_page_ends_at_the_navigation_timeout():
     )
 
 
+def test_live_render_blocks_a_websocket_escape_without_touching_the_network():
+    """V2: WebSocket handshakes bypass HTTP routing; they must be intercepted.
+
+    Before ``route_web_socket``, a page could open ws:// to any local service or
+    the outside without appearing in ``external``. A routed socket is never
+    connected, so the listener below must stay silent while the attempt is
+    recorded.
+    """
+    import socket
+    import threading
+
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    server.settimeout(10)
+    leaked = threading.Event()
+
+    def listener() -> None:
+        try:
+            server.accept()
+            leaked.set()
+        except OSError:
+            pass
+
+    threading.Thread(target=listener, daemon=True).start()
+    port = server.getsockname()[1]
+    html = (
+        "<!doctype html><script>const ws = new WebSocket("
+        f"'ws://127.0.0.1:{port}/channel');"
+        "ws.onopen = () => { document.title = 'leaked'; }</script>"
+    )
+    try:
+        result = browser.render(html, mode="live")
+    finally:
+        server.close()
+
+    assert not leaked.is_set(), "WebSocket handshake reached the network"
+    assert any(url.startswith(f"websocket: ws://127.0.0.1:{port}/") for url in result.external)
+
+
 # --------------------------------------------------------------------------- #
 # The frame cache
 # --------------------------------------------------------------------------- #

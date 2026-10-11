@@ -143,13 +143,25 @@ def availability() -> tuple[bool, str]:
     )
     cache = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or default_cache)
     mac_cache = Path.home() / "Library" / "Caches" / "ms-playwright"
-    found = any(
-        (root / entry).is_dir()
+    candidates = [
+        root / entry
         for root in (cache, mac_cache)
         for entry in (root.iterdir() if root.is_dir() else [])
         if entry.name.startswith("chromium")
-    )
-    if not found:
+    ]
+    # A chromium directory without its executable is a broken install, not a
+    # usable one: a bare ``is_dir`` check used to pass and then ``launch``
+    # failed inside ``render``, scoring the model zero for stand breakage (V6).
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as pw:
+            executable = Path(pw.chromium.executable_path)
+        found = executable.is_file()
+        if not found:
+            return False, f"chromium есть, но executable недоступен: {executable}"
+    except Exception as exc:  # pragma: no cover - depends on the machine
+        return False, f"chromium не запускается ({exc.__class__.__name__})"
+    if not candidates:
         return False, "chromium для playwright не установлен (playwright install chromium)"
     if not (VENDOR / "three.module.js").is_file():
         return False, f"нет библиотеки {VENDOR / 'three.module.js'}"
@@ -508,6 +520,10 @@ def _page_pass(
                 else (external.append(route.request.url), route.abort())
             ),
         )
+        # HTTP routing does not govern the WebSocket handshake: a ws:// channel
+        # used to bypass ``route`` entirely. A routed socket is never connected,
+        # so no traffic leaves and the attempt is recorded in ``external``.
+        context.route_web_socket("**/*", lambda ws: external.append(f"websocket: {ws.url}"))
         page = context.new_page()
         page.on("console", lambda msg: errors.append(f"console: {msg.text}") if msg.type == "error" else None)
         page.on("pageerror", lambda exc: errors.append(f"pageerror: {exc}"))
