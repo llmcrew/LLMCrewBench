@@ -156,3 +156,22 @@ def test_packing_oracle_proves_minimum() -> None:
             assert task.meta["minimum_nodes"] == task.oracle["answer"]
             assert task.meta["one_less_feasible"] is False
             assert task.meta["expected"] == task.oracle["answer"]
+
+
+def test_prompt_states_the_answer_contract() -> None:
+    """Every B prompt must pin the reply format the evaluator enforces.
+
+    Two run-time failures were formulation defects, not model errors: R-8 never
+    said the keys are comma-separated (models answered ``9;C A``), and the
+    single-value tasks never demanded a reply without explanations (a model
+    answered ``**19/31**`` plus reasoning and failed the one-line contract).
+    """
+    for task in _tasks(20260915):
+        assert "одной строкой без пояснений" in task.prompt, task.id
+
+    r8 = _by_id(20260915, "R-8")
+    assert "через запятую" in r8.prompt
+    # The format spec must itself parse: the oracle answer is spelled exactly
+    # the way the prompt describes it (misses first, keys comma-separated).
+    misses, order = r8.oracle["reference"].split(";", 1)
+    assert "," in order or len(r8.meta["final_order"]) == 1

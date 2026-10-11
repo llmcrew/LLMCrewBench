@@ -357,6 +357,24 @@ def test_tool_loop_refreshes_a_stale_metric():
     assert not any(c.passed and c.name in ("refreshed", "fresh_value") for c in stale_only.score.checks)
 
 
+def test_tool_loop_full_score_on_the_golden_cache_cleanup():
+    """T-4 golden calls must find the cache: search_code matches file paths.
+
+    The cache files are opaque binary blobs whose *content* never mentions
+    ``build-cache``; before the path match the golden ``search_code`` query
+    returned ``no matches`` and no model could solve T-4 at full score.
+    """
+    task = _tool_task("T-4")
+    oracle = task.oracle
+    replies = [_call(index, call["name"], call["arguments"]) for index, call in enumerate(oracle["golden_calls"], 1)]
+    replies.append(core.ModelReply(text=oracle["final_answer"]))
+    run = Runner(RunConfig(), ScriptedProvider(replies)).run_task(task)
+    found = run.transcript.tool_log[0]["result"]
+    assert all(path in found for path in oracle["cache_files"]), "golden search must list every cache file"
+    assert run.score.earned == task.max_points == 2.0
+
+
+
 def test_tool_budget_is_enforced():
     task = _tool_task("T-1")
     replies = [_call(index, "read_file", {"path": "README.md"}) for index in range(30)]

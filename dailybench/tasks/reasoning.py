@@ -86,7 +86,7 @@ def _task(
         id=scenario,
         category="B",
         title=title,
-        prompt=prompt,
+        prompt=prompt.rstrip("\n") + "\n\nВерни ответ одной строкой без пояснений.",
         max_points=_POINTS,
         oracle=oracle,
         meta={"scenario": scenario, "kind": kind, "expected": answer, **(meta or {})},
@@ -460,7 +460,9 @@ def r8(rng: random.Random) -> core.TaskInstance:
         + "\n\nПри miss ключ добавляется.\n"
         "При попадании ключ становится самым недавно использованным.\n"
         "При переполнении удаляется Least Recently Used.\n\n"
-        "Верни только строку формата:\n\nMISSES;MRU_TO_LRU"
+        "Верни только одну строку формата:\n\n"
+        "MISSES;K1,K2,... — сначала число промахов, затем ключи через запятую "
+        "от самого свежего к самому старому"
     )
     return _task(
         "R-8",
