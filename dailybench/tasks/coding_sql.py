@@ -384,19 +384,29 @@ def _statement_or_error(reply: str) -> tuple[str | None, str]:
     return statement, ""
 
 
-def _normalise_rows(rows: list[tuple]) -> list[tuple[str, int]]:
-    normalised = []
-    for row in rows:
-        if len(row) < 2:
-            continue
-        month, revenue = row[0], row[1]
-        month_text = str(month)[:10]
-        match = re.match(r"(\d{4})-(\d{2})", month_text)
-        if not match:
-            normalised.append((month_text, int(float(revenue))))
-            continue
-        normalised.append((f"{match.group(1)}-{match.group(2)}-01", int(float(revenue))))
-    return sorted(normalised)
+def _normalise_value(value: object) -> object:
+    """A comparison key that keeps the numeric value intact.
+
+    ``int(float(v))`` used to truncate ``+0.75`` away (C3); a real number now
+    compares as itself, so a fractional sum is a wrong answer. Strings pass
+    through unchanged: a date must match exactly, day included.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return round(float(value), 4)
+    return str(value)
+
+
+def _normalise_rows(rows: list[tuple]) -> list[tuple]:
+    """Normalise only cross-backend spelling, never content or shape.
+
+    The allowed differences between SQLite and Postgres outputs are: the column
+    *names* (headers are not compared) and int/float spelling of whole numbers
+    (``187168`` vs ``187168.0``). Everything else — column count, the exact
+    date, fractional cents, row order — is part of the answer and is compared.
+    """
+    return [tuple(_normalise_value(value) for value in row) for row in rows]
 
 
 # --------------------------------------------------------------------------- #
@@ -514,7 +524,7 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
                     score.add(name, False, _POINTS_PER_CHECK, (result.get("stderr") or "ошибка выполнения").strip()[:300])
                     continue
                 got = _normalise_rows(result.get("rows") or [])
-                want_rows = [(str(month), int(value)) for month, value in want]
+                want_rows = _normalise_rows([(month, value) for month, value in want])
                 score.add(name, got == want_rows, _POINTS_PER_CHECK, f"получено {got}, ожидалось {want_rows}")
         finally:
             postgres.stop()
@@ -530,6 +540,6 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
             score.add(name, False, _POINTS_PER_CHECK, f"ошибка выполнения: {exc}")
             continue
         got = _normalise_rows(rows)
-        want_rows = [(str(month), int(value)) for month, value in want]
+        want_rows = _normalise_rows([(month, value) for month, value in want])
         score.add(name, got == want_rows, _POINTS_PER_CHECK, f"получено {got}, ожидалось {want_rows}")
     return score

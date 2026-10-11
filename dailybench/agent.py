@@ -750,9 +750,10 @@ def answer_text(task: core.TaskInstance, transcript: core.Transcript, fallback: 
     and reading it would grade the *stub* instead of the printed answer. So the
     harness decides, not the file's existence.
 
-    For an agent, an empty or missing file is the honest zero: the agent left the
-    stub in place, and the stub does not implement the task. The fallback still
-    covers an agent that printed a correct file without saving it.
+    For an agent, an empty or missing file is the honest zero: neither the
+    untouched stub nor a chat reference can stand in for the deliverable. A
+    printed-but-unsaved file is not accepted either — the agent contract names
+    the file, and the file is what gets graded.
     """
     rel = task.oracle.get("answer_file")
     recorded = transcript.extra.get("artefact")
@@ -768,6 +769,7 @@ def answer_text(task: core.TaskInstance, transcript: core.Transcript, fallback: 
                 text = ""
             if text.strip():
                 return text
+        return ""
     return fallback
 
 
