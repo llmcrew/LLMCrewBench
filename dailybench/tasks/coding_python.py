@@ -345,12 +345,21 @@ if __name__ == "__main__":
     unittest.main()
 '''
 
-_RUNNER = '''"""Runs the hidden test module and reports one JSON line per test."""
+_RUNNER = '''"""Runs the hidden tests and writes the report to a private channel.
+
+The candidate module is imported into this very process (the hidden tests
+import it), so any code it runs at import time shares our stdout. A spoof that
+printed fake report lines used to score full points (C1). The report therefore
+ goes to a file whose path is created *after* the candidate import: import-time
+ code cannot predict it, and the runner prints nothing to stdout at all.
+"""
 
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 
 class Recorder(unittest.TestResult):
@@ -376,12 +385,20 @@ def main() -> int:
     sys.path.insert(0, repo)
     spec = importlib.util.spec_from_file_location("hidden_ttl_tests", test_file)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    spec.loader.exec_module(module)  # the untrusted candidate runs here
     suite = unittest.defaultTestLoader.loadTestsFromModule(module)
     recorder = Recorder()
     suite.run(recorder)
-    for name, ok, detail in recorder.rows:
-        print(json.dumps({"test": name, "ok": ok, "detail": detail[:400]}))
+    # The report path exists only from this moment: candidate import-time code
+    # has already finished and could not have written to a file it could not name.
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".jsonl", prefix="dailybench-report-", delete=False, encoding="utf-8"
+    ) as report:
+        report_path = Path(report.name)
+        for name, ok, detail in recorder.rows:
+            report.write(json.dumps({"test": name, "ok": ok, "detail": detail[:400]}) + "\\n")
+    # The only stdout line the trusted supervisor looks for is the report path.
+    sys.stdout.write(f"REPORT {report_path}\\n")
     return 0
 
 
@@ -450,11 +467,19 @@ def generate(rng: random.Random, cfg: Any) -> core.TaskInstance:
 
 
 def extract_code(reply: str) -> str | None:
-    """Full-file answer: a fenced block when present, else the whole reply."""
-    block = text.first_fenced_block(reply)
-    if block:
-        return block
+    """Full-file answer: the outermost fenced block when present, else the reply.
+
+    A module may legitimately contain a fenced example in its docstring; the
+    first inner fence used to win and truncated the file to the example (C2),
+    scoring a correct module 0. The whole-file protocol treats the reply as
+    one block: everything between the opening fence line and the final closer.
+    """
     candidate = text.strip_fence(reply)[0]
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if len(lines) > 1 and lines[-1].strip() == "```":
+            return "\n".join(lines[1:-1]) or None
+        return candidate[3:].lstrip("\n") or None
     return candidate or None
 
 
@@ -491,11 +516,26 @@ def _run_hidden(sandbox: Path, repo: Path) -> dict[str, tuple[bool, str]]:
     except OSError as exc:
         return {name: (False, f"cannot run hidden tests: {exc}") for name, _ in CHECK_ORDER}
 
-    results: dict[str, tuple[bool, str]] = {}
+    # The report arrives through a file the candidate cannot predict (see
+    # _RUNNER); stdout parsing would re-open the spoofing hole C1 closed.
+    report_path = ""
     for line in (proc.stdout or "").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
+        if line.startswith("REPORT "):
+            report_path = line[len("REPORT "):].strip()
+    if not report_path:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        tail = detail[-1] if detail else "нет результата"
+        return {
+            name: (False, f"тест {test_name} не выполнился: {tail[:200]}")
+            for name, test_name in CHECK_ORDER
+        }
+
+    results: dict[str, tuple[bool, str]] = {}
+    try:
+        blob = Path(report_path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {name: (False, f"отчёт скрытых тестов недоступен: {exc}") for name, _ in CHECK_ORDER}
+    for line in blob.splitlines():
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
@@ -506,9 +546,7 @@ def _run_hidden(sandbox: Path, repo: Path) -> dict[str, tuple[bool, str]]:
     for name, test_name in CHECK_ORDER:
         match = next((v for k, v in results.items() if k.endswith(test_name)), None)
         if match is None:
-            detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-            tail = detail[-1] if detail else "нет результата"
-            mapped[name] = (False, f"тест {test_name} не выполнился: {tail[:200]}")
+            mapped[name] = (False, f"тест {test_name} не выполнился")
         else:
             mapped[name] = match
     return mapped

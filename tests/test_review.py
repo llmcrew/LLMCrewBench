@@ -131,6 +131,8 @@ def test_review_unfixed_file_loses_only_the_fix_check() -> None:
         assert score.earned == 1.0
         assert _check(score, "defect_located").passed
         failed = _check(score, "fix_passes_hidden_tests")
+        # The unfixed file keeps the one-line contract (no lines changed), so the
+        # failure must come from the hidden tests, not the contract check.
         assert not failed.passed and "скрытых тестов" in failed.detail
 
 

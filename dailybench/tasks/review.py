@@ -267,12 +267,45 @@ _PROMPT = """В рабочей копии репозитория ровно од
 * "fix" — полный текст файла после исправления (не diff, без многоточий и сокращений).
 """
 
-_RUNNER = '''"""Runs the named test modules and reports one JSON line per test."""
+_RUNNER = '''"""Runs the named test modules against a tamper-resistant harness.
+
+The candidate file is imported into this process (the tests import it), so its
+import-time code shares our stdout and our ``unittest``. A fix that used to
+patch ``unittest.TestCase.assert*`` silenced every hidden failure and kept the
+bug (C4). Two defences:
+
+1. The report goes to a file whose path exists only after every module has run:
+   import-time code cannot predict it, and nothing trusted is read from stdout.
+2. The grader state (``Recorder`` methods, ``TestCase.assert*``) is snapshotted
+   *before* any candidate import and restored before each module runs.
+"""
 
 import importlib.util
 import json
 import sys
 import unittest
+from pathlib import Path
+
+
+def _snapshot() -> dict:
+    case = unittest.TestCase
+    state = {"result": unittest.TestResult.__dict__.copy()}
+    state["case"] = {name: getattr(case, name) for name in vars(case)
+                     if callable(getattr(case, name, None))}
+    return state
+
+
+def _restore(state: dict) -> None:
+    for name, value in state["result"].items():
+        try:
+            setattr(unittest.TestResult, name, value)
+        except (AttributeError, TypeError):
+            pass
+    for name, value in state["case"].items():
+        try:
+            setattr(unittest.TestCase, name, value)
+        except (AttributeError, TypeError):
+            pass
 
 
 class Recorder(unittest.TestResult):
@@ -293,28 +326,41 @@ class Recorder(unittest.TestResult):
         self.rows.append((test.id(), False, f"skipped: {reason}"))
 
 
-def run_module(label: str, path: str) -> None:
+def run_module(label: str, path: str, state: dict, report) -> None:
+    _restore(state)
     spec = importlib.util.spec_from_file_location(f"dailybench_review_{label}", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    spec.loader.exec_module(module)  # the untrusted candidate runs here
+    _restore(state)
     suite = unittest.defaultTestLoader.loadTestsFromModule(module)
     recorder = Recorder()
+    recorder.rows = []  # candidate import may have re-bound the class; fresh run
     suite.run(recorder)
     for name, ok, detail in recorder.rows:
-        print(json.dumps({"module": label, "test": name, "ok": ok, "detail": detail[:400]}))
+        report.write(json.dumps({"module": label, "test": name, "ok": ok, "detail": detail[:400]}) + "\\n")
 
 
 def main() -> int:
     repo = sys.argv[1]
     pairs = sys.argv[2:]
     sys.path.insert(0, repo)
-    for label, path in zip(pairs[0::2], pairs[1::2]):
-        try:
-            run_module(label, path)
-        except BaseException as exc:  # a broken import is a failed test, not a crash
-            detail = f"{type(exc).__name__}: {exc}"[:400]
-            print(json.dumps({"module": label, "test": f"{label}.<import>", "ok": False, "detail": detail}))
+    state = _snapshot()
+    import tempfile
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".jsonl", prefix="dailybench-review-", delete=False, encoding="utf-8"
+    ) as handle:
+        report_path = Path(handle.name)
+    with report_path.open("w", encoding="utf-8") as report:
+        for label, path in zip(pairs[0::2], pairs[1::2]):
+            try:
+                run_module(label, path, state, report)
+            except BaseException as exc:  # a broken import is a failed test, not a crash
+                _restore(state)
+                detail = f"{type(exc).__name__}: {exc}"[:400]
+                report.write(json.dumps({"module": label, "test": f"{label}.<import>",
+                                         "ok": False, "detail": detail}) + "\\n")
+    sys.stdout.write(f"REPORT {report_path}\\n")
     return 0
 
 
@@ -387,11 +433,23 @@ def _run_modules(
     except OSError as exc:
         return empty, f"не удалось запустить python: {exc}"
 
-    rows: dict[str, dict[str, tuple[bool, str]]] = empty
+    # The report arrives through a file the candidate cannot predict (see
+    # _RUNNER); parsing stdout would re-open the spoofing hole C4 closed.
+    report_path = ""
     for line in (proc.stdout or "").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
+        if line.startswith("REPORT "):
+            report_path = line[len("REPORT "):].strip()
+    if not report_path:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        note = f"тесты не выполнились: {tail[-1][:200] if tail else 'нет вывода'}"
+        return empty, note
+
+    rows: dict[str, dict[str, tuple[bool, str]]] = empty
+    try:
+        blob = Path(report_path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return empty, f"отчёт тестов недоступен: {exc}"
+    for line in blob.splitlines():
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
@@ -401,8 +459,7 @@ def _run_modules(
             rows[label][str(row.get("test", ""))] = (bool(row.get("ok")), str(row.get("detail", "")))
     note = ""
     if any(not group for group in rows.values()):
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()
-        note = f"тесты не выполнились: {tail[-1][:200] if tail else 'нет вывода'}"
+        note = "тесты не выполнились"
     return rows, note
 
 
@@ -643,11 +700,29 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
         score.add("fix_passes_hidden_tests", False, fix_points, "в ответе нет полного исправленного файла")
         return score
 
-    rows, note = _run_test_modules(task, fix, ("hidden",))
+    rows, note = _run_test_modules(task, fix, ("hidden", "public"))
     if note:
         score.add("fix_passes_hidden_tests", False, fix_points, note)
         return score
     passed, detail = _hidden_summary(rows.get("hidden", {}))
+    # The public tests ship in the prompt: a fix that keeps the hidden cases but
+    # breaks them is not a fix (C5).
+    public = rows.get("public", {})
+    public_failed = [name for name, (ok, _) in public.items() if not ok]
+    if public_failed:
+        passed = False
+        detail = f"публичные тесты упали: {public_failed[0]}"
+    # The prompt promises the defect fits in one line: rewriting the whole file
+    # keeps hidden tests but violates the stated contract (C5).
+    buggy = str((task.workspace or {}).get(target, ""))
+    changed = [
+        index
+        for index, (before, after) in enumerate(zip(buggy.splitlines(), fix.splitlines()), 1)
+        if before != after
+    ]
+    if changed and (len(fix.splitlines()) != len(buggy.splitlines()) or changed != [defect_line]):
+        passed = False
+        detail = f"правка вне одной строки дефекта: изменены строки {changed[:5]}"
     score.add("fix_passes_hidden_tests", passed, fix_points, detail)
     if not strict:
         score.notes.append("ответ не является строгим JSON целиком")
