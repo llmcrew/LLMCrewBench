@@ -1,31 +1,31 @@
 {
-  "tasks": 83,
-  "sha256": "61497b6f52a4f9791504e80eac5d11917c90a6a30484e7a601f7f3f95ca1b33e",
+  "tasks": 68,
+  "sha256": "da04b66eea4badd5dfe860bbc55f07599f68a4012fddb674f9c6d64b717f45ab",
   "per_task": [
     {
       "id": "IF-1",
       "category": "A",
-      "prompt_sha256": "ea461bba713a47a9206f645410622fc555ef1f8dc4036c0d734cb2f479a45978"
+      "prompt_sha256": "e4a7da1eb7d2103938b04c92d2499d1e87e51c5bfc785e6f1aff530d9c6aa591"
     },
     {
       "id": "IF-2",
       "category": "A",
-      "prompt_sha256": "6167cc65eda3f66e9ca20de818bb0f7d35226367573f4fdcec999e91b518eb2e"
+      "prompt_sha256": "679f603c571b3987a35f34954716e8d9fe62261915eb97d0c5cceaac86d372b7"
     },
     {
       "id": "IF-3",
       "category": "A",
-      "prompt_sha256": "5813f3d834659d4f3f9947e72841b4d7c6b2d6fcb3c269128c0d3bab8e0043c5"
+      "prompt_sha256": "44074cd8876370514e1422071c3c1d3d356b00e1412e3a2c3efa2155fbddae14"
     },
     {
       "id": "IF-4",
       "category": "A",
-      "prompt_sha256": "30286e58919308cd3dd3ff0346a2bbd673a218ef803beb15ae3b466a7e9c448d"
+      "prompt_sha256": "d8e8de86cbc7e0654e9c35e04636ffd37c8f15ced92cab2af91ceacf794bf808"
     },
     {
       "id": "IF-5",
       "category": "A",
-      "prompt_sha256": "bc7d218bb22454cd42117c9de0f59301d0873bad64266590f54cb7d984807c7e"
+      "prompt_sha256": "b3af781dff80637c7b14b4c1f1e3fa2e522ea7db9f4f68860518f9c193c21a57"
     },
     {
       "id": "R-1",
@@ -130,7 +130,7 @@
     {
       "id": "T-3",
       "category": "D",
-      "prompt_sha256": "e5d811e5e0ef155f9432111515412f029c5822cea37f0b09fa702989ee82151c"
+      "prompt_sha256": "fb5cd3f1fa725e239825c461c0b4554a6561cc117a48b96fcc5f98a8bf60de14"
     },
     {
       "id": "T-4",
@@ -150,37 +150,37 @@
     {
       "id": "T-7",
       "category": "D",
-      "prompt_sha256": "6a43ad327d7cd337e4bb647d772d6bae0b10d7542b851005472bc68ee1c009fe"
+      "prompt_sha256": "845703ab2ec17614efa7b789c774b487882333d0535004ceed566c24e8cea684"
     },
     {
       "id": "LC-1",
       "category": "E",
-      "prompt_sha256": "e8ad06cfa0769b3580d1346d4658372bdec636c835a387e825b9b33c20024dcc"
+      "prompt_sha256": "058c1cad25b28914e9dd8e56871156939e7d00bc57f1526c5faf2b84b6616115"
     },
     {
       "id": "LC-2",
       "category": "E",
-      "prompt_sha256": "8753d64830bbbb8ff60c3e6a74b09f10beeeb690b8aaa21a3520839e247b667c"
+      "prompt_sha256": "6f624ad8828c852cb7e4231aec979e5cec7188639fa36c8c00edd0e6cc9e774c"
     },
     {
       "id": "LC-3",
       "category": "E",
-      "prompt_sha256": "f9b774d94052ed39940bf44b671d5fb7a2d9a6bec8827e743f932a22a56e715a"
+      "prompt_sha256": "e9403d721f125ece2761377d9a06e1f68c6d43094b92e4d3d15e05bb41b194a1"
     },
     {
       "id": "LC-4",
       "category": "E",
-      "prompt_sha256": "b38d971b2b4d67b24338afb9744616df5aadce0c8dec29e18a21349c10d27efc"
+      "prompt_sha256": "d910f97f7596c524943cd0593a8756933fcdf85859c170f36d05405ea3479bc4"
     },
     {
       "id": "LC-5",
       "category": "E",
-      "prompt_sha256": "18197d49126352561c3717ab27b1f590502cb67f6735218c65f4ad2d0b04f578"
+      "prompt_sha256": "f5b8c933b56dc6e763eee6ede9166c19c13dd3ba0de56ed02ce46a6e0be6f2a5"
     },
     {
       "id": "F",
       "category": "F",
-      "prompt_sha256": "8a05a7fe23526c9a6e3ecd7dd5648419fdc435f06d4b537893904b4d784cd6e0"
+      "prompt_sha256": "1d16441f2e0bf0cb56914c2fd00922cf158c93d09f9525eadcbb7e5e6b51972f"
     },
     {
       "id": "G-1",
@@ -240,57 +240,57 @@
     {
       "id": "K-1",
       "category": "K",
-      "prompt_sha256": "a21a45881aa0fa91f55e2916142f5e57912c3fc4b4fb73115000ac7bbd8abb77"
+      "prompt_sha256": "be7b996baaa3bd81cb4d3362281e747ca3e8a48ce654836cd3b37c760aa5dc92"
     },
     {
       "id": "K-2",
       "category": "K",
-      "prompt_sha256": "720f5bdd4f233fd0b00009d8f54e76870f3da2bf6aec369cd8d15d2b3e4011b0"
+      "prompt_sha256": "2d6bbbf62739a1337d170179860401db700477fbfdf11b4eadeb32e673039064"
     },
     {
       "id": "K-3",
       "category": "K",
-      "prompt_sha256": "03ee49e89baa2e4bc3aad26159f97752e5446b4b1ad07de84cd99b5c4dfe057d"
+      "prompt_sha256": "995d60be62f1a4e8dde27d66f2daa25a2fb8ca6c2ea19a30ce83eb69d49be0fc"
     },
     {
       "id": "K-4",
       "category": "K",
-      "prompt_sha256": "5c6f3c6643e457cd4fca63d9f526d597b802982f73d71b1b5706bd2d35aec746"
+      "prompt_sha256": "caa85fd3c80c2b66af81209575e29cbc1ac3dcaaa4751f13d5e87e7e6893abba"
     },
     {
       "id": "K-5",
       "category": "K",
-      "prompt_sha256": "c737efa226e1fb2c20c6b78cc758326d3681bf203c9c2e1399805f29d1f8a28d"
+      "prompt_sha256": "5507a9bab07c65dad7421ab54c52b7ea43e4ee716fc0cc94a20cc7df67e78acd"
     },
     {
       "id": "K-6",
       "category": "K",
-      "prompt_sha256": "380b21c96d59380f1c51ce1e2b43c1911a80fa43b9be7a8fc1b6b91a3aa7a368"
+      "prompt_sha256": "767792fe595cfc185079f01ead3dfabe8363cbfed97495248453eb5f62df309b"
     },
     {
       "id": "K-7",
       "category": "K",
-      "prompt_sha256": "164adfe4d5df0b0df9489e535b21391a4595ec6267ddecfa5e97c7da9e053452"
+      "prompt_sha256": "8f76a47760e4d4c7f5ae79b9ebd7ad690dd98c51e873687294c0e25f1c559435"
     },
     {
       "id": "K-8",
       "category": "K",
-      "prompt_sha256": "75812f21ee79dd515c587e6051003746340357d0560e4ae4f94c38e0c30046f7"
+      "prompt_sha256": "831152502ec94e07d026dedd6ce04d80b7e17492421ffcd05b6f6312f0d75ab1"
     },
     {
       "id": "K-9",
       "category": "K",
-      "prompt_sha256": "2efac5d109ecc7577466c888a56b77c3d63f7d88de233540612252e67474a45a"
+      "prompt_sha256": "23b1ef9c368467c89b5687f6a2c84cf0ac40b78992968febca195b20287b339d"
     },
     {
       "id": "K-10",
       "category": "K",
-      "prompt_sha256": "e5002f9195154f12808a50c34ee8ede277f2b7231ea54466feb66b62e3ba6457"
+      "prompt_sha256": "91158c6f7dca4eabdeac1ccb2a03de68b9bf5c4c71aa6ec8a514fdfaa4a7ee04"
     },
     {
       "id": "K-11",
       "category": "K",
-      "prompt_sha256": "b05b20f630f3291166ef2a7c2a888a5352087baa618a9e0c61eef7d7792546bc"
+      "prompt_sha256": "b44ec377d9d2efaaf39accf2a1032a1c4a2ceb8ce0c6cebe986da3246f7ada4f"
     },
     {
       "id": "K-12",
@@ -300,122 +300,47 @@
     {
       "id": "K-13",
       "category": "K",
-      "prompt_sha256": "fe4ed3d096672c1d6bf19f1d3c433aa882330ab7ab7a88b44ad75671b9d5f908"
+      "prompt_sha256": "a043a2685e2770f59394b4c9da63e1a07a7294a97fe9af79ddea386359615155"
     },
     {
       "id": "K-14",
       "category": "K",
-      "prompt_sha256": "403ebd8c244ed06d53256a2398bc0fb1cc518b06e311fd89d21ce2f8ace229b8"
+      "prompt_sha256": "086b4fefa50d2a3d5de9cd68ceb3696057a233552841a41d93fbf889fa371ef3"
     },
     {
       "id": "K-15",
       "category": "K",
-      "prompt_sha256": "2f2bfd720ce519b045885f3d9acb1c7a0231fa391e0cbaa90c9ac4ec117ed162"
+      "prompt_sha256": "23a9737003d7116c6db2c7cfd5fd87912dd118efd81bacc6a045db08c5714f6f"
     },
     {
       "id": "K-16",
       "category": "K",
-      "prompt_sha256": "3c0a18c68cce23e6e6d3989abd83c3282319ff899b828b413f256654bf63f2a8"
+      "prompt_sha256": "78e9bd0b8448b086f735492366bf1e739309504b492331db12b046dd9c261abe"
     },
     {
       "id": "K-17",
       "category": "K",
-      "prompt_sha256": "04da10551e3e114137c19fd86ace94240f7b6a46092cc6b9f5f73fdc952893a9"
+      "prompt_sha256": "4a558fc14ccea940d687b4667f526ca3aab94caf98ffb606b2e47b1c5bdcb577"
     },
     {
       "id": "K-18",
       "category": "K",
-      "prompt_sha256": "780ab7a9d8ea1c69caacd2a235d2b704ae7009feba39ad54e4fba6b1db65bad6"
+      "prompt_sha256": "9b3ef4e94e02f452e25b3ec5c9f7c12d95682b4bede84132b31b844698245e80"
     },
     {
       "id": "K-19",
       "category": "K",
-      "prompt_sha256": "997ba3a65da43ecbecd1601b7c1d9a484da7afef2a2e5e49abf2f8750dba7368"
+      "prompt_sha256": "1487023dffbbf74da2420281714088489c47f098789dcf999eccf4193846e173"
     },
     {
       "id": "K-20",
       "category": "K",
-      "prompt_sha256": "26ab5a2e9e475ec298d7e60cfb2b8d14132167c2d0c1b282df4cc766070694a4"
+      "prompt_sha256": "6006b95c1a5b791caf1bf2afc385c6982211ca6998e5939fe676e0a22ee81394"
     },
     {
       "id": "L-1",
       "category": "L",
-      "prompt_sha256": "d609504d7d240a7f84a4974be8b037e8d4b8a6b7fa8e87fdab92b2df56e424ac"
-    },
-    {
-      "id": "L-2",
-      "category": "L",
-      "prompt_sha256": "068953637e814f00df8019edd5d0852d1bf99e7d00d6f129fa5fb19869a8aba2"
-    },
-    {
-      "id": "L-3",
-      "category": "L",
-      "prompt_sha256": "def4e58d62203031335b9d9ca6a4a46b2a01ff64fd28fee6cb9850d8272a590c"
-    },
-    {
-      "id": "L-4",
-      "category": "L",
-      "prompt_sha256": "69c71d6b4bf1d2b62afb27dd8c0407ade15f8f087cb47c81e3893e1a48c9977f"
-    },
-    {
-      "id": "L-5",
-      "category": "L",
-      "prompt_sha256": "114691516178548101e58a270ddb5780d33de00592c81aeadd1e2c75f36125cc"
-    },
-    {
-      "id": "L-6",
-      "category": "L",
-      "prompt_sha256": "9d3d6caecae674e3c44c232e3acca9c9af75602ec9dc962847f1665c026121ac"
-    },
-    {
-      "id": "L-7",
-      "category": "L",
-      "prompt_sha256": "ca27a462ddf319586ab38ea9507f2ef4b046328455dea024c8d93449844287c3"
-    },
-    {
-      "id": "L-8",
-      "category": "L",
-      "prompt_sha256": "4d39ca8eb030ccfcdd6b859258265823fdd934e9935cd5e968c7a0677f24bb24"
-    },
-    {
-      "id": "L-9",
-      "category": "L",
-      "prompt_sha256": "0f4e6fcc9a1270ff2648e71227afc4021a6bd3a7930abf58655f1330717cc851"
-    },
-    {
-      "id": "L-10",
-      "category": "L",
-      "prompt_sha256": "4997960ad2b8bd772dec1d27f3bece36858a0e239d13360d06f6fa84c30c9c1e"
-    },
-    {
-      "id": "L-11",
-      "category": "L",
-      "prompt_sha256": "f006ab95b73ab7f27935de4c83a2e2fde328f495c2b24744a6e30a2aa031d2e3"
-    },
-    {
-      "id": "L-12",
-      "category": "L",
-      "prompt_sha256": "3b6c5556d54411dc7ae179fe1c6024298fe18a1fabc30574730c9d95bde6a049"
-    },
-    {
-      "id": "L-13",
-      "category": "L",
-      "prompt_sha256": "6ba7d1b1168c2ff259d23e7154f5a200aa3b54226e0c91c285606f42055526bf"
-    },
-    {
-      "id": "L-14",
-      "category": "L",
-      "prompt_sha256": "43dc2e76bf3bb5412a54dad72204592a6d751508633d015346595a88ea9d22be"
-    },
-    {
-      "id": "L-15",
-      "category": "L",
-      "prompt_sha256": "9db42f6498b904904e75ebf5290cafec31cf42e781680dac3c581dec7f861493"
-    },
-    {
-      "id": "L-16",
-      "category": "L",
-      "prompt_sha256": "28dbdd67e1bc672d3124825527b9426fe3c412cf243c4bb75b354fd3c052e1d0"
+      "prompt_sha256": "7677e6b12e75fb7dedfb1acf80e3c97b1176061f4cef8ddb2f7bc3ee9390da95"
     }
   ]
 }

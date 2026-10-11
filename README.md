@@ -4,7 +4,7 @@ A deterministic, programmatically scored benchmark for **local** language models
 run under a 16 GiB VRAM budget (internally: *DailyBench-16*).
 
 Ten scored categories, 47 tasks, 100 points, plus two **visual blocks** — 20
-simulation scenarios and 24 art scenarios on Three.js — measured in a headless
+simulation scenarios and 1 free-form art task — measured in a headless
 browser and shown outside the score. Every point comes from an observable result — a parsed answer, a file on
 disk, a hidden test run, a tool-call log, a rendered frame — and never from a
 judge model. The whole suite is regenerated from a single seed, so two runs of
@@ -118,7 +118,7 @@ points the run at a specific binary.
 | Key | Block | Tasks | What is actually checked |
 |---|---|---:|---|
 | K | Visual simulations (Three.js r186) | 20 | The agent writes `index.html`; the page runs in headless Chromium, reports its scene through `window.__probe()`, advances exactly by `window.__step(dt)`, and renders a reproducible 800×600 frame |
-| L | Art visualisations + LoFi Rain Sci-Fi (Three.js r186) | 24 | Same render loop (agent writes the file), scored on the *picture*: declared palette coverage (hue-first), composition (horizon, gradient, symmetry, radial falloff), detail (edges, colours — not a flat fill), motion (frames at two moments differ, each load reproduces its own) |
+| L | Free-form art | 1 | The agent writes `index.html`; the model picks the subject, style, palette and means (HTML/CSS, SVG, Canvas, WebGL; the vendored Three.js is available but optional). The only automatic check is technical delivery: the page loads without external requests or errors and a 1920×1080 frame is captured. Artistic quality is judged by people from the gallery frames |
 
 Each scenario asks one question: does the model produce a *working* page —
 ballistics, pendulums, collision boxes, particle fountains, boids, heat
@@ -132,11 +132,13 @@ measurement machine must not move a quality score. The frames are copied into
 the run directory and collected into a `visual.html` gallery, so the leaderboard
 has a screen that shows what a model actually drew.
 
-The art block asks for something different from the simulation block: the prompt
-declares a palette, a composition and a motion, the checks measure them in the
-frame, and the reference pages are the author's own renders. Palette is checked
-strictly (a wrong hue loses the point), composition loosely (taste is not
-punished). Authoring rules: `docs/art-contract.md`.
+The art block asks for something different from the simulation block: the model
+gets a free brief and chooses the idea, style and means itself. The prompt
+prescribes no palette, composition, frame reproducibility or mandatory hooks
+(`__probe`, `__step`, `__ready`); a static page is acceptable and animation is
+optional. The single automatic check is technical delivery (the page loads, the
+frame is captured); taste is never scored by heuristics. Authoring rules:
+`docs/art-contract.md`.
 
 The library is pinned and vendored (`vendor/three/`, r186, checksums in
 `vendor/three/PROVENANCE.md`); answers may import only

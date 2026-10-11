@@ -41,7 +41,7 @@ def _ignored(relative: str) -> bool:
         "pyproject.toml",
         "Makefile",
         "README.md",
-        "dailybench/tasks/art_sunset.py",
+"dailybench/tasks/art.py",
         "tests/test_art.py",
         # Опубликованный отчёт лежит в git: он открывается двойным кликом,
         # без прогона и без сервера. runs/ при этом остаётся локальным.
