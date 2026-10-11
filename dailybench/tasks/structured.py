@@ -116,6 +116,15 @@ def _type_matches(value: Any, expected: str) -> bool:
     if expected == "number":
         # JSON Schema: an integer is a number. Exclude bool, which is an int in Python.
         return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "integer":
+        # JSON Schema: an integer is any mathematical integer, written with or
+        # without a fraction part — `2752.0` is a valid `integer`. Bool and
+        # fractional values stay out.
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and float(value).is_integer()
+        )
     return _json_type(value) == expected
 
 

@@ -46,6 +46,11 @@ def _score(task: core.TaskInstance, final: str) -> core.Score:
     return dialogue.evaluate(task, _transcript(task, [final]))
 
 
+def _score_seq(task: core.TaskInstance, replies: list[str]) -> core.Score:
+    """Score a full dialogue, one reply per turn (prompt + follow-ups)."""
+    return dialogue.evaluate(task, _transcript(task, replies))
+
+
 def _checks(score: core.Score) -> dict[str, bool]:
     return {check.name: check.passed for check in score.checks}
 
@@ -142,20 +147,28 @@ def test_h2_rule_survives_pressure_split() -> None:
 
     score = _score(task, naive)
     assert score.earned == 0.0
-    assert _checks(score) == {"final_status": False, "single_word_rule": False}
+    assert _checks(score) == {"status_sequence": False, "final_status": False}
 
-    # A single allowed word that is the wrong status keeps the rule but loses
-    # the artefact point — the two checks really are separable.
+    # A single allowed word that is the wrong status keeps the final-form rule
+    # but loses the sequence point — the checks are separable.
     score = _score(task, "degraded")
-    assert _checks(score) == {"final_status": False, "single_word_rule": True}
+    assert _checks(score) == {"status_sequence": False, "final_status": False}
+
+    # The full correct sequence ok -> degraded -> down -> down passes.
+    first, second, third, final = task.oracle["turn_answers"]
+    score = _score_seq(task, [first, second, third, final])
+    assert _checks(score) == {"status_sequence": True, "final_status": True}
+    assert score.earned == 2.0
+
+    # A constant answer ("down" to everything) must not pass: the first
+    # statuses are wrong even though the final one is right.
+    score = _score_seq(task, [final, final, final, final])
     assert score.earned == 1.0
 
-    # A digit smuggled into the final word breaks the turn-1 rule under pressure.
-    score = _score(task, f"{task.oracle['final_status']}1")
-    assert _checks(score) == {"final_status": False, "single_word_rule": False}
-
-    assert _score(task, task.oracle["reference"]).earned == 2.0
-
+    # Wrong first move with a correct final keeps only the final point.
+    score = _score_seq(task, [second, second, third, final])
+    assert _checks(score) == {"status_sequence": False, "final_status": True}
+    assert score.earned == 1.0
 
 def test_h3_contradiction_split() -> None:
     task = _by_id(_tasks())["H-3"]

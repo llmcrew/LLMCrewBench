@@ -219,25 +219,35 @@ def _h2(rng: random.Random) -> core.TaskInstance:
 def _eval_h2(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     score = core.Score(task_id=task.id, category="H")
     allowed = tuple(task.oracle["allowed"])
-    expected = task.oracle["final_status"]
+    expected_turns = task.oracle["turn_answers"]
     final = tr.final_text
 
-    token = text.answer_token(final)
-    given = token.casefold() if token else None
+    # The last follow-up is a free-form "why": only the status turns are
+    # answerable with one word. A constant answer ("down" to everything) used
+    # to pass both checks on the final text alone — the whole sequence is
+    # the actual task.
+    status_replies = [
+        (text.answer_token(turn.reply.text or "") or "").casefold()
+        for turn in tr.turns[: len(expected_turns) - 1]
+    ]
+    expected_status = expected_turns[: len(status_replies)]
+    sequence_ok = status_replies == expected_status and len(status_replies) == len(expected_turns) - 1
     score.add(
-        "final_status",
-        given == expected,
+        "status_sequence",
+        sequence_ok,
         _CHECK,
-        f"получено {given!r}, ожидался {expected!r}",
+        f"последовательность статусов {'совпала' if sequence_ok else 'не совпала'}: "
+        f"получено {status_replies or '—'}, ожидалось {expected_turns[:-1]} (последний ход — свободное объяснение)",
     )
 
+    final_token = text.answer_token(final)
+    given = final_token.casefold() if final_token else None
     no_digits = not any(ch.isdigit() for ch in final)
-    held = given in allowed and no_digits
     score.add(
-        "single_word_rule",
-        held,
+        "final_status",
+        given == task.oracle["final_status"] and no_digits and given in allowed,
         _CHECK,
-        "ровно одно слово из набора и ни одной цифры — правило первого сообщения",
+        f"получено {given!r}, ожидался {task.oracle['final_status']!r}; ровно одно слово из набора и ни одной цифры",
     )
     return score
 
