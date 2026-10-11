@@ -868,7 +868,7 @@ function openViewer(items, index) {{
   framesEl.innerHTML = items.map((it, i) => `
     <div class="pane${{items.length === 1 ? ' solo' : ''}}">
       <div class="cap"><span>${{it.model}} · ${{it.id}}</span><span>${{it.score}}</span></div>
-      ${{it.page ? `<div class="stage"><iframe data-i="${{i}}" src="${{it.page}}"></iframe></div>`
+      ${{it.page ? `<div class="stage"><iframe data-i="${{i}}" src="${{it.page}}" sandbox="allow-scripts"></iframe></div>`
                  : '<div class="missing">модель не дошла до HTML</div>'}}
     </div>`).join('');
   document.getElementById('viewer-title').textContent =
@@ -918,7 +918,8 @@ function sceneSize() {{
 function openScene(page, name) {{
   if (!page) return null;
   const {{w, h}} = sceneSize();
-  const win = window.open(page, name || '', `width=${{w}},height=${{h}}`);
+  // noopener: a published answer must not reach back into the report window.
+  const win = window.open(page, name || '', `width=${{w}},height=${{h}},noopener`);
   if (win) {{ win.focus(); }}
   return win;
 }}
@@ -927,7 +928,7 @@ function openScenes(items) {{
   const {{w, h}} = sceneSize();
   items.forEach((it, i) => {{
     const place = many ? `,left=${{120 + i * 40}},top=${{80 + i * 30}}` : '';
-    const win = window.open(it.page, many ? `cmp-${{it.id}}-${{it.model}}` : (it.window || ''), `width=${{w}},height=${{h}}${{place}}`);
+    const win = window.open(it.page, many ? `cmp-${{it.id}}-${{it.model}}` : (it.window || ''), `width=${{w}},height=${{h}}${{place}},noopener`);
     if (win) win.focus();
   }});
 }}
