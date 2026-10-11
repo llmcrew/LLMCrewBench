@@ -109,8 +109,8 @@ def summarise(
     ran_showcase = sum(row["tasks"] for row in per_showcase.values())
     skipped_total = sum(row["skipped"] for row in per_category.values())
 
-    showcase_earned = round(sum(row["earned"] for row in per_showcase.values()), 3)
-    showcase_possible = round(sum(row["possible"] for row in per_showcase.values()), 3)
+    showcase_earned = round(sum(row["earned"] for key, row in per_showcase.items() if key in core.SHOWCASE_CATEGORIES), 3)
+    showcase_possible = round(sum(row["possible"] for key, row in per_showcase.items() if key in core.SHOWCASE_CATEGORIES), 3)
 
     expected_scored: int | None = None
     if isinstance(suite_tasks, dict):
@@ -267,6 +267,13 @@ def render_markdown(run: dict[str, Any]) -> str:
             lines.append(f"| {score['task_id']} | не проверялось | — | — | {score['skipped']} |")
             continue
         failed = [c["name"] for c in score.get("checks", []) if not c["passed"]]
+        if score.get("category") in core.ART_CATEGORIES:
+            status = "отрисовано" if not failed and score.get("earned") else "не отрисовалось"
+            lines.append(
+                f"| {score['task_id']} | {status} | {_stop_reason(runs_by_id.get(score['task_id']))} | "
+                f"{score.get('error') or '—'} | {', '.join(failed) if failed else '—'} |"
+            )
+            continue
         lines.append(
             f"| {score['task_id']} | {score.get('earned', 0):.0f}/{score.get('possible', 0):.0f} | "
             f"{_stop_reason(runs_by_id.get(score['task_id']))} | "
@@ -279,10 +286,9 @@ def render_markdown(run: dict[str, Any]) -> str:
         lines.append("## Витрина: картинки вне общего счёта")
         lines.append("")
         lines.append(
-            f"Визуальные блоки — {summary['showcase_earned']:.0f} / {summary['showcase_possible']:.0f} "
-            "баллов. В итоговую сумму они не входят: каждая страница запускается в "
-            "headless-браузере, кадры лежат рядом в `visual/`, а проверки мерят кадр "
-            "(K — корректность симуляций, L — палитра, композиция и движение)."
+            f"Симуляции K — {summary['showcase_earned']:.0f} / {summary['showcase_possible']:.0f} "
+            "баллов вне итоговой суммы. L — свободная арт-работа: сохраняются страница "
+            "и кадр, цвет, тональность и художественное качество оценивает человек."
         )
         lines.append("")
         for key in sorted(showcase):
@@ -293,6 +299,10 @@ def render_markdown(run: dict[str, Any]) -> str:
             lines.append("")
             if row["skipped"] == row["tasks"]:
                 lines.append("не проверялось")
+                lines.append("")
+                continue
+            if key in core.ART_CATEGORIES:
+                lines.append("Без художественных баллов. Автоматически проверяется только загрузка HTML.")
                 lines.append("")
                 continue
             lines.append(
@@ -340,7 +350,8 @@ def compare_markdown(runs: list[dict[str, Any]]) -> str:
     header = ["Модель", "Квант", "Итог"]
     for key in sorted(core.CATEGORY_POINTS):
         header.append(f"{key}, %")
-    header += [f"{key} (визуальный), %" for key in sorted(core.VISUAL_CATEGORIES)]
+    header += [f"{key} (визуальный), %" for key in sorted(core.SHOWCASE_CATEGORIES)]
+    header += [f"{key} (арт)" for key in core.ART_CATEGORIES]
     header += ["Пик VRAM, MiB", "TTFT long, с", "Gen tok/s", "Ошибок"]
     lines.append("| " + " | ".join(header) + " |")
     lines.append("|" + "---|" * len(header))
@@ -361,7 +372,7 @@ def compare_markdown(runs: list[dict[str, Any]]) -> str:
                 row.append(f"{100 * entry['earned'] / entry['possible']:.0f}")
             else:
                 row.append("—")
-        for key in sorted(core.VISUAL_CATEGORIES):
+        for key in sorted(core.SHOWCASE_CATEGORIES):
             entry = (summary.get("showcase") or {}).get(key)
             if not entry or not entry["tasks"]:
                 row.append("—")
@@ -371,6 +382,14 @@ def compare_markdown(runs: list[dict[str, Any]]) -> str:
                 row.append(f"{100 * entry['earned'] / entry['possible']:.0f}")
             else:
                 row.append("—")
+        for key in core.ART_CATEGORIES:
+            entry = (summary.get("showcase") or {}).get(key)
+            if not entry or not entry["tasks"]:
+                row.append("—")
+            elif entry["skipped"] == entry["tasks"]:
+                row.append("не проверялось")
+            else:
+                row.append("оценка человеком")
         speed = run.get("speed") or []
         long_row = next((s for s in speed if str(s.get("label", "")).startswith("long")), None)
         peak = long_row.get("vram_peak_mib") if long_row else None

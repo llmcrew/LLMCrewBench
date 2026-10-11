@@ -247,7 +247,7 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
             f"{summary['headline_earned']:.0f}<span class='of'>/{summary['headline_possible']:.0f}</span>"
             f"<span class='unit'>баллов качества</span></div>"
             f"<div class='meter'><i style='width:{100 * summary['headline_earned'] / (summary['headline_possible'] or 1):.0f}%'></i></div>"
-            f"<div class='sub'>визуальные блоки: <b>{summary['showcase_earned']:.0f}/{summary['showcase_possible']:.0f}</b> (K — баллы, L — на глаз) · "
+            f"<div class='sub'>симуляции K: <b>{summary['showcase_earned']:.0f}/{summary['showcase_possible']:.0f}</b> · L — оценка человеком · "
             f"заданий с потерей: <b>{failed}</b> (нулевых {zero})</div>"
             f"<div class='sub'>категории с потерей: {_cell(', '.join(failed_cats) or 'нет')}</div>"
             f"<div class='sub spend'>токенов: <b>{spend['total'] / 1000:.0f}K</b> "
@@ -285,6 +285,12 @@ def _verdict_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> st
             cells.append(f"<td class='num'>{'—' if pct is None else f'{pct:.0f}%'}</td>")
         for key in SHOWCASE:
             row = (summary.get("showcase") or {}).get(key, {})
+            if key in core.ART_CATEGORIES:
+                label = "оценка человеком" if row.get("tasks") else "—"
+                if row.get("tasks") and row.get("skipped") == row.get("tasks"):
+                    label = "не проверялось"
+                cells.append(f"<td class='show'>{label}</td>")
+                continue
             pct = _pct(row.get("earned", 0), row.get("possible", 0))
             cells.append(f"<td class='num show'>{'—' if pct is None else f'{pct:.0f}%'}</td>")
         cells.append(f"<td class='num'>{spend['total'] / 1000:.0f}K</td>")
@@ -336,6 +342,10 @@ def _suite_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
             failed = [c["name"] for c in score.get("checks", []) if not c["passed"]]
             klass = "full" if earned == possible else ("zero" if not earned else "part")
             detail = "; ".join(f"{c['name']}: {c['detail']}" for c in score.get("checks", []) if not c["passed"])
+            if category in core.ART_CATEGORIES:
+                label = "отрисовано" if earned == possible and earned else "не отрисовалось"
+                cells.append(f"<td class='cell {klass}' title='{_cell(detail)[:400]}'>{label}</td>")
+                continue
             cells.append(
                 f"<td class='cell {klass}' title='{_cell(detail)[:400]}'>"
                 f"{earned:.1f}<span class='of'>/{possible:.0f}</span>"
@@ -350,7 +360,7 @@ def _suite_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
     legend = (
         "<p class='hint'>в ячейке — сумма проверок за задание у этой модели; цвет: зелёный — все проверки, "
         "жёлтый — часть, красный — ноль. Для блока K это баллы (симуляции проверяются расчётом), "
-        "для блока L — наблюдения: сцены смотрит человек по кадрам витрины. "
+        "для блока L — только загрузка HTML; художественное качество оценивает человек по кадрам. "
         "Наведите курсор, чтобы увидеть, какая проверка не прошла.</p>"
     )
     return (f"<table class='grid suite-table'><thead><tr><th>задание сьюта</th>{header}</tr></thead>"
@@ -447,7 +457,7 @@ def _provenance(runs: list[dict[str, Any]]) -> str:
 def _charts_payload(runs: list[dict[str, Any]]) -> dict[str, Any]:
     payload: dict[str, Any] = {"models": [], "scoredKeys": list(SCORED),
                                "scoredNames": [f"{k}. {core.category_title(k).split(' ')[0]}" for k in SCORED],
-                               "showcaseKeys": list(SHOWCASE), "scored": [], "showcase": [],
+                               "showcaseKeys": list(core.SHOWCASE_CATEGORIES), "scored": [], "showcase": [],
                                "spend": [], "cost": []}
     for run in runs:
         summary = summarise(run["scores"], run.get("suite"))
@@ -457,7 +467,7 @@ def _charts_payload(runs: list[dict[str, Any]]) -> dict[str, Any]:
                                        summary["per_category"].get(k, {}).get("possible", 0)) for k in SCORED])
         showcase = summary.get("showcase") or {}
         payload["showcase"].append([_pct(showcase.get(k, {}).get("earned", 0),
-                                         showcase.get(k, {}).get("possible", 0)) for k in SHOWCASE])
+                                         showcase.get(k, {}).get("possible", 0)) for k in core.SHOWCASE_CATEGORIES])
         spend = _spend_totals(run)
         payload["spend"].append({"model": name, "answer": spend["answer"], "reasoning": spend["reasoning"],
                                  "minutes": spend["seconds"] / 60})
@@ -467,29 +477,12 @@ def _charts_payload(runs: list[dict[str, Any]]) -> dict[str, Any]:
     return payload
 
 
-def _atmosphere(marks: list[dict[str, Any]]) -> str:
-    """Шкала «как это смотрится» для атмосферных сцен: 6 критериев по 1-5."""
-    if not marks:
-        return ""
-    cells = "".join(
-        f"<span class='mark' title='{_cell(m.get('note', ''))}'>"
-        f"{_cell(m.get('criterion', ''))} <b class='m{int(m.get('score', 0))}'>{m.get('score')}</b></span>"
-        for m in marks
-    )
-    return f"<div class='marks'>{cells}</div>"
 
 
 def _verdict_text(category: str, failed: list[str]) -> str:
-    """Арт-блок не балльный: у него не «провалы», а наблюдения.
-
-    У K проверки объективны (координаты сверяются с пересчётом), поэтому там
-    честное «провалено». У L проверки только описывают кадр, и человек смотрит
-    сам — поэтому формулировка мягче.
-    """
+    """Keep HTML delivery separate from human judgement of artwork."""
     if category in core.ART_CATEGORIES:
-        if not failed:
-            return "все наблюдения сошлись"
-        return "наблюдения не сошлись: " + ", ".join(failed)
+        return "HTML не загрузился: " + ", ".join(failed) if failed else "HTML загружен · художественное качество оценивает человек"
     return "провалено: " + ", ".join(failed) if failed else "все проверки пройдены"
 
 
@@ -500,6 +493,8 @@ def _gallery(entries: list[dict[str, Any]]) -> str:
         earned, possible = score.get("earned"), score.get("possible")
         failed = [c["name"] for c in score.get("checks", []) if not c["passed"]]
         status = f"{earned:.0f}/{possible:.0f}" if isinstance(earned, (int, float)) else "н/п"
+        if item.get("category") in core.ART_CATEGORIES:
+            status = "HTML" if earned and not failed else ("н/п" if score.get("skipped") else "ошибка HTML")
         tone = "full" if earned == possible else ("zero" if not earned else "part")
         page, frame = item.get("page") or "", item.get("frame") or ""
         spend = item.get("spend") or {}
@@ -520,7 +515,6 @@ def _gallery(entries: list[dict[str, Any]]) -> str:
             f"<div class='who'>{_cell(item['model'])}</div>{media}"
             f"<div class='checks'>{_cell(_verdict_text(item['category'], failed))}"
             f"<span class='sub'> · {spend.get('answer_tokens') or 0} ток. ответ / {spend.get('reasoning_tokens') or 0} reasoning</span></div>"
-            f"{_atmosphere(item.get('atmosphere') or [])}"
             f"<div class='row'><button class='open' data-page='{_cell(page)}' data-window='{window_name}'>"
             f"сцена в новом окне</button>"
             f"<button class='open cmp-solo' data-page='{_cell(page)}'>сравнить</button></div>"

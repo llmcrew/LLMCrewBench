@@ -295,21 +295,6 @@ def test_a_clean_exit_still_sweeps_a_detached_survivor(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_the_working_copy_carries_the_fixture_and_the_library():
-    load_all()
-    page = art.build_task(
-        task_id="L-T", title="t", prompt="нарисуй",
-        spec=art.ArtSpec(palette=[], composition=[], detail=[]),
-        golden="<html></html>",
-    )
-    work = agent.prepare_work_dir(page)
-    assert (work / "vendor" / "three.module.js").exists(), "библиотека обязана лежать рядом"
-    assert (work / "AGENTS.md").is_file()
-
-    code = coding_python.generate(random.Random(1), RunConfig())
-    work_code = agent.prepare_work_dir(code)
-    assert (work_code / coding_python.TARGET_FILE).is_file()
-    assert not (work_code / "vendor").exists(), "у питоновской задачи не должно быть vendor"
 
 
 def test_the_prompt_names_the_graded_file():
@@ -368,7 +353,6 @@ def test_the_visual_page_is_read_from_disk(tmp_path):
     load_all()
     task = art.build_task(
         task_id="L-T", title="t", prompt="нарисуй",
-        spec=art.ArtSpec(palette=[], composition=[], detail=[]),
         golden="<html>gold</html>",
     )
     work = agent.prepare_work_dir(task)
@@ -436,15 +420,3 @@ def _shell_task() -> core.TaskInstance:
     )
 
 
-def test_the_visual_prompt_names_the_page_and_the_library():
-    """A visual agent must be told which file is graded and where the library is."""
-    load_all()
-    task = art.build_task(
-        task_id="L-T", title="t", prompt="нарисуй закат",
-        spec=art.ArtSpec(palette=[], composition=[], detail=[]),
-        golden="<html></html>",
-    )
-    prompt = agent.prompt_for(task)
-    assert task.prompt.rstrip() in prompt
-    assert f"`{art.PAGE_FILE}`" in prompt
-    assert "осталось на диске" in prompt

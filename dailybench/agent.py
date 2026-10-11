@@ -775,7 +775,7 @@ def prompt_for(task: core.TaskInstance) -> str:
     from . import art, visual
 
     if task.category == "L":
-        tail = AGENT_TARGET_PAGE.format(path=art.PAGE_FILE) + " " + art.palette_hint()
+        tail = AGENT_TARGET_PAGE.format(path=art.PAGE_FILE)
     elif task.category == "K":
         tail = AGENT_TARGET_PAGE.format(path=visual.PAGE_FILE)
     else:

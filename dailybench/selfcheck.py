@@ -142,7 +142,7 @@ def selfcheck(cfg: RunConfig, tasks: list[core.TaskInstance] | None = None) -> S
 
     other_seed = RunConfig.from_dict({**cfg.__dict__, "seed": cfg.seed + 1})
     digest_other = suite_digest(build_suite(other_seed))
-    if digest_other["sha256"] == digest_a["sha256"]:
+    if digest_other["sha256"] == digest_a["sha256"] and any(task.meta.get("seed_sensitive", True) for task in tasks):
         report.errors.append("смена seed не меняет fixtures")
 
     for task in tasks:

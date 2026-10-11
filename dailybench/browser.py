@@ -5,19 +5,21 @@ the model writes a Three.js page, so the evaluator has to *run* it. This module
 owns that step and nothing else — how a scenario is scored lives in
 ``tasks/visual_*.py``.
 
-What is deliberately fixed here, identically for every model:
+Shared behavior across modes:
 
-* the page is served from ``/app.html`` on a loopback port, and the pinned
-  library from ``/vendor/`` — no CDN, and every request that is not loopback is
-  refused and reported, so an answer that secretly depends on the network scores
-  zero instead of silently working on a machine with internet;
-* the viewport is 800x600 at device pixel ratio 1, so two models are compared on
-  the same frame;
-* the scene is stepped through ``window.__step(dt)``, never through the wall
-  clock, so a simulation is scored at a stated time rather than "after a while";
-* the frame is rendered twice, in two separate page loads, and the two images
-  are hashed: a scene that depends on ``Math.random()`` or on elapsed time is
-  not reproducible and loses the image point.
+* the page is served from ``/app.html`` on a loopback port, with the pinned
+  library from ``/vendor/``;
+* the default viewport is 800x600 at device pixel ratio 1;
+* network requests outside the loopback server (and ``data:`` URLs) are refused
+  and reported, so a page cannot silently depend on a backend resource.
+
+Mode-specific behavior:
+
+* category K's ``fixed``/``time`` modes step ``window.__step(dt)`` and compare
+  repeatable frames;
+* the separate ``live`` mode behaves like an ordinary browser page, settles
+  briefly after DOMContentLoaded, and samples twice using wall-clock time
+  without requiring page hooks or repeatable animation frames.
 
 When Playwright (or its Chromium) is not installed the scenario is reported as
 unverified — the same rule as a missing Go toolchain: not verified is not a
@@ -54,6 +56,11 @@ DEFAULT_TIMEOUT_MS = 20_000
 #: сьюта рисует кадры в соседнем процессе) сцена 1920x1080 не укладывалась в
 #: дефолтные 30 с Playwright и весь рендер падал «TimeoutError: Page.screenshot».
 SCREENSHOT_TIMEOUT_MS = 90_000
+
+#: ``live`` samples a normally loaded page after a short settle, then once more
+#: after a fixed interval. This is observational, not an animation score.
+LIVE_SETTLE_MS = 250
+LIVE_SAMPLE_INTERVAL_MS = 250
 
 #: Chromium is driven headless with software GL: a benchmark may not require a
 #: display, and the same flags must hold on a headless Linux box and on a
@@ -130,7 +137,11 @@ def availability() -> tuple[bool, str]:
         from playwright.sync_api import sync_playwright  # noqa: F401
     except Exception as exc:  # pragma: no cover - depends on the machine
         return False, f"playwright не установлен ({exc.__class__.__name__})"
-    cache = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or (Path.home() / ".cache" / "ms-playwright"))
+    default_cache = (
+        Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / "ms-playwright"
+        if os.name == "nt" else Path.home() / ".cache" / "ms-playwright"
+    )
+    cache = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or default_cache)
     mac_cache = Path.home() / "Library" / "Caches" / "ms-playwright"
     found = any(
         (root / entry).is_dir()
@@ -473,19 +484,17 @@ def _page_pass(
     timeout_ms: int,
     mode: str = "fixed",
 ) -> dict[str, Any]:
-    """One full load: errors, probe, stepping, pixels, frames.
+    """Load a page and capture its observable output.
 
-    ``mode`` decides how the page is advanced before the frame is taken:
-
-    * ``fixed`` — ``steps`` calls of ``__step(dt)`` (the simulation block);
-    * ``time``  — the same, but the frames are also compared at two moments, so
-      an animated art scene proves it animates and a static one proves it does
-      not drift.
+    ``fixed`` and ``time`` use the page's deterministic stepping protocol.
+    ``live`` waits for DOMContentLoaded and a brief settle, then takes two
+    screenshots of the same page at a fixed wall-clock interval. It never calls
+    page-defined hooks and treats pixel statistics as optional.
     """
     context = _browser().new_context(
         viewport={"width": viewport[0], "height": viewport[1]},
         device_scale_factor=1,
-        reduced_motion="reduce",
+        reduced_motion="no-preference" if mode == "live" else "reduce",
     )
     errors: list[str] = []
     external: list[str] = []
@@ -502,6 +511,48 @@ def _page_pass(
         page = context.new_page()
         page.on("console", lambda msg: errors.append(f"console: {msg.text}") if msg.type == "error" else None)
         page.on("pageerror", lambda exc: errors.append(f"pageerror: {exc}"))
+        if mode == "live":
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception as exc:
+                errors.append(f"navigation: {exc.__class__.__name__}: {str(exc)[:200]}")
+            try:
+                page.wait_for_timeout(LIVE_SETTLE_MS)
+            except Exception as exc:
+                errors.append(f"settle: {exc.__class__.__name__}: {str(exc)[:200]}")
+
+            shot = None
+            try:
+                shot = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
+            except Exception as exc:
+                errors.append(f"screenshot: {exc.__class__.__name__}: {str(exc)[:200]}")
+            try:
+                page.wait_for_timeout(LIVE_SAMPLE_INTERVAL_MS)
+            except Exception as exc:
+                errors.append(f"sample wait: {exc.__class__.__name__}: {str(exc)[:200]}")
+            shot_later = None
+            try:
+                shot_later = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
+            except Exception as exc:
+                errors.append(f"later screenshot: {exc.__class__.__name__}: {str(exc)[:200]}")
+
+            # These statistics describe a canvas only. SVG and CSS pages have
+            # no trustworthy canvas sample, so leave their pixels unavailable.
+            try:
+                pixels = page.evaluate(PIXEL_PROBE)
+            except Exception:
+                pixels = None
+            return {
+                "errors": errors,
+                "external": external,
+                "probe": None,
+                "stepped": None,
+                "pixels": pixels,
+                "shot": shot or shot_later,
+                "shot_later": shot_later,
+                "ready_failed": False,
+            }
+
         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
         ready_failed = False
         try:
@@ -579,7 +630,7 @@ def render(
     again: bool = True,
     mode: str = "fixed",
 ) -> RenderResult:
-    """Run one candidate page and return everything observable about it."""
+    """Render one candidate page in a fixed, time-driven, or ordinary live mode."""
     usable, reason = availability()
     if not usable:
         return RenderResult(ok=False, reason=reason)
@@ -590,7 +641,11 @@ def render(
     try:
         with _served(html) as (url, port):
             first = _page_pass(url, port, steps, dt, viewport, timeout_ms, mode)
-            second = _page_pass(url, port, steps, dt, viewport, timeout_ms, mode) if again else None
+            second = (
+                _page_pass(url, port, steps, dt, viewport, timeout_ms, mode)
+                if again and mode != "live"
+                else None
+            )
     except Exception as exc:
         return RenderResult(ok=False, reason=f"{exc.__class__.__name__}: {str(exc)[:200]}")
 
@@ -627,6 +682,15 @@ def render(
     # is mesh`` ронял ``json.dumps`` кадра, и кадр терялся вместе с кэшем. Обе
     # ветки — свежий рендер и чтение из кэша — должны видеть один и тот же
     # JSON-safe payload.
+
+    if mode == "live":
+        # ``live`` deliberately has no page protocol: a static document is a
+        # complete result, and random/realtime animation is not judged for
+        # frame-to-frame reproducibility.
+        result.probe_ok = False
+        if result.errors:
+            result.reason = result.errors[0][:200]
+        return result
 
     result.probe = plain(result.probe) if result.probe is not None else None
     result.stepped = plain(result.stepped) if result.stepped is not None else None

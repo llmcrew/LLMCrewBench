@@ -215,6 +215,52 @@ def test_render_without_a_document_is_refused():
     assert not result.ok and "пустой ответ" in result.reason
 
 
+def test_live_render_screenshots_a_static_svg_without_page_hooks():
+    html = """<!doctype html>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60">
+      <rect width="100" height="60" fill="#123456"/>
+      <circle cx="50" cy="30" r="18" fill="#ffcc00"/>
+    </svg>"""
+    result = browser.render(html, mode="live")
+
+    assert result.ok, result.reason
+    assert result.shot and result.shot.startswith(b"\x89PNG\r\n\x1a\n")
+    assert result.probe is None and not result.probe_ok
+    assert result.pixels is None
+    assert result.shot_later_sha
+    assert not result.shot_sha_again
+
+
+def test_live_render_accepts_css_animation_without_reproducibility_checks():
+    html = """<!doctype html>
+    <style>
+      @keyframes pulse { from { opacity: .2; } to { opacity: 1; } }
+      #box { width: 80px; height: 80px; background: #36c;
+             animation: pulse 1s linear infinite alternate; }
+    </style>
+    <div id="box"></div>"""
+    result = browser.render(html, mode="live")
+
+    assert result.ok, result.reason
+    assert result.shot and result.shot.startswith(b"\x89PNG\r\n\x1a\n")
+    assert result.shot_later_sha
+    assert result.animated is None
+    assert result.pixels is None
+
+
+def test_live_render_keeps_a_screenshot_when_page_errors_and_external_load_fails():
+    html = """<!doctype html>
+    <style>body { background: #135; }</style>
+    <script>throw new Error("live fixture pageerror");</script>
+    <img src="https://example.invalid/unavailable.png">"""
+    result = browser.render(html, mode="live")
+
+    assert not result.ok
+    assert result.shot and result.shot.startswith(b"\x89PNG\r\n\x1a\n")
+    assert any("pageerror:" in error for error in result.errors)
+    assert any(url.startswith("https://example.invalid/") for url in result.external)
+
+
 def test_availability_reports_a_reason_when_usable():
     usable, reason = browser.availability()
     assert usable is True, reason

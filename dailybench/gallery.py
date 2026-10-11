@@ -306,6 +306,8 @@ def answer_html(entry: dict[str, Any]) -> str:
     transcript's recorded artefact comes first; a chat run has no artefact and
     falls back to the fenced block in the reply.
     """
+    if (entry.get("task") or {}).get("category", entry.get("category")) in core.ART_CATEGORIES:
+        return _raw_page(entry)
     transcript = entry.get("transcript") or {}
     recorded = ((transcript.get("extra") or {}).get("artefact") or {}).get("text") or ""
     if recorded.strip():
@@ -337,6 +339,8 @@ def scene_page(item: dict[str, Any], target: Path, task_id: str) -> str:
         + " · пробел — пауза, → — шаг, R — сброс</div>"
     )
     page = standalone_html(item["html"], f"{depth}{ASSET_DIR}/three.global.js")
+    if item.get("category") in core.ART_CATEGORIES:
+        return page
     # Кадр сцены — 1920x1080. Ответ рисует canvas по своим числам, поэтому
     # масштабируем его целиком под окно: без обрезки и без полей, на любом
     # экране. `zoom` двигает и хит-тесты, поэтому он, а не transform: scale.
@@ -435,16 +439,19 @@ def _shot_for(entry: dict[str, Any], visual: dict[str, Any]) -> str:
     # -Frame, so a render of it lands on a different moment (measured: 14.6 % of
     # the pixels differed). The checks scored the raw page, and so must the frame.
     page = str(entry.get("raw") or "") or _raw_page(entry)
-    if not steps or not dt or not page:
+    if not page:
         return existing
     from . import art, visual
 
     try:
-        if entry.get("category") in core.ART_CATEGORIES:
-            path = art.art_shot_path(page, int(steps), float(dt))
+        category = (entry.get("task") or {}).get("category", entry.get("category"))
+        if category in core.ART_CATEGORIES:
+            path = art.art_shot_path(page)
             if not path.is_file():
-                art.cached_art_render(page, int(steps), float(dt))
+                art.cached_art_render(page)
         else:
+            if not steps or not dt:
+                return existing
             path = visual.shot_path(page, int(steps), float(dt))
             if not path.is_file():
                 visual._cached_render(page, int(steps), float(dt))
