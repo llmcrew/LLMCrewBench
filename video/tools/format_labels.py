@@ -19,10 +19,9 @@ DATA = ROOT / "video" / "src" / "data"
 NAMES = {
     "deepseek-v4.1-flash-uncensored": "DeepSeek 4.1 Flash",
     "deepseek-v4.1-flash-unc": "DeepSeek 4.1 Flash",
-    "Qwen3.5 397B-A17B": "Qwen 3.5 397B A17B",
+    "glm-5.3": "GLM 5.3",
     "Qwen3.6-35B-A3B": "Qwen 3.6 35B A3B",
     "qwen3.8": "Qwen 3.8",
-    "minimax-m3": "MiniMax M3",
 }
 
 

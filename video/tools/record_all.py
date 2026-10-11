@@ -24,7 +24,10 @@ def job(pair: tuple[str, str], secs: float, warmup: float, force: bool = False) 
     model, scene = pair
     existing = OUT / f"{model}__{scene}.mp4"
     if existing.is_file() and not force:
-        return model, scene, "cached"
+        # плашка (страница не ожила/нет страницы) — это не кэш живой записи;
+        # в манифесте clips.json она должна значиться missing.
+        tag = "missing" if (OUT / f"{model}__{scene}.missing").is_file() else "cached"
+        return model, scene, tag
     if force and existing.is_file():
         existing.unlink()
     # Chrome изредка не поднимается (Target.createTarget по таймауту) — это

@@ -87,7 +87,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-5",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -107,7 +107,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-6",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -127,7 +127,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-7",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -147,7 +147,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-8",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -167,7 +167,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-9",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -187,7 +187,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-10",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -207,7 +207,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-11",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -227,7 +227,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-12",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -247,7 +247,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-13",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -267,7 +267,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-14",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -287,12 +287,12 @@
  {
   "model": "glm-5.3",
   "scene": "K-15",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
   "scene": "K-15",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "qwen38",
@@ -307,7 +307,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-16",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -327,7 +327,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-17",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -347,7 +347,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-18",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -367,7 +367,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-19",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -387,7 +387,7 @@
  {
   "model": "glm-5.3",
   "scene": "K-20",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -407,7 +407,7 @@
  {
   "model": "glm-5.3",
   "scene": "L-1",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -427,7 +427,7 @@
  {
   "model": "glm-5.3",
   "scene": "L-2",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -447,7 +447,7 @@
  {
   "model": "glm-5.3",
   "scene": "L-3",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -467,7 +467,7 @@
  {
   "model": "glm-5.3",
   "scene": "L-4",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -487,12 +487,12 @@
  {
   "model": "glm-5.3",
   "scene": "L-5",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
   "scene": "L-5",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "qwen38",
@@ -507,7 +507,7 @@
  {
   "model": "glm-5.3",
   "scene": "L-6",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -527,7 +527,7 @@
  {
   "model": "glm-5.3",
   "scene": "L-7",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -547,7 +547,7 @@
  {
   "model": "glm-5.3",
   "scene": "L-8",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -567,7 +567,7 @@
  {
   "model": "glm-5.3",
   "scene": "L-9",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -587,7 +587,7 @@
  {
   "model": "glm-5.3",
   "scene": "L-10",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -607,7 +607,7 @@
  {
   "model": "glm-5.3",
   "scene": "L-11",
-  "status": "ok"
+  "status": "cached"
  },
  {
   "model": "qwen36",
@@ -752,7 +752,7 @@
  {
   "model": "qwen36",
   "scene": "L-18",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "qwen38",
@@ -792,7 +792,7 @@
  {
   "model": "qwen36",
   "scene": "L-20",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "qwen38",
@@ -832,7 +832,7 @@
  {
   "model": "qwen36",
   "scene": "L-22",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "qwen38",
@@ -872,7 +872,7 @@
  {
   "model": "qwen36",
   "scene": "L-24",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "qwen38",
@@ -892,7 +892,7 @@
  {
   "model": "qwen36",
   "scene": "L-25",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "qwen38",
@@ -912,12 +912,12 @@
  {
   "model": "qwen36",
   "scene": "L-26",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "qwen38",
   "scene": "L-26",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
@@ -952,7 +952,7 @@
  {
   "model": "qwen36",
   "scene": "L-28",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "qwen38",
