@@ -206,7 +206,7 @@ export const ShowcaseScene: React.FC<{
         }}
       >
         <span style={{font: `500 21px/1.4 ${FONT_SANS}`, color: C.muted}}>
-          решение {runs[openIndex]?.label ?? '—'} · сцена {sceneId} · {openedIndex + 1}/5 ·{' '}
+          решение {runs[openIndex]?.label ?? '—'} · сцена {sceneId} · {openedIndex + 1}/{runs.length} ·{' '}
           {runs[openIndex]?.missing ? 'страница не ожила' : 'живая страница, снята покадрово'}
         </span>
       </div>
