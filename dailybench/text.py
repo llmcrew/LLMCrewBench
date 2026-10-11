@@ -237,8 +237,12 @@ def numbered_lines(text: str, expected: int) -> list[str] | None:
         m = re.match(r"\s*(\d{1,2})\s*[.)\]:-]\s*(.+?)\s*$", line)
         if m:
             idx = int(m.group(1))
-            if idx not in found:
-                found[idx] = clean_line(m.group(2))
+            # A repeated index is an extra line, not an override: first-wins
+            # parsing let a duplicate "6. KNOWN: ..." smuggle an invented
+            # answer while keeping full marks (T5).
+            if idx in found:
+                return None
+            found[idx] = clean_line(m.group(2))
     if sorted(found) != list(range(1, expected + 1)):
         return None
     return [found[i] for i in range(1, expected + 1)]
