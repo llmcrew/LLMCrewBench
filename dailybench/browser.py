@@ -302,9 +302,15 @@ PIXEL_PROBE = """
   // фиксированные 2 px съедают слишком много пар, и тонкие линии (лучи, кабели)
   // перестают попадать в метрику границ. Шаг округляется до чётного.
   const st = Math.max(2, Math.round(w / 800) * 2);
-  for (let y = 0; y < h; y += st) {
+  // Half-stride row offset: a regular grid aliases with patterns that repeat at
+  // the stride (thin stripes shift the sampled share from 100% to 0% with a
+  // one-pixel move). Staggering alternate rows by st/2 halves that dependence.
+  let row = 0;
+  for (let y = 0; y < h; y += st, row += 1) {
     let rowLum = 0, rowSat = 0, rowN = 0;
-    for (let x = 0; x < w; x += st) {
+    const x0 = (row % 2) * (st >> 1);
+    for (let x = x0; x < w; x += st) {
+
       const i = (y * w + x) * 4;
       const r = data[i], g = data[i + 1], b = data[i + 2];
       const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
