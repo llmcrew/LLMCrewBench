@@ -40,7 +40,7 @@ zero.
 | C | Coding | 20 | 3 | Built by the agent in a working copy; hidden tests decide: Python repo patch, Go concurrency, SQL result sets |
 | D | Tool calling | 14 | 7 | Tool-call log, file diffs after the run, no destructive action |
 | E | Long context | 10 | 5 | One value retrieved from a 8K–28K-token document, admission measured |
-| F | Hallucination resistance | 8 | 1 | 10 questions: 5 answerable, 5 not — inventing one scores zero |
+| F | Hallucination resistance | 8 | 1 | 10 questions: 5 answerable, 5 not — each invention loses that question's points |
 | G | Structured output | 8 | 4 | JSON-Schema conformance (types, enums, bounds, no extra keys) |
 | H | Multi-turn dialogue | 6 | 3 | A correction applied mid-conversation, earlier constraints kept |
 | I | Retrieval over files | 4 | 2 | Aggregation and conflict resolution over a multi-file workspace |

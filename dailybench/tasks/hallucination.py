@@ -9,6 +9,8 @@ carries a property-transfer trap (worker replicas vs database replicas).
 from __future__ import annotations
 
 import random
+import re
+from decimal import Decimal
 from typing import Any
 
 from .. import core, text
@@ -88,7 +90,7 @@ def _build(rng: random.Random) -> tuple[str, list[dict[str, Any]]]:
             "text": "Когда выполняется плановый deployment?",
             "kind": "known",
             "answer": f"{day_en} 03:00 UTC",
-            "accept_all": [list(day_accept), ["03:00", "3:00", "03.00", "3.00"]],
+            "accept_all": [list(day_accept), ["03:00", "3:00", "03.00", "3.00"], ["utc"]],
         },
     ]
     unknown = [
@@ -181,7 +183,33 @@ def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
     ]
 
 
+_BYTE_UNITS = {
+    "kib": 1024, "mib": 1024**2, "gib": 1024**3, "tib": 1024**4,
+    "kb": 1000, "mb": 1000**2, "gb": 1000**3, "tb": 1000**4,
+    "bytes": 1, "byte": 1, "b": 1,
+}
+
+
+def _bytes_of(payload: str) -> Decimal | None:
+    """Normalise a size answer to bytes, unit included.
+
+    ``parse_decimal`` used to strip the unit, so ``500 GiB`` equalled
+    ``500 MiB`` and the byte alias never matched (T5).
+    """
+    match = re.search(r"([-+]?\d+(?:\.\d+)?)\s*([a-z]+)", (payload or "").casefold())
+    if match:
+        unit = match.group(2)
+        if unit not in _BYTE_UNITS:
+            return None
+        return Decimal(match.group(1)) * _BYTE_UNITS[unit]
+    bare = re.search(r"[-+]?\d+", payload or "")
+    return Decimal(bare.group(0)) if bare else None
+
+
 def _numeric_equal(payload: str, expected: str) -> bool:
+    if any(unit in expected.casefold() for unit in _BYTE_UNITS):
+        got, want = _bytes_of(payload), _bytes_of(expected)
+        return got is not None and want is not None and got == want
     numbers = text.parse_decimal(payload)
     expected_number = text.parse_decimal(expected)
     return numbers is not None and expected_number is not None and numbers == expected_number
@@ -215,6 +243,12 @@ def _judge(question: dict[str, Any], value: str) -> tuple[bool, str]:
             if low == " ".join(str(variant).casefold().split()):
                 return True, "верно"
         return False, f"получено {payload!r}, ожидалось {question['answer']}"
+
+    # A hedged line is not an asserted value: "not Tuesday; not 03:00" used to
+    # pass because both substrings were present (T5). The answer must be one
+    # positive statement, not a chain of negations.
+    if re.search(r"\b(?:not|нет|не)\b", low):
+        return False, f"ответ {payload!r} содержит отрицание — это не утверждение значения"
 
     groups = question.get("accept_all") or []
     for group in groups:
