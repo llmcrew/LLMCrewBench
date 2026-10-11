@@ -1,0 +1,342 @@
+[
+ {
+  "dir": "deepseek-v4.1-flash-unc",
+  "label": "DeepSeek 4.1 Flash",
+  "title": "DeepSeek 4.1 Flash",
+  "accent": "#4cc2ff",
+  "quant": "bf16/fp8",
+  "context": 262144,
+  "score": 95.0,
+  "verdict": "95/100",
+  "errors": 1,
+  "tasks": 96,
+  "K": {
+   "e": 77.0,
+   "p": 80.0
+  },
+  "L": {
+   "e": 134.0,
+   "p": 145.0
+  },
+  "totals": {
+   "A": {
+    "earned": 10.0,
+    "possible": 10.0
+   },
+   "B": {
+    "earned": 15.0,
+    "possible": 15.0
+   },
+   "C": {
+    "earned": 20.0,
+    "possible": 20.0
+   },
+   "D": {
+    "earned": 9.0,
+    "possible": 14.0
+   },
+   "E": {
+    "earned": 10.0,
+    "possible": 10.0
+   },
+   "F": {
+    "earned": 8.0,
+    "possible": 8.0
+   },
+   "G": {
+    "earned": 8.0,
+    "possible": 8.0
+   },
+   "H": {
+    "earned": 6.0,
+    "possible": 6.0
+   },
+   "I": {
+    "earned": 4.0,
+    "possible": 4.0
+   },
+   "J": {
+    "earned": 5.0,
+    "possible": 5.0
+   }
+  },
+  "spend": {
+   "answer": 1037184,
+   "reasoning": 585622,
+   "tools": 1449,
+   "minutes": 140.3
+  }
+ },
+ {
+  "dir": "qwen35",
+  "label": "Qwen 3.5 397B A17B",
+  "title": "Qwen3.5 397B-A17B",
+  "accent": "#7ee0ff",
+  "quant": "bf16/fp8",
+  "context": 131072,
+  "score": 67.0,
+  "verdict": "67/100",
+  "errors": 0,
+  "tasks": 91,
+  "K": {
+   "e": 62.0,
+   "p": 80.0
+  },
+  "L": {
+   "e": 46.0,
+   "p": 120.0
+  },
+  "totals": {
+   "A": {
+    "earned": 10.0,
+    "possible": 10.0
+   },
+   "B": {
+    "earned": 12.0,
+    "possible": 15.0
+   },
+   "C": {
+    "earned": 4.0,
+    "possible": 20.0
+   },
+   "D": {
+    "earned": 8.0,
+    "possible": 14.0
+   },
+   "E": {
+    "earned": 8.0,
+    "possible": 10.0
+   },
+   "F": {
+    "earned": 8.0,
+    "possible": 8.0
+   },
+   "G": {
+    "earned": 6.0,
+    "possible": 8.0
+   },
+   "H": {
+    "earned": 6.0,
+    "possible": 6.0
+   },
+   "I": {
+    "earned": 2.0,
+    "possible": 4.0
+   },
+   "J": {
+    "earned": 3.0,
+    "possible": 5.0
+   }
+  },
+  "spend": {
+   "answer": 475879,
+   "reasoning": 0,
+   "tools": 58,
+   "minutes": 101.0
+  }
+ },
+ {
+  "dir": "qwen36",
+  "label": "Qwen 3.6 35B A3B",
+  "title": "Qwen 3.6 35B A3B",
+  "accent": "#3ddc97",
+  "quant": "bf16/fp8",
+  "context": 262144,
+  "score": 92.5,
+  "verdict": "92/100",
+  "errors": 0,
+  "tasks": 96,
+  "K": {
+   "e": 69.0,
+   "p": 80.0
+  },
+  "L": {
+   "e": 46.0,
+   "p": 145.0
+  },
+  "totals": {
+   "A": {
+    "earned": 10.0,
+    "possible": 10.0
+   },
+   "B": {
+    "earned": 14.0,
+    "possible": 15.0
+   },
+   "C": {
+    "earned": 20.0,
+    "possible": 20.0
+   },
+   "D": {
+    "earned": 10.5,
+    "possible": 14.0
+   },
+   "E": {
+    "earned": 10.0,
+    "possible": 10.0
+   },
+   "F": {
+    "earned": 8.0,
+    "possible": 8.0
+   },
+   "G": {
+    "earned": 8.0,
+    "possible": 8.0
+   },
+   "H": {
+    "earned": 6.0,
+    "possible": 6.0
+   },
+   "I": {
+    "earned": 2.0,
+    "possible": 4.0
+   },
+   "J": {
+    "earned": 4.0,
+    "possible": 5.0
+   }
+  },
+  "spend": {
+   "answer": 1796429,
+   "reasoning": 0,
+   "tools": 1281,
+   "minutes": 144.0
+  }
+ },
+ {
+  "dir": "qwen38",
+  "label": "Qwen 3.8",
+  "title": "Qwen 3.8",
+  "accent": "#b48cff",
+  "quant": "bf16/fp8",
+  "context": 262144,
+  "score": 85.0,
+  "verdict": "85/100",
+  "errors": 3,
+  "tasks": 96,
+  "K": {
+   "e": 76.0,
+   "p": 80.0
+  },
+  "L": {
+   "e": 126.0,
+   "p": 145.0
+  },
+  "totals": {
+   "A": {
+    "earned": 10.0,
+    "possible": 10.0
+   },
+   "B": {
+    "earned": 14.0,
+    "possible": 15.0
+   },
+   "C": {
+    "earned": 12.0,
+    "possible": 20.0
+   },
+   "D": {
+    "earned": 8.0,
+    "possible": 14.0
+   },
+   "E": {
+    "earned": 10.0,
+    "possible": 10.0
+   },
+   "F": {
+    "earned": 8.0,
+    "possible": 8.0
+   },
+   "G": {
+    "earned": 8.0,
+    "possible": 8.0
+   },
+   "H": {
+    "earned": 6.0,
+    "possible": 6.0
+   },
+   "I": {
+    "earned": 4.0,
+    "possible": 4.0
+   },
+   "J": {
+    "earned": 5.0,
+    "possible": 5.0
+   }
+  },
+  "spend": {
+   "answer": 1634754,
+   "reasoning": 0,
+   "tools": 1488,
+   "minutes": 329.6
+  }
+ },
+ {
+  "dir": "minimax-m3",
+  "label": "MiniMax M3",
+  "title": "MiniMax M3",
+  "accent": "#ffb454",
+  "quant": "bf16/fp8",
+  "context": 160000,
+  "score": 79.0,
+  "verdict": "79/100",
+  "errors": 9,
+  "tasks": 90,
+  "K": {
+   "e": 78.0,
+   "p": 80.0
+  },
+  "L": {
+   "e": 90.0,
+   "p": 115.0
+  },
+  "totals": {
+   "A": {
+    "earned": 10.0,
+    "possible": 10.0
+   },
+   "B": {
+    "earned": 9.0,
+    "possible": 15.0
+   },
+   "C": {
+    "earned": 20.0,
+    "possible": 20.0
+   },
+   "D": {
+    "earned": 7.0,
+    "possible": 14.0
+   },
+   "E": {
+    "earned": 10.0,
+    "possible": 10.0
+   },
+   "F": {
+    "earned": 4.0,
+    "possible": 8.0
+   },
+   "G": {
+    "earned": 8.0,
+    "possible": 8.0
+   },
+   "H": {
+    "earned": 4.0,
+    "possible": 6.0
+   },
+   "I": {
+    "earned": 2.0,
+    "possible": 4.0
+   },
+   "J": {
+    "earned": 5.0,
+    "possible": 5.0
+   }
+  },
+  "spend": {
+   "answer": 1784748,
+   "reasoning": 0,
+   "tools": 1638,
+   "minutes": 746.0
+  }
+ }
+]

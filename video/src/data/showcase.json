@@ -1,0 +1,2060 @@
+[
+ {
+  "scene": "K-1",
+  "title": "K-1 — баллистика: три снаряда под гравитацией",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-1.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-1.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-1.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-1.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-1.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 2
+ },
+ {
+  "scene": "K-2",
+  "title": "K-2 — груз на пружине",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-2.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-2.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-2.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-2.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-2.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 4
+ },
+ {
+  "scene": "K-3",
+  "title": "K-3 — затухающий маятник",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-3.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-3.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-3.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-3.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-3.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 2
+ },
+ {
+  "scene": "K-4",
+  "title": "K-4 — упругие соударения на прямой",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-4.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-4.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-4.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-4.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-4.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 3
+ },
+ {
+  "scene": "K-5",
+  "title": "K-5 — цепочка из трёх грузов на пружинах",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-5.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-5.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-5.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-5.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-5.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 1
+ },
+ {
+  "scene": "K-6",
+  "title": "K-6 — свободное вращение твёрдого тела",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-6.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-6.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-6.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-6.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-6.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 0
+ },
+ {
+  "scene": "K-7",
+  "title": "K-7 — фонтан частиц",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-7.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-7.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-7.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-7.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-7.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 4
+ },
+ {
+  "scene": "K-8",
+  "title": "K-8 — броуновское движение",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-8.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-8.mp4",
+    "missing": true,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-8.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-8.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-8.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 0
+ },
+ {
+  "scene": "K-9",
+  "title": "K-9 — стая (boids)",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-9.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-9.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-9.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-9.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-9.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 0
+ },
+ {
+  "scene": "K-10",
+  "title": "K-10 — частицы в коробке с гравитацией",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-10.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-10.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-10.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-10.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-10.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 0
+ },
+ {
+  "scene": "K-11",
+  "title": "K-11 — частицы в заданном поле скоростей",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-11.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-11.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-11.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-11.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-11.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 2
+ },
+ {
+  "scene": "K-12",
+  "title": "K-12 — диффузия тепла на пластине 32x32",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-12.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-12.mp4",
+    "missing": true,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-12.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-12.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-12.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 3
+ },
+ {
+  "scene": "K-13",
+  "title": "K-13 — лесной пожар 40x40",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-13.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-13.mp4",
+    "missing": true,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-13.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-13.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-13.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 4
+ },
+ {
+  "scene": "K-14",
+  "title": "K-14 — игра «Жизнь» 24x24",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-14.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-14.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-14.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-14.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-14.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 3
+ },
+ {
+  "scene": "K-15",
+  "title": "K-15 — волновое уравнение на струне",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-15.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-15.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-15.mp4",
+    "missing": true,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-15.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-15.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 4
+ },
+ {
+  "scene": "K-16",
+  "title": "K-16 — терраин из сеяного вэлью-шума",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-16.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-16.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-16.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-16.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-16.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 1
+ },
+ {
+  "scene": "K-17",
+  "title": "K-17 — 3D-гистограмма: высоты столбцов равны данным",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-17.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-17.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-17.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-17.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-17.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 0
+ },
+ {
+  "scene": "K-18",
+  "title": "K-18 — оррерия: углы и координаты трёх планет",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-18.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-18.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-18.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-18.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-18.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 1
+ },
+ {
+  "scene": "K-19",
+  "title": "K-19 — обратная кинематика: схват попадает в цель",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-19.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-19.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-19.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-19.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-19.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 2
+ },
+ {
+  "scene": "K-20",
+  "title": "K-20 — спектр сигнала: амплитуды ДПФ на заданных бинах",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__K-20.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__K-20.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__K-20.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__K-20.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__K-20.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 3
+ },
+ {
+  "scene": "L-1",
+  "title": "L-1 — закат над морем",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-1.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-1.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-1.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-1.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-1.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 2
+ },
+ {
+  "scene": "L-2",
+  "title": "L-2 — неоновая сетка (synthwave)",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-2.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-2.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-2.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-2.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-2.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 2
+ },
+ {
+  "scene": "L-3",
+  "title": "L-3 — мандала",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-3.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-3.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-3.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-3.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-3.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 3
+ },
+ {
+  "scene": "L-4",
+  "title": "L-4 — ночной город",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-4.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-4.mp4",
+    "missing": true,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-4.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-4.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-4.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 3
+ },
+ {
+  "scene": "L-5",
+  "title": "L-5 — мост в изометрии",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-5.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-5.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-5.mp4",
+    "missing": true,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-5.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-5.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 3
+ },
+ {
+  "scene": "L-6",
+  "title": "L-6 — галактика из частиц",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-6.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-6.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-6.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-6.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-6.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 1
+ },
+ {
+  "scene": "L-7",
+  "title": "L-7 — фейерверк",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-7.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-7.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-7.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-7.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-7.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 0
+ },
+ {
+  "scene": "L-8",
+  "title": "L-8 — аврора",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-8.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-8.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-8.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-8.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-8.mp4",
+    "missing": true,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 1
+ },
+ {
+  "scene": "L-9",
+  "title": "L-9 — звёздное небо над горами",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-9.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-9.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-9.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-9.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-9.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 1
+ },
+ {
+  "scene": "L-10",
+  "title": "L-10 — фрактал Мандельброта (фрагментный шейдер)",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-10.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-10.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-10.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-10.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-10.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 2
+ },
+ {
+  "scene": "L-11",
+  "title": "L-11 — жидкий металл и стекло (MeshPhysicalMaterial)",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-11.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-11.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-11.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-11.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-11.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 2
+ },
+ {
+  "scene": "L-12",
+  "title": "L-12 — бесконечный туннель (туман в шейдере)",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-12.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-12.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-12.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-12.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-12.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 4
+ },
+ {
+  "scene": "L-13",
+  "title": "L-13 — лавовая лампа",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-13.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-13.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-13.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-13.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-13.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 4
+ },
+ {
+  "scene": "L-14",
+  "title": "L-14 — водная поверхность",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-14.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-14.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-14.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-14.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-14.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 3
+ },
+ {
+  "scene": "L-15",
+  "title": "L-15 — поток частиц",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-15.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-15.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-15.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-15.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-15.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 1
+ },
+ {
+  "scene": "L-16",
+  "title": "L-16 — следы сфер",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-16.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-16.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-16.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-16.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-16.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 0
+ },
+ {
+  "scene": "L-17",
+  "title": "L-17 — комната с дождём за окном",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-17.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-17.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-17.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-17.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-17.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 1
+ },
+ {
+  "scene": "L-18",
+  "title": "L-18 — неоновая лапшичная под дождём",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-18.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-18.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-18.mp4",
+    "missing": true,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-18.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-18.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 4
+ },
+ {
+  "scene": "L-19",
+  "title": "L-19 — трамвай сквозь дождливый город",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-19.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-19.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-19.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-19.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-19.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 4
+ },
+ {
+  "scene": "L-20",
+  "title": "L-20 — оранжерея на станции под метеорным дождём",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-20.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-20.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-20.mp4",
+    "missing": true,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-20.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-20.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 1
+ },
+ {
+  "scene": "L-21",
+  "title": "L-21 — аналоговая рубка с дождём за стеклом",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-21.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-21.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-21.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-21.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-21.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 3
+ },
+ {
+  "scene": "L-22",
+  "title": "L-22 — робот-ремонтник под дождём",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-22.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-22.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-22.mp4",
+    "missing": true,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-22.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-22.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 3
+ },
+ {
+  "scene": "L-23",
+  "title": "L-23 — космическая заправка под дождём",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-23.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-23.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-23.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-23.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-23.mp4",
+    "missing": false,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 2
+ },
+ {
+  "scene": "L-24",
+  "title": "L-24 — автобусная остановка в неоне",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-24.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-24.mp4",
+    "missing": false,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-24.mp4",
+    "missing": true,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-24.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-24.mp4",
+    "missing": true,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 0
+ },
+ {
+  "scene": "L-25",
+  "title": "L-25 — ядерные взрывы на Земле из космоса",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-25.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-25.mp4",
+    "missing": true,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-25.mp4",
+    "missing": true,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-25.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-25.mp4",
+    "missing": true,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 3
+ },
+ {
+  "scene": "L-26",
+  "title": "L-26 — метеорит входит в атмосферу",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-26.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-26.mp4",
+    "missing": true,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-26.mp4",
+    "missing": true,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-26.mp4",
+    "missing": true,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-26.mp4",
+    "missing": true,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 0
+ },
+ {
+  "scene": "L-27",
+  "title": "L-27 — столкновение двух планет",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-27.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-27.mp4",
+    "missing": true,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-27.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-27.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-27.mp4",
+    "missing": true,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 3
+ },
+ {
+  "scene": "L-28",
+  "title": "L-28 — цепная реакция обломков",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-28.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-28.mp4",
+    "missing": true,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-28.mp4",
+    "missing": true,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-28.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-28.mp4",
+    "missing": true,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 0
+ },
+ {
+  "scene": "L-29",
+  "title": "L-29 — станция уходит, Земля позади",
+  "runs": [
+   {
+    "model": "deepseek-v4.1-flash-unc",
+    "label": "DeepSeek 4.1 Flash",
+    "clip": "clips/deepseek-v4.1-flash-unc__L-29.mp4",
+    "missing": false,
+    "accent": "#4cc2ff"
+   },
+   {
+    "model": "qwen35",
+    "label": "Qwen 3.5 397B A17B",
+    "clip": "clips/qwen35__L-29.mp4",
+    "missing": true,
+    "accent": "#7ee0ff"
+   },
+   {
+    "model": "qwen36",
+    "label": "Qwen 3.6 35B A3B",
+    "clip": "clips/qwen36__L-29.mp4",
+    "missing": false,
+    "accent": "#3ddc97"
+   },
+   {
+    "model": "qwen38",
+    "label": "Qwen 3.8",
+    "clip": "clips/qwen38__L-29.mp4",
+    "missing": false,
+    "accent": "#b48cff"
+   },
+   {
+    "model": "minimax-m3",
+    "label": "MiniMax M3",
+    "clip": "clips/minimax-m3__L-29.mp4",
+    "missing": true,
+    "accent": "#ffb454"
+   }
+  ],
+  "open": 3
+ }
+]
