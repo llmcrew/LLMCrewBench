@@ -336,10 +336,14 @@ def _content_i1(payload: Any, task: core.TaskInstance) -> bool:
     top3 = payload.get("top3")
     if total is None or mean is None:
         return False
+    if not isinstance(top3, list):
+        # A malformed field is a wrong answer, not an evaluator crash: the
+        # check must survive top3=1 or any other shape without losing points.
+        return False
     return (
         total == task.oracle["sum"]
         and round(mean, 2) == task.oracle["mean"]
-        and list(top3 or []) == task.oracle["top3"]
+        and top3 == task.oracle["top3"]
         and payload.get("max_file") == task.oracle["max_file"]
     )
 

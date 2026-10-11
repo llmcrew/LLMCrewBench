@@ -512,42 +512,45 @@ def _page_pass(
         page.on("console", lambda msg: errors.append(f"console: {msg.text}") if msg.type == "error" else None)
         page.on("pageerror", lambda exc: errors.append(f"pageerror: {exc}"))
         if mode == "live":
+            navigated = True
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             except Exception as exc:
                 errors.append(f"navigation: {exc.__class__.__name__}: {str(exc)[:200]}")
-            try:
-                page.wait_for_timeout(LIVE_SETTLE_MS)
-            except Exception as exc:
-                errors.append(f"settle: {exc.__class__.__name__}: {str(exc)[:200]}")
-
+                navigated = False
+            # A page that never reaches DOMContentLoaded is busy in its own
+            # script: screenshots would each hang for their full timeout
+            # (measured: +180 s on a `while (true)` page). The render ends
+            # here — a hung page gets a timeout, not the whole suite.
             shot = None
-            try:
-                shot = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
-            except Exception as exc:
-                errors.append(f"screenshot: {exc.__class__.__name__}: {str(exc)[:200]}")
-            try:
-                page.wait_for_timeout(LIVE_SAMPLE_INTERVAL_MS)
-            except Exception as exc:
-                errors.append(f"sample wait: {exc.__class__.__name__}: {str(exc)[:200]}")
             shot_later = None
-            try:
-                shot_later = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
-            except Exception as exc:
-                errors.append(f"later screenshot: {exc.__class__.__name__}: {str(exc)[:200]}")
+            if navigated:
+                try:
+                    page.wait_for_timeout(LIVE_SETTLE_MS)
+                except Exception as exc:
+                    errors.append(f"settle: {exc.__class__.__name__}: {str(exc)[:200]}")
+                try:
+                    shot = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
+                except Exception as exc:
+                    errors.append(f"screenshot: {exc.__class__.__name__}: {str(exc)[:200]}")
+                try:
+                    page.wait_for_timeout(LIVE_SAMPLE_INTERVAL_MS)
+                except Exception as exc:
+                    errors.append(f"sample wait: {exc.__class__.__name__}: {str(exc)[:200]}")
+                try:
+                    shot_later = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
+                except Exception as exc:
+                    errors.append(f"later screenshot: {exc.__class__.__name__}: {str(exc)[:200]}")
 
-            # These statistics describe a canvas only. SVG and CSS pages have
-            # no trustworthy canvas sample, so leave their pixels unavailable.
-            try:
-                pixels = page.evaluate(PIXEL_PROBE)
-            except Exception:
-                pixels = None
+            # No pixel statistics in ``live``: the canvas probe is a K-only
+            # measurement, and an arbitrary page may have no canvas at all —
+            # or an evaluate call that never returns.
             return {
                 "errors": errors,
                 "external": external,
                 "probe": None,
                 "stepped": None,
-                "pixels": pixels,
+                "pixels": None,
                 "shot": shot or shot_later,
                 "shot_later": shot_later,
                 "ready_failed": False,

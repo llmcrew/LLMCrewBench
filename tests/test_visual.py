@@ -273,6 +273,30 @@ def test_the_pinned_library_is_present(name):
 
 
 # --------------------------------------------------------------------------- #
+
+def test_live_render_of_a_hung_page_ends_at_the_navigation_timeout():
+    """An infinite script must not stall the whole suite (V1).
+
+    Before the guard, both screenshots each hung for their full 90 s timeout on
+    a `while (true)` page — one task cost ~200 s and blocked the run. Now the
+    render ends at the navigation deadline with an explicit error.
+    """
+    import time
+
+    html = """<!doctype html><script>while (true) {}</script>"""
+    started = time.monotonic()
+    result = browser.render(html, mode="live")
+    elapsed = time.monotonic() - started
+
+    assert not result.ok
+    assert any("navigation:" in error for error in result.errors)
+    assert not result.shot
+    assert elapsed < 60, (
+        f"зависшая страница обязана упираться в таймаут навигации, а не в скриншоты ({elapsed:.0f}s)"
+    )
+
+
+# --------------------------------------------------------------------------- #
 # The frame cache
 # --------------------------------------------------------------------------- #
 

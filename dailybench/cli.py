@@ -644,6 +644,22 @@ def _resume_tasks(cfg: RunConfig, tasks: list) -> tuple[list, list]:
             f"({str(current.get('sha256'))[:12]} ≠ {str(saved_digest.get('sha256'))[:12]}) — "
             "догрузка смешала бы два сьюта"
         )
+    saved_config = directory / "config.json"
+    if saved_config.is_file():
+        old = json.loads(saved_config.read_text(encoding="utf-8"))
+        identity = ("model", "base_url", "seed", "quant", "system_prompt",
+                    "temperature", "top_p", "max_new_tokens", "max_total_tokens")
+        changed = [
+            key
+            for key in identity
+            if str(old.get(key, "")) != str(getattr(cfg, key, "") if getattr(cfg, key, None) is not None else "")
+        ]
+        if changed:
+            raise SystemExit(
+                f"{directory}: resume смешал бы два прогона — "
+                f"{', '.join(changed)} не совпадает с config.json "
+                "(продолжать нельзя; запустите новый прогон с новым --name)"
+            )
 
     by_id = {task.id: task for task in full}
     saved = _saved_entries(directory)

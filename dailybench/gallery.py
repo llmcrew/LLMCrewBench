@@ -82,7 +82,7 @@ STEP_HOOK = """
       const cs = document.querySelectorAll('canvas');
       if (!cs.length) return -1;
       if (!oc) { oc = document.createElement('canvas'); oc.width = 64; oc.height = 48; ox = oc.getContext('2d', {willReadFrequently: true}); }
-      // Сумма по ВСЕМ canvas: у L-2 их два, первый — WebGL без
+      // Сумма по ВСЕМ canvas: страница может держать два canvas, первый — WebGL без
       // preserveDrawingBuffer, и подпись только по нему читалась как пустая:
       // движущаяся сцена получала freeze=0 и показывалась статичным кадром.
       let total = 0;
@@ -400,7 +400,7 @@ def showcase_entries(run: dict[str, Any]) -> list[dict[str, Any]]:
                 "shot": _shot_for(entry, sample),
                 "score": entry.get("score") or {},
                 "spend": transcript.get("spend") or {},
-                "atmosphere": visual.get("atmosphere") or [],
+
                 "steps": sample["steps"],
                 "dt": sample["dt"],
             }
@@ -426,9 +426,11 @@ def _shot_for(entry: dict[str, Any], visual: dict[str, Any]) -> str:
 
     The cache lives outside the run (``~/.cache/dailybench/visual``) and is keyed
     by page content: a purged or rotated cache used to leave the showcase with the
-    live page but no picture at all, silently. The render is deterministic, so the
-    recovered frame is the same one the checks scored; a browser-less machine just
-    keeps whatever the run recorded.
+    live page but no picture at all, silently. A K render is deterministic, so
+    the recovered frame is the same one the checks scored; a recovered live
+    page (L) is *a* frame of the same work, not necessarily the byte-identical
+    one the check scored. A browser-less machine just keeps whatever the run
+    recorded.
     """
     existing = str(visual.get("shot") or "")
     if existing and Path(existing).is_file():
@@ -482,8 +484,7 @@ def materialise(run_dir: Path, target: Path) -> dict[str, Any]:
     for item in showcase_entries(data):
         task_id = item["id"]
         record = {"id": task_id, "category": item["category"], "title": item["title"],
-                  "score": item["score"], "spend": item["spend"],
-                  "atmosphere": item.get("atmosphere") or []}
+                  "score": item["score"], "spend": item["spend"]}
         if item["html"]:
             page = pages / f"{task_id}.html"
             page.write_text(scene_page(item, target, task_id), encoding="utf-8")

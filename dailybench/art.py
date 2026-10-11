@@ -73,8 +73,6 @@ def _observe(transcript: core.Transcript, result: browser.RenderResult, html: st
     transcript.extra["visual"] = {
         "shot": str(path) if path.is_file() else "",
         "capture_mode": "live",
-        "pixels": result.pixels,
-        "animated": result.animated,
         "duration_s": round(result.duration_s, 3),
     }
 

@@ -39,8 +39,7 @@ def test_native_static_svg_needs_no_scene_api_or_palette(monkeypatch, tmp_path):
     transcript = _answer(SVG_PAGE)
     score = art.evaluate(_task(), transcript)
     assert score.earned == score.possible == 1.0
-    assert transcript.extra["visual"]["animated"] is False
-    assert transcript.extra["visual"]["pixels"] is None
+    assert transcript.extra["visual"]["capture_mode"] == "live"
     assert art.art_shot_path(SVG_PAGE).read_bytes() == b"captured-frame"
 
 

@@ -187,7 +187,8 @@ def test_resume_replays_a_task_whose_agent_died(endpoint, tmp_path: Path):
 
     from dailybench.cli import _resume_tasks
 
-    cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "cut")
+    cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "cut",
+                    model="test-model", base_url=base_url)
     missing, kept = _resume_tasks(cfg, build_suite(cfg))
     assert [task.id for task in missing] == ["IF-2"], "оборванное задание обязано уйти в повтор"
     assert [run.task.id for run in kept] == ["IF-1"]
@@ -205,11 +206,34 @@ def test_resume_rebuilds_from_transcripts_when_tasks_json_is_corrupt(endpoint, t
     (out / "torn" / "tasks.json").write_text('{"broken": ', encoding="utf-8")
 
     from dailybench.cli import _resume_tasks
-
-    cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "torn")
+    cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "torn",
+                    model="test-model", base_url=base_url)
     missing, kept = _resume_tasks(cfg, build_suite(cfg))
     assert [run.task.id for run in kept] == ["IF-1", "IF-2"], "записи обязаны подняться из transcripts/"
     assert missing == []
+
+
+def test_resume_refuses_to_mix_two_models(endpoint, tmp_path: Path):
+    """A saved run of model-a must not be continued by model-b.
+
+    The merged directory would carry answers of two different models under one
+    config, and the final report would silently attribute the new tasks to the
+    old identity (or vice versa).
+    """
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1", "--name", "mix") == 0
+
+    from dailybench.cli import _resume_tasks
+
+    cfg = RunConfig(seed=SEED, only=("IF-1",), out_dir=out / "mix", model="model-b")
+    with pytest.raises(SystemExit, match="resume смешал бы"):
+        _resume_tasks(cfg, build_suite(cfg))
+
+    same = RunConfig(seed=SEED, only=("IF-1",), out_dir=out / "mix",
+                     model="test-model", base_url=base_url)
+    missing, kept = _resume_tasks(same, build_suite(same))
+    assert missing == [] and [run.task.id for run in kept] == ["IF-1"]
 
 
 def test_resume_without_speed_keeps_the_saved_profile(endpoint, tmp_path: Path):

@@ -92,7 +92,16 @@ def summarise(
             row["skipped"] += 1
             row["skip_reasons"].append(score["skipped"])
             continue
-        row["possible"] += score.get("possible", 0.0)
+        # A broken answer is still an answer: an evaluator crash or a
+        # transport error must not shrink the denominator (R1) — an errored
+        # task keeps its max points in ``possible`` unless the run itself is
+        # explicitly marked skipped above.
+        possible = score.get("possible", 0.0)
+        if score.get("error") and not possible:
+            # An errored task with no checks (evaluator crash, dead agent)
+            # still counts at its max: the model did not earn the points.
+            possible = float(score.get("max_points") or 0.0)
+        row["possible"] += possible
         if score.get("error"):
             row["errors"] += 1
         if score.get("admission") is False:

@@ -387,12 +387,16 @@ class Runner:
             return core.Score(task_id=task.id, category=task.category, error="category not registered")
         try:
             score = module.evaluate(task, transcript)
-        except Exception as exc:  # pragma: no cover - defensive
-            return core.Score(
+        except Exception as exc:
+            # An evaluator crash must not remove the task from the
+            # denominator: the model still failed to earn these points.
+            score = core.Score(
                 task_id=task.id,
                 category=task.category,
                 error=f"evaluator failed: {type(exc).__name__}: {exc}",
             )
+            score.add("evaluator", False, task.max_points,
+                      f"оценка не выполнена: {type(exc).__name__}: {exc}")
         if transcript.error:
             score.error = transcript.error
             score.notes.append(f"прогон прерван: {transcript.error}")
