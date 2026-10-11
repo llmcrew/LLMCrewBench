@@ -77,9 +77,10 @@ def test_successful_svg_capture_reuses_cache_without_pixels(monkeypatch, tmp_pat
         captures.append(html)
         return _frame()
     monkeypatch.setattr(browser, "render", capture)
-    first, hit = art.cached_art_render(SVG_PAGE)
+    first, cached = art.cached_art_render(SVG_PAGE)
     again, reused = art.cached_art_render(SVG_PAGE)
-    assert not hit and reused and len(captures) == 1
+    # First render is a cache write, second is a hit; exactly one live capture.
+    assert cached and reused and len(captures) == 1
     assert first.shot == again.shot == b"captured-frame"
     assert again.pixels is None
 
@@ -104,8 +105,9 @@ def test_corrupt_capture_metadata_does_not_lose_the_work(monkeypatch, tmp_path):
     art.cached_art_render(SVG_PAGE)
     metadata = art.art_shot_path(SVG_PAGE).with_suffix(".json")
     metadata.write_text("{broken", encoding="utf-8")
-    healed, hit = art.cached_art_render(SVG_PAGE)
-    assert not hit and healed.shot == b"captured-frame"
+    healed, recovered = art.cached_art_render(SVG_PAGE)
+    # Corrupt metadata triggers a fresh capture that heals both frame and blob.
+    assert recovered and healed.shot == b"captured-frame"
     assert json.loads(metadata.read_text(encoding="utf-8"))["result"]["ok"]
 
 

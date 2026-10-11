@@ -59,7 +59,10 @@ def cached_art_render(html: str) -> tuple[browser.RenderResult, bool]:
     except (OSError, ValueError, TypeError):
         # A captured frame remains usable even when its metadata cannot be saved.
         pass
-    return result, False
+    # A fresh render that captured a frame is a cache write, not a miss: the
+    # next identical call must hit it. Returning False unconditionally made
+    # every first render report a miss even when the frame was saved.
+    return result, bool(result.ok and result.shot)
 
 
 def _page_of(task: core.TaskInstance, transcript: core.Transcript) -> str:
