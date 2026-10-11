@@ -164,6 +164,11 @@ without it the block is reported as unverified rather than failing. Authoring ru
 - **Not verified is not a zero**: a category the configuration cannot do (a
   template without tool support), or a scenario that cannot be verified on this
   machine (no Go toolchain), leaves both the numerator and the denominator.
+- **Probe trust (K)**: the scene checks read `window.__probe()` values the
+  page itself reports. A page can hardcode them instead of reading its own
+  scene — recorded in an audit as a model error (the contract asks for
+  actual values), but a future hardening may read `camera.position` from
+  the JS context directly.
 - **Provenance**: weights path and SHA-256, runtime build, quant, KV type,
   context window, offload mode and the exact server launch line are recorded in
   the run directory.

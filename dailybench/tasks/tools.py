@@ -191,7 +191,15 @@ class Simulator:
         matches: list[str] = []
         target = self._resolve(path) if path not in (".", "./") else self.work_dir
         files = [target] if target.is_file() else [p for p in self._files() if str(p).startswith(str(target))]
+        # The search covers the path itself, not only the contents: a file whose
+        # *name* matches is reported even when its body is opaque binary. Without
+        # this, the cache directory was undiscoverable — the model had to guess
+        # file names out of thin air (T-4 was unsolvable at full score).
         for file in files:
+            if needle and needle in self._rel(file):
+                matches.append(f"{self._rel(file)}:0: {self._rel(file)}")
+                if len(matches) >= 50:
+                    break
             try:
                 content = file.read_text(encoding="utf-8", errors="replace")
             except OSError:
