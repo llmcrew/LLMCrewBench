@@ -1603,7 +1603,7 @@
     "model": "qwen38",
     "label": "Qwen 3.8",
     "clip": "clips/qwen38__L-26.mp4",
-    "missing": true,
+    "missing": false,
     "accent": "#b48cff"
    }
   ],

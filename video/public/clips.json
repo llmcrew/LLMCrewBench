@@ -917,7 +917,7 @@
  {
   "model": "qwen38",
   "scene": "L-26",
-  "status": "missing"
+  "status": "cached"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
