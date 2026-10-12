@@ -9,10 +9,10 @@ unzip dailybench-video.zip        # или: tar --zstd -xf dailybench-video.tar.
 cd dailybench-video
 npm ci
 npx remotion render DailyBench out/dailybench.mp4 --concurrency=6 --timeout=120000
-# → out/dailybench.mp4, 1920x1080, 30 fps, 34:32, без звука
+# → out/dailybench.mp4, 1920x1080, 60 fps, 34:32, без звука
 ```
 
-`public/clips/` (196 файлов, ~1,4 ГБ) уже внутри — ничего записывать не нужно.
+`public/clips/` (196 файлов, ~1,2 ГБ) уже внутри — ничего записывать не нужно.
 
 ## Требования
 
@@ -44,6 +44,8 @@ npx remotion render DailyBench out/dailybench.mp4 --concurrency=6 --timeout=1200
 Клипы снимаются с живых страниц витрины в `reports/comparison/_showcase/`:
 страница исполняется в headless-Chrome, кадры двигает её собственный драйвер
 (`__dbscene.seek` — окно движения разворачивается на все 23 секунды клипа).
+60 fps: один кадр клипа — один шаг сцены, частота у клипа и у ролика одна
+(`FPS` в `src/video/data.ts` и `record_clip.py` — пара).
 
 ```bash
 python3 tools/record_all.py 6 23 0.6          # дополнить пропущенные
@@ -65,8 +67,8 @@ npx remotion render DailyBench out/dailybench.mp4 --concurrency=6 --timeout=1200
 ## Проверка
 
 ```bash
-npx remotion still scene-board out/check-board.png --frame=900      # таблица результатов
-npx remotion still scene-showcase out/check-showcase.png --frame=1600
+npx remotion still scene-board out/check-board.png --frame=1800      # таблица результатов
+npx remotion still scene-showcase out/check-showcase.png --frame=3200
 ```
 
 Ожидаемо: кадр витрины показывает раскрытую полосу одной модели, остальные
@@ -86,7 +88,7 @@ npx remotion still scene-showcase out/check-showcase.png --frame=1600
 
 ```
 src/            144K  сцены, таймлайн (SCENES), данные — весь ролик отсюда
-public/clips/   1,4G  196 записей: 168 живых + 28 плашек «модель не справилась»
+public/clips/   1,2G  196 записей: 168 живых + 28 плашек «модель не справилась»
                       (18 сцен без страницы у GLM 5.3 — сервер упал в прогоне; 10 страниц, упавших до кадра)
 docs/           8K    текст диктора (voiceover.md) и это руководство
 tools/          24K   утилиты (для рендера не обязательны)

@@ -21,7 +21,7 @@ export const C = {
   line: '#23324e',
   ink: '#e8eefb',
   muted: '#8ba0c0',
-  faint: '#5a6d8c',
+  faint: '#7288a8',
   accent: '#4cc2ff',
   accent2: '#7ee0ff',
   green: '#3ddc97',

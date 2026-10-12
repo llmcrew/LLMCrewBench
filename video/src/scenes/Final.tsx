@@ -58,7 +58,7 @@ export const Hero: React.FC<{clip: string; caption: string; model: string}> = ({
           opacity: riseIn(frame, 10).opacity,
         }}
       >
-        <span style={{font: `500 20px/1 ${FONT_MONO}`, color: C.faint}}>живая сцена, не кадр</span>
+        <span style={{font: `500 20px/1 ${FONT_MONO}`, color: C.faint, textShadow: '0 1px 8px rgba(5,8,15,.9), 0 0 2px rgba(5,8,15,.8)'}}>живая сцена, не кадр</span>
       </div>
     </AbsoluteFill>
   );
@@ -72,7 +72,7 @@ export const Verdict: React.FC = () => {
   const topK = MODELS.slice().sort((a, b) => b.K.e / b.K.p - a.K.e / a.K.p)[0];
   const topL = MODELS.slice().sort((a, b) => b.L.e / b.L.p - a.L.e / a.L.p)[0];
   const facts = [
-    ['Лучший итог', `${best.label} — ${best.verdict || best.score.toFixed(0)}/100`, best.accent],
+    ['Лучший итог', `${best.label} — ${best.verdict || `${best.score.toFixed(0)}/100`}`, best.accent],
     ['Больше всех инструментов', `${MODELS.slice().sort((a, b) => b.spend.tools - a.spend.tools)[0].label} — ${MODELS.slice().sort((a, b) => b.spend.tools - a.spend.tools)[0].spend.tools} вызовов`, C.accent],
     ['Быстрее всех по генерации', `${fastest.label} — ${Math.round(fastest.spend.minutes)} мин`, fastest.accent],
     ['Лучшие симуляции (K)', `${topK.label} — ${Math.round((topK.K.e / topK.K.p) * 100)}%`, topK.accent],
@@ -85,13 +85,14 @@ export const Verdict: React.FC = () => {
         <Title size={58}>Что показали числа</Title>
         <Title sub delay={18}>Ниже витрина: те же модели, те же сцены — можно смотреть глазами</Title>
       </div>
-      <div style={{position: 'absolute', top: 320, left: 96, right: 96, display: 'flex', flexDirection: 'column', gap: 14}}>
+      <div style={{position: 'absolute', top: 320, bottom: 120, left: 96, right: 96, display: 'flex', flexDirection: 'column', gap: 14}}>
         {facts.map(([name, value, accent], i) => (
           <div
             key={name}
             style={{
               display: 'flex',
               alignItems: 'center',
+              flex: 1,
               gap: 20,
               padding: '20px 26px',
               borderRadius: 12,

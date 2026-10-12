@@ -37,7 +37,7 @@ tools/
   record_clip.py            # запись одного клипа (живая страница, CDP)
   record_all.py             # все 49×4 клипов параллельно + манифест
 public/
-  clips/<модель>__<сцена>.mp4   # 1920x1080, 30 fps, 23 с
+  clips/<модель>__<сцена>.mp4   # 1920x1080, 60 fps, 23 с
 ```
 
 ## Команды
@@ -46,7 +46,7 @@ public/
 npm install
 npm run studio                 # превью
 npm run render                 # out/dailybench.mp4
-npx remotion still scene-showcase out/frame.png --frame=1500
+npx remotion still scene-showcase out/frame.png --frame=3000
 
 python3 tools/record_all.py 6 23 0.6          # дополнить пропущенные клипы
 python3 tools/record_all.py 6 23 0.6 --force  # перезаписать все

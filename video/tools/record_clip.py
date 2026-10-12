@@ -15,9 +15,9 @@
 (отдаётся локальным http-сервером, `_vendor` рядом). Нет страницы — пишем
 плашку (тёмный клип), текст «модель не справилась» рисует Remotion.
 
-Все клипы: 1920x1080, 30 fps, h264, 23 с (окно движения сцены целиком).
-Страницы K (canvas 800x600) центрируются и приближаются зумом, чтобы сцена
-занимала кадр.
+Все клипы: 1920x1080, 60 fps, h264, 23 с (окно движения сцены целиком).
+Страницы K (canvas 800x600) вписываются в кадр целиком, а пустые поля по
+сторонам заливаются растянутыми краями сцены — кадр идёт без рамки и полос.
 """
 from __future__ import annotations
 
@@ -39,14 +39,19 @@ ROOT = Path(__file__).resolve().parents[2]
 ART = ROOT / "reports" / "comparison"
 BIN = ROOT / "video" / "bin"
 FF = BIN / "ffmpeg"
-FPS = 30
+#: Частота клипа. Пара с `FPS` в `src/video/data.ts`: клип снят покадрово, и
+#: расхождение играло бы его рывками (кадр клипа не ложился бы на кадр ролика).
+#: Шагов сцены на клип ровно `secs * FPS` — с ростом частоты шаг мельче.
+FPS = 60
+#: Шаг страницы без драйвера (`window.__step`): один кадр клипа — один шаг,
+#: как в её живом показе (там тот же шаг зовётся из rAF).
+DT = 1 / FPS
 W, H = 1920, 1080
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 #: Плашки страницы (модель · сцена · клавиши) в видео не нужны: подписи свои,
-#: а плашка перекрывает сцену. Заодно canvas растягивается на кадр — K рисует
-#: 800x600, арт-сцены — какую выбрала модель. Перезагрузка посреди клипа сносит
-#: DOM, поэтому блок применяется после каждой загрузки.
+#: а плашка перекрывает сцену. Перезагрузка посреди клипа сносит DOM, поэтому
+#: блок применяется после каждой загрузки.
 #: NB: обёртка — IIFE: Runtime.evaluate исполняет ВЫРАЖЕНИЕ, и без вызова
 #: `() => {...}` остаётся функцией, которая никогда не выполнится.
 STYLE_JS = """
@@ -57,12 +62,72 @@ STYLE_JS = """
     if (st.position !== 'fixed' && st.position !== 'absolute') continue;
     if (!d.querySelector('canvas')) d.style.display = 'none';
   }
-  const c = document.querySelector('canvas');
-  if (c) {
+
+  // Поля кадра. canvas вписывается целиком (K рисует 800x600, арт-сцены —
+  // какую выбрала модель), а пустые поля заливаются растянутыми краями сцены:
+  // у 800x600-страниц поле было белым (body страницы), у тёмных — своим цветом
+  // с резкой границей у канваса, и кадр шёл в рамке. Тянутый край продолжает
+  // сцену за её границей. Замер на пилотах: перепад на границе 0-1/255, у
+  // заливки полей одним средним цветом — 48/255 (край сцены не одноцветный).
+  let bg = document.getElementById('__bgfill');
+  if (!bg) {
+    bg = document.createElement('canvas');
+    bg.id = '__bgfill';
+    bg.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:0;pointer-events:none';
+    document.body.appendChild(bg);
+  }
+  const g = bg.getContext('2d');
+  // Образец краёв — отдельным канвасом в половину разрешения: средний цвет
+  // ставится фоном html/body, под подложку (запасной слой на случай, если
+  // подложка не отрисуется). Читать пиксели — только с CPU-канваса.
+  const probe = document.createElement('canvas');
+  const pg = probe.getContext('2d', {willReadFrequently: true});
+  document.documentElement.style.colorScheme = 'dark';
+  document.documentElement.style.background = '#000';
+  document.body.style.background = 'transparent';
+
+  // Перерисовка подложки: зовётся тем же evaluate, что и шаг сцены, — кадр
+  // клипа снимается сразу после, и подложка обязана быть уже свежей.
+  window.__refill = () => {
+    // Именно canvas сцены: `querySelector('canvas')` вернул бы подложку, если
+    // страница добавит свой canvas позже (её appendChild идёт после нашего).
+    const c = [...document.querySelectorAll('canvas')].find((el) => el !== bg);
+    if (!c || !c.width || !c.height) return false;
     const k = Math.min(1920 / c.width, 1080 / c.height);
     c.style.width = `${Math.round(c.width * k)}px`;
     c.style.height = `${Math.round(c.height * k)}px`;
-  }
+    c.style.position = 'relative';
+    c.style.zIndex = '1';
+    const r = c.getBoundingClientRect();
+    const x = Math.round(r.x), y = Math.round(r.y), w = Math.round(r.width), h = Math.round(r.height);
+    const vw = Math.round(window.innerWidth), vh = Math.round(window.innerHeight);
+    if (bg.width !== vw || bg.height !== vh) { bg.width = vw; bg.height = vh; }
+    g.clearRect(0, 0, vw, vh);
+    // Края сцены (полоса в 1 пиксель) тянутся в поля и в углы: сцена
+    // продолжается, стыка не видно ни по бокам, ни сверху и снизу.
+    if (x > 0) g.drawImage(c, 0, 0, 1, c.height, 0, 0, x, vh);
+    if (x + w < vw) g.drawImage(c, c.width - 1, 0, 1, c.height, x + w, 0, vw - x - w, vh);
+    if (y > 0) g.drawImage(c, 0, 0, c.width, 1, x, 0, w, y);
+    if (y + h < vh) g.drawImage(c, 0, c.height - 1, c.width, 1, x, y + h, w, vh - y - h);
+    g.drawImage(c, x, y, w, h);
+
+    const pw = Math.max(1, Math.round(c.width / 2)), ph = Math.max(1, Math.round(c.height / 2));
+    if (probe.width !== pw || probe.height !== ph) { probe.width = pw; probe.height = ph; }
+    pg.drawImage(c, 0, 0, pw, ph);
+    let sr = 0, sg = 0, sb = 0, sn = 0;
+    const bands = [pg.getImageData(0, 0, 1, ph).data, pg.getImageData(pw - 1, 0, 1, ph).data,
+                   pg.getImageData(0, 0, pw, 1).data, pg.getImageData(0, ph - 1, pw, 1).data];
+    for (const band of bands) {
+      for (let i = 0; i < band.length; i += 28) { sr += band[i]; sg += band[i + 1]; sb += band[i + 2]; sn++; }
+    }
+    const col = `rgb(${Math.round(sr / sn)},${Math.round(sg / sn)},${Math.round(sb / sn)})`;
+    if (col !== window.__bgsolid) {
+      window.__bgsolid = col;
+      document.documentElement.style.background = col;
+    }
+    return true;
+  };
+
   document.body.style.margin = '0';
   document.body.style.overflow = 'hidden';
   document.body.style.display = 'flex';
@@ -75,6 +140,7 @@ STYLE_JS = """
   document.body.style.maxWidth = 'none';
   document.body.style.maxHeight = 'none';
   document.documentElement.style.zoom = '';
+  window.__refill();
   return true;
 })()"""
 
@@ -339,12 +405,16 @@ new Promise((res) => {
                 # max(base, ...) — floor по шагам, которые автоплей сделал до
                 # паузы: seek назад не ходит.
                 t = max(base, round(k * steps / max(1, n - 1))) if steps else base
-                call("Runtime.evaluate", {"expression": f"window.__dbscene.seek({t})",
-                                          "returnByValue": False}, timeout=60)
+                js = f"window.__dbscene.seek({t});"
             else:
-                # Страница без драйвера: шагаем сами, один кадр клипа — один шаг.
-                call("Runtime.evaluate", {"expression": "window.__step(1/60)",
-                                          "returnByValue": False}, timeout=60)
+                # Страница без драйвера: шагаем сами, один кадр клипа — один
+                # шаг её живого показа (шаг зовётся из rAF через DT).
+                js = f"window.__step({DT});"
+            # Подложка полей перерисовывается тем же evaluate: между шагом и
+            # кадром нет round-trip, за который буфер отрисовки мог бы остаться
+            # от прежнего шага.
+            call("Runtime.evaluate", {"expression": js + " window.__refill && window.__refill();",
+                                      "returnByValue": False}, timeout=60)
             shot = call("Page.captureScreenshot", {"format": "jpeg", "quality": 90, "optimizeForSpeed": True}, timeout=120)
             data = shot.get("result", {}).get("data", "")
             if not data:

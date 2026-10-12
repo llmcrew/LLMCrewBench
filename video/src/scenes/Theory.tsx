@@ -41,7 +41,7 @@ export const Intro: React.FC = () => {
           DailyBench-16
         </Title>
         <Title sub delay={26}>
-          Пять моделей · один сьют · сто баллов · визуальные блоки отдельно
+          Четыре модели · один сьют · сто баллов · визуальные блоки отдельно
         </Title>
         <div style={{display: 'flex', gap: 12, marginTop: 14}}>
           {MODELS.map((m, i) => (
@@ -70,11 +70,14 @@ export const HarnessDef: React.FC = () => {
           Не «ум» модели, а работу агента: решения, вызовы инструментов и проверяемый результат
         </Title>
       </div>
-      <div style={{position: 'absolute', top: 320, left: 96, right: 96, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 18}}>
+      <div style={{position: 'absolute', top: 320, bottom: 250, left: 96, right: 96, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gridAutoRows: '1fr', gap: 18}}>
         {CYCLE.map((step, i) => (
           <div
             key={step}
             style={{
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
               padding: '22px 24px',
               borderRadius: 12,
               border: `1px solid ${i === 2 ? C.accent + '66' : C.line}`,
@@ -100,14 +103,14 @@ export const HarnessDef: React.FC = () => {
 };
 
 const CATEGORIES: [string, string, number, number][] = [
-  ['A', 'Следование инструкциям', 8, 10],
+  ['A', 'Следование инструкциям', 5, 10],
   ['B', 'Рассуждение', 15, 15],
   ['C', 'Код', 3, 20],
-  ['D', 'Вызовы инструментов', 12, 14],
+  ['D', 'Вызовы инструментов', 7, 14],
   ['E', 'Длинный контекст', 5, 10],
-  ['F', 'Сопротивление галлюцинациям', 8, 8],
+  ['F', 'Сопротивление галлюцинациям', 1, 8],
   ['G', 'Структурированный вывод', 4, 8],
-  ['H', 'Диалог', 6, 6],
+  ['H', 'Диалог', 3, 6],
   ['I', 'Поиск по файлам', 2, 4],
   ['J', 'Ревью кода', 2, 5],
 ];
@@ -122,43 +125,43 @@ export const Suite: React.FC = () => {
           Каждый балл — наблюдаемый результат: разобранный ответ, файл на диске, прогон скрытых тестов, лог вызовов
         </Title>
       </div>
-      <div style={{position: 'absolute', top: 280, left: 96, width: 1120, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14}}>
+      <div style={{position: 'absolute', top: 280, bottom: 260, left: 96, width: 1120, display: 'grid', gridTemplateColumns: '1fr 1fr', gridAutoRows: '1fr', gap: 14}}>
         {CATEGORIES.map(([key, name, tasks, pts], i) => (
           <div
             key={key}
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: 16,
-              padding: '18px 20px',
+              gap: 12,
+              padding: '18px 16px',
               borderRadius: 10,
               border: `1px solid ${C.line}`,
               background: C.panel,
               ...riseIn(frame, 30 + i * 9),
             }}
           >
-            <span style={{font: `700 26px/1 ${FONT_MONO}`, color: C.accent, width: 36}}>{key}</span>
-            <span style={{font: `500 22px/1.2 ${FONT_SANS}`, flex: 1}}>{name}</span>
-            <span style={{font: `500 17px/1 ${FONT_MONO}`, color: C.muted}}>{tasks} задач</span>
-            <span style={{font: `600 17px/1 ${FONT_MONO}`, color: C.ink}}>{pts} б.</span>
+            <span style={{font: `700 26px/1 ${FONT_MONO}`, color: C.accent, width: 32}}>{key}</span>
+            <span style={{font: `500 20px/1.2 ${FONT_SANS}`, flex: 1}}>{name}</span>
+            <span style={{font: `500 16px/1 ${FONT_MONO}`, color: C.muted}}>{tasks} задач</span>
+            <span style={{font: `600 16px/1 ${FONT_MONO}`, color: C.ink}}>{pts} б.</span>
           </div>
         ))}
       </div>
-      <div style={{position: 'absolute', top: 280, left: 1260, width: 564, display: 'flex', flexDirection: 'column', gap: 16}}>
-        <div style={{padding: 24, borderRadius: 12, border: `1px solid ${C.purple}55`, background: `${C.purple}10`, ...riseIn(frame, 60)}}>
-          <div style={{font: `700 30px/1.2 ${FONT_SANS}`, color: C.purple}}>K — 20 симуляций</div>
-          <div style={{font: `400 19px/1.5 ${FONT_SANS}`, color: C.muted, marginTop: 8}}>
+      <div style={{position: 'absolute', top: 280, bottom: 260, left: 1260, width: 564, display: 'grid', gridTemplateRows: 'repeat(5, 1fr)', gap: 14}}>
+        <div style={{gridRow: 'span 2', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: 20, borderRadius: 12, border: `1px solid ${C.purple}55`, background: `${C.purple}10`, ...riseIn(frame, 60)}}>
+          <div style={{font: `700 27px/1.2 ${FONT_SANS}`, color: C.purple}}>K — 20 симуляций</div>
+          <div style={{font: `400 17px/1.5 ${FONT_SANS}`, color: C.muted, marginTop: 6}}>
             Three.js-сцены с проверяемой физикой: пробы состояния сверяются с независимым пересчётом на Python.
           </div>
         </div>
-        <div style={{padding: 24, borderRadius: 12, border: `1px solid ${C.pink}55`, background: `${C.pink}10`, ...riseIn(frame, 84)}}>
-          <div style={{font: `700 30px/1.2 ${FONT_SANS}`, color: C.pink}}>L — 29 арт-сцен</div>
-          <div style={{font: `400 19px/1.5 ${FONT_SANS}`, color: C.muted, marginTop: 8}}>
+        <div style={{gridRow: 'span 2', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: 20, borderRadius: 12, border: `1px solid ${C.pink}55`, background: `${C.pink}10`, ...riseIn(frame, 84)}}>
+          <div style={{font: `700 27px/1.2 ${FONT_SANS}`, color: C.pink}}>L — 29 арт-сцен</div>
+          <div style={{font: `400 17px/1.5 ${FONT_SANS}`, color: C.muted, marginTop: 6}}>
             Свободная форма: палитра, композиция, детали, движение. Смотрится глазами, в балл не входит.
           </div>
         </div>
-        <div style={{padding: 22, borderRadius: 12, border: `1px solid ${C.line}`, background: C.bgSoft, ...riseIn(frame, 108)}}>
-          <div style={{font: `500 19px/1.5 ${FONT_SANS}`, color: C.muted}}>
+        <div style={{display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: 20, borderRadius: 12, border: `1px solid ${C.line}`, background: C.bgSoft, ...riseIn(frame, 108)}}>
+          <div style={{font: `500 17px/1.5 ${FONT_SANS}`, color: C.muted}}>
             Всё генерируется из одного сида: два прогона видят побайтово одинаковые задания.
           </div>
         </div>
@@ -175,7 +178,7 @@ export const Models: React.FC = () => {
         <Title size={54}>Четыре конфигурации</Title>
         <Title sub delay={16}>Разные семейства и масштабы: интересен не итог сам по себе, а профиль по категориям</Title>
       </div>
-      <div style={{position: 'absolute', top: 250, left: 84, right: 84, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16}}>
+      <div style={{position: 'absolute', top: 240, bottom: 200, left: 84, right: 84, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, alignContent: 'center'}}>
         {MODELS.map((m, i) => (
           <div
             key={m.dir}

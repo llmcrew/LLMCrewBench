@@ -5,7 +5,7 @@
 
 import {AbsoluteFill, Freeze, OffthreadVideo, Sequence, interpolate, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import {C, FONT_MONO, FONT_SANS} from '../video/theme';
-import {fadeIn} from '../components/ui';
+import {fadeIn, fadeOut} from '../components/ui';
 import {CLIP_SECONDS, OPEN_SECONDS, SHOWCASE_LEAD, SHOWCASE_MODELS, SHOWCASE_TURN_SECONDS} from '../video/data';
 
 export type ShowcaseRun = {
@@ -16,10 +16,15 @@ export type ShowcaseRun = {
   accent: string;
 };
 
-const LANE_W = 350;
-const LANE_GAP = 16;
-const LANE_H = 780;
-const X0 = (1920 - (LANE_W * 5 + LANE_GAP * 4)) / 2;
+// Ширина полосы считается от фактического числа моделей: полосы вместе с зазорами
+// и полями ровно заполняют кадр, сетка всегда центрирована.
+const LANE_MARGIN = 113;
+const LANE_GAP = 18;
+const LANE_W = (1920 - LANE_MARGIN * 2 - LANE_GAP * (SHOWCASE_MODELS - 1)) / SHOWCASE_MODELS;
+const X0 = (1920 - (LANE_W * SHOWCASE_MODELS + LANE_GAP * (SHOWCASE_MODELS - 1))) / 2;
+const LANE_TOP = 196;
+const LANE_BOTTOM = 70;
+const LANE_H = 1080 - LANE_TOP - LANE_BOTTOM;
 
 /** Полоса: стоит на месте, пока её очередь; на своём ходу выезжает на весь кадр. */
 const Lane: React.FC<{
@@ -36,27 +41,39 @@ const Lane: React.FC<{
   // Открыта ровно одна полоса — та, чья сейчас очередь.
   const isOpen = index === openIndex;
   const open = isOpen && frame >= openStart && frame < openEnd;
-  const appear = fadeIn(frame, 6 + index * 4, 12);
+  // Полосы проявляются каскадом и успевают набрать полную плотность к началу
+  // первого раскрытия (expandFrom).
+  const appear = fadeIn(frame, 3 + index * 2, 6);
 
-  // Чужая раскрытая карточка накрывает полосу целиком: пока чужая карточка
-  // стоит в полном размере, свою полосу рендерить не нужно. Без этого каждую
-  // сцену декодировались все четыре видео сразу и рендер шёл ~1 кадр/с.
-  const covered = !isOpen && frame >= openStart + 10 && frame <= openEnd - 8;
-  if (covered) return null;
+  // Раскрытие и возврат — доли бюджета SHOWCASE_LEAD вокруг окна показа: полоса
+  // приходит на весь кадр ровно к началу своего отрезка, уходит на место сразу
+  // после него, а сетке остаётся пауза до следующего хода (turn = OPEN + 2*LEAD).
+  const leadFrames = SHOWCASE_LEAD * fps;
+  const expandFrames = Math.max(2, Math.round(leadFrames * 0.4));
+  const returnFrames = Math.max(2, Math.round(leadFrames * 0.36));
+  const expandFrom = openStart - expandFrames;
+  const expandTo = openStart;
+  const returnFrom = openEnd;
+  const returnTo = openEnd + returnFrames;
 
   const t = isOpen
-    ? interpolate(
-        frame,
-        [openStart - 10, openStart + 8, openEnd - 8, openEnd + 10],
-        [0, 1, 1, 0],
-        {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'},
-      )
+    ? interpolate(frame, [expandFrom, expandTo, returnFrom, returnTo], [0, 1, 1, 0], {
+        extrapolateLeft: 'clamp',
+        extrapolateRight: 'clamp',
+      })
     : 0;
-  const x = interpolate(t, [0, 1], [X0 + index * (LANE_W + LANE_GAP), 40]);
-  const y = interpolate(t, [0, 1], [196, 54]);
-  const w = interpolate(t, [0, 1], [LANE_W, 1840]);
-  const h = interpolate(t, [0, 1], [LANE_H, 930]);
-  const z = isOpen && frame >= openStart - 10 && frame < openEnd + 10 ? 30 : 1 + index;
+
+  // Пока полоса стоит во весь кадр, остальные лежат ровно под ней и картинку не
+  // меняют: их можно не рендерить. Иначе на каждой сцене декодировались бы все
+  // четыре клипа сразу и рендер шёл бы ~кадр в секунду.
+  const covered = !isOpen && frame >= expandTo && frame <= returnFrom;
+  if (covered) return null;
+
+  const x = interpolate(t, [0, 1], [X0 + index * (LANE_W + LANE_GAP), 0]);
+  const y = interpolate(t, [0, 1], [LANE_TOP, 0]);
+  const w = interpolate(t, [0, 1], [LANE_W, 1920]);
+  const h = interpolate(t, [0, 1], [LANE_H, 1080]);
+  const z = isOpen && frame >= expandFrom && frame <= returnTo ? 30 : 1 + index;
 
   // Темп клипа: свой отрезок за окно показа (сцена длинная, клип — CLIP_SECONDS).
   const windowFrames = Math.max(1, laneTo - laneFrom);
@@ -68,12 +85,19 @@ const Lane: React.FC<{
         position: 'absolute',
         left: x,
         top: y,
-        width: w,
-        height: h,
+        // В открытом состоянии карточка обязана накрыть кадр целиком: на кадре
+        // с frameless-бордером её края заметны как обводка поверх краёв кадра.
+        width: open ? 1920 : w,
+        height: open ? 1080 : h,
+        // border-box: рамка входит в размер, поэтому открытая карточка равна
+        // кадру ровно, а полосы в сетке делят ширину без сдвига на рамку.
+        boxSizing: 'border-box',
         zIndex: z,
         overflow: 'hidden',
         borderRadius: 12,
-        border: `1px solid ${open ? run.accent : C.line}`,
+        // Акцентная рамка — пока полоса летит или стоит раскрытой (t > 0), и
+        // сменяется на обычную, когда та садится в сетку: без скачка на месте.
+        border: `1px solid ${t > 0 ? run.accent : C.line}`,
         background: '#05080f',
         boxShadow: open ? '0 24px 80px rgba(0,0,0,.55)' : 'none',
         opacity: appear,
@@ -99,20 +123,29 @@ const Lane: React.FC<{
       ) : (
         <Sequence from={laneFrom} durationInFrames={windowFrames} name={`${run.label} клип`}>
           <Freeze frame={Math.max(1, windowFrames - 2)} active={(f) => f >= windowFrames - 1}>
-            <OffthreadVideo
-              src={staticFile(run.clip)}
-              playbackRate={rate}
-              muted
+            {/* Клип всегда 1920x1080 и уменьшается только transform'ом: элемент
+                <video> не меняет размер при раскрытии и не пересобирается. */}
+            <div
               style={{
                 position: 'absolute',
-                left: 0,
-                top: 0,
-                width: w,
-                height: h,
-                objectFit: 'cover',
-                objectPosition: 'center',
+                // Клип повторяет поведение objectFit:cover: при сжатой полосе
+                // мимо кадра уходит не левый край, а пропорционально срезанные
+                // поля — в центре всегда виден один и тот же участок клипа.
+                left: (w - 1920 * Math.max(w / 1920, h / 1080)) / 2,
+                top: (h - 1080 * Math.max(w / 1920, h / 1080)) / 2,
+                width: 1920,
+                height: 1080,
+                transform: `scale(${Math.max(w / 1920, h / 1080)})`,
+                transformOrigin: 'top left',
               }}
-            />
+            >
+              <OffthreadVideo
+                src={staticFile(run.clip)}
+                playbackRate={rate}
+                muted
+                style={{position: 'absolute', inset: 0, width: 1920, height: 1080, objectFit: 'cover', objectPosition: 'center'}}
+              />
+            </div>
           </Freeze>
         </Sequence>
       )}
@@ -157,9 +190,18 @@ export const ShowcaseScene: React.FC<{
 
   // Какая полоса сейчас раскрыта: по кадрам идём по order.
   const openedIndex = Math.min(SHOWCASE_MODELS - 1, Math.floor(frame / turn));
-  const openIndex = order[openedIndex] ?? openedIndex;
+  // order — порядок моделей всего реестра (длиной 5). Для сцены с другим числом
+  // полос приводим его к индексам runs без повторов: каждая полоса получает свой
+  // ход ровно один раз, а не первая дважды.
+  const slots = Array.from(new Set(order.map((v) => v % runs.length)));
+  const openIndex = slots[openedIndex % slots.length] ?? 0;
   const openStart = openedIndex * SHOWCASE_TURN_SECONDS * fps + SHOWCASE_LEAD * fps;
   const openEnd = openStart + OPEN_SECONDS * fps;
+  // Подпись живёт ровно время показа своего решения: к выезду она готова.
+  const captionOpacity = interpolate(frame, [openStart, openStart + 16, openEnd - 8, openEnd + 8], [0, 1, 1, 0], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+  });
 
   return (
     <AbsoluteFill style={{backgroundColor: C.bg}}>
@@ -170,7 +212,9 @@ export const ShowcaseScene: React.FC<{
           left: 0,
           right: 0,
           textAlign: 'center',
-          opacity: fadeIn(frame, 4) * 0.75,
+          // К адаптации первой полосы шапка уже не нужна: в открытом состоянии
+          // по центру сверху подпись решения, а не заголовок сцены.
+          opacity: Math.min(fadeIn(frame, 4) * 0.75, fadeOut(frame, openStart + 10, 30)),
         }}
       >
         <div style={{font: `700 40px/1.15 ${FONT_SANS}`, color: C.ink}}>
@@ -196,16 +240,31 @@ export const ShowcaseScene: React.FC<{
           position: 'absolute',
           left: 0,
           right: 0,
+          bottom: 0,
+          height: 128,
+          // Подложка под подпись: на широком кадре клипа верхний градиент шапки
+          // до подписи не достаёт, поэтому у низа свой. Гаснет вместе с подписью,
+          // в закрытой сетке низ полос не затемняет. 39 — над полосами (до 30),
+          // под подписью (40).
+          zIndex: 39,
+          background: 'linear-gradient(180deg, rgba(5,8,15,0), rgba(5,8,15,.92))',
+          opacity: captionOpacity,
+          pointerEvents: 'none',
+        }}
+      />
+
+      <div
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
           bottom: 22,
           zIndex: 40,
           textAlign: 'center',
-          opacity: interpolate(frame, [openStart + 6, openEnd - 6], [0, 1], {
-            extrapolateLeft: 'clamp',
-            extrapolateRight: 'clamp',
-          }),
+          opacity: captionOpacity,
         }}
       >
-        <span style={{font: `500 21px/1.4 ${FONT_SANS}`, color: C.muted}}>
+        <span style={{font: `500 21px/1.4 ${FONT_SANS}`, color: C.ink}}>
           решение {runs[openIndex]?.label ?? '—'} · сцена {sceneId} · {openedIndex + 1}/{runs.length} ·{' '}
           {runs[openIndex]?.missing ? 'страница не ожила' : 'живая страница, снята покадрово'}
         </span>

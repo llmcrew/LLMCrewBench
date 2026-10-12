@@ -69,7 +69,7 @@ export const Board: React.FC = () => {
               gridTemplateColumns: `220px repeat(${CATS.length}, 1fr) 90px`,
               gap: 6,
               alignItems: 'center',
-              padding: '13px 0',
+              padding: '37px 0',
               borderTop: `1px solid ${C.line}`,
               ...riseIn(frame, 30 + row * 18),
             }}
