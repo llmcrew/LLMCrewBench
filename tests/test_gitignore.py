@@ -43,8 +43,9 @@ def _ignored(relative: str) -> bool:
         "README.md",
 "dailybench/tasks/art.py",
         "tests/test_art.py",
-        # Опубликованный отчёт лежит в git: он открывается двойным кликом,
-        # без прогона и без сервера. runs/ при этом остаётся локальным.
+        # Опубликованный отчёт: в git живёт только выборка первой публикации —
+        # читатель клона открывает её двойным кликом, без прогона и сервера.
+        # Пересборки и новые файлы — игнорируются (пины ниже); runs/ не в git.
         "reports/comparison/index.html",
         "reports/comparison/_vendor/three.global.js",
     ],
@@ -68,6 +69,10 @@ def test_published_artefacts_are_tracked(relative: str):
         ".env",
         "secrets.env",
         ".DS_Store",
+        # Объёмные локальные артефакты ролика и отчёта: не пушатся, см. .gitignore.
+        "video/public/clips/deepseek-v4.1-flash-unc__K-1.mp4",
+        "video/bin/ffmpeg",
+        "reports/comparison/_showcase/glm-5.3/pages/K-1.html",
     ],
 )
 def test_generated_files_are_ignored(relative: str):
