@@ -1,210 +1,189 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
 <meta charset="utf-8">
+<title>Ночной город</title>
 <style>
-*{margin:0;padding:0}
-body{background:#000;display:flex;justify-content:center;align-items:center;height:100vh}
-canvas{display:block}
+  html, body { margin: 0; padding: 0; background: #0b0b14; overflow: hidden; }
+  canvas { display: block; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
+<canvas id="c" width="1920" height="1080"></canvas>
 <script type="module">
 const THREE = window.THREE;
 
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+const W = 1920, H = 1080;
+
+const renderer = new THREE.WebGLRenderer({
+  canvas: document.getElementById('c'),
+  preserveDrawingBuffer: true
+});
 renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
-document.body.appendChild(renderer.domElement);
+renderer.setSize(W, H, false);
+renderer.setClearColor(0x2a1b5c, 1);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x2a1b5c);
 
-const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
+const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 500);
 camera.position.set(0, 8, 26);
 camera.lookAt(0, 8, 0);
 
-// Ground
-const groundGeo = new THREE.PlaneGeometry(200, 200);
-const groundMat = new THREE.MeshBasicMaterial({ color: 0x0b0b14 });
-const ground = new THREE.Mesh(groundGeo, groundMat);
+const SILHOUETTE = 0x0b0b14;
+const CYAN = new THREE.Color(0x22e0d0);
+const WARM = new THREE.Color(0xffb066);
+
+// ---------- земля ----------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(400, 400),
+  new THREE.MeshBasicMaterial({ color: SILHOUETTE })
+);
 ground.rotation.x = -Math.PI / 2;
 ground.position.y = 0;
 ground.name = 'ground';
 scene.add(ground);
 
-// Houses
-const houseDefs = [
+// ---------- дома ----------
+const houses = [
   { x: -6.8, w: 2.4, h: 14.8 },
   { x: -3.7, w: 2.1, h: 10.1 },
   { x: -1.2, w: 1.6, h: 10.7 },
-  { x: 1.5,  w: 2.3, h: 14.9 },
-  { x: 4.8,  w: 2.6, h: 13.5 },
-  { x: 8.0,  w: 1.6, h: 10.9 }
+  { x:  1.5, w: 2.3, h: 14.9 },
+  { x:  4.8, w: 2.6, h: 13.5 },
+  { x:  8.0, w: 1.6, h: 10.9 }
 ];
 
-const houseMat = new THREE.MeshBasicMaterial({ color: 0x0b0b14 });
-
-houseDefs.forEach(h => {
-  const geo = new THREE.BoxGeometry(h.w, h.h, 3);
-  const mesh = new THREE.Mesh(geo, houseMat);
-  mesh.position.set(h.x, h.h / 2, 0);
+for (const hs of houses) {
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(hs.w, hs.h, 3),
+    new THREE.MeshBasicMaterial({ color: SILHOUETTE })
+  );
   mesh.name = 'house';
+  mesh.position.set(hs.x, hs.h / 2, 0);
   scene.add(mesh);
-});
+}
 
-// Windows – single InstancedMesh
-const COL_SP = 0.95, FLOOR_SP = 1.45, WW = 0.5, WH = 0.7, Y0 = 1.0;
-const winData = [];
+// ---------- окна (InstancedMesh) ----------
+const COL_STEP = 0.95, FLOOR_STEP = 1.45;
+const WIN_W = 0.5, WIN_H = 0.7;
 
-houseDefs.forEach((h, hi) => {
-  const num = hi + 1;
-  const col = num % 2 === 0 ? new THREE.Color(0x22e0d0) : new THREE.Color(0xffb066);
-  const nCols = Math.floor((h.w - 0.725) / COL_SP) + 1;
-  const nFloors = Math.floor((h.h - 1.35) / FLOOR_SP) + 1;
+const winList = [];        // { houseIdx, x, y, base: Color }
+houses.forEach((hs, hi) => {
+  const base = (hi % 2 === 1) ? CYAN : WARM;   // чётный номер дома (2,4,6) — бирюза
+  const nCols = Math.max(1, Math.floor((hs.w - 0.5) / COL_STEP) + 1);
+  const nFloors = Math.floor((hs.h - 0.35 - 1.0) / FLOOR_STEP) + 1;
   for (let c = 0; c < nCols; c++) {
     for (let f = 0; f < nFloors; f++) {
-      const wx = h.x - h.w / 2 + COL_SP * (c + 0.5);
-      const wy = Y0 + FLOOR_SP * f;
-      const wz = 1.51;
-      winData.push({ x: wx, y: wy, z: wz, r: col.r, g: col.g, b: col.b });
+      winList.push({
+        x: hs.x + (c - (nCols - 1) / 2) * COL_STEP,
+        y: 1.0 + f * FLOOR_STEP,
+        base: base
+      });
     }
   }
 });
 
-const winGeo = new THREE.PlaneGeometry(WW, WH);
-const winMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-const winMesh = new THREE.InstancedMesh(winGeo, winMat, winData.length);
-winMesh.name = 'windows';
+const windowsGeo = new THREE.PlaneGeometry(WIN_W, WIN_H);
+const windowsMat = new THREE.MeshBasicMaterial({
+  color: 0xffffff,
+  side: THREE.DoubleSide,
+  toneMapped: false
+});
+const windowsMesh = new THREE.InstancedMesh(windowsGeo, windowsMat, winList.length);
+windowsMesh.name = 'windows';
+const _m4 = new THREE.Matrix4();
+winList.forEach((win, i) => {
+  _m4.makeTranslation(win.x, win.y, 1.53); // слегка впереди фасада
+  windowsMesh.setMatrixAt(i, _m4);
+});
+windowsMesh.instanceMatrix.needsUpdate = true;
+scene.add(windowsMesh);
 
-const _m = new THREE.Matrix4();
-const _c = new THREE.Color();
-
-function setWindowColors(t) {
-  for (let i = 0; i < winData.length; i++) {
-    const d = winData[i];
+function updateWindows(t) {
+  const _c = new THREE.Color();
+  let lit = 0;
+  for (let i = 0; i < winList.length; i++) {
     const phase = (i * 0.129 + t * 0.500) % 1;
-    const br = phase < 0.78 ? 1.0 : 0.15;
-    _c.setRGB(d.r * br, d.g * br, d.b * br);
-    winMesh.setColorAt(i, _c);
+    const on = phase < 0.78;
+    if (on) lit++;
+    const b = on ? 1.0 : 0.15;
+    _c.copy(winList[i].base).multiplyScalar(b);
+    windowsMesh.setColorAt(i, _c);
   }
-  winMesh.instanceColor.needsUpdate = true;
+  windowsMesh.instanceColor.needsUpdate = true;
+  return lit;
 }
 
-winData.forEach((d, i) => {
-  _m.makeTranslation(d.x, d.y, d.z);
-  winMesh.setMatrixAt(i, _m);
-});
-winMesh.instanceMatrix.needsUpdate = true;
-setWindowColors(0);
-scene.add(winMesh);
-
-// Haze
-const hCv = document.createElement('canvas');
-hCv.width = 2; hCv.height = 256;
-const hCx = hCv.getContext('2d');
-const grd = hCx.createLinearGradient(0, 0, 0, 256);
-grd.addColorStop(0, 'rgba(255,255,255,0)');
-grd.addColorStop(0.4, 'rgba(255,255,255,0.6)');
-grd.addColorStop(1, 'rgba(255,255,255,1)');
-hCx.fillStyle = grd;
-hCx.fillRect(0, 0, 2, 256);
-
-const hazeTex = new THREE.CanvasTexture(hCv);
-const hazeGeo = new THREE.PlaneGeometry(50, 18);
-const hazeMat = new THREE.MeshBasicMaterial({
-  map: hazeTex,
-  color: 0x4a5a8a,
-  transparent: true,
-  opacity: 0.22,
-  depthWrite: false,
-  side: THREE.DoubleSide
-});
-const haze = new THREE.Mesh(hazeGeo, hazeMat);
-haze.position.set(0, 7.35, 6);
+// ---------- дымка ----------
+function makeGradientTexture() {
+  const cv = document.createElement('canvas');
+  cv.width = 4; cv.height = 256;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, 256);
+  // вертикальный градиент прозрачности: тоньше на краях, плотнее по центру
+  g.addColorStop(0.0,  'rgba(255,255,255,0.0)');
+  g.addColorStop(0.25, 'rgba(255,255,255,0.55)');
+  g.addColorStop(0.55, 'rgba(255,255,255,1.0)');
+  g.addColorStop(0.85, 'rgba(255,255,255,0.5)');
+  g.addColorStop(1.0,  'rgba(255,255,255,0.0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 4, 256);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.NoColorSpace;
+  return tex;
+}
+const haze = new THREE.Mesh(
+  new THREE.PlaneGeometry(90, 18),
+  new THREE.MeshBasicMaterial({
+    color: 0x4a5a8a,
+    transparent: true,
+    opacity: 0.22,
+    alphaMap: makeGradientTexture(),
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    toneMapped: false
+  })
+);
 haze.name = 'haze';
+haze.position.set(1.0, 7.35, 9);
 scene.add(haze);
 
-// State
+// ---------- время / probe ----------
 let t = 0;
 
+function hazeY(tt) { return 7.35 + 0.9 * Math.sin(tt * 0.25); }
+
+function probe() {
+  const objects = [];
+  scene.traverse((o) => {
+    if (o.isMesh) objects.push({ name: o.name || 'mesh', count: o.isInstancedMesh ? o.count : 1 });
+  });
+  return {
+    t: Math.round(t * 10000) / 10000,
+    objects: objects,
+    lit: litCount,
+    haze_y: Math.round(haze.position.y * 10000) / 10000
+  };
+}
+
+let litCount = 0;
+
 function render() {
-  setWindowColors(t);
-  haze.position.y = 7.35 + 0.9 * Math.sin(t * 0.25);
+  haze.position.y = hazeY(t);
+  litCount = updateWindows(t);
   renderer.render(scene, camera);
 }
 
 render();
 window.__ready = true;
 
-window.__probe = function () {
-  let lit = 0;
-  for (let i = 0; i < winData.length; i++) {
-    if ((i * 0.129 + t * 0.500) % 1 < 0.78) lit++;
-  }
-  const objects = [];
-  scene.traverse(o => { if (o.name) objects.push(o.name); });
-  return {
-    t: Math.round(t * 10000) / 10000,
-    objects,
-    lit,
-    haze_y: Math.round(haze.position.y * 10000) / 10000
-  };
-};
-
-window.__step = function (dt) {
+window.__probe = probe;
+window.__step = (dt) => {
   t += dt;
   render();
-  return window.__probe();
+  return probe();
 };
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-4 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

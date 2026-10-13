@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
 <meta charset="utf-8">
+<title>Комната с дождём за окном — lofi</title>
 <style>
-*{margin:0;padding:0}
-body{background:#000;display:flex;justify-content:center;align-items:center;min-height:100vh}
-canvas{display:block}
+  html, body { margin: 0; padding: 0; background: #0a0712; }
+  canvas { display: block; width: 1920px; height: 1080px; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
@@ -13,390 +13,310 @@ canvas{display:block}
 <script type="module">
 const THREE = window.THREE;
 
-// === LCG (deterministic) ===
+// ---------- детерминированная случайность ----------
 let lcg = 232350;
 function rnd() {
   lcg = (lcg * 1103515245 + 12345) % 2147483648;
   return lcg / 2147483648;
 }
 
-// === Constants ===
-const W = 800, H = 600;
-const FOV = 50 * Math.PI / 180;
-const ASPECT = W / H;
-const TH = Math.tan(FOV / 2);
-const CAM_Z0 = 4;
-const CAM_Z_END = -3.6;
-const CAM_SPEED = 1.64;
-const RAIN_SPEED = 2.4;
+// ---------- палитра ----------
+const C_WALL   = 0x2e1636; // стены, потолок, пол
+const C_WARM   = 0xffa83c; // лампа, подоконник
+const C_LEAF   = 0x7bbf6a; // растение
+const C_CYAN   = 0x7fe3e0; // окна города, монитор
+const C_COOL   = 0xa8c8dc; // капли и дождь
 
-// === Pre-generate random positions (fixed LCG order) ===
-const cityWinPos = [];
-for (let i = 0; i < 26; i++) cityWinPos.push([rnd(), rnd()]);
-const rainPos = [];
-for (let i = 0; i < 64; i++) rainPos.push([rnd(), rnd()]);
-
-// === Renderer ===
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+// ---------- рендерер / камера ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(1);
-renderer.setSize(W, H, false);
+renderer.setSize(1920, 1080, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 
-// === Scene ===
+const camera = new THREE.PerspectiveCamera(50, 1920 / 1080, 0.05, 120);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
+
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x2e1636);
+scene.background = new THREE.Color(0x06040c);
 
-// === Camera ===
-const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 200);
-camera.position.set(0, 0, CAM_Z0);
-camera.rotation.set(0, 0, 0);
+// ---------- свет ----------
+scene.add(new THREE.AmbientLight(0xffffff, 1.75));
+const lampLight = new THREE.PointLight(0xffa83c, 18, 0, 2);
+lampLight.position.set(-4.1, 3.85, -5.4);
+scene.add(lampLight);
+// лёгкий холодный свет из окна на подоконник
+const windowLight = new THREE.PointLight(0x7fe3e0, 2, 10, 2);
+windowLight.position.set(0, 2.2, -5.1);
+scene.add(windowLight);
 
-// === Helper: screen (u,v) → world at z (camera at z=CAM_Z0) ===
-function s2w(u, v, z) {
-  const d = CAM_Z0 - z;
-  const hh = d * TH;
-  const hw = hh * ASPECT;
-  return { x: (u - 0.5) * 2 * hw, y: (0.5 - v) * 2 * hh };
-}
-function frameAt(z) {
-  const d = CAM_Z0 - z;
-  const hh = d * TH;
-  return { h: hh * 2, w: hh * 2 * ASPECT };
-}
+// ---------- материалы ----------
+const matWall    = new THREE.MeshBasicMaterial({ color: C_WALL });
+const matWallLit = new THREE.MeshLambertMaterial({ color: C_WALL });
+const matWarm    = new THREE.MeshBasicMaterial({ color: C_WARM });
+const matLeaf    = new THREE.MeshBasicMaterial({ color: C_LEAF, side: THREE.DoubleSide });
+const matCyan    = new THREE.MeshBasicMaterial({ color: C_CYAN });
+const matCool    = new THREE.MeshBasicMaterial({ color: C_COOL });
+const matGlass   = new THREE.MeshBasicMaterial({
+  color: 0xe9f3f5, transparent: true, opacity: 0.35, side: THREE.DoubleSide
+});
 
-// === Colors ===
-const C_WALL = 0x2e1636;
-const C_WARM = 0xffa83c;
-const C_LEAF = 0x7bbf6a;
-const C_CYAN = 0x7fe3e0;
-const C_RAIN = 0xa8c8dc;
+// ---------- комната (тела, а не картинка) ----------
+// окно: проём в стене z = -6.4..-5.6, стекло z = -6.0
+// начальный кадр (камера z=4, d=10 до проёма): H_d = 9.326, W_d = 16.60
+const winX = 6.475, winY0 = 0.466, winY1 = 3.637;
 
-// === wall_top ===
+// пол (коробка, уходит в глубину)
+const floor = new THREE.Mesh(new THREE.BoxGeometry(44, 0.6, 16), matWall);
+floor.position.set(0, -4.22, 0.8);
+scene.add(floor);
+// потолок (коробка, уходит в глубину)
+const ceiling = new THREE.Mesh(new THREE.BoxGeometry(44, 0.6, 16), matWallLit);
+ceiling.position.set(0, 4.5, 0.8);
+scene.add(ceiling);
+// верхняя полоса стены над окном (0..11% кадра)
+const wallTop = new THREE.Mesh(new THREE.BoxGeometry(32, 4.2 - winY1, 0.8), matWall);
+wallTop.position.set(0, (4.2 + winY1) / 2, -6.0);
+scene.add(wallTop);
+// стена под окном (тёплая, светится от лампы градиентом)
+const wallBottom = new THREE.Mesh(new THREE.BoxGeometry(32, winY0 + 3.92, 0.8), matWallLit);
+wallBottom.position.set(0, (winY0 - 3.92) / 2, -6.0);
+scene.add(wallBottom);
+// боковые откосы-стены
+const wallL = new THREE.Mesh(new THREE.BoxGeometry(6, 8.12, 0.8), matWallLit);
+wallL.position.set(-(winX + 3), (4.2 - 3.92) / 2, -6.0);
+scene.add(wallL);
+const wallR = new THREE.Mesh(new THREE.BoxGeometry(6, 8.12, 0.8), matWallLit);
+wallR.position.set(winX + 3, (4.2 - 3.92) / 2, -6.0);
+scene.add(wallR);
+
+// тёплая полоса подоконника (выступает в комнату, верх на нижней кромке окна)
+const sill = new THREE.Mesh(
+  new THREE.BoxGeometry(32, 0.62, 0.35),
+  [matWall, matWall, matWall, matWall, matWarm, matWall]
+);
+sill.position.set(0, winY0 - 0.31, -5.5);
+scene.add(sill);
+
+// ---------- стекло ----------
+const glass = new THREE.Mesh(
+  new THREE.PlaneGeometry(winX * 2, winY1 - winY0),
+  matGlass
+);
+glass.position.set(0, (winY0 + winY1) / 2, -6.0);
+glass.renderOrder = 2;
+scene.add(glass);
+
+// ---------- небо за окном ----------
+const sky = new THREE.Mesh(new THREE.PlaneGeometry(80, 44),
+  new THREE.MeshBasicMaterial({ color: 0x060a16 }));
+sky.position.set(0, 6, -30);
+scene.add(sky);
+// дымка неона за городом
+const haze = new THREE.Mesh(new THREE.PlaneGeometry(30, 14), new THREE.MeshBasicMaterial({
+  color: C_CYAN, transparent: true, opacity: 0.14, blending: THREE.AdditiveBlending, depthWrite: false
+}));
+haze.position.set(0, 4.2, -26);
+haze.renderOrder = 1;
+scene.add(haze);
+
+// ---------- city: небоскрёбы, z = -20 ----------
+// при d = 24: H_d = 22.38, W_d = 39.85
+const cityGrp = new THREE.Group();
+scene.add(cityGrp);
 {
-  const f = frameAt(-6);
-  const h = 0.11 * f.h;
-  const y = (0.5 - 0.055) * f.h;
-  const geo = new THREE.PlaneGeometry(f.w, h);
-  const mat = new THREE.MeshBasicMaterial({ color: C_WALL });
-  const m = new THREE.Mesh(geo, mat);
-  m.position.set(0, y, -6);
-  m.name = 'wall_top';
-  scene.add(m);
-}
-
-// === glass ===
-{
-  const p1 = s2w(0.11, 0.11, -6);
-  const p2 = s2w(0.89, 0.45, -6);
-  const w = p2.x - p1.x;
-  const h = p1.y - p2.y;
-  const cx = (p1.x + p2.x) / 2;
-  const cy = (p1.y + p2.y) / 2;
-  const geo = new THREE.PlaneGeometry(w, h);
-  const mat = new THREE.MeshBasicMaterial({
-    color: 0x88ccff, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false
-  });
-  const m = new THREE.Mesh(geo, mat);
-  m.position.set(cx, cy, -6);
-  m.name = 'glass';
-  m.renderOrder = 10;
-  scene.add(m);
-}
-
-// === city ===
-{
-  const group = new THREE.Group();
-  group.name = 'city';
-  const f = frameAt(-20);
-
-  // Dark sky background
-  const bgGeo = new THREE.PlaneGeometry(f.w, f.h);
-  const bgMat = new THREE.MeshBasicMaterial({ color: 0x0c0818 });
-  const bg = new THREE.Mesh(bgGeo, bgMat);
-  bg.position.set(0, 0, -20);
-  group.add(bg);
-
-  // Skyscrapers (deterministic positions)
-  const bData = [
-    { u: 0.15, hFrac: 0.35, wFrac: 0.06 },
-    { u: 0.28, hFrac: 0.42, wFrac: 0.05 },
-    { u: 0.42, hFrac: 0.28, wFrac: 0.07 },
-    { u: 0.55, hFrac: 0.45, wFrac: 0.05 },
-    { u: 0.68, hFrac: 0.32, wFrac: 0.06 },
-    { u: 0.82, hFrac: 0.38, wFrac: 0.05 }
-  ];
-  for (const bd of bData) {
-    const bw = bd.wFrac * f.w;
-    const bh = bd.hFrac * f.h;
-    const bx = (bd.u - 0.5) * f.w;
-    const by = -f.h / 2 + bh / 2;
-    const bGeo = new THREE.PlaneGeometry(bw, bh);
-    const bMat = new THREE.MeshBasicMaterial({ color: 0x1a1030 });
-    const b = new THREE.Mesh(bGeo, bMat);
-    b.position.set(bx, by, -19.9);
-    group.add(b);
-  }
-
-  // 26 additive windows (#7fe3e0)
-  const ws = 0.012 * f.w;
-  const wsH = 0.012 * f.h;
-  for (let i = 0; i < 26; i++) {
-    const wx = (cityWinPos[i][0] - 0.5) * f.w * 0.8;
-    const wy = (cityWinPos[i][1] - 0.3) * f.h * 0.6;
-    const wGeo = new THREE.PlaneGeometry(ws, wsH);
-    const wMat = new THREE.MeshBasicMaterial({
-      color: C_CYAN, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false
-    });
-    const w = new THREE.Mesh(wGeo, wMat);
-    w.position.set(wx, wy, -19.8);
-    w.renderOrder = 5;
-    group.add(w);
-  }
-  scene.add(group);
-}
-
-// === rain ===
-let rainGeo;
-{
-  const f = frameAt(-12);
-  const gTop = s2w(0.5, 0.11, -6).y;
-  const gBot = s2w(0.5, 0.45, -6).y;
-  const gLeft = s2w(0.11, 0.5, -6).x;
-  const gRight = s2w(0.89, 0.5, -6).x;
-  const yMin = gBot - 0.5;
-  const yMax = gTop + 0.5;
-  const xMin = gLeft - 0.5;
-  const xMax = gRight + 0.5;
-
-  const positions = new Float32Array(64 * 3);
-  for (let i = 0; i < 64; i++) {
-    positions[i * 3]     = xMin + rainPos[i][0] * (xMax - xMin);
-    positions[i * 3 + 1] = yMin + rainPos[i][1] * (yMax - yMin);
-    positions[i * 3 + 2] = -12;
-  }
-  rainGeo = new THREE.BufferGeometry();
-  rainGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-
-  const mat = new THREE.PointsMaterial({
-    color: C_RAIN, size: 10, sizeAttenuation: false,
-    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false
-  });
-  const pts = new THREE.Points(rainGeo, mat);
-  pts.name = 'rain';
-  pts.renderOrder = 6;
-  scene.add(pts);
-}
-
-// Rain wrap bounds
-const rainYMin = s2w(0.5, 0.45, -6).y - 0.5;
-const rainYMax = s2w(0.5, 0.11, -6).y + 0.5;
-const rainYRange = rainYMax - rainYMin;
-
-// === plant ===
-{
-  const group = new THREE.Group();
-  group.name = 'plant';
-  const z = -5.9;
-  const f = frameAt(z);
-  const base = s2w(0.16, 0.45, z);
-
-  // Pot
-  const potW = 0.04 * f.w;
-  const potH = 0.035 * f.h;
-  const potGeo = new THREE.PlaneGeometry(potW, potH);
-  const potMat = new THREE.MeshBasicMaterial({ color: C_WALL });
-  const pot = new THREE.Mesh(potGeo, potMat);
-  pot.position.set(base.x, base.y + potH / 2, z);
-  group.add(pot);
-
-  // Three leaves
-  const leaves = [
-    { w: 0.09, h: 0.15, dx: 0, dy: 0.07, rz: 0 },
-    { w: 0.08, h: 0.12, dx: -0.025, dy: 0.04, rz: -0.35 },
-    { w: 0.07, h: 0.10, dx: 0.025, dy: 0.03, rz: 0.35 }
-  ];
-  for (const ld of leaves) {
-    const lw = ld.w * f.w;
-    const lh = ld.h * f.h;
-    const lGeo = new THREE.PlaneGeometry(lw, lh);
-    const lMat = new THREE.MeshBasicMaterial({ color: C_LEAF, side: THREE.DoubleSide });
-    const leaf = new THREE.Mesh(lGeo, lMat);
-    leaf.position.set(base.x + ld.dx * f.w, base.y + ld.dy * f.h, z);
-    leaf.rotation.z = ld.rz;
-    group.add(leaf);
-  }
-  scene.add(group);
-}
-
-// === desk ===
-{
-  const group = new THREE.Group();
-  group.name = 'desk';
-  const z = -5.9;
-  const f = frameAt(z);
-  const dp = s2w(0.73, 0.72, z);
-
-  // Desk surface
-  const dW = 0.28 * f.w;
-  const dH = 0.06 * f.h;
-  const dGeo = new THREE.PlaneGeometry(dW, dH);
-  const dMat = new THREE.MeshBasicMaterial({ color: 0x3d2040 });
-  const dMesh = new THREE.Mesh(dGeo, dMat);
-  dMesh.position.set(dp.x, dp.y, z);
-  group.add(dMesh);
-
-  // Monitor (#7fe3e0, 14% width)
-  const mW = 0.14 * f.w;
-  const mH = 0.10 * f.h;
-  const mGeo = new THREE.PlaneGeometry(mW, mH);
-  const mMat = new THREE.MeshBasicMaterial({ color: C_CYAN });
-  const mMesh = new THREE.Mesh(mGeo, mMat);
-  mMesh.position.set(dp.x, dp.y + dH / 2 + mH / 2 + 0.01 * f.h, z);
-  group.add(mMesh);
-
-  // Warm spot on desk
-  const sW = 0.06 * f.w;
-  const sH = 0.015 * f.h;
-  const sGeo = new THREE.PlaneGeometry(sW, sH);
-  const sMat = new THREE.MeshBasicMaterial({ color: C_WARM });
-  const sMesh = new THREE.Mesh(sGeo, sMat);
-  sMesh.position.set(dp.x + 0.06 * f.w, dp.y + dH / 2 + 0.005 * f.h, z);
-  group.add(sMesh);
-
-  scene.add(group);
-}
-
-// === lamp ===
-{
-  const z = -5.9;
-  const f = frameAt(z);
-  const lp = s2w(0.25, 0.06, z);
-  const lW = 0.05 * f.w;
-  const lH = 0.04 * f.h;
-  const geo = new THREE.PlaneGeometry(lW, lH);
-  const mat = new THREE.MeshBasicMaterial({ color: C_WARM });
-  const m = new THREE.Mesh(geo, mat);
-  m.position.set(lp.x, lp.y, z);
-  m.name = 'lamp';
-  scene.add(m);
-}
-
-// === windowsill ===
-{
-  const z = -5.95;
-  const f = frameAt(z);
-  const top = s2w(0.5, 0.45, z).y;
-  const bot = s2w(0.5, 0.50, z).y;
-  const h = top - bot;
-  const w = 0.78 * f.w;
-  const cy = (top + bot) / 2;
-  const geo = new THREE.PlaneGeometry(w, h);
-  const mat = new THREE.MeshBasicMaterial({ color: C_WARM });
-  const m = new THREE.Mesh(geo, mat);
-  m.position.set(0, cy, z);
-  m.name = 'windowsill';
-  scene.add(m);
-}
-
-// === Animation state ===
-let t = 0;
-let camZ = CAM_Z0;
-
-// === Render ===
-function render() {
-  camera.position.set(0, 0, camZ);
-  camera.rotation.set(0, 0, 0);
-  renderer.render(scene, camera);
-}
-
-// Initial render (t=0)
-render();
-window.__ready = true;
-
-// === Step ===
-window.__step = function(dt) {
-  t += dt;
-
-  // Camera
-  camZ -= CAM_SPEED * dt;
-  if (camZ < CAM_Z_END) camZ = CAM_Z_END;
-
-  // Rain
-  const pos = rainGeo.attributes.position.array;
-  for (let i = 0; i < 64; i++) {
-    pos[i * 3 + 1] -= RAIN_SPEED * dt;
-    if (pos[i * 3 + 1] < rainYMin) {
-      pos[i * 3 + 1] += rainYRange;
+  const n = 9;
+  let x = -14.5;
+  for (let i = 0; i < n; i++) {
+    const w = 1.6 + rnd() * 1.8;
+    const hTop = 0.20 + rnd() * 0.25;                       // доля высоты кадра
+    const top = 1.2 + hTop * 22.38;                          // верх здания
+    const b = new THREE.Mesh(
+      new THREE.BoxGeometry(w, top + 3, 1.2),
+      new THREE.MeshBasicMaterial({ color: 0x101828 })
+    );
+    b.position.set(x + w / 2, (top - 3) / 2, -20);
+    cityGrp.add(b);
+    // иногда вывеска-полоска на здании
+    if (i % 2 === 0) {
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(w * 0.55, 0.16), new THREE.MeshBasicMaterial({
+        color: C_CYAN, transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false
+      }));
+      sign.position.set(x + w / 2, 1.8 + rnd() * (top - 3), -19.38);
+      sign.renderOrder = 1;
+      cityGrp.add(sign);
     }
+    x += w + 0.5 + rnd() * 0.5;
+  }
+  // 26 окон-квадратов 0.012x0.012 кадра, аддитивные, LCG
+  for (let i = 0; i < 26; i++) {
+    const wx = (rnd() * 2 - 1) * 13.5;
+    const wy = 1.4 + rnd() * 7.2;
+    const win = new THREE.Mesh(new THREE.PlaneGeometry(0.012 * 39.85, 0.012 * 22.38), new THREE.MeshBasicMaterial({
+      color: C_CYAN, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false
+    }));
+    win.position.set(wx, wy, -19.38);
+    win.renderOrder = 1;
+    cityGrp.add(win);
+  }
+}
+
+// ---------- rain: 64 аддитивные точки, z = -12 ----------
+const RAIN = 64;
+const rainX = new Float32Array(RAIN), rainY0 = new Float32Array(RAIN);
+for (let i = 0; i < RAIN; i++) {
+  rainX[i] = (rnd() * 2 - 1) * 10.0;
+  rainY0[i] = 1.0 + rnd() * 4.4;
+}
+const rainGeo = new THREE.BufferGeometry();
+const rainPos = new Float32Array(RAIN * 3);
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+const rain = new THREE.Points(rainGeo, new THREE.PointsMaterial({
+  color: C_COOL, size: 5, sizeAttenuation: false,
+  transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false
+}));
+rain.renderOrder = 1;
+scene.add(rain);
+
+// ---------- капли на стекле (InstancedMesh), з = -5.9 ----------
+const DROPS = 84;
+const dropX = new Float32Array(DROPS), dropY0 = new Float32Array(DROPS), dropS = new Float32Array(DROPS);
+for (let i = 0; i < DROPS; i++) {
+  dropX[i] = (rnd() * 2 - 1) * 6.2;
+  dropY0[i] = 0.55 + rnd() * 3.0;
+  dropS[i] = 0.7 + rnd() * 0.8;
+}
+const drops = new THREE.InstancedMesh(
+  new THREE.PlaneGeometry(0.013 * 16.6, 0.024 * 9.326), matCool, DROPS
+);
+drops.position.set(0, 0, -5.9);
+drops.renderOrder = 3;
+const dummy = new THREE.Object3D();
+scene.add(drops);
+
+// ---------- plant: растение на подоконнике слева (u ≈ 0.16) ----------
+{
+  const px = -5.4, pz = -5.45;
+  const pot = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.45, 0.4), matWall);
+  pot.position.set(px, winY0 + 0.225, pz);
+  scene.add(pot);
+  const rim = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.07, 0.44), matWall);
+  rim.position.set(px, winY0 + 0.46, pz);
+  scene.add(rim);
+  const leaf = (w, h, dx, dy, rot) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(1, h / w), matLeaf);
+    m.scale.set(w, h, 1);
+    m.rotation.z = rot;
+    m.position.set(px + dx, winY0 + 0.45 + dy, -5.42);
+    scene.add(m);
+  };
+  leaf(1.42, 1.34,  0.02, 0.62, -0.22);
+  leaf(1.26, 1.04,  0.20, 0.46,  0.42);
+  leaf(1.08, 0.84, -0.22, 0.36, -0.65);
+}
+
+// ---------- desk: стол справа внизу (u ≈ 0.73, v ≈ 0.72) + монитор ----------
+{
+  const body = new THREE.Mesh(new THREE.BoxGeometry(4.6, 2.5, 0.9), matWall);
+  body.position.set(4.25, -3.92 + 1.25, -3.45);
+  scene.add(body);
+  const top = new THREE.Mesh(new THREE.BoxGeometry(5.0, 0.13, 1.0), matWall);
+  top.position.set(4.15, -1.435, -3.45);
+  scene.add(top);
+  // тёплое пятно на столе
+  const spot = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.34), matWarm);
+  spot.rotation.x = -Math.PI / 2;
+  spot.position.set(5.1, -1.368, -3.4);
+  scene.add(spot);
+  // монитор: 14% кадра шириной, экран #7fe3e0
+  const stand = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 0.16), matWall);
+  stand.position.set(2.85, -1.30, -3.55);
+  scene.add(stand);
+  const bezel = new THREE.Mesh(new THREE.BoxGeometry(1.80, 1.14, 0.08), matWall);
+  bezel.position.set(2.85, -0.72, -3.55);
+  scene.add(bezel);
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(1.62, 0.98), matCyan);
+  screen.position.set(2.85, -0.72, -3.505);
+  scene.add(screen);
+  // пара книжек рядом
+  const book = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.09, 0.42),
+    new THREE.MeshLambertMaterial({ color: 0x5a3620 }));
+  book.position.set(4.15, -1.315, -3.42);
+  scene.add(book);
+}
+
+// ---------- lamp: тёплая лампа под потолком (u ≈ 0.25, v ≈ 0.06) ----------
+{
+  const cord = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.14, 0.05), matWall);
+  cord.position.set(-4.1, 4.14, -5.5);
+  scene.add(cord);
+  const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.28, 24, 16), matWarm);
+  bulb.position.set(-4.1, 3.85, -5.5);
+  scene.add(bulb);
+}
+
+// ---------- анимация ----------
+let t = 0;
+
+function updateDynamics() {
+  // дождь: полосы падают вниз 2.4 ед/с, заворачиваются
+  const span = 4.4;
+  for (let i = 0; i < RAIN; i++) {
+    rainPos[i * 3]     = rainX[i];
+    rainPos[i * 3 + 1] = 1.0 + ((rainY0[i] - 2.4 * t) % span + span) % span;
+    rainPos[i * 3 + 2] = -12;
   }
   rainGeo.attributes.position.needsUpdate = true;
 
-  render();
+  // капли на стекле медленно стекают
+  const dspan = 3.0;
+  for (let i = 0; i < DROPS; i++) {
+    dummy.position.set(
+      dropX[i],
+      0.55 + ((dropY0[i] - 0.9 * t) % dspan + dspan) % dspan,
+      0
+    );
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(dropS[i], dropS[i], 1);
+    dummy.updateMatrix();
+    drops.setMatrixAt(i, dummy.matrix);
+  }
+  drops.instanceMatrix.needsUpdate = true;
+}
+
+window.__step = function (dt) {
+  t += dt;
+  // камера медленно едет к окну, x не меняется
+  camera.position.z = Math.max(-3.6, 4 - 1.64 * t);
+  updateDynamics();
+  renderer.render(scene, camera);
   return window.__probe();
 };
 
-// === Probe ===
-window.__probe = function() {
-  const objects = [];
-  scene.traverse(function(obj) {
-    if (obj.name) objects.push(obj.name);
-  });
+window.__probe = function () {
   return {
     t: Math.round(t * 10000) / 10000,
-    objects: objects,
-    camera: [
-      Math.round(camera.position.x * 10000) / 10000,
-      Math.round(camera.position.z * 10000) / 10000
-    ]
+    objects: [
+      { name: 'wall_top', v: '0..11%', color: '#2e1636' },
+      { name: 'glass', z: -6.0, width: '78%', v: '11..45%', opacity: 0.35 },
+      { name: 'sill', color: '#ffa83c', v: '45..52%' },
+      { name: 'city', z: -20, windows: 26, windowsPx: '0.012x0.012' },
+      { name: 'rain', z: -12, count: RAIN, sizePx: 5, speed: 2.4 },
+      { name: 'drops', z: -5.9, count: DROPS },
+      { name: 'plant', u: 0.16, leaves: 3 },
+      { name: 'desk', u: 0.73, v: 0.72, monitor: '14% #7fe3e0' },
+      { name: 'lamp', u: 0.25, v: 0.06, color: '#ffa83c' },
+      { name: 'camera', speed: -1.64, zMin: -3.6 }
+    ],
+    camera: [ +camera.position.x.toFixed(4), +camera.position.z.toFixed(4) ]
   };
 };
+
+// первый кадр — начало сцены
+updateDynamics();
+renderer.render(scene, camera);
+window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-17 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

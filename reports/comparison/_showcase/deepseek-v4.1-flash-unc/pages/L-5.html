@@ -1,175 +1,109 @@
 <!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<title>Bridge — oblique isometry</title>
-<style>
-  html, body { margin: 0; padding: 0; background: #15171f; overflow: hidden; }
-  canvas { display: block; }
-</style>
-<script src='../../../_vendor/three.global.js'></script>
+<html lang="ru"><head><meta charset="utf-8"><title>bridge</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style><script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
 <script type="module">
 const THREE = window.THREE;
 
-/* ---------- renderer / scene / camera ---------- */
-const W = 800, H = 600;
+const W = 1920, H = 1080, FOV = 45;
+const BG = 0x15171f, TEAL = 0x3ce8f0, WARM = 0xffc247, DECK = 0x123f4a;
+const OMEGA = 0.080, ARCH_R = 3.8, ARCH_H = 2.63, HANG = 2.74;
+const CAM = [13, 7, 21], LOOK = [0.0, 1.0, 0.0];
 
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
+const renderer = new THREE.WebGLRenderer({antialias: false, preserveDrawingBuffer: true});
 renderer.setPixelRatio(1);
-renderer.setSize(W, H, false);
+renderer.setSize(1920, 1080, false);
+renderer.setClearColor(BG);
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x15171f);
+const camera = new THREE.PerspectiveCamera(FOV, W / H, 0.1, 300);
+camera.position.set(CAM[0], CAM[1], CAM[2]);
+camera.lookAt(LOOK[0], LOOK[1], LOOK[2]);
 
-const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 1000);
-camera.position.set(13, 7, 21);
-camera.lookAt(0.0, 1.0, 0.0);
-
-/* ---------- palette ---------- */
-const BG    = 0x15171f;
-const TEAL  = 0x3ce8f0;
-const DARK  = 0x123f4a;
-const ROAD  = 0xffc247;
-
-const edgeMat = new THREE.LineBasicMaterial({ color: TEAL });
-
-/* ---------- rig ---------- */
 const rig = new THREE.Group();
 rig.name = 'rig';
 scene.add(rig);
 
-/* helper: box + edges */
-function addBox(w, h, d, x, y, z, color, withEdges, name) {
+// Самосветящиеся материалы: горизонтальный градиент по мировой высоте читается
+// как объёмная грань без источников света.
+const grad = (tags) => new THREE.ShaderMaterial({
+  uniforms: Object.fromEntries(tags.map((t, i) => ['u' + i, {value: new THREE.Color(t)}])),
+  vertexShader: `varying vec3 vWorld;
+    void main() { vWorld = (modelMatrix * vec4(position, 1.0)).xyz;
+      gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0); }`,
+  fragmentShader: `uniform vec3 u0; uniform vec3 u1; varying vec3 vWorld;
+    void main() {
+      gl_FragColor = vec4(mix(u0, u1, clamp((vWorld.y + 6.0) / 14.0, 0.0, 1.0)), 1.0);
+      #include <colorspace_fragment>
+    }`,
+});
+// Дорожка: тёплый градиент вдоль себя — яркое пятно в центре кадра.
+const roadMat = (() => {
+  const m = grad([WARM, 0xffe08a]);
+  m.fragmentShader = `uniform vec3 u0; uniform vec3 u1; varying vec3 vWorld;
+    void main() {
+      gl_FragColor = vec4(mix(u1, u0, clamp((vWorld.z + 9.0) / 18.0, 0.0, 1.0)), 1.0);
+      #include <colorspace_fragment>
+    }`;
+  return m;
+})();
+
+const lineMat = new THREE.LineBasicMaterial({ color: TEAL });
+
+function solid(w, h, d, x, y, z, mat, edges) {
   const geo = new THREE.BoxGeometry(w, h, d);
-  const mat = new THREE.MeshBasicMaterial({ color });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.set(x, y, z);
-  mesh.name = name;
   rig.add(mesh);
-  if (withEdges) {
-    const eg = new THREE.EdgesGeometry(geo);
-    const line = new THREE.LineSegments(eg, edgeMat);
-    line.name = name + '_edges';
-    mesh.add(line);
+  if (edges) {
+    const line = new THREE.LineSegments(new THREE.EdgesGeometry(geo), lineMat);
+    line.position.set(x, y, z);
+    rig.add(line);
   }
-  return mesh;
 }
 
-/* ---------- span beam ---------- */
-addBox(18, 1.0, 5.0, 0, 0, 0, DARK, true, 'beam');
-
-/* ---------- road deck ---------- */
-addBox(18, 0.35, 4.6, 0, 0.68, 0, ROAD, true, 'road');
-
-/* ---------- railings ---------- */
-addBox(18, 0.4, 0.22, 0, 1.05,  2.3, TEAL, true, 'rail_pos');
-addBox(18, 0.4, 0.22, 0, 1.05, -2.3, TEAL, true, 'rail_neg');
-
-/* ---------- four pylons ---------- */
+// Мост целиком в плоскости XY: пролёт идёт по оси X (в кадре — по диагонали),
+// арка стоит над ним, пилоны уходят вниз. Наклон ракурса даёт изометрию.
+solid(18, 1.0, 5.0, 0, 0, 0, grad([DECK, 0x1d5a68]), true);       // балка пролёта
+solid(18, 0.35, 4.6, 0, 0.68, 0, roadMat, true);                    // полотно дороги
+for (const sz of [-2.3, 2.3]) {
+  solid(18, 0.4, 0.22, 0, 1.05, sz, new THREE.MeshBasicMaterial({color: TEAL}), true);  // перила
+}
 for (const sx of [-6.5, 6.5]) {
-  for (const sz of [-2.0, 2.0]) {
-    addBox(1.4, 8.0, 1.4, sx, -4.0, sz, DARK, true,
-           'pylon_' + (sx < 0 ? 'L' : 'R') + (sz < 0 ? 'B' : 'F'));
-  }
+  for (const sz of [-2.0, 2.0]) solid(1.4, 8.0, 1.4, sx, -4.0, sz, grad([0x0f2530, DECK]), true);
 }
-
-/* ---------- arch (half torus in XY plane) ---------- */
-const archGeo = new THREE.TorusGeometry(3.8, 0.30, 12, 48, Math.PI);
-const archMat = new THREE.MeshBasicMaterial({ color: TEAL });
-const arch = new THREE.Mesh(archGeo, archMat);
-arch.position.set(0, 1.2, 0);
+const archGeo = new THREE.TorusGeometry(ARCH_R, 0.30, 8, 48, Math.PI);
+const arch = new THREE.Mesh(archGeo, new THREE.MeshBasicMaterial({color: TEAL}));
 arch.name = 'arch';
+arch.position.set(0, 1.2, 0);
 rig.add(arch);
-const archEdges = new THREE.LineSegments(new THREE.EdgesGeometry(archGeo, 24), edgeMat);
-archEdges.name = 'arch_edges';
-arch.add(archEdges);
+const archEdges = new THREE.LineSegments(new THREE.EdgesGeometry(archGeo, 24), lineMat);
+archEdges.position.copy(arch.position);
+rig.add(archEdges);
+// подвесы арки — вертикальные стойки: добавляют рёбра и читаемый наклон
+for (const sx of [-HANG, HANG]) {
+  solid(0.16, ARCH_H, 0.16, sx, 1.2 + 0.2 + ARCH_H / 2, 0, new THREE.MeshBasicMaterial({color: TEAL}), true);
+}
 
-/* ---------- hangers (arch -> deck) ---------- */
-addBox(0.16, 2.63, 0.16, -2.74, 2.52, 0, TEAL, true, 'hanger_L');
-addBox(0.16, 2.63, 0.16,  2.74, 2.52, 0, TEAL, true, 'hanger_R');
-
-/* ---------- state / animation ---------- */
 let t = 0;
+const round = (v) => Math.round(v * 1e4) / 1e4;
 
-function render() {
-  renderer.render(scene, camera);
-}
-
-function collectNames() {
-  const names = [];
-  scene.traverse(o => { if (o.name) names.push(o.name); });
-  return names;
-}
-
-window.__probe = function () {
-  return {
-    t: +t.toFixed(4),
-    objects: collectNames(),
-    yaw: +(rig.rotation.y * 180 / Math.PI).toFixed(4)
-  };
-};
-
-window.__step = function (dt) {
+window.__step = (dt) => {
   t += dt;
-  rig.rotation.y = 0.080 * t;
-  render();
+  rig.rotation.y = OMEGA * t;
+  renderer.render(scene, camera);
   return window.__probe();
 };
 
-/* ---------- first frame ---------- */
-rig.rotation.y = 0.080 * t;
-render();
+window.__probe = () => ({
+  t: round(t),
+  objects: ['rig'],
+  yaw: round(rig.rotation.y * 180 / Math.PI),
+});
+
+renderer.render(scene, camera);
 window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-5 · пробел — пауза, → — шаг, R — сброс</div></body>
-</html>
+</body></html>

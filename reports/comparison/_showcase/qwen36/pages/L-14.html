@@ -1,239 +1,240 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8">
-  <title>Water Surface</title>
-  <style>body { margin: 0; overflow: hidden; }</style>
+<meta charset="utf-8">
+<style>body{margin:0;overflow:hidden;background:#000}canvas{display:block}</style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
-  <script type="module">
-    const THREE = window.THREE;
+<script type="importmap">{"imports":{"three":"./vendor/three.module.js"}}</script>
+<script type="module">
+const THREE = window.THREE;
 
-    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
-    renderer.setPixelRatio(1);
-    renderer.setSize(800, 600, false);
-    document.body.appendChild(renderer.domElement);
+(function () {
+  const W = 1920, H = 1080;
 
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 1000);
-    camera.position.set(0, 0.9, 0);
-    camera.lookAt(0, 0.9 - 0.1185, -1);
+  /* ---------- Renderer ---------- */
+  const renderer = new THREE.WebGLRenderer({preserveDrawingBuffer:true});
+  renderer.setPixelRatio(1);
+  renderer.setSize(W, H, false);
+  document.body.appendChild(renderer.domElement);
 
-    // Water
-    const waterGeo = new THREE.PlaneGeometry(300, 400.0, 180, 200);
-    waterGeo.rotateX(-Math.PI / 2);
-    waterGeo.translate(0, 0, -199.6); // z from 0.4 to -399.6
-    const waterMat = new THREE.ShaderMaterial({
-      uniforms: {
-        uTime: { value: 0.0 },
-        uCamPos: { value: camera.position },
-        uSunDir: { value: new THREE.Vector3() }
-      },
-      vertexShader: `
-        uniform float uTime;
-        varying vec3 vNormal;
-        varying vec3 vWorldPos;
-        varying vec2 vUv;
+  const scene  = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(45, W/H, 0.1, 1000);
+  camera.position.set(0, 0.9, 0);
+  camera.lookAt(0, 0.7815, -1);
 
-        void main() {
-          vUv = uv;
-          vec3 pos = position;
-          vec2 p = pos.xz;
-          float t = uTime;
+  /* ---------- Clipping plane y = 0 (keep world Y >= 0) ---------- */
+  const clipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
+  renderer.clippingPlanes = [clipPlane];
 
-          vec3 d1 = vec3(0.924, 0.383, 0.0);
-          float k1 = 0.38, w1 = 0.90, a1 = 0.26;
-          vec3 d2 = vec3(-0.643, 0.766, 0.0);
-          float k2 = 0.72, w2 = 1.50, a2 = 0.16;
-          vec3 d3 = vec3(0.309, -0.951, 0.0);
-          float k3 = 1.25, w3 = 2.40, a3 = 0.09;
-          float p1 = 2.282, p2 = 2.282 + 1.7, p3 = 2.282 + 3.4;
+  /* ---------- Time ---------- */
+  let t = 0;
 
-          float h = 0.0;
-          float dhdx = 0.0;
-          float dhdz = 0.0;
+  /* === Sun position ============================================ */
+  const tanHalfFov = Math.tan(Math.PI * 45 / 360);              // 0.4142
+  const horizonNDY = Math.atan(0.1185) / tanHalfFov;            // ≈ 0.2866
+  const sunNDY     = horizonNDY + 0.024;                        // 0.012 frame-h above horizon
+  // Build sun ray in camera view-space (Three.js: looks along local -Z)
+  const viewY      = sunNDY * tanHalfFov * 300;                 // view Y at dist 300
+  const camWorld   = camera.matrixWorld;
+  // Matrix columns: 0→(c0,c4,c8) Right,  1→(c1,c5,c9) Up,  2→(c2,c6,c10) Back(=+Z local)
+  const camRight   = new THREE.Vector3(camWorld.elements[ 0], camWorld.elements[ 4], camWorld.elements[ 8]);
+  const camUp      = new THREE.Vector3(camWorld.elements[ 1], camWorld.elements[ 5], camWorld.elements[ 9]);
+  const camBack    = new THREE.Vector3(camWorld.elements[ 2], camWorld.elements[ 6], camWorld.elements[10]);
+  // Camera looks opposite to camBack (local +Z points backward)
+  const sunWorldDir = new THREE.Vector3()
+      .addScaledVector(camRight,  0)
+      .addScaledVector(camUp,     viewY)
+      .addScaledVector(camBack,  -300)
+      .normalize();
+  const sunPos     = new THREE.Vector3().copy(camera.position).addScaledVector(sunWorldDir, 300);
+  const sunRadius  = 300 * Math.tan(Math.PI * 2.25 / 180);
 
-          float arg1 = k1 * dot(d1.xz, p) - w1 * t + p1;
-          h += a1 * sin(arg1);
-          dhdx += a1 * k1 * cos(arg1) * d1.x;
-          dhdz += a1 * k1 * cos(arg1) * d1.z;
+  /* ================================================================ */
+  /* === WATER SHADERS ============================================= */
+  /* ================================================================ */
 
-          float arg2 = k2 * dot(d2.xz, p) - w2 * t + p2;
-          h += a2 * sin(arg2);
-          dhdx += a2 * k2 * cos(arg2) * d2.x;
-          dhdz += a2 * k2 * cos(arg2) * d2.z;
+  const waterVShader = `
+uniform float uTime;
+varying vec3 vNormal;
+varying vec2 vUv;
+varying vec3 vWorldPos;
 
-          float arg3 = k3 * dot(d3.xz, p) - w3 * t + p3;
-          h += a3 * sin(arg3);
-          dhdx += a3 * k3 * cos(arg3) * d3.x;
-          dhdz += a3 * k3 * cos(arg3) * d3.z;
+void main() {
+  vec3 pos  = position;
+  vec2 p    = pos.xz;
+  float h   = 0.0, dhdx = 0.0, dhdz = 0.0;
+  float a1 = 0.26 * 1.080, a2 = 0.16 * 1.080, a3 = 0.09 * 1.080;
 
-          h *= 1.080;
-          dhdx *= 1.080;
-          dhdz *= 1.080;
+  float d0 = dot(p, vec2( 0.924,  0.383));
+  float ph0 = 0.38*d0 - 0.90*uTime + 2.282;
+  h   += a1*sin(ph0);  dhdx += a1*0.38*cos(ph0)* 0.924;  dhdz += a1*0.38*cos(ph0)* 0.383;
 
-          pos.y += h;
-          vNormal = normalize(vec3(-dhdx, 1.0, -dhdz));
-          vWorldPos = (modelMatrix * vec4(pos, 1.0)).xyz;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
-        }
-      `,
-      fragmentShader: `
-        precision highp float;
-        varying vec3 vNormal;
-        varying vec3 vWorldPos;
-        varying vec2 vUv;
-        uniform vec3 uCamPos;
-        uniform vec3 uSunDir;
+  float d1 = dot(p, vec2(-0.643,  0.766));
+  float ph1 = 0.72*d1 - 1.50*uTime + 3.982;
+  h   += a2*sin(ph1);  dhdx += a2*0.72*cos(ph1)*(-0.643); dhdz += a2*0.72*cos(ph1)* 0.766;
 
-        void main() {
-          vec3 N = normalize(vNormal);
-          vec3 V = normalize(uCamPos - vWorldPos);
-          vec3 L = normalize(uSunDir);
+  float d2 = dot(p, vec2( 0.309, -0.951));
+  float ph2 = 1.25*d2 - 2.40*uTime + 5.682;
+  h   += a3*sin(ph2);  dhdx += a3*1.25*cos(ph2)* 0.309;  dhdz += a3*1.25*cos(ph2)*(-0.951);
 
-          float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-          vec3 colHorizon = vec3(0.184, 0.525, 0.690);
-          vec3 colBottom = vec3(0.043, 0.153, 0.251);
-          vec3 waterCol = mix(colBottom, colHorizon, fresnel);
+  pos.y += h;
+  vNormal = normalize(vec3(-dhdx, 1.0, -dhdz));
+  vUv     = uv;
+  vWorldPos = pos;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+}`;
 
-          vec3 R = reflect(-L, N);
-          float spec = pow(max(dot(R, V), 0.0), 32.0);
-          vec3 sunCol = vec3(1.0, 0.902, 0.690);
-          waterCol += sunCol * spec * 1.5;
+  const waterFShader = `
+uniform vec3 uCamPos;
+uniform vec3 uSunPos;
+varying vec3 vNormal;
+varying vec2 vUv;
+varying vec3 vWorldPos;
 
-          float track = exp(-vWorldPos.x * vWorldPos.x / 0.35) * smoothstep(-2.0, -25.0, vWorldPos.z);
-          waterCol += sunCol * track * 0.8;
+void main() {
+  vec3 N = normalize(vNormal);
+  vec3 V = normalize(uCamPos - vWorldPos);
+  vec3 L = normalize(uSunPos - vWorldPos);
 
-          gl_FragColor = vec4(waterCol, 1.0);
-        }
-      `
-    });
-    const water = new THREE.Mesh(waterGeo, waterMat);
-    water.name = 'water';
-    scene.add(water);
+  // Fresnel water colour: dark near camera, light at horizon
+  float F = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.0);
+  vec3 col = mix(vec3(0.043,0.153,0.251), vec3(0.184,0.522,0.690), F);
 
-    // Sky
-    const skyGeo = new THREE.PlaneGeometry(1000, 1000);
-    const skyMat = new THREE.ShaderMaterial({
-      uniforms: {
-        uCamPos: { value: camera.position }
-      },
-      vertexShader: `
-        varying vec2 vUv;
-        varying vec3 vWorldPos;
-        void main() {
-          vUv = uv;
-          vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        precision highp float;
-        varying vec2 vUv;
-        varying vec3 vWorldPos;
-        uniform vec3 uCamPos;
-        void main() {
-          vec3 col1 = vec3(1.0, 0.690, 0.400);
-          vec3 col2 = vec3(0.549, 0.373, 0.525);
-          vec3 col3 = vec3(0.078, 0.133, 0.310);
-          vec3 skyCol;
-          if (vUv.y < 0.5) {
-            skyCol = mix(col1, col2, vUv.y * 2.0);
-          } else {
-            skyCol = mix(col2, col3, (vUv.y - 0.5) * 2.0);
-          }
-          gl_FragColor = vec4(skyCol, 1.0);
-        }
-      `
-    });
-    const sky = new THREE.Mesh(skyGeo, skyMat);
-    sky.name = 'sky';
-    scene.add(sky);
+  // Specular sun glint
+  vec3 R = reflect(-L, N);
+  col += pow(max(dot(R, V), 0.0), 32.0) * vec3(1.0,0.902,0.690) * 1.2;
 
-    // Sun
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    const frameHeightAt300 = 2 * 300 * Math.tan(Math.PI / 4 / 2);
-    const sunOffset = 0.012 * frameHeightAt300;
-    const sunPos = camera.position.clone().add(dir.clone().multiplyScalar(300)).add(camera.up.clone().multiplyScalar(sunOffset));
-    const sunGeo = new THREE.PlaneGeometry(25, 25);
-    const sunMat = new THREE.MeshBasicMaterial({ color: 0xffe6b0 });
-    const sun = new THREE.Mesh(sunGeo, sunMat);
-    sun.position.copy(sunPos);
-    sun.lookAt(camera.position);
-    sun.name = 'sun';
-    scene.add(sun);
+  // Warm sun-trail   exp(-x²/0.35) · smoothstep(-2,-25,z)
+  float trail = exp(-vWorldPos.x*vWorldPos.x/0.35) *
+                smoothstep(-2.0, -25.0, vWorldPos.z);
+  col += trail * vec3(1.0,0.902,0.690) * 0.6;
 
-    // Update sun direction for water shader
-    waterMat.uniforms.uSunDir.value.copy(sunPos.clone().sub(new THREE.Vector3(0, 0, 0)).normalize());
+  gl_FragColor = vec4(col, 1.0);
+}`;
 
-    // Animation & Probe
-    let t = 0.0;
-    window.__step = function(dt) {
-      t += dt;
-      waterMat.uniforms.uTime.value = t;
-      renderer.render(scene, camera);
-      return window.__probe();
-    };
+  const waterUniforms = {
+    uTime:  { value: 0 },
+    uCamPos:{ value: camera.position.clone() },
+    uSunPos:{ value: sunPos.clone() }
+  };
 
-    window.__probe = function() {
-      return {
-        t: t.toFixed(4),
-        objects: ['water', 'sky', 'sun'],
-        horizon: 0.357,
-        wave: t.toFixed(4)
-      };
-    };
+  const water = new THREE.Mesh(
+    new THREE.PlaneGeometry(300, 400, 180, 200),
+    new THREE.ShaderMaterial({
+      uniforms: waterUniforms,
+      vertexShader: waterVShader,
+      fragmentShader: waterFShader,
+      clippingPlanes: [clipPlane]
+    })
+  );
+  water.rotation.x = -Math.PI / 2;
+  water.position.set(0, 0, -199.6);
+  water.name = 'water';
+  scene.add(water);
 
-    window.__ready = true;
-  </script>
+  /* ================================================================ */
+  /* === SKY SHADERS =============================================== */
+  /* ================================================================ */
 
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
+  // Sky plane: large, placed at distance 500, oriented perpendicular to view.
+  // Gradient computed from projected Y (ndcY) – independent of placement.
+  const skyVShader = `
+varying float vNdCY;                       // ndcY * tan(fov/2)
+void main() {
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vNdCY = mv.y / (-mv.z);                  // = ndcY * tanHalfFov
+  gl_Position = projectionMatrix * mv;
+}`;
 
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
+  const skyFShader = `
+uniform float uTanHalfFov;
+uniform float uMinNDY;                     // horizon ndcY ≈ 0.2866
+varying float vNdCY;
 
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
+void main() {
+  float ndcY = vNdCY / uTanHalfFov;
+  // t = 0 at horizon, t = 1 at top of frame
+  float t  = clamp((ndcY - uMinNDY) / (1.0 - uMinNDY), 0.0, 1.0);
+
+  vec3 col;
+  if (t < 0.5) {
+    col = mix(vec3(1.0,0.690,0.400),     // #ffb066
+              vec3(0.549,0.373,0.525),   // #8c5f86
+              t * 2.0);
+  } else {
+    col = mix(vec3(0.549,0.373,0.525),   // #8c5f86
+              vec3(0.078,0.133,0.310),   // #14224f
+              (t - 0.5) * 2.0);
   }
+  gl_FragColor = vec4(col, 1.0);
+}`;
 
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);             // unit look direction (world −Z in view)
+  const skyCenter = camera.position.clone().addScaledVector(dir, 500);
 
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
+  const sky = new THREE.Mesh(
+    new THREE.PlaneGeometry(2000, 800),
+    new THREE.ShaderMaterial({
+      uniforms: {
+        uTanHalfFov: { value: tanHalfFov },
+        uMinNDY:     { value: horizonNDY }
+      },
+      vertexShader: skyVShader,
+      fragmentShader: skyFShader,
+      side: THREE.FrontSide,
+      clippingPlanes: [clipPlane]
+    })
+  );
+  sky.position.copy(skyCenter);
+  sky.lookAt(camera.position);               // face the camera
+  sky.name = 'sky';
+  scene.add(sky);
+
+  /* ================================================================ */
+  /* === SUN (MeshBasicMaterial) =================================== */
+  /* ================================================================ */
+
+  const sunMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(sunRadius, 32, 32),
+    new THREE.MeshBasicMaterial({ color: 0xffe6b0, clippingPlanes: [clipPlane] })
+  );
+  sunMesh.position.copy(sunPos);
+  sunMesh.name = 'sun';
+  scene.add(sunMesh);
+
+  /* ================================================================ */
+  /* === ANIMATION & PROBE ========================================= */
+  /* ================================================================ */
+
+  window.__step = function (dt) {
+    dt       = dt || 0;
+    t       += dt;
+    waterUniforms.uTime.value = t;
+    renderer.render(scene, camera);
+    return window.__probe();
+  };
+
+  window.__probe = function () {
+    return {
+      t:       parseFloat(t.toFixed(4)),
+      objects: [
+        { name:'water', type:'plane', position:[0, 0, -199.6] },
+        { name:'sky',   type:'plane', position: sky.position.toArray() },
+        { name:'sun',   type:'sphere',position: sunPos.toArray() }
+      ],
+      horizon: 0.357,
+      wave:    parseFloat(t.toFixed(4))
+    };
+  };
+
+  /* First frame — signal ready */
+  renderer.render(scene, camera);
+  window.__ready = true;
+
 })();
 </script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-14 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

@@ -2,9 +2,9 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>Night Fireworks</title>
+<title>Ночной фейерверк</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  html, body { margin: 0; padding: 0; background: #280f54; overflow: hidden; }
   canvas { display: block; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
@@ -13,204 +13,211 @@
 <script type="module">
 const THREE = window.THREE;
 
-/* ---------- renderer / scene / camera ---------- */
-const W = 800, H = 600;
+/* ---------- детерминированный ЛЦГ ---------- */
+const S0 = 571619;
+const MOD = 4294967296;
+let _s = S0;
+function nextU() {
+  _s = (1664525 * _s + 1013904223) % MOD;
+  return _s / MOD;
+}
+
+/* ---------- сцена и камера ---------- */
+const W = 1920, H = 1080;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#280f54');
+
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
+camera.position.set(0, 0, 12.0);
+camera.lookAt(0, 0, 0);
 
 const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
 renderer.setPixelRatio(1);
 renderer.setSize(W, H, false);
 document.body.appendChild(renderer.domElement);
 
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x280f54);   // ночное небо
-
-const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 200);
-camera.position.set(0, 0, 12.0);
-camera.lookAt(0, 0, 0);
-
-/* ---------- frame-fraction -> world ---------- */
-const HALF_H = 4.971;
-const ASPECT = W / H;
-const fx2x = fx => (fx - 0.5) * 2 * HALF_H * ASPECT;
-const fy2y = fy => (0.5 - fy) * 2 * HALF_H;
-
-/* ---------- fixture constants ---------- */
-const LAUNCH = [[0.343, 0.287], [0.373, 0.329], [0.448, 0.334]];
-const DELAYS = [0.0, 0.3, 0.7];
-const COLORS = [0xff0051, 0xffc300, 0x19cdff];
-const N       = 320;
-const SPEED   = 2.20;
-const GRAV    = 1.10;
-const LIFE    = 1.90;
-const PERIOD  = 2.00;
-
-/* ---------- deterministic LCG ---------- */
-let s = 571619;
-function rnd() {
-  s = (1664525 * s + 1013904223) % 4294967296;
-  return s / 4294967296;
+/* ---------- перевод долей кадра в мировые координаты ---------- */
+const halfHeight = 12.0 * Math.tan((45 * Math.PI / 180) / 2); // ~4.9706
+function frameToWorld(fx, fy) {
+  const x = (fx - 0.5) * 2 * halfHeight * (800 / 600);
+  const y = (0.5 - fy) * 2 * halfHeight;
+  return new THREE.Vector3(x, y, 0);
 }
 
-/* ---------- build bursts ---------- */
-const bursts = [];
+/* ---------- параметры залпов ---------- */
+const BURSTS = [
+  { name: 'burst_1', fx: 0.343, fy: 0.287, delay: 0.0, color: new THREE.Color('#ff0051') },
+  { name: 'burst_2', fx: 0.373, fy: 0.329, delay: 0.3, color: new THREE.Color('#ffc300') },
+  { name: 'burst_3', fx: 0.448, fy: 0.334, delay: 0.7, color: new THREE.Color('#19cdff') },
+];
+const COUNT = 320;
+const PERIOD = 2.00;
+const LIFE = 1.90;
+const SPEED = 2.20;
+const GRAV = 1.10;
 
-for (let b = 0; b < 3; b++) {
-  const px = fx2x(LAUNCH[b][0]);
-  const py = fy2y(LAUNCH[b][1]);
-  const pz = 0;
+/* ---------- генерация частиц (порядок обращений к ЛЦГ фиксирован) ---------- */
+const burstData = [];
+const group = new THREE.Group();
+group.name = 'fireworks';
+scene.add(group);
 
-  const vecs = new Float32Array(N * 3);
-  for (let i = 0; i < N; i++) {
-    const u = rnd();
-    const v = rnd();
-    const w = rnd();
-    const z   = 1 - 2 * u;
+for (const b of BURSTS) {
+  const point = frameToWorld(b.fx, b.fy);
+  const vel = new Float32Array(COUNT * 3);
+  for (let i = 0; i < COUNT; i++) {
+    const u = nextU();
+    const v = nextU();
+    const w = nextU();
+    const z = 1 - 2 * u;
     const phi = 2 * Math.PI * v;
-    const rr  = Math.sqrt(Math.max(0, 1 - z * z));
-    const V   = SPEED * (0.65 + 0.5 * w);
-    vecs[i * 3]     = rr * Math.cos(phi) * V;
-    vecs[i * 3 + 1] = z * V;
-    vecs[i * 3 + 2] = rr * Math.sin(phi) * V * 0.5;
+    const rr = Math.sqrt(Math.max(0, 1 - z * z));
+    const V = SPEED * (0.65 + 0.5 * w);
+    vel[i * 3 + 0] = rr * Math.cos(phi) * V;
+    vel[i * 3 + 1] = z * V;
+    vel[i * 3 + 2] = rr * Math.sin(phi) * V * 0.5;
   }
 
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
-  geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(N * 3), 3));
+  const pos = new Float32Array(COUNT * 3);
+  const col = new Float32Array(COUNT * 4);
+  for (let i = 0; i < COUNT; i++) {
+    pos[i * 3 + 0] = point.x;
+    pos[i * 3 + 1] = point.y;
+    pos[i * 3 + 2] = point.z;
+    col[i * 4 + 0] = b.color.r;
+    col[i * 4 + 1] = b.color.g;
+    col[i * 4 + 2] = b.color.b;
+    col[i * 4 + 3] = 1;
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 4));
 
   const mat = new THREE.PointsMaterial({
     size: 6.0,
     sizeAttenuation: false,
     transparent: true,
+    vertexColors: true,
     blending: THREE.AdditiveBlending,
     depthTest: false,
-    vertexColors: true,
-    color: new THREE.Color(COLORS[b])
+    depthWrite: false,
   });
 
-  const pts = new THREE.Points(geo, mat);
-  pts.name = 'burst_' + (b + 1);
-  pts.frustumCulled = false;
-  scene.add(pts);
+  const points = new THREE.Points(geo, mat);
+  points.name = b.name;
+  points.frustumCulled = false;
+  group.add(points);
 
-  bursts.push({ pts, geo, vecs, px, py, pz, delay: DELAYS[b], tau: 0, bright: 0 });
+  burstData.push({ points, geo, point, vel, delay: b.delay });
 }
 
-/* ---------- animation state ---------- */
+/* ---------- звёзды (детализация фона, генерируются после залпов) ---------- */
+(function stars() {
+  const N = 420;
+  const pos = new Float32Array(N * 3);
+  const col = new Float32Array(N * 4);
+  for (let i = 0; i < N; i++) {
+    const u = nextU();
+    const v = nextU();
+    const w = nextU();
+    pos[i * 3 + 0] = (u - 0.5) * 46;
+    pos[i * 3 + 1] = (v - 0.35) * 30;
+    pos[i * 3 + 2] = -8 - w * 24;
+    const t = nextU();
+    col[i * 4 + 0] = 0.55 + 0.35 * t;
+    col[i * 4 + 1] = 0.60 + 0.30 * t;
+    col[i * 4 + 2] = 0.75 + 0.25 * t;
+    col[i * 4 + 3] = 0.18 + 0.30 * (1 - w);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 4));
+  const mat = new THREE.PointsMaterial({
+    size: 1.6,
+    sizeAttenuation: false,
+    transparent: true,
+    vertexColors: true,
+    blending: THREE.AdditiveBlending,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const stars = new THREE.Points(geo, mat);
+  stars.name = 'stars';
+  stars.frustumCulled = false;
+  scene.add(stars);
+})();
+
+/* ---------- состояние времени ---------- */
 let t = 0;
 
+function wrap(x, p) {
+  return ((x % p) + p) % p;
+}
+
 function update() {
-  for (const b of bursts) {
-    let tau = (t - b.delay) % PERIOD;
-    if (tau < 0) tau += PERIOD;
-
-    const bright = Math.max(0, 1 - tau / LIFE);
-    const pos = b.geo.attributes.position.array;
-    const col = b.geo.attributes.color.array;
-    const g2  = 0.5 * GRAV * tau * tau;
-
-    for (let i = 0; i < N; i++) {
-      pos[i * 3]     = b.px + b.vecs[i * 3] * tau;
-      pos[i * 3 + 1] = b.py + b.vecs[i * 3 + 1] * tau - g2;
-      pos[i * 3 + 2] = b.pz + b.vecs[i * 3 + 2] * tau;
-
-      col[i * 3]     = bright;
-      col[i * 3 + 1] = bright;
-      col[i * 3 + 2] = bright;
+  for (const b of burstData) {
+    const tau = wrap(t - b.delay, PERIOD);
+    const alive = tau <= LIFE ? Math.max(0, 1 - tau / LIFE) : 0;
+    const posAttr = b.geo.getAttribute('position');
+    const colAttr = b.geo.getAttribute('color');
+    const pos = posAttr.array;
+    const col = colAttr.array;
+    const dt2 = 0.5 * GRAV * tau * tau;
+    for (let i = 0; i < COUNT; i++) {
+      const k = i * 3;
+      pos[k + 0] = b.point.x + b.vel[k + 0] * tau;
+      pos[k + 1] = b.point.y + b.vel[k + 1] * tau - dt2;
+      pos[k + 2] = b.point.z + b.vel[k + 2] * tau;
+      col[i * 4 + 3] = alive;
     }
-
-    b.geo.attributes.position.needsUpdate = true;
-    b.geo.attributes.color.needsUpdate = true;
-    b.tau = tau;
-    b.bright = bright;
+    posAttr.needsUpdate = true;
+    colAttr.needsUpdate = true;
   }
 }
 
-/* ---------- probe ---------- */
+/* ---------- проба ---------- */
 function probe() {
-  const bs = bursts.map(b => {
-    const tau = b.tau;
-    const g2  = 0.5 * GRAV * tau * tau;
+  const objects = [];
+  scene.traverse((o) => { if (o.name) objects.push(o.name); });
+  const bursts = burstData.map((b) => {
+    const tau = wrap(t - b.delay, PERIOD);
+    const bright = tau <= LIFE ? Math.max(0, 1 - tau / LIFE) : 0;
+    const pos = b.geo.getAttribute('position').array;
     let sum = 0;
-    for (let i = 0; i < N; i++) {
-      const dx = b.vecs[i * 3] * tau;
-      const dy = b.vecs[i * 3 + 1] * tau - g2;
-      const dz = b.vecs[i * 3 + 2] * tau;
+    for (let i = 0; i < COUNT; i++) {
+      const k = i * 3;
+      const dx = pos[k + 0] - b.point.x;
+      const dy = pos[k + 1] - b.point.y;
+      const dz = pos[k + 2] - b.point.z;
       sum += Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
+    const r = sum / COUNT;
     return {
-      r: Number((sum / N).toFixed(4)),
-      bright: Number(b.bright.toFixed(4))
+      name: b.points.name,
+      r: Number(r.toFixed(4)),
+      bright: Number(bright.toFixed(4)),
     };
   });
-
   return {
     t: Number(t.toFixed(4)),
-    objects: scene.children.map(o => o.name),
-    bursts: bs
+    objects,
+    bursts,
   };
 }
 
-/* ---------- public API ---------- */
-window.__probe = probe;
-
+/* ---------- шаг времени ---------- */
 window.__step = function (dt) {
   t += dt;
   update();
   renderer.render(scene, camera);
-  return probe();
+  return window.__probe();
 };
+window.__probe = probe;
 
-/* ---------- first frame ---------- */
+/* ---------- начальный кадр ---------- */
 update();
 renderer.render(scene, camera);
 window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-7 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

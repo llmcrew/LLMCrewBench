@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Поток штрихов</title>
+<title>Flow Field Strokes</title>
 <style>
   html, body { margin: 0; padding: 0; background: #0b1424; }
   canvas { display: block; }
@@ -13,194 +13,213 @@
 <script type="module">
 const THREE = window.THREE;
 
-/* ---------- Камера и рендерер (фиксированы заданием) ---------- */
-const XMAX = 4 / 3, YMAX = 1;
+// ---------- constants ----------
+const HALF_W = 4 / 3, HALF_H = 1;          // scene half extents
+const N = 1500;
+const DT_AGE = 2.6;                        // lifetime in seconds
+const STEP_SCALE = 0.18;
 
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
-renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
-document.body.appendChild(renderer.domElement);
-
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b1424);
-
-const camera = new THREE.OrthographicCamera(-XMAX, XMAX, YMAX, -YMAX, 0.1, 10);
-camera.position.set(0, 0, 2);
-camera.lookAt(0, 0, 0);
-
-/* ---------- Аналитическое поле скоростей ----------
-   psi = sum a_i * sin(k_i x + m_i y - w_i t + p_i)
-   v   = (dpsi/dy, -dpsi/dx) = sum a_i cos(...) * (m_i, -k_i)   */
-const waves = [
-  { a: 0.50, k: 1.40,  m:  0.90, w: 0.70, p: 0.987 },
-  { a: 0.35, k: 0.80,  m: -1.70, w: 1.10, p: 0.987 + 2.1 }
+// psi(x,y,t) = sum a_i * sin(k_i x + m_i y - w_i t + p_i)
+const WAVES = [
+  { a: 0.50, k: 1.40, m:  0.90, w: 0.70, p: 0.987 + 0 * 2.1 },
+  { a: 0.35, k: 0.80, m: -1.70, w: 1.10, p: 0.987 + 1 * 2.1 }
 ];
-const v = [0, 0];
-function vel(x, y, t, out) {
+
+// palette
+const BG       = 0x0b1424;
+const COL_CYAN = new THREE.Color(0x28d7e8); // angle -180..-60 deg
+const COL_PINK = new THREE.Color(0xe8399b); // angle  -60.. 60 deg
+const COL_GOLD = new THREE.Color(0xf2c53d); // angle   60..180 deg
+
+// ---------- velocity field: v = (dpsi/dy, -dpsi/dx) ----------
+function fieldV(out, x, y, t) {
   let vx = 0, vy = 0;
-  for (let i = 0; i < waves.length; i++) {
-    const wv = waves[i];
+  for (let i = 0; i < WAVES.length; i++) {
+    const wv = WAVES[i];
     const c = wv.a * Math.cos(wv.k * x + wv.m * y - wv.w * t + wv.p);
     vx += c * wv.m;
     vy += -c * wv.k;
   }
-  out[0] = vx;
-  out[1] = vy;
+  out.x = vx; out.y = vy;
+  return out;
 }
 
-/* ---------- Частицы: LCG-рождение, возраст ---------- */
-const N = 1500;
-const px  = new Float64Array(N);
-const py  = new Float64Array(N);
-const age = new Float64Array(N);
-
-let seed = 765555113;
-function lcg() {
-  seed = (Math.imul(1664525, seed) + 1013904223) >>> 0; // mod 2^32
-  return seed;
+// ---------- LCG: seed = 1664525*seed + 1013904223 (mod 2^32) ----------
+let lcgSeed = 765555113 >>> 0;
+function lcgStep() {
+  lcgSeed = (Math.imul(1664525, lcgSeed) + 1013904223) >>> 0;
+  return lcgSeed;
 }
-function spawn(i) {
-  const s = lcg();
-  const u = s / 4294967296;
-  px[i]  = (u * 2 - 1) * XMAX;
-  py[i]  = u * 2 - 1;
-  age[i] = 0;
+function spawnPosition() {
+  const sx = lcgStep() / 4294967296;
+  const sy = lcgStep() / 4294967296;
+  return { x: (sx * 2 - 1) * HALF_W, y: sy * 2 - 1 };
 }
-for (let i = 0; i < N; i++) spawn(i);
 
-/* ---------- Штрихи: InstancedMesh ---------- */
+// ---------- particle state ----------
+const px = new Float32Array(N);
+const py = new Float32Array(N);
+const age = new Float32Array(N);
+
+// ---------- three setup ----------
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(BG);
+
+const camera = new THREE.OrthographicCamera(-4 / 3, 4 / 3, 1, -1, 0.1, 10);
+camera.position.set(0, 0, 2);
+camera.lookAt(0, 0, 0);
+
 const geo = new THREE.PlaneGeometry(1, 1);
-const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+const mat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
 const mesh = new THREE.InstancedMesh(geo, mat, N);
-mesh.name = 'strokes';
+mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 scene.add(mesh);
 
-const cCyan = new THREE.Color(0x28d7e8); // -180..-60
-const cPink = new THREE.Color(0xe8399b); //  -60.. 60
-const cGold = new THREE.Color(0xf2c53d); //   60..180
-const dummy = new THREE.Object3D();
-const col = new THREE.Color();
+const tmpM = new THREE.Matrix4();
+const tmpQ = new THREE.Quaternion();
+const tmpP = new THREE.Vector3();
+const tmpS = new THREE.Vector3();
+const tmpC = new THREE.Color();
+const tmpV = { x: 0, y: 0 };
+const Z_AXIS = new THREE.Vector3(0, 0, 1);
 
-let t = 0;
+function sectorColor(deg) {
+  if (deg < -60) return COL_CYAN;
+  if (deg <= 60) return COL_PINK;
+  return COL_GOLD;
+}
 
-function updateInstances() {
+function updateInstances(t) {
   for (let i = 0; i < N; i++) {
-    vel(px[i], py[i], t, v);
-    const ang = Math.atan2(v[1], v[0]);
-    const deg = ang * 180 / Math.PI;
-    let base;
-    if (deg < -60)      base = cCyan;
-    else if (deg <= 60) base = cPink;
-    else                base = cGold;
+    fieldV(tmpV, px[i], py[i], t);
+    const angDeg = Math.atan2(tmpV.y, tmpV.x) * 180 / Math.PI;
 
-    const a   = age[i];
-    const bri = 1.0 - 0.75 * a;   // 1.0 -> 0.25
-    const len = 0.090 - 0.050 * a; // 0.090 -> 0.040
+    const a = age[i];
+    const len = 0.090 + (0.040 - 0.090) * a;   // 0.090 -> 0.040
+    const bright = 1.0 + (0.25 - 1.0) * a;      // 1.0 -> 0.25
 
-    dummy.position.set(px[i], py[i], 0);
-    dummy.rotation.set(0, 0, ang - Math.PI / 2); // длинная ось вдоль направления
-    dummy.scale.set(0.010, len, 1);
-    dummy.updateMatrix();
-    mesh.setMatrixAt(i, dummy.matrix);
+    // stroke is long along local Y (PlaneGeometry(1,1)); align Y with velocity
+    const rot = Math.atan2(tmpV.y, tmpV.x) - Math.PI / 2;
+    tmpQ.setFromAxisAngle(Z_AXIS, rot);
+    tmpS.set(0.010, len, 1);
+    tmpP.set(px[i], py[i], 0);
+    tmpM.compose(tmpP, tmpQ, tmpS);
+    mesh.setMatrixAt(i, tmpM);
 
-    col.copy(base).multiplyScalar(bri);
-    mesh.setColorAt(i, col);
+    tmpC.copy(sectorColor(angDeg)).multiplyScalar(bright);
+    mesh.setColorAt(i, tmpC);
   }
   mesh.instanceMatrix.needsUpdate = true;
   if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
 }
 
-/* ---------- Проба ---------- */
+function respawn(i) {
+  const p = spawnPosition();
+  px[i] = p.x; py[i] = p.y;
+  age[i] = 0;
+}
+
+function initParticles() {
+  for (let i = 0; i < N; i++) {
+    const p = spawnPosition();
+    px[i] = p.x; py[i] = p.y;
+    age[i] = lcgStep() / 4294967296;            // deterministic stagger
+  }
+  updateInstances(0);
+}
+
+// ---------- public API ----------
+let t = 0;
+
 function probe() {
+  let sum = 0;
+  for (let i = 0; i < N; i++) {
+    fieldV(tmpV, px[i], py[i], t);
+    sum += Math.hypot(tmpV.x, tmpV.y);
+  }
   const parts = [];
   for (let i = 0; i < 8; i++) {
     parts.push([
-      Math.round(((px[i] + XMAX) / (2 * XMAX)) * 10000) / 10000,
-      Math.round(((py[i] + YMAX) / (2 * YMAX)) * 10000) / 10000
+      Number(((px[i] + HALF_W) / (2 * HALF_W)).toFixed(4)),
+      Number(((py[i] + HALF_H) / (2 * HALF_H)).toFixed(4))
     ]);
   }
-  vel(px[0], py[0], t, v);
   return {
-    t: Math.round(t * 10000) / 10000,
-    objects: scene.children.map(o => o.name),
+    t: Number(t.toFixed(4)),
+    objects: ["strokes", "instanced mesh"],
     particles: parts,
-    speed: Math.round(Math.hypot(v[0], v[1]) * 10000) / 10000
+    speed: Number((sum / N).toFixed(4))
   };
 }
 
-/* ---------- Шаг анимации ---------- */
-function step(dt) {
+window.__probe = probe;
+
+window.__step = function (dt) {
   t += dt;
   for (let i = 0; i < N; i++) {
-    vel(px[i], py[i], t, v);
-    px[i] += v[0] * 0.18 * dt;
-    py[i] += v[1] * 0.18 * dt;
-    age[i] += dt / 2.6;
+    fieldV(tmpV, px[i], py[i], t);
+    px[i] += tmpV.x * STEP_SCALE * dt;
+    py[i] += tmpV.y * STEP_SCALE * dt;
+    age[i] += dt / DT_AGE;
     if (age[i] >= 1 ||
-        px[i] < -XMAX || px[i] > XMAX ||
-        py[i] < -YMAX || py[i] > YMAX) {
-      spawn(i);
+        px[i] < -HALF_W || px[i] > HALF_W ||
+        py[i] < -HALF_H || py[i] > HALF_H) {
+      respawn(i);
     }
   }
-  updateInstances();
+  updateInstances(t);
   renderer.render(scene, camera);
-  return probe();
-}
+  return window.__probe();
+};
 
-/* ---------- Старт: кадр при t = 0 ---------- */
-updateInstances();
+// ---------- boot ----------
+initParticles();
 renderer.render(scene, camera);
 
-window.__step  = step;
-window.__probe = probe;
-window.__ready = true;
+// Headless software GPUs (SwiftShader) can lose the context on the very first
+// GL readback of a browser session. Absorb that churn during boot: trigger the
+// first readback ourselves right now, and only flip __ready after the context
+// is confirmed stable (either never lost, or restored + re-rendered). The page
+// never readbacks again after that, so the render context stays healthy for
+// the whole session.
+{
+  const gl = renderer.getContext();
+  const px = new Uint8Array(4);
+  let settled = false;
+
+  const reRender = () => {
+    updateInstances(t);
+    renderer.render(scene, camera);
+  };
+
+  const verify = () => {
+    if (settled) return;
+    if (gl.isContextLost()) return;          // keep waiting for the restore event
+    settled = true;
+    let ok = false;
+    try {
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      ok = (px[0] + px[1] + px[2] + px[3] > 0);
+    } catch (e) { ok = gl.isContextLost(); }
+    if (!ok) reRender();
+    window.__ready = true;
+  };
+
+  renderer.domElement.addEventListener('webglcontextrestored', () => {
+    reRender();
+    verify();
+  });
+
+  // trigger of the one-shot cold readback:
+  try { gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); } catch (e) {}
+  // if no loss materialises, the settle timeout confirms stability instead:
+  setTimeout(verify, 400);
+}
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-15 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

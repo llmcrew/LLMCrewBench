@@ -2,9 +2,9 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>Aurora — 28 ribbons</title>
+<title>Aurora</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #1d1638; }
+  html, body { margin: 0; padding: 0; background: #1d1638; overflow: hidden; }
   canvas { display: block; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
@@ -13,123 +13,93 @@
 <script type="module">
 const THREE = window.THREE;
 
-/* ---------- deterministic LCG (seed 53827) ---------- */
-const MOD = 4294967296;
-let s = 53827;
-function rnd() {
-  s = (1664525 * s + 1013904223) % MOD;
-  return s / MOD;
+try {
+
+/* ---------- deterministic LCG ---------- */
+const S0 = 53827;
+let s = S0 >>> 0;
+function nextU() {
+  s = (1664525 * s + 1013904223) % 4294967296;
+  return s / 4294967296;
 }
 
-/* ---------- frame geometry ---------- */
-const FOV = 45;
-const DIST = 10.0;
-const FRAME_H = 2 * DIST * Math.tan((FOV / 2) * Math.PI / 180); // ≈ 8.2843
-const FRAME_W = FRAME_H * (800 / 600);                          // ≈ 11.0457
+/* ---------- renderer / scene / camera ---------- */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
 
-/* ---------- scene / camera / renderer ---------- */
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1d1638);
 
-const camera = new THREE.PerspectiveCamera(FOV, 800 / 600, 0.1, 200);
-camera.position.set(0, 0, DIST);
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
+camera.position.set(0, 0, 10.0);
 camera.lookAt(0, 0, 0);
 
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
-renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
-document.body.appendChild(renderer.domElement);
+/* half-height of the frame on the z=0 plane at distance 10 */
+const halfH = Math.tan((Math.PI / 180) * (45 / 2)) * 10.0; // ~4.142
+const frameH = halfH * 2.0;
+const frameW = frameH * (800 / 600);
 
-if (THREE.SRGBColorSpace !== undefined && 'outputColorSpace' in renderer) {
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-} else if (THREE.sRGBEncoding !== undefined && 'outputEncoding' in renderer) {
-  renderer.outputEncoding = THREE.sRGBEncoding;
-}
+/* ---------- shared curtain texture (64x256) ---------- */
+const cvs = document.createElement('canvas');
+cvs.width = 64;
+cvs.height = 256;
+const ctx = cvs.getContext('2d');
 
-/* ---------- helpers ---------- */
-function smoothstep(a, b, x) {
-  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
-  return t * t * (3 - 2 * t);
-}
+// vertical colour ramp: top magenta -> middle blue -> bottom green
+const vg = ctx.createLinearGradient(0, 0, 0, 256);
+vg.addColorStop(0.00, '#ff20e8');
+vg.addColorStop(0.15, '#ff20e8');
+vg.addColorStop(0.36, '#2197db');
+vg.addColorStop(0.62, '#2197db');
+vg.addColorStop(0.74, '#0dff2e');
+vg.addColorStop(1.00, '#0dff2e');
+ctx.fillStyle = vg;
+ctx.fillRect(0, 0, 64, 256);
 
-/* ---------- shared 64x256 canvas texture ----------
-   vertical: bottom #18f051 -> middle #2197db -> top #ff33ee
-   horizontal: opaque middle, soft side falloff (curtain look) */
-function makeTexture() {
-  const W = 64, H = 256;
-  const cv = document.createElement('canvas');
-  cv.width = W; cv.height = H;
-  const ctx = cv.getContext('2d');
-  const img = ctx.createImageData(W, H);
+// soft side falloff so a strip reads as a curtain, not a rectangle
+const ag = ctx.createLinearGradient(0, 0, 64, 0);
+ag.addColorStop(0.00, 'rgba(0,0,0,0)');
+ag.addColorStop(0.10, 'rgba(0,0,0,0.9)');
+ag.addColorStop(0.50, 'rgba(0,0,0,1)');
+ag.addColorStop(0.90, 'rgba(0,0,0,0.9)');
+ag.addColorStop(1.00, 'rgba(0,0,0,0)');
+ctx.globalCompositeOperation = 'destination-in';
+ctx.fillStyle = ag;
+ctx.fillRect(0, 0, 64, 256);
+ctx.globalCompositeOperation = 'source-over';
 
-  const cTop = [0xff, 0x33, 0xee];
-  const cMid = [0x21, 0x97, 0xdb];
-  const cBot = [0x18, 0xf0, 0x51];
-
-  for (let y = 0; y < H; y++) {
-    // canvas row 0 == top of ribbon (flipY), row H-1 == bottom
-    const t = y / (H - 1);
-    let col;
-    if (t < 0.5) {
-      const k = t / 0.5;
-      col = [cTop[0] + (cMid[0] - cTop[0]) * k,
-             cTop[1] + (cMid[1] - cTop[1]) * k,
-             cTop[2] + (cMid[2] - cTop[2]) * k];
-    } else {
-      const k = (t - 0.5) / 0.5;
-      col = [cMid[0] + (cBot[0] - cMid[0]) * k,
-             cMid[1] + (cBot[1] - cMid[1]) * k,
-             cMid[2] + (cBot[2] - cMid[2]) * k];
-    }
-    for (let x = 0; x < W; x++) {
-      const nx = (x + 0.5) / W;
-      const d = Math.abs(nx - 0.5) * 2;      // 0 center, 1 edge
-      const a = 1 - smoothstep(0.4, 1.0, d); // opaque middle, soft sides
-      const idx = (y * W + x) * 4;
-      img.data[idx]     = Math.round(col[0]);
-      img.data[idx + 1] = Math.round(col[1]);
-      img.data[idx + 2] = Math.round(col[2]);
-      img.data[idx + 3] = Math.round(a * 255);
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-
-  const tex = new THREE.CanvasTexture(cv);
-  tex.minFilter = THREE.LinearFilter;
-  tex.magFilter = THREE.LinearFilter;
-  tex.wrapS = THREE.ClampToEdgeWrapping;
-  tex.wrapT = THREE.ClampToEdgeWrapping;
-  if (THREE.SRGBColorSpace !== undefined && 'colorSpace' in tex) {
-    tex.colorSpace = THREE.SRGBColorSpace;
-  } else if (THREE.sRGBEncoding !== undefined && 'encoding' in tex) {
-    tex.encoding = THREE.sRGBEncoding;
-  }
-  tex.needsUpdate = true;
-  return tex;
-}
-
-const tex = makeTexture();
+const tex = new THREE.CanvasTexture(cvs);
+window.__cvs = cvs;
+window.__scene = scene;
+tex.wrapS = THREE.ClampToEdgeWrapping;
+tex.wrapT = THREE.ClampToEdgeWrapping;
+tex.minFilter = THREE.LinearFilter;
+tex.magFilter = THREE.LinearFilter;
+tex.generateMipmaps = false;
 
 /* ---------- 28 ribbons ---------- */
-const N = 28;
+const SPEED = 0.35;
+const AMP = 0.05;
+const geo = new THREE.PlaneGeometry(1, 1);
 const ribbons = [];
 
-for (let i = 0; i < N; i++) {
-  const u  = rnd();
-  const v  = rnd();
-  const u2 = rnd();
-  const u3 = rnd();
-  const u4 = rnd();
-  const u5 = rnd();
+for (let i = 0; i < 28; i++) {
+  const u = nextU();
+  const v = nextU();
+  const u2 = nextU();
+  const u3 = nextU();
+  const u4 = nextU();
+  const u5 = nextU();
 
-  const w  = 0.030 + 0.055 * u;                       // fraction of frame width
-  const h  = 0.30  + 0.38  * v;                       // fraction of frame height
-  const x  = (i + 0.5 + 0.6 * (u2 - 0.5)) / N - 0.5;  // fraction of frame width
-  const y  = 0.02  + 0.26  * u3;                      // fraction of frame height
-  const op = 0.16  + 0.24  * u4;
-  const ph = 0.4   * u5;
+  const w = 0.030 + 0.055 * u;              // fraction of frame width
+  const h = 0.30 + 0.38 * v;                // fraction of frame height
+  const xf = (i + 0.5 + 0.6 * (u2 - 0.5)) / 28 - 0.5; // fraction of frame width
+  const yf = 0.02 + 0.26 * u3;              // fraction of frame height, upward
+  const op = 0.16 + 0.24 * u4;
+  const ph = 0.4 * u5;
 
-  const geo = new THREE.PlaneGeometry(1, 1);
   const mat = new THREE.MeshBasicMaterial({
     map: tex,
     transparent: true,
@@ -137,100 +107,90 @@ for (let i = 0; i < N; i++) {
     depthTest: false,
     opacity: op
   });
+  mat.color.setRGB(2.5, 2.5, 2.5);
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = 'ribbon_' + (i + 1);
-  mesh.position.set(x * FRAME_W, y * FRAME_H, 0);
-  mesh.scale.set(w * FRAME_W, h * FRAME_H, 1);
-  mesh.userData = { xf: x, hf: h, ph: ph };
+  mesh.renderOrder = i;
+  const baseX = xf * frameW;
+  const baseY = yf * frameH;
+  const wWorld = w * frameW;
+  const hWorld = h * frameH;
+  mesh.position.set(baseX, baseY, 0);
+  mesh.scale.set(wWorld, hWorld, 1);
   scene.add(mesh);
-  ribbons.push(mesh);
+  ribbons.push({ mesh, xf, ph, baseX, baseY, hWorld, wWorld, op });
 }
+
+/* ---------- faint deterministic star field (detail in the sky) ---------- */
+const starCount = 240;
+const starPos = new Float32Array(starCount * 3);
+for (let i = 0; i < starCount; i++) {
+  const a = nextU();
+  const b = nextU();
+  starPos[i * 3 + 0] = (a - 0.5) * frameW * 1.6;
+  starPos[i * 3 + 1] = (b - 0.5) * frameH * 1.6;
+  starPos[i * 3 + 2] = -2.0 - nextU() * 3.0;
+}
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+const starMat = new THREE.PointsMaterial({
+  color: 0xbfd4ff,
+  size: 0.035,
+  sizeAttenuation: true,
+  transparent: true,
+  opacity: 0.7,
+  blending: THREE.AdditiveBlending,
+  depthTest: false,
+  depthWrite: false
+});
+const stars = new THREE.Points(starGeo, starMat);
+stars.renderOrder = -1;
+scene.add(stars);
 
 /* ---------- animation state ---------- */
 let t = 0;
 
-function applyWave() {
-  const wphase = 2 * Math.PI * 0.35 * t;
-  for (const m of ribbons) {
-    const d = m.userData;
-    const dx = 0.05 * Math.sin(wphase - 3.0 * d.xf + d.ph);
-    const hh = d.hf * (1 + 0.15 * Math.sin(2 * Math.PI * 0.35 * 0.7 * t + d.ph));
-    m.position.x = (d.xf + dx) * FRAME_W;
-    m.scale.y = hh * FRAME_H;
+function update(time) {
+  for (const r of ribbons) {
+    const dx = AMP * frameW * Math.sin(2 * Math.PI * SPEED * time - 3.0 * r.xf + r.ph);
+    const hs = r.hWorld * (1 + 0.15 * Math.sin(2 * Math.PI * SPEED * 0.7 * time + r.ph));
+    r.mesh.position.x = r.baseX + dx;
+    r.mesh.scale.y = hs;
   }
 }
 
-function draw() {
-  applyWave();
-  renderer.render(scene, camera);
-}
-
-/* ---------- public API ---------- */
-window.__probe = function () {
+function probe() {
   return {
     t: Number(t.toFixed(4)),
-    objects: scene.children.map(o => o.name),
-    wave: Number((2 * Math.PI * 0.35 * t).toFixed(4))
+    objects: ribbons.map(r => ({
+      name: r.mesh.name,
+      x: Number(r.mesh.position.x.toFixed(4)),
+      y: Number(r.mesh.position.y.toFixed(4)),
+      w: Number(r.wWorld.toFixed(4)),
+      h: Number(r.mesh.scale.y.toFixed(4)),
+      opacity: Number(r.op.toFixed(4))
+    })),
+    wave: Number((2 * Math.PI * SPEED * t).toFixed(4))
   };
-};
+}
 
 window.__step = function (dt) {
   t += dt;
-  draw();
-  return window.__probe();
+  update(t);
+  renderer.render(scene, camera);
+  return probe();
 };
 
-/* ---------- first frame ---------- */
-draw();
+window.__probe = probe;
+
+update(0);
+renderer.render(scene, camera);
 window.__ready = true;
+} catch (e) {
+  window.__err = String(e) + ' | ' + (e && e.stack);
+  console.log('AURORA_ERR', window.__err);
+}
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-8 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

@@ -1,219 +1,154 @@
 <!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<title>Ночной город</title>
-<style>
-  html, body { margin: 0; padding: 0; background: #2a1b5c; overflow: hidden; }
-  canvas { display: block; }
-</style>
-<script src='../../../_vendor/three.global.js'></script>
+<html lang="ru"><head><meta charset="utf-8"><title>night city</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style><script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
 <script type="module">
 const THREE = window.THREE;
 
-const W = 800, H = 600;
+const W = 1920, H = 1080, FOV = 45;
+const EYE = 8.0, DIST = 26.0;
+const BG = 0x2a1b5c, SIL = 0x0b0b14, MINT = 0x22e0d0, WARM = 0xffb066, EDGE = 0x2f6f8f;
+const PHASE = 0.129, BLINK = 0.500, HAZE_Y = 7.35;
+const HOUSES = [[-6.8, 2.4, 14.8], [-3.7, 2.1, 10.1], [-1.2, 1.6, 10.7], [1.5, 2.3, 14.9], [4.8, 2.6, 13.5], [8.0, 1.6, 10.9]];
 
-/* ---------- рендерер ---------- */
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
+const renderer = new THREE.WebGLRenderer({antialias: false, preserveDrawingBuffer: true});
 renderer.setPixelRatio(1);
-renderer.setSize(W, H, false);
+renderer.setSize(1920, 1080, false);
+renderer.setClearColor(BG);
 document.body.appendChild(renderer.domElement);
 
-/* ---------- сцена и камера ---------- */
 const scene = new THREE.Scene();
-scene.background = new THREE.Color('#2a1b5c');
-
-const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 100000);
-camera.position.set(0, 8, 27.5);   // высота 8, 26 единиц от фасада (фасад z = 1.5)
-camera.lookAt(0, 8, 0);            // строго горизонтально
-camera.updateMatrixWorld(true);
-
-/* ---------- земля ---------- */
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(20000, 20000),
-  new THREE.MeshBasicMaterial({ color: '#0b0b14' })
+// Небо — градиентная плоскость: фон обязан светлеть к горизонту, а не быть
+// однотонной заливкой (иначе кадр вырождается в четыре цвета).
+const frameH = 2 * Math.tan(FOV * Math.PI / 360) * DIST;
+const sky = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 60),
+  new THREE.ShaderMaterial({
+    uniforms: { uTop: {value: new THREE.Color(0x4a2f7a)}, uBottom: {value: new THREE.Color(BG)} },
+    vertexShader: `varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform vec3 uTop; uniform vec3 uBottom; varying vec2 vUv;
+      void main() {
+        gl_FragColor = vec4(mix(uBottom, uTop, smoothstep(0.05, 0.70, vUv.y)), 1.0);
+        #include <colorspace_fragment>
+      }`,
+  })
 );
-ground.name = 'ground';
+sky.name = 'sky';
+sky.position.set(0, 16, -45);
+scene.add(sky);
+
+const camera = new THREE.PerspectiveCamera(FOV, W / H, 0.1, 200);
+camera.position.set(0, EYE, DIST);
+camera.lookAt(0, EYE, 0);
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 120),
+  new THREE.ShaderMaterial({
+    uniforms: { uNear: {value: new THREE.Color(SIL)}, uFar: {value: new THREE.Color(0x141428)} },
+    vertexShader: `varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform vec3 uNear; uniform vec3 uFar; varying vec2 vUv;
+      void main() {
+        gl_FragColor = vec4(mix(uFar, uNear, smoothstep(0.0, 0.65, vUv.y)), 1.0);
+        #include <colorspace_fragment>
+      }`,
+  })
+);
+ground.name = 'street';
 ground.rotation.x = -Math.PI / 2;
 ground.position.set(0, 0, 0);
 scene.add(ground);
 
-/* ---------- дома ---------- */
-const HOUSES = [
-  { x: -6.8, w: 2.4, h: 14.8 },
-  { x: -3.7, w: 2.1, h: 10.1 },
-  { x: -1.2, w: 1.6, h: 10.7 },
-  { x:  1.5, w: 2.3, h: 14.9 },
-  { x:  4.8, w: 2.6, h: 13.5 },
-  { x:  8.0, w: 1.6, h: 10.9 }
-];
-const DEPTH = 3;
-const FACADE_Z = DEPTH / 2;                 // 1.5
-const houseMat = new THREE.MeshBasicMaterial({ color: '#0b0b14' });
-
-const winPos = [];    // [x, y, z]
-const winBase = [];   // THREE.Color
-
-HOUSES.forEach((hd, idx) => {
-  const house = new THREE.Mesh(new THREE.BoxGeometry(hd.w, hd.h, DEPTH), houseMat);
+const edgeMat = new THREE.LineBasicMaterial({ color: EDGE });
+const cells = [];
+for (let b = 0; b < HOUSES.length; b++) {
+  const [x, w, h] = HOUSES[b];
+  // фасад чуть светлее к низу: тонкая разница оттенков держит кадр живым
+  const shade = new THREE.Color(SIL).offsetHSL(0.0, 0.0, 0.012 * b);
+  const geo = new THREE.BoxGeometry(w, h, 3);
+  const house = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: shade }));
   house.name = 'house';
-  house.position.set(hd.x, hd.h / 2, 0);    // низ на y = 0
+  house.position.set(x, h / 2, 0);
   scene.add(house);
-
-  const even = ((idx + 1) % 2) === 0;       // чётный номер дома -> бирюза
-  const base = new THREE.Color(even ? '#22e0d0' : '#ffb066');
-
-  const nCols   = Math.max(1, Math.floor(hd.w / 0.95));
-  const nFloors = Math.max(1, Math.floor((hd.h - 0.35 - 1.0) / 1.45) + 1);
-
-  for (let c = 0; c < nCols; c++) {
-    const ox = (c - (nCols - 1) / 2) * 0.95;
-    for (let f = 0; f < nFloors; f++) {
-      winPos.push([hd.x + ox, 1.0 + f * 1.45, FACADE_Z + 0.01]);
-      winBase.push(base);
+  // контур крыши и рёбер: даёт силуэту читаемую линию и добавляет деталей
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat);
+  edges.position.copy(house.position);
+  scene.add(edges);
+  const cols = Math.max(2, Math.floor(w / 0.95));
+  const rows = Math.max(3, Math.floor(h / 1.45));
+  for (let c = 0; c < cols; c++) {
+    for (let r = 0; r < rows; r++) {
+      const wx = x + (c - (cols - 1) / 2) * 0.95;
+      const wy = 1.0 + r * 1.45;
+      cells.push([wx, wy, (b % 2) ? 1 : 0]);
     }
   }
-});
-
-/* ---------- окна (один InstancedMesh) ---------- */
-const windows = new THREE.InstancedMesh(
-  new THREE.PlaneGeometry(0.5, 0.7),
-  new THREE.MeshBasicMaterial({ color: 0xffffff }),
-  winPos.length
-);
-windows.name = 'windows';
-windows.frustumCulled = false;
-
-const dummy = new THREE.Object3D();
-for (let i = 0; i < winPos.length; i++) {
-  dummy.position.set(winPos[i][0], winPos[i][1], winPos[i][2]);
-  dummy.rotation.set(0, 0, 0);
-  dummy.scale.set(1, 1, 1);
-  dummy.updateMatrix();
-  windows.setMatrixAt(i, dummy.matrix);
 }
-windows.instanceMatrix.needsUpdate = true;
+
+const winGeo = new THREE.PlaneGeometry(0.5, 0.7);
+const winMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const windows = new THREE.InstancedMesh(winGeo, winMat, cells.length);
+windows.name = 'windows';
+const lit = [], dim = [];
+const m4 = new THREE.Matrix4();
+for (let i = 0; i < cells.length; i++) {
+  const [x, y, warm] = cells[i];
+  m4.makeTranslation(x, y, 1.56);
+  windows.setMatrixAt(i, m4);
+  const base = new THREE.Color(warm ? WARM : MINT);
+  lit.push(base);
+  dim.push(base.clone().multiplyScalar(0.15));
+  windows.setColorAt(i, base);
+}
 scene.add(windows);
 
-/* ---------- дымка ---------- */
-const HAZE_H = 20;
-const hazeGeo = new THREE.PlaneGeometry(120, HAZE_H, 1, 48);
-{
-  const pos = hazeGeo.attributes.position;
-  const col = new Float32Array(pos.count * 4);
-  const hc = new THREE.Color('#4a5a8a');
-  for (let i = 0; i < pos.count; i++) {
-    const f = (pos.getY(i) + HAZE_H / 2) / HAZE_H;   // 0 низ .. 1 верх
-    col[i * 4 + 0] = hc.r;
-    col[i * 4 + 1] = hc.g;
-    col[i * 4 + 2] = hc.b;
-    col[i * 4 + 3] = Math.pow(1 - f, 1.15);          // вертикальный градиент
-  }
-  hazeGeo.setAttribute('color', new THREE.BufferAttribute(col, 4));
-}
-const haze = new THREE.Mesh(hazeGeo, new THREE.MeshBasicMaterial({
-  vertexColors: true,
-  transparent: true,
-  opacity: 0.22,
-  depthWrite: false,
-  side: THREE.DoubleSide
-}));
+const haze = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 16),
+  new THREE.ShaderMaterial({
+    uniforms: { uColor: {value: new THREE.Color(0x4a5a8a)} },
+    transparent: true, depthWrite: false,
+    vertexShader: `varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform vec3 uColor; varying vec2 vUv;
+      void main() { gl_FragColor = vec4(uColor, 0.22 * (1.0 - abs(vUv.y - 0.35))); }`,
+  })
+);
 haze.name = 'haze';
-haze.position.set(0, 7.35, 12);   // перед домами
+haze.position.set(0, HAZE_Y, 14);
 scene.add(haze);
 
-/* ---------- анимация ---------- */
 let t = 0;
-let litCount = 0;
-const tmpColor = new THREE.Color();
-
-function applyWindows(time) {
-  let lit = 0;
-  for (let i = 0; i < winPos.length; i++) {
-    const phase = (((i * 0.129 + time * 0.500) % 1) + 1) % 1;
-    const on = phase < 0.78;
-    if (on) lit++;
-    tmpColor.copy(winBase[i]);
-    if (!on) tmpColor.multiplyScalar(0.15);
-    windows.setColorAt(i, tmpColor);
-  }
-  if (windows.instanceColor) windows.instanceColor.needsUpdate = true;
-  return lit;
-}
-
-function draw() {
-  litCount = applyWindows(t);
-  haze.position.y = 7.35 + 0.9 * Math.sin(t * 0.25);
-  renderer.render(scene, camera);
-}
-
-window.__probe = function () {
-  return {
-    t: Math.round(t * 10000) / 10000,
-    objects: scene.children.map(o => o.name).filter(n => n && n.length > 0),
-    lit: litCount,
-    haze_y: Math.round(haze.position.y * 10000) / 10000
-  };
+const round = (v) => Math.round(v * 1e4) / 1e4;
+const litCount = () => {
+  let n = 0;
+  for (let i = 0; i < cells.length; i++) if (((i * PHASE + t * BLINK) % 1) < 0.78) n++;
+  return n;
 };
 
-window.__step = function (dt) {
+window.__step = (dt) => {
   t += dt;
-  draw();
+  let n = 0;
+  for (let i = 0; i < cells.length; i++) {
+    const on = ((i * PHASE + t * BLINK) % 1) < 0.78;
+    windows.setColorAt(i, on ? lit[i] : dim[i]);
+    if (on) n++;
+  }
+  windows.instanceColor.needsUpdate = true;
+  haze.position.y = HAZE_Y + 0.9 * Math.sin(t * 0.25);
+  renderer.render(scene, camera);
   return window.__probe();
 };
 
-/* ---------- первый кадр ---------- */
-draw();
+window.__probe = () => ({
+  t: round(t),
+  objects: scene.children.map((o) => o.name).filter(Boolean),
+  lit: litCount(),
+  haze_y: round(haze.position.y),
+});
+
+renderer.render(scene, camera);
 window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-4 · пробел — пауза, → — шаг, R — сброс</div></body>
-</html>
+</body></html>

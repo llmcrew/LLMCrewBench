@@ -2,10 +2,10 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>автобусная остановка в неоне</title>
+<title>Автобусная остановка в неоне</title>
 <style>
-html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
-canvas { display: block; width: 800px; height: 600px; }
+  html,body{margin:0;padding:0;background:#0a0714;overflow:hidden}
+  canvas{display:block;width:1920px;height:1080px}
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
@@ -13,345 +13,449 @@ canvas { display: block; width: 800px; height: 600px; }
 <script type="module">
 const THREE = window.THREE;
 
-if (THREE.ColorManagement) THREE.ColorManagement.enabled = false;
+/* ================= детерминизм: только LCG ================= */
+let lcg = 140149;
+function rnd(){ lcg = (lcg * 1103515245 + 12345) % 2147483648; return lcg / 2147483648; }
 
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+/* ================= базовые параметры ================= */
+const W = 1920, H = 1080;
+const CAM_Z = 4;
+const FOV = 50;
+const TAN_HH = Math.tan(FOV * Math.PI / 360);      // 0.4663
+const ASPECT = W / H;
+const CAM_Y0 = 0;
+
+// расстояние от камеры до плоскости z
+const dOf = z => CAM_Z - z;
+// половина видимой высоты / ширины в кадре на глубине z
+const hhOf = z => dOf(z) * TAN_HH;
+const hwOf = z => dOf(z) * TAN_HH * ASPECT;
+// точка кадра (u: 0..1 слева направо, v: 0..1 сверху вниз) в мировых координатах
+function pt(u, v, z){ return new THREE.Vector3(hwOf(z)*(2*u-1), hhOf(z)*(1-2*v), z); }
+
+/* ================= рендерер ================= */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
 renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
-if (THREE.LinearSRGBColorSpace !== undefined) renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
-else if (THREE.LinearEncoding !== undefined) renderer.outputEncoding = THREE.LinearEncoding;
-if (THREE.NoToneMapping !== undefined) renderer.toneMapping = THREE.NoToneMapping;
+renderer.setSize(1920, 1080, false);
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1c1236);
+scene.fog = new THREE.Fog(0x1c1236, 16, 70);
 
-const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 100);
-camera.position.set(0, 0, 4);
-camera.lookAt(0, 0, -1);
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 200);
+camera.position.set(0, CAM_Y0, CAM_Z);
+camera.lookAt(0, CAM_Y0, -1);
 
-const ASPECT = 800 / 600;
+const names = [];
+function reg(name, obj){ names.push(name); if (obj && obj.name === '') obj.name = name; scene.add(obj); return obj; }
 
-function visibleHeight(z) {
-  const d = 4 - z;
-  return 2 * d * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
-}
-function visibleWidth(z) {
-  return visibleHeight(z) * ASPECT;
-}
-function uvToWorld(u, v, z) {
-  const vh = visibleHeight(z);
-  const vw = visibleWidth(z);
-  return new THREE.Vector3((u - 0.5) * vw, (0.5 - v) * vh, z);
-}
-function makePlane(w, h, color, opts = {}) {
-  const mat = new THREE.MeshBasicMaterial({
-    color: color,
-    transparent: !!opts.transparent,
-    opacity: opts.opacity === undefined ? 1 : opts.opacity,
-    depthWrite: opts.depthWrite === undefined ? true : opts.depthWrite,
-    side: THREE.FrontSide
-  });
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
-  if (opts.renderOrder !== undefined) mesh.renderOrder = opts.renderOrder;
-  return mesh;
+/* ================= вспомогательные фигуры ================= */
+function quad(color, u, v, wF, hF, z, opts = {}){
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial(Object.assign({
+      color, transparent: true, opacity: 1, depthWrite: opts.depthWrite !== false,
+      side: THREE.DoubleSide, fog: opts.fog !== false
+    }, opts.mat))
+  );
+  const p = pt(u, v, z);
+  m.position.copy(p);
+  m.scale.set(wF * 2 * hwOf(z), hF * 2 * hhOf(z), 1);
+  if (opts.rot) m.rotation.z = opts.rot;
+  if (opts.renderOrder !== undefined) m.renderOrder = opts.renderOrder;
+  return m;
 }
 
-const night = makePlane(220, 160, 0x1c1236);
-night.position.copy(uvToWorld(0.5, 0.5, -45));
-night.name = 'night';
-scene.add(night);
+/* ================= ночь за стеклом (z=-45) ================= */
+reg('night', quad(0x1c1236, 0.5, 0.5, 2.4, 1.6, -45));
 
-const floor = makePlane(1.6 * visibleWidth(-8), 0.44 * visibleHeight(-8), 0x1c1236);
-floor.position.copy(uvToWorld(0.5, 0.82, -8));
-floor.name = 'floor';
-scene.add(floor);
-
-const canopy = makePlane(1.5 * visibleWidth(-5), 0.16 * visibleHeight(-5), 0x1c1236);
-canopy.position.copy(uvToWorld(0.5, 0.08, -5));
-canopy.name = 'canopy';
-scene.add(canopy);
-
-const glassGroup = new THREE.Group();
-glassGroup.name = 'glass';
-
-const street = makePlane(0.62 * visibleWidth(-5.05), 0.30 * visibleHeight(-5.05), 0xa8c8dc);
-street.position.copy(uvToWorld(0.5, 0.45, -5.05));
-glassGroup.add(street);
-
-const glass = makePlane(0.62 * visibleWidth(-5), 0.44 * visibleHeight(-5), 0xa8c8dc, {
-  transparent: true,
-  opacity: 0.32,
-  depthWrite: false,
-  renderOrder: 10
-});
-glass.position.copy(uvToWorld(0.5, 0.38, -5));
-glassGroup.add(glass);
-
-scene.add(glassGroup);
-
-const postGroup = new THREE.Group();
-postGroup.name = 'post';
-function makePost(u) {
-  const p = makePlane(0.02 * visibleWidth(-4.98), 0.46 * visibleHeight(-4.98), 0x1c1236);
-  p.position.copy(uvToWorld(u, 0.39, -4.98));
-  return p;
-}
-postGroup.add(makePost(0.19), makePost(0.81));
-scene.add(postGroup);
-
-const boardZ = -4.95;
-const boardW = 0.22 * visibleWidth(boardZ);
-const boardH = 0.14 * visibleHeight(boardZ);
-const board = new THREE.Group();
-board.name = 'board';
-board.position.copy(uvToWorld(0.32, 0.30, boardZ));
-
-const boardBase = makePlane(boardW, boardH, 0x22d3c5);
-board.add(boardBase);
-
-const stripeH = 0.010 * visibleHeight(boardZ);
-const stripeW = boardW * 0.92;
-const spacing = boardH / 5;
-const stripes = [];
-for (let i = 0; i < 5; i++) {
-  const s = makePlane(stripeW, stripeH, 0x1c1236);
-  s.position.z = 0.001;
-  board.add(s);
-  stripes.push(s);
+// далёкая улица за стеклом: силуэты зданий + окна
+{
+  const grp = new THREE.Group();
+  // три тёмных корпуса
+  const bspecs = [[0.30, 0.43, 0.16], [0.50, 0.47, 0.13], [0.68, 0.42, 0.18]];
+  for (const [u, v, hF] of bspecs){
+    const b = quad(0x140d28, u, v, 0.20, hF, -44.9, { depthWrite: false, renderOrder: 1, fog: false });
+    grp.add(b);
+  }
+  // окна
+  for (let i = 0; i < 46; i++){
+    const u = 0.22 + rnd() * 0.56;
+    const v = 0.34 + rnd() * 0.22;
+    const cols = [0x22d3c5, 0xffa83c, 0xff4d9d, 0xa8c8dc];
+    const c = cols[Math.floor(rnd() * cols.length)];
+    const s = 0.0035 + rnd() * 0.004;
+    grp.add(quad(c, u, v, s, s * (0.7 + rnd() * 0.8), -44.8, { depthWrite: false, renderOrder: 2, opacity: 0.85, fog: false }));
+    if (rnd() < 0.3) // слабое гало у половины огней
+      grp.add(quad(c, u, v, s * 3.2, s * 3.2, -44.82, { mat: { color: c, transparent: true, opacity: 0.10, depthWrite: false }, depthWrite: false, renderOrder: 2 }));
+  }
+  reg('street_far', grp);
 }
 
-const headerH = 0.015 * visibleHeight(boardZ);
-const header = makePlane(boardW * 0.92, headerH, 0x1c1236);
-header.position.set(0, boardH / 2 - headerH / 2, 0.002);
-board.add(header);
-
-scene.add(board);
-
-const lampGroup = new THREE.Group();
-lampGroup.name = 'lamp';
-
-const lampW = 0.13 * visibleWidth(-4.95);
-const lampH = 0.06 * visibleHeight(-4.95);
-
-const lampBase = makePlane(lampW, lampH, 0xffa83c);
-lampBase.position.copy(uvToWorld(0.62, 0.14, -4.96));
-lampGroup.add(lampBase);
-
-const lampCore = makePlane(lampW, lampH, 0xffa83c, {
-  transparent: true,
-  opacity: 0.9,
-  depthWrite: false,
-  renderOrder: 11
-});
-lampCore.position.copy(uvToWorld(0.62, 0.14, -4.95));
-lampGroup.add(lampCore);
-
-const halo = makePlane(0.20 * visibleWidth(-4.90), 0.10 * visibleHeight(-4.90), 0xffa83c, {
-  transparent: true,
-  opacity: 0.35,
-  depthWrite: false,
-  renderOrder: 12
-});
-halo.position.copy(uvToWorld(0.62, 0.14, -4.90));
-lampGroup.add(halo);
-
-scene.add(lampGroup);
-
-const neon = makePlane(0.30 * visibleWidth(-5.02), 0.06 * visibleHeight(-5.02), 0xff4d9d);
-neon.position.copy(uvToWorld(0.58, 0.24, -5.02));
-neon.name = 'neon';
-scene.add(neon);
-
-const bench = makePlane(0.30 * visibleWidth(-6.5), 0.05 * visibleHeight(-6.5), 0x1c1236);
-bench.position.copy(uvToWorld(0.5, 0.66, -6.5));
-bench.name = 'bench';
-scene.add(bench);
-
-const puddleGroup = new THREE.Group();
-puddleGroup.name = 'puddle';
-const puddleW = 0.18 * visibleWidth(-7.9);
-const puddleH = 0.04 * visibleHeight(-7.9);
-for (let i = 0; i < 3; i++) {
-  const u = 0.30 + 0.20 * i;
-
-  const base = makePlane(puddleW, puddleH, 0xff4d9d);
-  base.position.copy(uvToWorld(u, 0.90, -7.99));
-  puddleGroup.add(base);
-
-  const p = makePlane(puddleW, puddleH, 0xff4d9d, {
-    transparent: true,
-    opacity: 0.35,
-    depthWrite: false,
-    renderOrder: 13
-  });
-  p.position.copy(uvToWorld(u, 0.90, -7.9));
-  puddleGroup.add(p);
-}
-scene.add(puddleGroup);
-
-let lcg = 140149n;
-function rnd() {
-  lcg = (lcg * 1103515245n + 12345n) % 2147483648n;
-  return Number(lcg) / 2147483648;
-}
-
-const N = 56;
-const dropU = new Float32Array(N);
-const dropV = new Float32Array(N);
-for (let i = 0; i < N; i++) {
-  dropU[i] = 0.19 + rnd() * 0.62;
-  dropV[i] = 0.16 + rnd() * 0.44;
-}
-
-function makePoints(z) {
-  const geo = new THREE.BufferGeometry();
-  const pos = new Float32Array(N * 3);
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  const mat = new THREE.PointsMaterial({
-    color: 0xa8c8dc,
-    size: 6,
-    sizeAttenuation: false,
-    depthWrite: true
-  });
-  return new THREE.Points(geo, mat);
-}
-
-const drops = makePoints(-4.9);
-drops.name = 'drops';
-scene.add(drops);
-
-const rain = makePoints(-12);
-rain.name = 'rain';
-scene.add(rain);
-
-let t = 0;
+/* ================= дождь за стеклом (z=-12), 56 строк ================= */
+const N_DROPS = 56;
 const DROP_SPEED = 1.90;
-const RAIN_SPEED = DROP_SPEED * 2 / 3;
+const RAIN_SPEED = DROP_SPEED * 2 / 3;   // на треть медленнее
+const zD = -4.9, zR = -12;
 
-function updateDrops(points, z, speed) {
-  const vh = visibleHeight(z);
-  const vw = visibleWidth(z);
-  const topY = (0.5 - 0.16) * vh;
-  const bottomY = (0.5 - 0.60) * vh;
-  const range = topY - bottomY;
-  const pos = points.geometry.attributes.position.array;
-
-  for (let i = 0; i < N; i++) {
-    const u = dropU[i];
-    const v0 = dropV[i];
-    const y0 = (0.5 - v0) * vh;
-    const offset = topY - y0;
-    const shift = (offset + speed * t) % range;
-    const y = topY - ((shift + range) % range);
-
-    pos[i * 3] = (u - 0.5) * vw;
-    pos[i * 3 + 1] = y;
-    pos[i * 3 + 2] = z;
+// общий набор точек: одна сетка x, свои фазы для капель и струй
+const dropX = [], dropY = [], rainY = [], rainLen = [];
+const HALF_D = 1.16 * hhOf(zD);   // половина пути падения капель (чуть за кадр)
+const HALF_R = 1.16 * hhOf(zR);   // то же для струй
+{
+  for (let i = 0; i < N_DROPS; i++){
+    // x: капли — по стеклу, струи — по той же сетке
+    dropX.push(0.10 + rnd() * 0.80);
+    dropY.push(-HALF_D + rnd() * 2 * HALF_D);
+    rainLen.push(0.30 + rnd() * 0.25);
+    rainY.push(-HALF_R + rnd() * 2 * HALF_R);
   }
-
-  points.geometry.attributes.position.needsUpdate = true;
 }
 
-function boardPhase() {
-  return (t * 0.37) % 1;
-}
+// капли — Points, 6 px
+const dropGeo = new THREE.BufferGeometry();
+const dropPos = new Float32Array(N_DROPS * 3);
+const dropMesh = new THREE.Points(dropGeo, new THREE.PointsMaterial({
+  color: 0xa8c8dc, size: 6, sizeAttenuation: false, transparent: true, opacity: 0.95, depthWrite: false
+}));
+dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPos, 3));
+reg('drops', dropMesh);
 
-function updateBoard() {
-  const phase = boardPhase();
-  const offset = (phase * spacing) % spacing;
-  const m = boardH - stripeH;
+// струи — тонкие прямоугольники (одна геометрия, обновляется в шаге)
+const rainGeo = new THREE.BufferGeometry();
+const rainPos = new Float32Array(N_DROPS * 6 * 3);
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+const rainMesh = new THREE.Mesh(rainGeo, new THREE.MeshBasicMaterial({
+  color: 0xa8c8dc, transparent: true, opacity: 0.8, depthWrite: false, side: THREE.DoubleSide
+}));
+reg('rain', rainMesh);
 
-  for (let i = 0; i < 5; i++) {
-    const y = -boardH / 2 + stripeH / 2 + (((i * spacing + offset) % m) + m) % m;
-    stripes[i].position.y = y;
+/* ================= лужи с отражением (v=0.90) ================= */
+{
+  const grp = new THREE.Group();
+  const pus = [0.24, 0.50, 0.76];
+  for (let i = 0; i < 3; i++){
+    // розовое пятно размытого отражения на асфальте
+    const sp = 0.10 + rnd() * 0.06;
+    grp.add(quad(0xff4d9d, pus[i], 0.905, sp * 2.2, 0.038, -7.99,
+      { mat: { color: 0xff4d9d, transparent: true, opacity: 0.20, depthWrite: false }, depthWrite: false, renderOrder: 3 }));
+    // сама лужа (opacity 0.35)
+    const wJ = 0.18 * (0.92 + rnd() * 0.16);
+    grp.add(quad(0xff4d9d, pus[i], 0.90, wJ, 0.04, -7.97,
+      { mat: { color: 0xff4d9d, transparent: true, opacity: 0.35, depthWrite: false }, depthWrite: false, renderOrder: 4 }));
+    // яркое ядро отражения вывески
+    grp.add(quad(0xff4d9d, pus[i] + 0.01, 0.898, wJ * 0.42, 0.016, -7.95,
+      { mat: { color: 0xff4d9d, transparent: true, opacity: 0.65, depthWrite: false }, depthWrite: false, renderOrder: 5 }));
+    // бегущий блик-полоса
+    grp.add(quad(0xff6fb2, pus[i] - 0.015, 0.896, wJ * 0.18, 0.008, -7.94,
+      { mat: { color: 0xff6fb2, transparent: true, opacity: 0.75, depthWrite: false }, depthWrite: false, renderOrder: 6 }));
+    const pn = 'puddle_' + i;
+    grp.children[grp.children.length - 1].name = pn;
   }
-
-  header.visible = Math.sin(t * 2.7) > 0;
-  return phase;
+  reg('puddles', grp);
 }
 
-function updateCamera() {
-  camera.position.x = 0.034 * Math.sin(t * 0.71);
+/* ================= асфальт (z=-8, от 62% высоты вниз) ================= */
+{
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshStandardMaterial({ color: 0x1c1236, roughness: 0.55, metalness: 0.25 }));
+  const p = pt(0.5, 0.92, -8);
+  m.position.copy(p);
+  m.scale.set(1.3 * 2 * hwOf(-8), 0.60 * 2 * hhOf(-8), 1);
+  reg('floor', m);
+  // мокрый блеск асфальта
+  const wet = quad(0xa8c8dc, 0.5, 0.78, 1.0, 0.10, -7.995,
+    { mat: { color: 0xa8c8dc, transparent: true, opacity: 0.05, depthWrite: false }, depthWrite: false, renderOrder: 2, fog: false });
+  reg('floor_wet', wet);
 }
 
-function round4(x) {
-  return Math.round(x * 10000) / 10000;
+/* ================= скамья (3D, v=0.66) ================= */
+{
+  const grp = new THREE.Group();
+  const matB = new THREE.MeshStandardMaterial({ color: 0x241a44, roughness: 0.7, metalness: 0.3 });
+  const zB = -6.4;
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(0.30 * 2 * hwOf(zB), 0.018 * 2 * hhOf(zB), 0.10), matB);
+  seat.position.copy(pt(0.5, 0.66, zB));
+  const back = new THREE.Mesh(new THREE.BoxGeometry(0.30 * 2 * hwOf(zB), 0.022 * 2 * hhOf(zB), 0.05), matB);
+  back.position.copy(pt(0.5, 0.745, zB - 0.06));
+  back.rotation.x = 0.12;
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(0.30 * 2 * hwOf(zB), 0.075 * 2 * hhOf(zB), 0.06), matB);
+  frame.position.copy(pt(0.5, 0.635, zB - 0.02));
+  grp.add(seat, back, frame);
+  for (const u of [0.38, 0.62]){
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.02 * 2 * hwOf(zB), 0.035 * 2 * hhOf(zB), 0.08), matB);
+    leg.position.copy(pt(u, 0.70, zB));
+    grp.add(leg);
+  }
+  reg('bench', grp);
 }
 
-window.__probe = function () {
-  return {
-    t: round4(t),
-    objects: scene.children.map(o => o.name).filter(Boolean),
-    board_phase: round4(boardPhase())
-  };
-};
+/* ================= малиновый неон за стеклом (u=0.58, v=0.24) ================= */
+let neonTex;
+{
+  const c = document.createElement('canvas'); c.width = 640; c.height = 128;
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, 640, 128);
+  g.strokeStyle = '#ff4d9d'; g.lineWidth = 16;
+  g.shadowColor = '#ff4d9d'; g.shadowBlur = 20;
+  g.strokeRect(24, 22, 592, 84);
+  g.shadowBlur = 16;
+  g.fillStyle = '#ff4d9d';
+  g.font = 'bold 74px monospace';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('КАФЕ  НОЧЬ', 320, 64);
+  g.fillRect(232, 100, 176, 12);
+  neonTex = new THREE.CanvasTexture(c);
+  neonTex.colorSpace = THREE.SRGBColorSpace;
+}
+const neonMesh = quad(0xff4d9d, 0.58, 0.24, 0.30, 0.06, -6.5,
+  { mat: { map: neonTex, transparent: true, opacity: 0.96, depthWrite: false }, depthWrite: false, renderOrder: 6, fog: false });
+reg('neon', neonMesh);
+// мягкое свечение вывески
+reg('neon_glow', quad(0xff4d9d, 0.58, 0.24, 0.44, 0.14, -6.48,
+  { mat: { color: 0xff4d9d, transparent: true, opacity: 0.10, blending: THREE.AdditiveBlending, depthWrite: false }, depthWrite: false, renderOrder: 6, fog: false }));
 
-window.__step = function (dt) {
-  t += Number(dt) || 0;
+/* ================= стекло (62% x 44%, верх 16%, z=-5) ================= */
+{
+  // лёгкий «мокрый» градиент по стеклу
+  const c = document.createElement('canvas'); c.width = 128; c.height = 128;
+  const g = c.getContext('2d');
+  const gr = g.createLinearGradient(0, 0, 0, 128);
+  gr.addColorStop(0, 'rgba(168,200,220,0.55)');
+  gr.addColorStop(0.45, 'rgba(168,200,220,0.10)');
+  gr.addColorStop(1, 'rgba(168,200,220,0.30)');
+  g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+  const glassTex = new THREE.CanvasTexture(c);
+  glassTex.colorSpace = THREE.SRGBColorSpace;
+  const gm = new THREE.MeshBasicMaterial({ map: glassTex, color: 0xa8c8dc, transparent: true, opacity: 0.32, depthWrite: false });
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), gm);
+  const p = pt(0.5, 0.38, -5);
+  glass.position.copy(p);
+  glass.scale.set(0.62 * 2 * hwOf(-5), 0.44 * 2 * hhOf(-5), 1);
+  glass.renderOrder = 8;
+  reg('glass', glass);
+}
 
-  updateDrops(drops, -4.9, DROP_SPEED);
-  updateDrops(rain, -12, RAIN_SPEED);
-  updateBoard();
-  updateCamera();
+/* ================= капли по стеклу (статичные, 3 размера) ================= */
+const dewGroups = [];
+{
+  const specs = [[2, 2000], [3, 1600], [5, 900]];
+  for (const [size, count] of specs){
+    const g = new THREE.BufferGeometry();
+    const pos = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++){
+      const p = pt(0.195 + rnd() * 0.61, 0.165 + rnd() * 0.435, -4.92);
+      pos[i * 3] = p.x; pos[i * 3 + 1] = p.y; pos[i * 3 + 2] = p.z;
+    }
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const m = new THREE.Points(g, new THREE.PointsMaterial({
+      color: 0xa8c8dc, size, sizeAttenuation: false, transparent: true, opacity: 0.85 + size * 0.03, depthWrite: false
+    }));
+    m.renderOrder = 7;
+    reg('dew_' + size, m);
+    dewGroups.push(m);
+  }
+}
 
+/* ================= стеклотиролита: голорасписание (u=0.32, v=0.30) ================= */
+// рамка (непрозрачная — иначе перекроет текстурное табло в прозраночном проходе)
+reg('board_frame', quad(0x0b3d3a, 0.32, 0.30, 0.235, 0.155, -4.74,
+  { mat: { color: 0x0b3d3a, transparent: false, depthWrite: true, side: THREE.DoubleSide }, renderOrder: 0, fog: false }));
+
+const boardCanvas = document.createElement('canvas');
+boardCanvas.width = 528; boardCanvas.height = 336;
+const bctx = boardCanvas.getContext('2d');
+const boardTex = new THREE.CanvasTexture(boardCanvas);
+boardTex.colorSpace = THREE.SRGBColorSpace;
+const boardMat = new THREE.MeshBasicMaterial({ map: boardTex, transparent: false, depthWrite: false });
+const boardMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), boardMat);
+boardMesh.position.copy(pt(0.32, 0.30, -4.70));
+boardMesh.scale.set(0.22 * 2 * hwOf(-4.70), 0.14 * 2 * hhOf(-4.70), 1);
+boardMesh.renderOrder = 9;
+reg('board', boardMesh);
+
+const ROWS = [
+  '99   21:14   TULSKAYA',
+  '12   21:19   STANITSY',
+  '3    21:23   PRIMORSKAYA',
+  '77   21:28   GORNOY',
+  '8    21:31   LUZHOVAYA'
+];
+function drawBoard(t){
+  const w = 528, h = 336;
+  const g = bctx;
+  // фон — бирюза
+  const gr = g.createLinearGradient(0, 0, 0, h);
+  gr.addColorStop(0, '#22d3c5');
+  gr.addColorStop(1, '#22c4b7');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  // заголовок — мигает
+  const blink = 0.5 + 0.5 * Math.sin(2 * Math.PI * t / 0.9);
+  g.fillStyle = '#06302d';
+  g.globalAlpha = 0.35 + 0.65 * blink;
+  g.font = 'bold 34px monospace';
+  g.textAlign = 'left'; g.textBaseline = 'middle';
+  g.fillText('ОСТАНОВКА · НЕОН-1', 20, 30);
+  g.globalAlpha = 1;
+  g.fillRect(20, 52, w - 40, 4);
+  // пять бегущих строк
+  g.font = '30px monospace';
+  const dark = '#0d4a44';
+  for (let i = 0; i < 5; i++){
+    const y = 92 + i * 48;
+    g.globalAlpha = 0.07; g.fillStyle = '#06302d'; g.fillRect(0, y - 24, w, 36);
+    g.globalAlpha = 1; g.fillStyle = dark;
+    const textW = g.measureText(ROWS[i]).width;
+    const speed = 52 + i * 13;
+    const off = (t * speed + i * 103) % (w + textW + 160);
+    const x = w + 40 - off;
+    for (let k = 0; k < 2; k++) g.fillText(ROWS[i], x - k * (w + textW + 160), y);
+  }
+  boardTex.needsUpdate = true;
+}
+
+/* ================= навес + стойки (z=-5, 0..16% высоты) ================= */
+{
+  const grp = new THREE.Group();
+  const matC = new THREE.MeshStandardMaterial({ color: 0x1c1236, roughness: 0.6, metalness: 0.4 });
+  // тело навеса — глухая полоса 0..16% высоты (z=-5, точный цвет ночи)
+  const top = quad(0x1c1236, 0.5, 0.03, 1.2, 0.26, -5,
+    { mat: { color: 0x1c1236, roughness: 0.65, metalness: 0.3, side: THREE.DoubleSide } });
+  // карниз-передний срез (затенение под навесом, лёгкий выступ)
+  const lip = quad(0x140d28, 0.5, 0.152, 1.25, 0.028, -4.78,
+    { mat: { color: 0x140d28, roughness: 0.5, metalness: 0.4, side: THREE.DoubleSide } });
+  // подвесные рёбра
+  for (const u of [0.3, 0.5, 0.7]){
+    const rib = quad(0x140d28, u, 0.185, 0.03, 0.03, -4.6, { mat: { color: 0x140d28, roughness: 0.5, metalness: 0.4, side: THREE.DoubleSide } });
+    grp.add(rib);
+  }
+  // две стойки (0.02 ширины кадра)
+  for (const u of [0.19, 0.81]){
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.02 * 2 * hwOf(-5), 0.68 * 2 * hhOf(-5), 0.34), matC);
+    post.position.copy(pt(u, 0.48, -5));
+    const col = new THREE.Mesh(new THREE.BoxGeometry(0.032 * 2 * hwOf(-5), 0.03 * 2 * hhOf(-5), 0.5), matC);
+    col.position.copy(pt(u, 0.72, -5));
+    grp.add(post, col);
+  }
+  grp.add(top, lip);
+  reg('canopy', grp);
+}
+
+/* ================= тёплая лампа под навесом (u=0.62, v=0.14) ================= */
+{
+  const grp = new THREE.Group();
+  const pL = pt(0.62, 0.14, -4.10);
+  // ореол 0.20 x 0.10
+  const hc = document.createElement('canvas'); hc.width = 128; hc.height = 128;
+  const hg = hc.getContext('2d');
+  const hgr = hg.createRadialGradient(64, 64, 4, 64, 64, 62);
+  hgr.addColorStop(0, 'rgba(255,168,60,0.85)');
+  hgr.addColorStop(0.5, 'rgba(255,168,60,0.28)');
+  hgr.addColorStop(1, 'rgba(255,168,60,0)');
+  hg.fillStyle = hgr; hg.fillRect(0, 0, 128, 128);
+  const hTex = new THREE.CanvasTexture(hc); hTex.colorSpace = THREE.SRGBColorSpace;
+  const halo = quad(0xffa83c, 0.62, 0.14, 0.20, 0.10, -4.08,
+    { mat: { map: hTex, color: 0xffa83c, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }, depthWrite: false, renderOrder: 9, fog: false });
+  // сама плафон-полоса 0.13 x 0.06
+  const bar = quad(0xffa83c, 0.62, 0.145, 0.13, 0.06, -4.10,
+    { mat: { color: 0xffa83c, transparent: true, opacity: 0.9, depthWrite: false }, renderOrder: 10, fog: false });
+  // крепление
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.22, 10),
+    new THREE.MeshStandardMaterial({ color: 0x1c1236, roughness: 0.5, metalness: 0.5 }));
+  stem.position.set(pL.x, 3.35, -4.85);
+  stem.scale.set(1, 4, 1);
+  grp.add(halo, bar, stem);
+  reg('lamp', grp);
+}
+
+/* ================= свет ================= */
+scene.add(new THREE.AmbientLight(0x332c55, 1.4));
+  const lampLight = new THREE.PointLight(0xffa83c, 55, 14, 1.8);
+lampLight.position.copy(pt(0.62, 0.16, -3.9));
+scene.add(lampLight);
+const neonLight = new THREE.PointLight(0xff4d9d, 40, 14, 1.8);
+neonLight.position.set(pt(0.58, 0.26, -6.2).x, pt(0.58, 0.35, -6.2).y, -6.2);
+scene.add(neonLight);
+// розовый отсвет с неона падает вниз, к лужам
+const spill = new THREE.PointLight(0xff4d9d, 18, 9, 2.0);
+spill.position.copy(pt(0.58, 0.80, -7.2));
+scene.add(spill);
+const boardLight = new THREE.PointLight(0x22d3c5, 14, 6, 1.6);
+boardLight.position.copy(pt(0.32, 0.30, -4.4));
+scene.add(boardLight);
+const coolFill = new THREE.PointLight(0x88aacc, 12, 20, 1.6);
+coolFill.position.copy(pt(0.30, 0.62, -3.5));
+scene.add(coolFill);
+
+/* ================= состояние времени ================= */
+let t = 0;
+
+function placeDrops(){
+  const spanD = 2 * hhOf(zD) * 1.16;
+  for (let i = 0; i < N_DROPS; i++){
+    const p = pt(dropX[i], 0.5, zD);
+    const y = p.y + dropY[i];
+    dropPos[i * 3] = p.x; dropPos[i * 3 + 1] = y; dropPos[i * 3 + 2] = zD;
+  }
+  dropGeo.attributes.position.needsUpdate = true;
+  // струи
+  const hw = hwOf(zR), hh = hhOf(zR);
+  for (let i = 0; i < N_DROPS; i++){
+    const bx = hw * (2 * dropX[i] - 1) * 0.9;          // те же точки x
+    const yTop = rainY[i];                               // диапазон ±1.16 высоты кадра
+    const yBot = yTop - rainLen[i];
+    const wpx = 0.0016 * dOf(zR);                        // ~1.9 px
+    const a = [-wpx, yTop], b = [wpx, yTop], c = [-wpx, yBot], d = [wpx, yBot];
+    const T = [a, b, c, b, d, c];                        // два треугольника
+    const q = i * 18;
+    for (let k = 0; k < 6; k++){
+      rainPos[q + k * 3] = T[k][0];
+      rainPos[q + k * 3 + 1] = T[k][1];
+      rainPos[q + k * 3 + 2] = zR;
+    }
+  }
+  rainGeo.attributes.position.needsUpdate = true;
+}
+
+function frame(tNow){
+  camera.position.x = 0.034 * Math.sin(2 * Math.PI * tNow / 9);
+  camera.position.y = CAM_Y0;
+  camera.lookAt(0, CAM_Y0, -1);
+  drawBoard(tNow);
+  // лёгкое мерцание неона
+  neonMesh.material.opacity = 0.88 + 0.10 * (0.5 + 0.5 * Math.sin(13.7 * tNow));
+  placeDrops();
   renderer.render(scene, camera);
-  return window.__probe();
-};
+}
 
-updateDrops(drops, -4.9, DROP_SPEED);
-updateDrops(rain, -12, RAIN_SPEED);
-updateBoard();
-updateCamera();
-renderer.render(scene, camera);
+function probe(){
+  return {
+    t: Math.round(t * 10000) / 10000,
+    objects: names.slice(),
+    board_phase: Math.round(((t * 0.25) % 1) * 10000) / 10000
+  };
+}
+
+function step(dt){
+  t += dt;
+  for (let i = 0; i < N_DROPS; i++){
+    dropY[i] -= DROP_SPEED * dt;
+    if (dropY[i] < -HALF_D) dropY[i] += 2 * HALF_D;
+    rainY[i] -= RAIN_SPEED * dt;
+    if (rainY[i] < -HALF_R) rainY[i] += 2 * HALF_R;
+  }
+  frame(t);
+  return probe();
+}
+
+window.__step = step;
+window.__probe = probe;
+window.__dbg = { THREE, scene, boardMesh, neonMesh, dropMesh, rainMesh, boardTex, renderer, camera };
+
+// первый кадр — начало сцены
+frame(0);
 window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-24 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

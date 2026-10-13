@@ -1,209 +1,226 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Орбиты</title>
 <style>
-body{margin:0;overflow:hidden;background:#080f22}
-canvas{display:block;width:800px;height:600px}
+  html, body { margin: 0; height: 100%; background: #05080f; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  #c { width: 800px; height: 600px; display: block; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
+<canvas id="c" width="1920" height="1080"></canvas>
 <script type="module">
 const THREE = window.THREE;
 
-const W=800,H=600,FULL_H=3.314,HALF_H=FULL_H/2;
+// ---------- константы ----------
+const FULL_UNIT  = 3.314;          // высота кадра в единицах сцены (на плоскости сцены)
+const HALF_UNIT  = FULL_UNIT / 2;  // 1.657: 1 "доля высоты кадра" = HALF_UNIT в мировых координатах
+const TRAIL_N    = 60;             // спрайтов в хвосте
+const TRAIL_DT   = 0.0167;         // шаг по времени между точками хвоста, с
+const TAU        = Math.PI * 2;
 
-const camera=new THREE.PerspectiveCamera(45,W/H,0.1,100);
-camera.position.set(0,0,4.0);
-camera.lookAt(0,0,0);
-
-const renderer=new THREE.WebGLRenderer({preserveDrawingBuffer:true});
-renderer.setPixelRatio(1);
-renderer.setSize(W,H,false);
-document.body.appendChild(renderer.domElement);
-
-const scene=new THREE.Scene();
-
-// Background
-const bgMesh=new THREE.Mesh(
-  new THREE.PlaneGeometry(14,14),
-  new THREE.MeshBasicMaterial({color:0x080f22,side:THREE.DoubleSide})
-);
-bgMesh.position.set(0,0,-1);
-bgMesh.name='background';
-scene.add(bgMesh);
-
-// Orbit data
-const OP=[
-  {a:0.603,inc:0.765,t0:2.567,T:5.76,color:0xff4d6d},
-  {a:0.784,inc:0.780,t0:5.254,T:8.40,color:0xffd166},
-  {a:0.668,inc:0.754,t0:2.690,T:5.09,color:0x4dd0e1},
-  {a:0.691,inc:0.620,t0:6.163,T:8.27,color:0x9b6dff},
-  {a:0.321,inc:0.520,t0:3.844,T:6.70,color:0xff4d6d},
-  {a:0.507,inc:0.688,t0:3.682,T:5.89,color:0xffd166}
+const SPHERES = [
+  { a: 0.603, inc: 0.765, t0: 2.567, T: 5.76, color: 0xff4d6d },
+  { a: 0.784, inc: 0.780, t0: 5.254, T: 8.40, color: 0xffd166 },
+  { a: 0.668, inc: 0.754, t0: 2.690, T: 5.09, color: 0x4dd0e1 },
+  { a: 0.691, inc: 0.620, t0: 6.163, T: 8.27, color: 0x9b6dff },
+  { a: 0.321, inc: 0.520, t0: 3.844, T: 6.70, color: 0xff4d6d },
+  { a: 0.507, inc: 0.688, t0: 3.682, T: 5.89, color: 0xffd166 },
 ];
-const TAIL_N=60,DT_T=0.0167;
 
-function theta(o,t){return o.t0+2*Math.PI*t/o.T}
-function pos(o,t){
-  const th=theta(o,t),r=o.a*HALF_H;
-  return new THREE.Vector3(r*Math.cos(th),r*Math.sin(th)*Math.cos(o.inc),r*Math.sin(th)*Math.sin(o.inc));
+// ---------- renderer / сцена / камера ----------
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x080f22);
+
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 100);
+camera.position.set(0, 0, 4.0);
+camera.lookAt(0, 0, 0);
+
+// ---------- детерминированные текстуры ----------
+function radialTex(size, stops) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = size;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  for (const [o, c] of stops) g.addColorStop(o, c);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
-function glowTex(r,g,b){
-  const s=64,c=document.createElement('canvas');c.width=s;c.height=s;
-  const x=c.getContext('2d'),gr=x.createRadialGradient(s/2,s/2,0,s/2,s/2,s/2);
-  gr.addColorStop(0,`rgba(${r},${g},${b},1)`);
-  gr.addColorStop(0.25,`rgba(${r},${g},${b},0.7)`);
-  gr.addColorStop(0.55,`rgba(${r},${g},${b},0.25)`);
-  gr.addColorStop(1,`rgba(${r},${g},${b},0)`);
-  x.fillStyle=gr;x.fillRect(0,0,s,s);
-  return new THREE.CanvasTexture(c);
+// мягкое светящееся пятно (для хвостов, свечения сфер и ореола центра)
+const glowTex = radialTex(128, [
+  [0.0, 'rgba(255,255,255,1)'],
+  [0.25, 'rgba(255,255,255,0.55)'],
+  [0.6, 'rgba(255,255,255,0.12)'],
+  [1.0, 'rgba(255,255,255,0)'],
+]);
+
+// диск центра: радиальный градиент #ffe9a8 -> фон #080f22
+const centerTex = radialTex(512, [
+  [0.00, '#fff6d8'],
+  [0.10, '#ffe9a8'],
+  [0.38, '#e8b45e'],
+  [0.72, '#28304a'],
+  [1.00, '#080f22'],
+]);
+
+// ---------- геометрия орбит ----------
+const theta = (t, s) => s.t0 + (TAU * t) / s.T;
+
+function orbitPoint(t, s, out, di = 0) {
+  const th = theta(t - di, s);
+  const r  = s.a * HALF_UNIT;
+  const sy = Math.sin(th) * r;
+  out[0] = Math.cos(th) * r;
+  out[1] = sy * Math.cos(s.inc);
+  out[2] = sy * Math.sin(s.inc);
+  return out;
 }
 
-function hexRGB(h){return{r:(h>>16)&255,g:(h>>8)&255,b:h&255}}
+const tmp = new THREE.Vector3();
 
-// Center glow
-(function(){
-  const s=128,c=document.createElement('canvas');c.width=s;c.height=s;
-  const x=c.getContext('2d'),gr=x.createRadialGradient(s/2,s/2,0,s/2,s/2,s/2);
-  gr.addColorStop(0,'#ffe9a8');
-  gr.addColorStop(0.25,'#ffe9a8');
-  gr.addColorStop(0.5,'rgba(255,233,168,0.55)');
-  gr.addColorStop(0.75,'rgba(255,233,168,0.15)');
-  gr.addColorStop(1,'rgba(8,15,34,0)');
-  x.fillStyle=gr;x.fillRect(0,0,s,s);
-  const tex=new THREE.CanvasTexture(c);
-  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,transparent:true,depthWrite:false}));
-  const wr=0.22*HALF_H;
-  sp.scale.set(wr*2,wr*2,1);
-  sp.position.set(0,0,0);
-  sp.name='center';
-  scene.add(sp);
-})();
+// ---------- фон: плоскость во весь кадр ----------
+const bgDist = 7.0;
+const bgHalfH = Math.tan(THREE.MathUtils.degToRad(22.5)) * bgDist;
+const bg = new THREE.Mesh(
+  new THREE.PlaneGeometry(bgHalfH * 2.4, bgHalfH * 2.4),
+  new THREE.MeshBasicMaterial({ color: 0x080f22 })
+);
+bg.position.z = -bgDist;
+scene.add(bg);
 
-// Spheres & tails
-const spheres=[],tails=[];
-const whiteGlow=glowTex(255,255,255);
+// ---------- центральный диск ----------
+const CENTER_R = 0.22 * HALF_UNIT;
+const center = new THREE.Mesh(
+  new THREE.CircleGeometry(CENTER_R, 64),
+  new THREE.MeshBasicMaterial({ map: centerTex })
+);
+center.position.z = -0.02;
+scene.add(center);
 
-for(let i=0;i<6;i++){
-  const o=OP[i],{r,g,b}=hexRGB(o.color);
+const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: glowTex, color: 0xffe9a8, transparent: true, opacity: 0.4,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+}));
+halo.scale.set(2.6, 2.6, 1);
+halo.position.z = -1.1; // позади всех орбит: не перекрашивает сферы
+scene.add(halo);
 
-  // Sphere sprite
-  const sp=new THREE.Sprite(new THREE.SpriteMaterial({
-    map:glowTex(r,g,b),transparent:true,depthWrite:false,blending:THREE.AdditiveBlending
+// ---------- сферы, свечение, кольца и хвосты ----------
+const SPHERE_R = 0.12;
+const objects = ['center'];
+const items = SPHERES.map((s, idx) => {
+  objects.push(`sphere-${idx + 1}`);
+
+  // тело
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(SPHERE_R, 28, 20),
+    new THREE.MeshBasicMaterial({ color: s.color })
+  );
+  scene.add(mesh);
+
+  // свечение вокруг тела
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex, color: s.color, transparent: true, opacity: 0.85,
+    blending: THREE.AdditiveBlending, depthWrite: false,
   }));
-  const ss=0.14*HALF_H;
-  sp.scale.set(ss,ss,1);
-  sp.name='sphere_'+(i+1);
-  scene.add(sp);
-  spheres.push(sp);
+  glow.scale.set(SPHERE_R * 5.5, SPHERE_R * 5.5, 1);
+  scene.add(glow);
 
-  // Tail points
-  const tp=new Float32Array(TAIL_N*3);
-  const tc=new Float32Array(TAIL_N*3);
-  for(let j=0;j<TAIL_N;j++){
-    const br=1.0-0.94*(j/(TAIL_N-1));
-    tc[j*3]=(r/255)*br;
-    tc[j*3+1]=(g/255)*br;
-    tc[j*3+2]=(b/255)*br;
+  // тонкое кольцо орбиты
+  const ringPts = [];
+  for (let k = 0; k < 128; k++) {
+    const th = (k / 128) * TAU;
+    const r = s.a * HALF_UNIT;
+    const sy = Math.sin(th) * r;
+    ringPts.push(new THREE.Vector3(Math.cos(th) * r, sy * Math.cos(s.inc), sy * Math.sin(s.inc)));
   }
-  const tg=new THREE.BufferGeometry();
-  tg.setAttribute('position',new THREE.BufferAttribute(tp,3));
-  tg.setAttribute('color',new THREE.BufferAttribute(tc,3));
-  const tm=new THREE.PointsMaterial({
-    size:0.07,vertexColors:true,transparent:true,depthWrite:false,
-    blending:THREE.AdditiveBlending,map:whiteGlow,sizeAttenuation:true
-  });
-  const pts=new THREE.Points(tg,tm);
-  pts.name='tail_'+(i+1);
-  scene.add(pts);
-  tails.push(pts);
-}
+  const ring = new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints(ringPts),
+    new THREE.LineBasicMaterial({ color: 0x1c2b4d, transparent: true, opacity: 0.55 })
+  );
+  scene.add(ring);
 
-let t=0;
+  // хвост: 60 светящихся точек
+  const tPos = new Float32Array(TRAIL_N * 3);
+  const tCol = new Float32Array(TRAIL_N * 3);
+  const trailGeo = new THREE.BufferGeometry();
+  trailGeo.setAttribute('position', new THREE.BufferAttribute(tPos, 3));
+  trailGeo.setAttribute('color', new THREE.BufferAttribute(tCol, 3));
+  const trail = new THREE.Points(trailGeo, new THREE.PointsMaterial({
+    map: glowTex, size: 0.17, sizeAttenuation: true, vertexColors: true,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  scene.add(trail);
 
-function update(tt){
-  for(let i=0;i<6;i++){
-    const o=OP[i];
-    spheres[i].position.copy(pos(o,tt));
-    const arr=tails[i].geometry.attributes.position.array;
-    for(let j=0;j<TAIL_N;j++){
-      const p=pos(o,tt-j*DT_T);
-      arr[j*3]=p.x;arr[j*3+1]=p.y;arr[j*3+2]=p.z;
+  const c3 = new THREE.Color(s.color);
+  return { def: s, mesh, glow, trail, tPos, tCol, c3 };
+});
+
+// ---------- обновление сцены в момент времени t ----------
+function update(t) {
+  for (const it of items) {
+    const { def, mesh, glow, tPos, tCol, c3 } = it;
+    const r = def.a * HALF_UNIT;
+
+    const base = orbitPoint(t, def, [0, 0, 0]);
+    mesh.position.set(...base);
+    glow.position.set(...base);
+
+    for (let i = 0; i < TRAIL_N; i++) {
+      orbitPoint(t, def, tmp, i * TRAIL_DT);
+      tPos[i * 3]     = tmp.x;
+      tPos[i * 3 + 1] = tmp.y;
+      tPos[i * 3 + 2] = tmp.z;
+      const b = 1.0 - (1.0 - 0.06) * (i / (TRAIL_N - 1)); // 1.0 -> 0.06
+      tCol[i * 3]     = c3.r * b;
+      tCol[i * 3 + 1] = c3.g * b;
+      tCol[i * 3 + 2] = c3.b * b;
     }
-    tails[i].geometry.attributes.position.needsUpdate=true;
+    it.trail.geometry.attributes.position.needsUpdate = true;
+    it.trail.geometry.attributes.color.needsUpdate = true;
   }
 }
 
-update(0);
-renderer.render(scene,camera);
-window.__ready=true;
+// ---------- время, шаги, зонд ----------
+let t = 0;
+const r4 = v => Math.round(v * 1e4) / 1e4;
 
-window.__step=function(dt){
-  t+=dt;
+window.__probe = function () {
+  return {
+    t: r4(t),
+    objects,
+    orbits: SPHERES.map(s => r4(((theta(t, s) % TAU) + TAU) % TAU)),
+    planets: SPHERES.map(s => {
+      const p = orbitPoint(t, s, [0, 0, 0]);
+      return { x: r4(p[0] / FULL_UNIT), y: r4(p[1] / FULL_UNIT), z: r4(p[2] / FULL_UNIT) };
+    }),
+  };
+};
+
+window.__step = function (dt) {
+  t += dt;
   update(t);
-  renderer.render(scene,camera);
+  renderer.render(scene, camera);
   return window.__probe();
 };
 
-window.__probe=function(){
-  const objects=scene.children.map(o=>o.name);
-  const orbits=OP.map(o=>Math.round(theta(o,t)*1e4)/1e4);
-  const planets=OP.map(o=>{
-    const p=pos(o,t);
-    return{x:Math.round(p.x/FULL_H*1e4)/1e4,y:Math.round(p.y/FULL_H*1e4)/1e4};
-  });
-  return{t:Math.round(t*1e4)/1e4,objects,orbits,planets};
-};
+// ---------- стартовый кадр (t = 0) ----------
+update(0);
+renderer.render(scene, camera);
+window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-16 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

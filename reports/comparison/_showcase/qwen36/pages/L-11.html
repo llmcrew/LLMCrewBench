@@ -1,216 +1,184 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html>
 <head>
-  <meta charset="utf-8">
-  <title>Жидкий металл и стекло</title>
-  <style>body { margin: 0; overflow: hidden; background: #0a0714; }</style>
+<meta charset="utf-8">
+<title>Liquid Metal and Glass</title>
+<style>
+body { margin: 0; overflow: hidden; background: #0a0714; }
+canvas { display: block; }
+</style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "./vendor/three.module.js"
-    }
-  }
-  </script>
-  <script type="module">
-    const THREE = window.THREE;
-
-    // --- Helpers ---
-    function hexToRgb(hex) {
-      const v = parseInt(hex.slice(1), 16);
-      return [(v >> 16) & 255, (v >> 8) & 255, v & 255].map(c => c / 255);
-    }
-
-    function createGradientTexture(w, h, stops) {
-      const data = new Uint8Array(w * h * 4);
-      for (let y = 0; y < h; y++) {
-        const t = y / (h - 1);
-        let r = 0, g = 0, b = 0;
-        for (let i = 0; i < stops.length - 1; i++) {
-          if (t >= stops[i].t && t <= stops[i + 1].t) {
-            const lt = (t - stops[i].t) / (stops[i + 1].t - stops[i].t);
-            r = stops[i].r + (stops[i + 1].r - stops[i].r) * lt;
-            g = stops[i].g + (stops[i + 1].g - stops[i].g) * lt;
-            b = stops[i].b + (stops[i + 1].b - stops[i].b) * lt;
-            break;
-          }
-        }
-        for (let x = 0; x < w; x++) {
-          const idx = (y * w + x) * 4;
-          data[idx] = Math.round(r * 255);
-          data[idx + 1] = Math.round(g * 255);
-          data[idx + 2] = Math.round(b * 255);
-          data[idx + 3] = 255;
-        }
-      }
-      const tex = new THREE.DataTexture(data, w, h, THREE.RGBAFormat);
-      tex.needsUpdate = true;
-      return tex;
-    }
-
-    // --- Scene Setup ---
-    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
-    renderer.setPixelRatio(1);
-    renderer.setSize(800, 600, false);
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.0;
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    document.body.appendChild(renderer.domElement);
-
-    const scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x0a0714, 14, 45);
-
-    const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 100);
-    camera.position.set(0, 0.5, 5);
-    camera.lookAt(0, 0.2, 0);
-
-    // --- Environment Map ---
-    const envStops = [
-      { t: 0.0, rgb: hexToRgb('#0a0714') },
-      { t: 0.33, rgb: hexToRgb('#0d1b2e') },
-      { t: 0.66, rgb: hexToRgb('#1b4a5e') },
-      { t: 1.0, rgb: hexToRgb('#8fd3ff') }
-    ];
-    const envTex = createGradientTexture(8, 64, envStops);
-    envTex.mapping = THREE.EquirectangularReflectionMapping;
-    envTex.colorSpace = THREE.SRGBColorSpace;
-    envTex.needsUpdate = true;
-    scene.environment = envTex;
-
-    // --- Background Plane ---
-    const bgStops = [
-      { t: 0.0, rgb: hexToRgb('#0a0714') },
-      { t: 1.0, rgb: hexToRgb('#4d7fa8') }
-    ];
-    const bgTex = createGradientTexture(8, 64, bgStops);
-    const bgPlane = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshBasicMaterial({ map: bgTex }));
-    bgPlane.position.z = -6;
-    scene.add(bgPlane);
-
-    // --- Floor ---
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({
-      color: 0x121a2e, metalness: 0.85, roughness: 0.30
-    }));
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.y = -1.20;
-    scene.add(floor);
-
-    // --- Sphere ---
-    const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.8, 48, 32), new THREE.MeshPhysicalMaterial({
-      color: 0x33d1c6, metalness: 1.0, roughness: 0.18, clearcoat: 0.6, envMapIntensity: 3.0
-    }));
-    sphere.position.set(0, 0.40, 0.60);
-    sphere.name = 'sphere';
-    scene.add(sphere);
-
-    // --- Torus ---
-    const torus = new THREE.Mesh(new THREE.TorusGeometry(0.80, 0.28, 16, 64), new THREE.MeshPhysicalMaterial({
-      color: 0xe0733c, metalness: 0.15, roughness: 0.06, clearcoat: 1.0
-    }));
-    torus.position.set(-1.45, -0.25, -0.6);
-    torus.name = 'torus';
-    scene.add(torus);
-
-    // --- Lights ---
-    const dirLight = new THREE.DirectionalLight(0xffffff, 4.0);
-    dirLight.position.set(2.0, 4.0, 3.0);
-    scene.add(dirLight);
-
-    const sparkLight = new THREE.PointLight(0xf2f6fb, 120, 25);
-    sparkLight.position.set(0.6, 2.6, 2.2);
-    scene.add(sparkLight);
-
-    const orbitLight1 = new THREE.PointLight(0x33d1c6, 45, 25);
-    const orbitLight2 = new THREE.PointLight(0xe0733c, 45, 25);
-    scene.add(orbitLight1, orbitLight2);
-
-    const ambientLight = new THREE.AmbientLight(0x223044, 0.3);
-    scene.add(ambientLight);
-
-    // --- Animation State ---
-    let t = 0;
-
-    window.__step = (dt) => {
-      t += dt;
-
-      sphere.rotation.y += 1.100 * dt;
-      sphere.rotation.x += 0.4 * dt;
-      torus.rotation.y += 0.7 * dt;
-
-      const angle = 0.900 * t + 0.052;
-      const ox = 3.2 * Math.cos(angle);
-      const oz = 3.2 * Math.sin(angle) + 2.0;
-      orbitLight1.position.set(ox, 0, oz);
-      orbitLight2.position.set(ox, 0, oz);
-
-      renderer.render(scene, camera);
-      return window.__probe();
-    };
-
-    window.__probe = () => {
-      const v = new THREE.Vector3(0.6, 2.6, 2.2).project(camera);
-      const sx = (v.x + 1) / 2 * 800;
-      const sy = (-v.y + 1) / 2 * 600;
-      return {
-        t: parseFloat(t.toFixed(4)),
-        objects: ['sphere', 'torus'],
-        angle: { x: sphere.rotation.x, y: sphere.rotation.y },
-        light: { x: sx.toFixed(4), y: sy.toFixed(4) }
-      };
-    };
-
-    // Initial frame
-    window.__step(0);
-    window.__ready = true;
-  </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
+<canvas id="c"></canvas>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
 </script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-11 · пробел — пауза, → — шаг, R — сброс</div></body>
+<script type="module">
+const THREE = window.THREE;
+
+// ── Renderer ──
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+// ── Environment-map DataTexture 8 × 64 ──
+// Gradient: bottom → top  #0a0714 → #0d1b2e → #1b4a5e → #8fd3ff
+// ~16 rows per band; sky brightens only at very top → two narrow bright bands
+const c = [
+  [0x0a, 0x07, 0x14],  // #0a0714  rows 0-15
+  [0x0d, 0x1b, 0x2e],  // #0d1b2e  rows 16-31
+  [0x1b, 0x4a, 0x5e],  // #1b4a5e  rows 32-47
+  [0x8f, 0xd3, 0xff],  // #8fd3ff  rows 48-63
+];
+const data = new Float32Array(8 * 64 * 4);
+for (let row = 0; row < 64; row++) {
+  const i = Math.min(Math.floor(row / 16), 3);
+  const px = row * 8;
+  for (let col = 0; col < 8; col++) {
+    const o = (px + col) * 4;
+    data[o]     = c[i][0] / 255;
+    data[o + 1] = c[i][1] / 255;
+    data[o + 2] = c[i][2] / 255;
+    data[o + 3] = 1;
+  }
+}
+const envMap = new THREE.DataTexture(data, 8, 64, THREE.RGBAFormat, THREE.FloatType);
+envMap.mapping = THREE.EquirectangularReflectionMapping;
+envMap.needsUpdate = true;
+
+// ── Scene & Camera ──
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x0a0714, 14, 45);
+
+const camera = new THREE.PerspectiveCamera(
+  45, 1920 / 1080, 0.1, 100);
+camera.position.set(0, 1.0, 3.5);
+camera.lookAt(0, 0.4, 0.6);
+
+// ── Sphere ──
+const sphere = new THREE.Mesh(
+  new THREE.SphereGeometry(0.8, 48, 32),
+  new THREE.MeshPhysicalMaterial({
+    color: 0x33d1c6, metalness: 1.0, roughness: 0.18,
+    clearcoat: 0.6, envMapIntensity: 3.0, envMap,
+  }));
+sphere.name = 'sphere';
+sphere.position.set(0, 0.40, 0.60);
+scene.add(sphere);
+
+// ── Torus ──
+const torus = new THREE.Mesh(
+  new THREE.TorusGeometry(0.80, 0.28, 16, 64),
+  new THREE.MeshPhysicalMaterial({
+    color: 0xe0733c, metalness: 0.15, roughness: 0.06,
+    clearcoat: 1.0, envMapIntensity: 2.0, envMap,
+  }));
+torus.name = 'torus';
+torus.position.set(-1.45, -0.25, -0.6);
+scene.add(torus);
+
+// ── Floor ──
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshPhysicalMaterial({
+    color: 0x121a2e, metalness: 0.85, roughness: 0.30,
+  }));
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = -1.20;
+scene.add(floor);
+
+// ── Background plane (same gradient as env-map, 2D mapped) ──
+const bg = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshBasicMaterial({
+    map: envMap, transparent: true,
+    side: THREE.FrontSide, depthWrite: false,
+  }));
+bg.position.z = -6;
+scene.add(bg);
+
+// ── Lights ──
+const dirLight = new THREE.DirectionalLight(0xffffff, 4.0);
+dirLight.position.set(2.0, 4.0, 3.0);
+scene.add(dirLight);
+
+const sparkle = new THREE.PointLight(0xf2f6fb, 120, 25);
+sparkle.position.set(0.6, 2.6, 2.2);
+scene.add(sparkle);
+
+const pLight1 = new THREE.PointLight(0x33d1c6, 45, 25);
+const pLight2 = new THREE.PointLight(0xe0733c, 45, 25);
+scene.add(pLight1);
+scene.add(pLight2);
+
+scene.add(new THREE.AmbientLight(0x223044, 0.3));
+
+// ── Animation ──
+let lastTime = 0;
+
+// initial render for __ready
+renderer.render(scene, camera);
+window.__ready = true;
+
+window.__step = function(dt) {
+  const t = lastTime + dt;
+
+  sphere.rotation.y += 1.100 * dt;
+  sphere.rotation.x += 0.400 * dt;
+  torus.rotation.y   += 0.700 * dt;
+
+  const phase = 0.900 * t + 0.052;
+  // orbit radius 3.2, plane xz, centre (0, 4, 2)
+  pLight1.position.set(3.2 * Math.cos(phase), 4.0,
+    3.2 * Math.sin(phase) + 2.0);
+  pLight2.position.set(3.2 * Math.cos(phase), 4.0,
+    3.2 * Math.sin(phase) + 2.0);
+
+  lastTime = t;
+
+  renderer.render(scene, camera);
+
+  return window.__probe();
+};
+
+window.__probe = function() {
+  const lp = new THREE.Vector3();
+  sparkle.getWorldPosition(lp);
+  return {
+    t: Number((lastTime).toFixed(4)),
+    objects: [
+      {
+        name: 'sphere',
+        position: [
+          +sphere.position.x.toFixed(4),
+          +sphere.position.y.toFixed(4),
+          +sphere.position.z.toFixed(4),
+        ],
+      },
+      {
+        name: 'torus',
+        position: [
+          +torus.position.x.toFixed(4),
+          +torus.position.y.toFixed(4),
+          +torus.position.z.toFixed(4),
+        ],
+      },
+      {
+        name: 'floor',
+        position: [0, -1.20, 0],
+      },
+    ],
+    angle: Number(sphere.rotation.y.toFixed(4)),
+    light: [
+      +lp.x.toFixed(4),
+      +lp.y.toFixed(4),
+      +lp.z.toFixed(4),
+    ],
+  };
+};
+</script>
+</body>
 </html>

@@ -1,216 +1,216 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
-  <meta charset="utf-8">
-  <style>body { margin: 0; overflow: hidden; background: #280f54; }</style>
+<meta charset="utf-8">
+<title>Ночной фейерверк</title>
+<style>
+body { margin: 0; overflow: hidden; background: #280f54; }
+canvas { display: block; width: 100%; }
+</style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "./vendor/three.module.js"
-    }
+<script type="module">
+const THREE = window.THREE;
+
+/* ── LCG (детерминированный ПСЧ) ───────────────────────────── */
+let LCG_S = 571619;
+function lcg() {
+  LCG_S = (1664525 * LCG_S + 1013904223) % 4294967296;
+  return LCG_S / 4294967296;
+}
+
+/* ── Константы сцены ───────────────────────────────────────── */
+const PI         = Math.PI;
+const NP         = 320;      // частиц в залпе
+const NB         = 3;        // количество залпов
+const PB         = 20;       // буфер для probe: макс. частиц в расчёте
+const HALF_FOV   = PI / 180 * 22.5;
+const HS         = 12.0 * Math.tan(HALF_FOV);   // полувысота на дистанции 12
+const ASPECT     = 800.0 / 600.0;
+const XSC        = 2.0 * HS * ASPECT;            // масштаб X от доли кадра
+const YSC        = 2.0 * HS;                      // масштаб Y от доли кадра
+
+const SPEED_B    = 2.20;
+const SPEED_OFF  = 0.65;
+const MUL        = 0.5;
+const G          = 0.5 * 1.10;                     // g в формуле y -= 0.5*g*tau^2
+const LIFETIME   = 1.90;
+const PERIOD     = 2.00;
+
+const DELAYS     = [0.0, 0.3, 0.7];
+
+const PALETTE    = [
+  new THREE.Color(0xff0051),  // #ff0051 красный
+  new THREE.Color(0xffc300),  // #ffc300 золотой
+  new THREE.Color(0x19cdff),  // #19cdff голубой
+];
+
+/* ── Точки запуска  (fraction → 3D, z=0) ─────────────────── */
+const LAUNCH = [
+  [ (0.343 - 0.5) * XSC, (0.5 - 0.287) * YSC, 0.0 ],
+  [ (0.373 - 0.5) * XSC, (0.5 - 0.329) * YSC, 0.0 ],
+  [ (0.448 - 0.5) * XSC, (0.5 - 0.334) * YSC, 0.0 ],
+];
+
+/* ── Генерация направлений  (LCG) ─────────────────────────── */
+const DIRS = [];
+for (let b = 0; b < NB; b++) {
+  const d = new Array(NP);
+  for (let i = 0; i < NP; i++) {
+    const u = lcg();                      // для z
+    const v = lcg();                      // для phi
+    const w = lcg();                      // для V
+    const z = 1.0 - 2.0 * u;
+    const phi = 2.0 * PI * v;
+    const rr = Math.sqrt(Math.max(0.0, 1.0 - z * z));
+    const V = SPEED_B * (SPEED_OFF + MUL * w);
+    d[i] = { vx: rr * Math.cos(phi) * V,
+             vy: z * V,
+             vz: rr * Math.sin(phi) * V * 0.5 };
   }
-  </script>
-  <script type="module">
-    const THREE = window.THREE;
+  DIRS.push(d);
+}
 
-    // LCG Generator
-    let s = 571619;
-    function nextLCG() {
-        s = (1664525 * s + 1013904223) % 4294967296;
-        return s / 4294967296;
-    }
+/* ── Сцена Three.js ────────────────────────────────────────── */
+const scene    = new THREE.Scene();
+const camera   = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
+camera.position.set(0, 0, 12.0);
+camera.lookAt(0, 0, 0);
 
-    // Coordinate mapping
-    const halfH = 12.0 * Math.tan(45 * Math.PI / 360);
-    const scaleX = 2 * halfH * (800 / 600);
-    const scaleY = 2 * halfH;
-    const launchPoints = [
-        { x: (0.343 - 0.5) * scaleX, y: (0.5 - 0.287) * scaleY, z: 0 },
-        { x: (0.373 - 0.5) * scaleX, y: (0.5 - 0.329) * scaleY, z: 0 },
-        { x: (0.448 - 0.5) * scaleX, y: (0.5 - 0.334) * scaleY, z: 0 }
-    ];
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+renderer.setClearAlpha(1);
+renderer.setClearColor(0x280f54);
+document.body.appendChild(renderer.domElement);
 
-    // Precompute particle directions & velocities
-    const dirs = [];
-    for (let i = 0; i < 3; i++) {
-        dirs[i] = [];
-        for (let j = 0; j < 320; j++) {
-            const u = nextLCG();
-            const v = nextLCG();
-            const w = nextLCG();
-            const z_dir = 1 - 2 * u;
-            const phi = 2 * Math.PI * v;
-            const rr = Math.sqrt(1 - z_dir * z_dir);
-            const V = 2.20 * (0.65 + 0.5 * w);
-            dirs[i].push({
-                vx: rr * Math.cos(phi) * V,
-                vy: z_dir * V,
-                vz: rr * Math.sin(phi) * V * 0.5
-            });
-        }
-    }
+/* ── Буферы ────────────────────────────────────────────────── */
+const posA = [];
+const colA = [];
+const bursts = [];
 
-    // Three.js Setup
-    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
-    renderer.setPixelRatio(1);
-    renderer.setSize(800, 600, false);
-    document.body.appendChild(renderer.domElement);
+for (let b = 0; b < NB; b++) {
+  const pos = new Float32Array(NP * 3);
+  const col = new Float32Array(NP * 3);
+  posA.push(pos);
+  colA.push(col);
 
-    const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
-    camera.position.set(0, 0, 12.0);
-    camera.lookAt(0, 0, 0);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geom.setAttribute('color',    new THREE.BufferAttribute(col, 3));
 
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x280f54);
-
-    const names = ['burst_1', 'burst_2', 'burst_3'];
-    const colorsHex = [0xff0051, 0xffc300, 0x19cdff];
-    const delays = [0.0, 0.3, 0.7];
-    const bursts = [];
-
-    for (let i = 0; i < 3; i++) {
-        const geo = new THREE.BufferGeometry();
-        const pos = new Float32Array(320 * 3);
-        const col = new Float32Array(320 * 4);
-        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-        geo.setAttribute('color', new THREE.BufferAttribute(col, 4));
-
-        const mat = new THREE.PointsMaterial({
-            size: 6.0,
-            sizeAttenuation: false,
-            transparent: true,
-            blending: THREE.AdditiveBlending,
-            depthTest: false,
-            vertexColors: true
-        });
-
-        const pts = new THREE.Points(geo, mat);
-        pts.name = names[i];
-        scene.add(pts);
-        bursts.push({ pts, geo, pos, col, delay: delays[i], color: colorsHex[i], launch: launchPoints[i] });
-    }
-
-    let t = 0;
-
-    function updateBursts() {
-        for (let i = 0; i < 3; i++) {
-            const b = bursts[i];
-            let tau = (t - b.delay) % 2.00;
-            if (tau < 0) tau += 2.00;
-            const visible = tau <= 1.90;
-            const bright = visible ? Math.max(0, 1 - tau / 1.90) : 0;
-            const c = new THREE.Color(b.color);
-
-            for (let j = 0; j < 320; j++) {
-                const idx = j;
-                const d = dirs[i][j];
-                if (visible) {
-                    b.pos[idx * 3] = b.launch.x + d.vx * tau;
-                    b.pos[idx * 3 + 1] = b.launch.y + d.vy * tau - 0.5 * 1.10 * tau * tau;
-                    b.pos[idx * 3 + 2] = b.launch.z + d.vz * tau;
-                    b.col[idx * 4] = c.r;
-                    b.col[idx * 4 + 1] = c.g;
-                    b.col[idx * 4 + 2] = c.b;
-                    b.col[idx * 4 + 3] = bright;
-                } else {
-                    b.pos[idx * 3] = 0;
-                    b.pos[idx * 3 + 1] = -100;
-                    b.pos[idx * 3 + 2] = 0;
-                    b.col[idx * 4 + 3] = 0;
-                }
-            }
-            b.geo.attributes.position.needsUpdate = true;
-            b.geo.attributes.color.needsUpdate = true;
-        }
-    }
-
-    window.__probe = function() {
-        let burstsData = [];
-        for (let i = 0; i < 3; i++) {
-            const b = bursts[i];
-            let tau = (t - b.delay) % 2.00;
-            if (tau < 0) tau += 2.00;
-            const visible = tau <= 1.90;
-            const bright = visible ? Math.max(0, 1 - tau / 1.90) : 0;
-            let r = 0;
-            if (visible) {
-                let sumR = 0;
-                for (let j = 0; j < 320; j++) {
-                    const d = dirs[i][j];
-                    const speed = Math.sqrt(d.vx * d.vx + d.vy * d.vy + d.vz * d.vz);
-                    sumR += speed * tau;
-                }
-                r = sumR / 320;
-            }
-            burstsData.push({ r: +r.toFixed(4), bright: +bright.toFixed(4) });
-        }
-        return {
-            t: +t.toFixed(4),
-            objects: ['burst_1', 'burst_2', 'burst_3'],
-            bursts: burstsData
-        };
-    };
-
-    window.__step = function(dt) {
-        t += dt;
-        updateBursts();
-        return window.__probe();
-    };
-
-    // Initial state & render
-    updateBursts();
-    renderer.render(scene, camera);
-    window.__ready = true;
-  </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
+  const mat = new THREE.PointsMaterial({
+    size:           6.0,
+    sizeAttenuation: false,
+    transparent:    true,
+    blending:       THREE.AdditiveBlending,
+    depthTest:      false,
+    vertexColors:   true,
   });
 
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
+  const pts = new THREE.Points(geom, mat);
+  pts.name = 'burst_' + (b + 1);
+  scene.add(pts);
+  bursts.push({ object: pts, pos, col, color: PALETTE[b] });
+}
+
+/* ── Данные probe ──────────────────────────────────────────── */
+const probeOut = { r: 0, bright: 0 };
+let probeData  = [{ r: 0, bright: 0 },
+                  { r: 0, bright: 0 },
+                  { r: 0, bright: 0 }];
+
+/* ── Обновление физики ────────────────────────────────────── */
+function update(t) {
+  for (let b = 0; b < NB; b++) {
+    const delay = DELAYS[b];
+    let tau = (t - delay) % PERIOD;
+    if (tau < 0) tau += PERIOD;
+
+    const dir  = DIRS[b];
+    const lac  = LAUNCH[b];
+    const pos  = posA[b];
+    const col  = colA[b];
+    const bc   = PALETTE[b];
+
+    let sumR  = 0;
+    let sumBr = 0;
+    let cnt   = 0;
+
+    for (let i = 0; i < NP; i++) {
+      const d = dir[i];
+
+      // положение
+      pos[i * 3]     = lac[0]       + d.vx * tau;
+      pos[i * 3 + 1] = lac[1]       + d.vy * tau - G * tau * tau;
+      pos[i * 3 + 2] = lac[2]       + d.vz * tau;
+
+      // яркость
+      const bright = (tau <= LIFETIME) ? Math.max(0.0, 1.0 - tau / LIFETIME) : 0;
+
+      // цвет (с яркостью)
+      col[i * 3]     = bc.r * bright;
+      col[i * 3 + 1] = bc.g * bright;
+      col[i * 3 + 2] = bc.b * bright;
+
+      if (bright > 0) {
+        const dx = pos[i * 3]     - lac[0];
+        const dy = pos[i * 3 + 1] - lac[1];
+        const dz = pos[i * 3 + 2] - lac[2];
+        sumR  += Math.sqrt(dx * dx + dy * dy + dz * dz);
+        sumBr += bright;
+        cnt++;
+      }
     }
-    requestAnimationFrame(loop);
+
+    probeData[b].r          = cnt > 0 ? sumR / cnt  : 0.0;
+    probeData[b].bright     = cnt > 0 ? sumBr / cnt  : 0.0;
+  }
+}
+
+/* ── Метки обновлений ─────────────────────────────────────── */
+const flags   = [false, false, false];
+function markDirty(b) { flags[b] = true; }
+
+/* ── window.__step / __probe ──────────────────────────────── */
+let simTime = 0.0;
+
+window.__step = function (dt) {
+  simTime += dt;
+  update(simTime);
+
+  for (let b = 0; b < NB; b++) {
+    posA[b].needsUpdate = true;
+    colA[b].needsUpdate = true;
   }
 
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
+  renderer.render(scene, camera);
+  return window.__probe();
+};
 
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
+window.__probe = function () {
+  const objects = [];
+  for (let b = 0; b < NB; b++) {
+    objects.push({ name: 'burst_' + (b + 1),
+                   r:          probeData[b].r,
+                   bright:     probeData[b].bright });
+  }
+  return {
+    t:       simTime.toFixed(4),
+    objects: objects,
+    bursts:  probeData.map(d => ({ r: d.r, bright: d.bright })),
+  };
+};
+
+/* ── Первичная отрисовка (t = 0) ──────────────────────────── */
+update(0.0);
+for (let b = 0; b < NB; b++) {
+  posA[b].needsUpdate = true;
+  colA[b].needsUpdate = true;
+}
+renderer.render(scene, camera);
+window.__ready = true;
 </script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-7 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

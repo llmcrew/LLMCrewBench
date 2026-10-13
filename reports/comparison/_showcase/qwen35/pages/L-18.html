@@ -407,38 +407,166 @@ window.__ready = true;
 </script>
 
 <script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+// Сцена играет сама: драйвер измеряет окно движения (сколько шагов подряд кадр
+// реально меняется), разворачивает его на несколько секунд и зацикливает
+// перезагрузкой. Без этого сцена выгорает за 1-2 с и стоит, как скриншот.
+// Отчёт и запись могут вмешаться сообщениями 'step', 'pause', 'play', 'reset'.
 (() => {
   const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
+  const QUIET = 90;          // столько шагов без изменений — окно кончилось
+  const MEASURE_CAP = 1200;  // предел замера в шагах
+  const MIN_WINDOW = 4;      // короче — сцена статична, повторять нечего
+  const SPAN_PER_STEP = 6;   // кадров на шаг показа (~0.1 с при 60 к/с)
+  const SPAN_MIN = 240;      // показ короче 4 с сливается
+  const SPAN_MAX = 600;      // ...а длиннее 10 с — затягивается
+  const HOLD_MS = 900;       // пауза перед повтором
+  const MEASURE_MS = 8;      // бюджет замера на кадр, чтобы не морозить вкладку
 
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
+  // three.js держит render собственным свойством экземпляра (this.render =
+  // render), поэтому обёртка прототипа его не видит: подменяем конструктор,
+  // а render перепривязываем на самом экземпляре. Так кадр обновляется, даже
+  // если страница рисует только в __probe — иначе сцена стоит, как скриншот.
+  let lastRender = null;
+  const wrap = () => {
+    const W = window.THREE && window.THREE.WebGLRenderer;
+    if (!W || W.__dbWrapped) return !!W;
+    const Wrapped = function (...args) {
+      const inst = new W(...args);
+      const orig = inst.render.bind(inst);
+      inst.render = function (scene, camera) { lastRender = [inst, scene, camera]; return orig(scene, camera); };
+      return inst;
+    };
+    Wrapped.prototype = W.prototype;
+    Object.setPrototypeOf(Wrapped, W);
+    Wrapped.__dbWrapped = true;
+    window.THREE.WebGLRenderer = Wrapped;
+    return true;
+  };
+  if (!wrap()) { let n = 0; const t = setInterval(() => { if (wrap() || ++n > 1500) clearInterval(t); }, 4); }
 
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
+  const step = () => { if (typeof window.__step === 'function') { try { window.__step(DT); } catch (e) {} } };
+  const probe = () => { if (typeof window.__probe === 'function') { try { window.__probe(); } catch (e) {} } };
+  const draw = () => { if (lastRender) { try { lastRender[0].render(lastRender[1], lastRender[2]); } catch (e) {} } };
+  // Один шаг — и сразу кадр: probe зовём всегда, часть страниц рисует в нём.
+  const beat = () => { step(); probe(); draw(); };
+
+  let oc = null, ox = null;
+  const sig = () => {  // дешёвая подпись кадра: 64x48 достаточно для «меняется/нет»
+    try {
+      const cs = document.querySelectorAll('canvas');
+      if (!cs.length) return -1;
+      if (!oc) { oc = document.createElement('canvas'); oc.width = 64; oc.height = 48; ox = oc.getContext('2d', {willReadFrequently: true}); }
+      // Сумма по ВСЕМ canvas: у L-2 их два, первый — WebGL без
+      // preserveDrawingBuffer, и подпись только по нему читалась как пустая:
+      // движущаяся сцена получала freeze=0 и показывалась статичным кадром.
+      let total = 0;
+      for (const c of cs) {
+        if (!c.width || !c.height) continue;
+        ox.clearRect(0, 0, 64, 48);
+        ox.drawImage(c, 0, 0, 64, 48);
+        const d = ox.getImageData(0, 0, 64, 48).data;
+        let s = 0;
+        for (let i = 0; i < d.length; i += 4) s = (s + d[i] + d[i + 1] * 3 + d[i + 2] * 7) % 1000003;
+        total = (total + s + cs.length * 7) % 1000003;
+      }
+      return total;
+    } catch (e) { return -2; }
+  };
+
+  // Замер должен пережить перезагрузку (её использует повтор): sessionStorage,
+  // а если он недоступен — window.name (оба живут в пределах вкладки).
+  const KEY = 'dailybench.scene:' + location.pathname;
+  const put = (v) => {
+    try { sessionStorage.setItem(KEY, JSON.stringify(v)); } catch (e) {}
+    try { window.name = 'dbscene:' + JSON.stringify(v); } catch (e) {}
+  };
+  const got = () => {
+    try { const v = sessionStorage.getItem(KEY); if (v) return JSON.parse(v); } catch (e) {}
+    try { if (window.name.indexOf('dbscene:') === 0) return JSON.parse(window.name.slice(8)); } catch (e) {}
+    return null;
+  };
+
+  let freeze = 0, span = SPAN_MAX, frames = 0, shown = 0, phase = 'measuring', holdUntil = 0, auto = true;
+  const scene = {mode: 'measuring', freeze: 0, step: 0};
+  // Ответы сами выставляют `window.__scene` (свой THREE.Scene) — у deepseek это
+  // уже занято, и модульный скрипт ответа исполняется ПОСЛЕ этого хука. Поэтому
+  // драйвер живёт под своим именем, а `__scene` остаётся странице.
+  window.__dbscene = scene;
+  window.__beat = beat;
+  const publish = () => {   // для записи и отладки: состояние драйвера наружу
+    scene.mode = phase; scene.freeze = freeze; scene.step = shown;
+    // seek(n) — ручной покадровый прогон до шага n (гарантирует первый кадр)
+    scene.seek = (n) => {
+      auto = false;
+      if (shown === 0) { beat(); shown++; }
+      while (shown < (n | 0)) { beat(); shown++; }
+      scene.step = shown;
+      return shown;
+    };
+  };
+  publish();
+
+  const play = () => {
+    const cache = got();
+    freeze = (cache && cache.freeze | 0) || 0;
+    // Окно движения разворачиваем примерно на 0.1 с на шаг: сцена из 240 шагов
+    // идёт 24 с — так движение видно, а не проскакивает за пару секунд.
+    span = Math.min(SPAN_MAX, Math.max(SPAN_MIN, freeze * SPAN_PER_STEP));
+    phase = freeze < MIN_WINDOW ? 'static' : 'play';
+    frames = 0; shown = 0;
+    publish();
+    if (phase === 'play') requestAnimationFrame(tick);
+  };
+
+  const tick = (now) => {
+    if (phase === 'play' && auto) {
+      frames++;
+      const target = Math.min(freeze, Math.round(frames * freeze / span));
+      while (shown < target) { beat(); shown++; }
+      scene.step = shown;
+      if (frames >= span) { phase = 'hold'; holdUntil = performance.now() + HOLD_MS; scene.mode = phase; }
+    } else if (phase === 'hold' && auto && performance.now() >= holdUntil) {
+      location.reload();  // сброса у страницы нет: повтор — только перезагрузкой
     }
-    requestAnimationFrame(loop);
+    requestAnimationFrame(tick);
+  };
+
+  if (got() === null) {
+    // Первый заход: дождаться кадра страницы, измерить окно движения и
+    // перезагрузиться — показ пойдёт с чистого состояния, замер уже в кэше.
+    const t0 = performance.now();
+    let prev = null, lastChange = 0, k = 0, started = false;
+    const measureFrame = () => {
+      const t1 = performance.now();
+      while (performance.now() - t1 < MEASURE_MS && k < MEASURE_CAP) {
+        beat(); k++;
+        const s = sig();
+        if (s !== prev) { lastChange = k; prev = s; }
+        else if (k - lastChange >= QUIET) break;
+      }
+      if ((k >= MEASURE_CAP || k - lastChange >= QUIET) && k > 0) {
+        put({freeze: lastChange});
+        location.reload();
+        return;
+      }
+      requestAnimationFrame(measureFrame);
+    };
+    const wait = () => {
+      if (window.__ready !== true && performance.now() - t0 < 8000) { requestAnimationFrame(wait); return; }
+      probe(); draw(); prev = sig();
+      if (!started) { started = true; requestAnimationFrame(measureFrame); }
+    };
+    requestAnimationFrame(wait);
+  } else {
+    play();
   }
 
+  const resume = () => { auto = true; if (phase !== 'play') { phase = 'play'; publish(); requestAnimationFrame(tick); } };
   window.addEventListener('message', (event) => {
     const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    if (cmd === 'step') { auto = false; beat(); shown++; scene.step = shown; }
+    else if (cmd === 'pause') { auto = false; }
+    else if (cmd === 'play') { resume(); }
     else if (cmd === 'reset') { window.location.reload(); }
     else return;
     window.dispatchEvent(new Event('dailybench-step'));
@@ -446,11 +574,28 @@ window.__ready = true;
 
   window.addEventListener('keydown', (event) => {
     if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === ' ') { event.preventDefault(); auto = !auto; if (auto) resume(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); auto = false; beat(); shown++; scene.step = shown; }
     if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
   });
 })();
 </script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-18 · пробел — пауза, → — шаг, R — сброс</div></body>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.5-397B-A17B · L-18 · пробел — пауза, → — шаг, R — сброс</div><script>
+(() => {
+  const fit = () => {
+    const canvas = document.querySelector('canvas');
+    if (!canvas) return;
+    const k = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+    document.documentElement.style.zoom = k === 1 ? '' : String(k);
+    document.body.style.overflow = 'hidden';
+    document.body.style.display = 'flex';
+    document.body.style.alignItems = 'center';
+    document.body.style.justifyContent = 'center';
+    document.body.style.height = '100vh';
+  };
+  window.addEventListener('resize', fit);
+  window.addEventListener('load', fit);
+  fit();
+})();
+</script></body>
 </html>

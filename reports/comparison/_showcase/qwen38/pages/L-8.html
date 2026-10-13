@@ -1,193 +1,131 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<style>
-body{margin:0;background:#000;overflow:hidden}
-</style>
+<title>aurora ribbons</title>
+<style>html,body{margin:0;padding:0;background:#1d1638;overflow:hidden}canvas{display:block;width:1920px;height:1080px}</style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
 <script type="module">
 const THREE = window.THREE;
 
-// LCG: seed 53827, step s=(1664525*s+1013904223)%4294967296, u=s/4294967296
+// ----- LCG: seed 53827, s = (1664525*s + 1013904223) % 4294967296 -----
 let s = 53827;
-function lcg(){
-  s = (1664525 * s + 1013904223) % 4294967296;
-  return s / 4294967296;
-}
+function rng(){ s = (1664525 * s + 1013904223) % 4294967296; return s / 4294967296; }
 
-// Renderer
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+// ----- renderer / camera / scene -----
+const renderer = new THREE.WebGLRenderer({preserveDrawingBuffer: true});
 renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
+renderer.setSize(1920, 1080, false);
 document.body.appendChild(renderer.domElement);
 
-// Camera: PerspectiveCamera(45, 800/600, 0.1, 200) at (0,0,10) looking at origin
 const camera = new THREE.PerspectiveCamera(45, 800/600, 0.1, 200);
 camera.position.set(0, 0, 10.0);
 camera.lookAt(0, 0, 0);
 
-// Scene with night sky background #1d1638
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1d1638);
+scene.background = new THREE.Color(0x1d1638); // night sky
 
-// Frame dimensions in world units
-const halfH = Math.tan(22.5 * Math.PI / 180) * 10; // ≈4.142
-const frameH = 2 * halfH;
-const frameW = frameH * (800 / 600);
+// frame size at distance 10
+const HALF_H = 10.0 * Math.tan(THREE.MathUtils.degToRad(22.5)); // ~4.142
+const FRAME_H = 2 * HALF_H;
+const FRAME_W = FRAME_H * (800 / 600);
 
-// Shared canvas texture 64×256
+// ----- shared 64x256 canvas texture: vertical color + horizontal soft fade -----
 const cvs = document.createElement('canvas');
-cvs.width = 64;
-cvs.height = 256;
+cvs.width = 64; cvs.height = 256;
 const c2d = cvs.getContext('2d');
-
-// Vertical gradient: top #ff33ee, middle #2197db, bottom #18f051
-const vg = c2d.createLinearGradient(0, 0, 0, 256);
-vg.addColorStop(0, '#ff33ee');
-vg.addColorStop(0.5, '#2197db');
-vg.addColorStop(1, '#18f051');
-c2d.fillStyle = vg;
-c2d.fillRect(0, 0, 64, 256);
-
-// Horizontal soft fade: opaque centre, transparent edges
-const img = c2d.getImageData(0, 0, 64, 256);
-for (let px = 0; px < 64; px++) {
-  const t = px / 63;
-  const a = 4 * t * (1 - t); // parabolic 0→1→0
-  for (let py = 0; py < 256; py++) {
-    const idx = (py * 64 + px) * 4;
-    img.data[idx + 3] = Math.round(a * 255);
+const img = c2d.createImageData(64, 256);
+const TOP = [0xff, 0x33, 0xee]; // top    #ff33ee
+const MID = [0x21, 0x97, 0xdb]; // middle #2197db
+const BOT = [0x18, 0xf0, 0x51]; // bottom #18f051
+function mixc(a, b, k){ return [a[0]+(b[0]-a[0])*k, a[1]+(b[1]-a[1])*k, a[2]+(b[2]-a[2])*k]; }
+for (let y = 0; y < 256; y++){
+  const ty = y / 255;                       // 0 = top of canvas
+  const col = ty <= 0.5 ? mixc(TOP, MID, ty * 2) : mixc(MID, BOT, (ty - 0.5) * 2);
+  for (let x = 0; x < 64; x++){
+    const nx = x / 63;                      // 0..1 across width
+    const ax = Math.pow(Math.sin(Math.PI * nx), 1.2); // opaque center, soft sides
+    const av = 1;                                     // color carries the vertical profile
+    const a = Math.round(255 * ax * av);
+    const i = (y * 64 + x) * 4;
+    img.data[i]   = col[0];
+    img.data[i+1] = col[1];
+    img.data[i+2] = col[2];
+    img.data[i+3] = a;
   }
 }
 c2d.putImageData(img, 0, 0);
-
 const tex = new THREE.CanvasTexture(cvs);
-tex.needsUpdate = true;
+tex.magFilter = THREE.LinearFilter;
+tex.minFilter = THREE.LinearFilter;
+tex.generateMipmaps = false;
+tex.colorSpace = THREE.SRGBColorSpace;
 
-// 28 ribbons
+// ----- 28 ribbons: width 0.030..0.055, height 0.30..0.38 -----
+const geo = new THREE.PlaneGeometry(1, 1);
+const N = 28;
 const ribbons = [];
-const rdata = [];
-
-for (let i = 0; i < 28; i++) {
-  const u1 = lcg();
-  const u2 = lcg();
-  const u3 = lcg();
-  const u4 = lcg();
-  const u5 = lcg();
-  const u6 = lcg();
-
-  const w  = 0.030 + 0.055 * u1;
-  const h  = 0.30  + 0.38  * u2;
-  const x  = (i + 0.5 + 0.6 * (u3 - 0.5)) / 28 - 0.5;
-  const y  = 0.02  + 0.26  * u4;
-  const op = 0.16  + 0.24  * u5;
-  const ph = 0.4   * u6;
-
-  const ww = w * frameW;
-  const wh = h * frameH;
-  const wx = x * frameW;
-  const wy = y * frameH;
-
-  const geo = new THREE.PlaneGeometry(1, 1);
+for (let i = 1; i <= N; i++){
+  const u1 = rng(); // w
+  const u2 = rng(); // h
+  const u3 = rng(); // x
+  const u4 = rng(); // y
+  const u5 = rng(); // op
+  const u6 = rng(); // ph
+  const wf = 0.030 + 0.055 * u1;
+  const hf = 0.30 + 0.38 * u2;
+  const xf = (i + 0.5 + 0.6 * (u3 - 0.5)) / N - 0.5;
+  const yf = 0.02 + 0.26 * u4;
+  const op = 0.16 + 0.24 * u5;
+  const ph = 0.4 * u6;
   const mat = new THREE.MeshBasicMaterial({
-    map: tex,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthTest: false
+    map: tex, transparent: true,
+    blending: THREE.AdditiveBlending, depthTest: false
   });
   mat.opacity = op;
-
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.name = 'ribbon_' + (i + 1);
-  mesh.scale.set(ww, wh, 1);
-  mesh.position.set(wx, wy, 0);
-
-  scene.add(mesh);
-  ribbons.push(mesh);
-  rdata.push({ x, ph, ww, wh, wx, wy });
+  const m = new THREE.Mesh(geo, mat);
+  m.name = 'ribbon_' + i;
+  m.position.set(xf * FRAME_W, yf * FRAME_H, 0);
+  m.renderOrder = i;
+  scene.add(m);
+  ribbons.push({ mesh: m, xf, ph, x0: xf * FRAME_W, sx: wf * FRAME_W, sy: hf * FRAME_H });
 }
-
-// Animation state
-let t = 0;
-
-function step(dt) {
-  t += dt;
-  for (let i = 0; i < 28; i++) {
-    const d = rdata[i];
-    const dx = 0.05 * Math.sin(2 * Math.PI * 0.35 * t - 3.0 * d.x + d.ph);
-    const hScale = 1 + 0.15 * Math.sin(2 * Math.PI * 0.35 * 0.7 * t + d.ph);
-    ribbons[i].position.x = d.wx + dx * frameW;
-    ribbons[i].scale.y = d.wh * hScale;
+function layoutScale(){
+  for (const r of ribbons){
+    r.mesh.scale.set(r.sx, r.sy * (1 + 0.15 * Math.sin(2 * Math.PI * 0.35 * 0.7 * t + r.ph)), 1);
   }
-  renderer.render(scene, camera);
-  return probe();
+}
+function layoutWave(){
+  for (const r of ribbons){
+    r.mesh.position.x = r.x0 + 0.05 * Math.sin(2 * Math.PI * 0.35 * t - 3.0 * r.xf + r.ph);
+  }
 }
 
-function probe() {
-  const objects = scene.children.filter(c => c.name).map(c => c.name);
-  const wave = 2 * Math.PI * 0.35 * t;
+// ----- time / animation (only via window.__step) -----
+const TAU = Math.PI * 2;
+let t = 0;
+function refresh(){
+  layoutWave();
+  layoutScale();
+  renderer.render(scene, camera);
+}
+refresh();
+window.__ready = true;
+
+window.__step = function(dt){
+  t += dt;
+  refresh();
+  return window.__probe();
+};
+window.__probe = function(){
   return {
     t: Math.round(t * 10000) / 10000,
-    objects,
-    wave: Math.round(wave * 10000) / 10000
+    objects: ribbons.map(r => r.mesh.name),
+    wave: Math.round((TAU * 0.35 * t) * 10000) / 10000
   };
-}
-
-// Initial render at t = 0
-renderer.render(scene, camera);
-window.__ready = true;
-window.__step = step;
-window.__probe = probe;
+};
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-8 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

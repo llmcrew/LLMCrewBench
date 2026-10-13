@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
 <meta charset="utf-8">
+<title>неоновая лапшичная под дождём</title>
 <style>
-*{margin:0;padding:0}
-body{background:#000;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden}
-canvas{display:block}
+  html,body{margin:0;padding:0;background:#0a0620;overflow:hidden}
+  canvas{display:block}
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
@@ -13,302 +13,493 @@ canvas{display:block}
 <script type="module">
 const THREE = window.THREE;
 
+/* ---------- детерминированный LCG ---------- */
 let lcg = 23268;
-function rnd(){lcg=(lcg*1103515245+12345)%2147483648;return lcg/2147483648;}
+function rnd(){
+  lcg = (Math.imul(lcg, 1103515245) + 12345) % 2147483648;
+  if (lcg < 0) lcg += 2147483648;
+  return lcg / 2147483648;
+}
 
-const renderer=new THREE.WebGLRenderer({preserveDrawingBuffer:true});
+/* ---------- рендерер и камера ---------- */
+const W = 1920, H = 1080, ASPECT = W / H;
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
 renderer.setPixelRatio(1);
-renderer.setSize(800,600,false);
+renderer.setSize(W, H, false);
 document.body.appendChild(renderer.domElement);
 
-const scene=new THREE.Scene();
-scene.background=new THREE.Color(0x1e1145);
+const scene = new THREE.Scene();
+const CAMZ = 4;
+const fov = 2 * Math.atan(1 / 16) * 180 / Math.PI;   // в d=16 видна высота 2
+const camera = new THREE.PerspectiveCamera(fov, ASPECT, 0.01, 200);
+camera.position.set(0, 0, CAMZ);
 
-const camera=new THREE.PerspectiveCamera(60,800/600,0.1,200);
-camera.position.set(0,0,4);
-camera.lookAt(0,0,-1);
-
-const TF=Math.tan(30*Math.PI/180);
-const AS=800/600;
-
-function uv2w(u,v,z){const d=4-z;return[(u-0.5)*2*d*TF*AS,(0.5-v)*2*d*TF,z];}
-function fsz(fw,fh,z){const d=4-z;return[fw*2*d*TF*AS,fh*2*d*TF];}
-
-function mkP(w,h,col,x,y,z,op,nm,ro){
-  const g=new THREE.PlaneGeometry(w,h);
-  const m=new THREE.MeshBasicMaterial({color:col,transparent:op<1,opacity:op,side:THREE.DoubleSide,depthWrite:op>=1});
-  const ms=new THREE.Mesh(g,m);
-  ms.position.set(x,y,z);
-  if(nm)ms.name=nm;
-  if(ro!==undefined)ms.renderOrder=ro;
-  return ms;
+/* карта долей кадра (u,v) на плоскость в z */
+function fr(z){
+  const d = CAMZ - z;
+  const h = d / 8, w = h * ASPECT;      // видимые ширина/высота кадра на этой плоскости
+  return { h, w };
+}
+function pos(z, u, v){
+  const f = fr(z);
+  return new THREE.Vector3((u - 0.5) * f.w, (0.5 - v) * f.h, z);
+}
+function planeAt(z, wFrac, hFrac, u, v, mat){
+  const f = fr(z);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(wFrac * f.w, hFrac * f.h), mat);
+  m.position.copy(pos(z, u, v));
+  return m;
+}
+function tex(c){
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.magFilter = THREE.LinearFilter;
+  t.minFilter = THREE.LinearFilter;
+  return t;
 }
 
-// sky z=-45
-scene.add(mkP(120,90,0x1e1145,0,0,-45,1,'sky',0));
+/* ---------- свет ---------- */
+scene.add(new THREE.AmbientLight(0x33255e, 1.1));
+const cyanLight = new THREE.PointLight(0x12c7d4, 10, 18, 1.6);
+cyanLight.position.copy(pos(-11.5, 0.12, 0.30));
+scene.add(cyanLight);
+const warmLight = new THREE.PointLight(0xffb347, 14, 20, 1.6);
+warmLight.position.copy(pos(-9.4, 0.24, 0.55));
+scene.add(warmLight);
+const lampLight = new THREE.PointLight(0xffb347, 8, 16, 1.6);
+lampLight.position.copy(pos(-11.9, 0.26, 0.12));
+scene.add(lampLight);
 
-// wall z=-12 (upper 62%)
-{const p=uv2w(0.5,0.31,-12);const s=fsz(1.2,0.62,-12);scene.add(mkP(s[0],s[1],0x1e1145,p[0],p[1],-12,1,'wall',0));}
+/* ---------- небо (глухая стена ночи) ---------- */
+const sky = planeAt(-45, 6, 6, 0.5, 0.5, new THREE.MeshBasicMaterial({ color: 0x1e1145 }));
+scene.add(sky);
 
-// floor z=-8 (lower 38%)
-{const p=uv2w(0.5,0.81,-8);const s=fsz(1.2,0.38,-8);scene.add(mkP(s[0],s[1],0x1e1145,p[0],p[1],-8,1,'floor',0));}
-
-// kiosk body z=-10
-{const p=uv2w(0.24,0.47,-10);const s=fsz(0.20,0.20,-10);scene.add(mkP(s[0],s[1],0x1e1145,p[0],p[1],-10,1,'kiosk',1));}
-
-// kiosk counter z=-10
-{const p=uv2w(0.24,0.62,-10);const s=fsz(0.26,0.05,-10);scene.add(mkP(s[0],s[1],0xffb347,p[0],p[1],-10,1,'kiosk_counter',1));}
-
-// board z=-10
-{const p=uv2w(0.37,0.40,-10);const s=fsz(0.19,0.07,-10);scene.add(mkP(s[0],s[1],0x12c7d4,p[0],p[1],-10,1,'board',1));}
-// board bars
-for(let i=0;i<4;i++){
-  const bv=0.40-0.015+i*0.015;
-  const p=uv2w(0.37,bv,-9.98);const s=fsz(0.14,0.01,-9.98);
-  scene.add(mkP(s[0],s[1],0x1e1145,p[0],p[1],-9.98,1,'board_bar'+i,1));
-}
-
-// sign z=-10 (vertical neon)
-const signMat=new THREE.MeshBasicMaterial({color:0x12c7d4,transparent:true,opacity:1,side:THREE.DoubleSide});
-{const p=uv2w(0.12,0.26,-10);const s=fsz(0.06,0.28,-10);
-const sg=new THREE.Mesh(new THREE.PlaneGeometry(s[0],s[1]),signMat);
-sg.position.set(p[0],p[1],-10);sg.name='sign';sg.renderOrder=1;scene.add(sg);}
-// sign glow
-{const p=uv2w(0.12,0.26,-10.01);const s=fsz(0.09,0.32,-10.01);
-scene.add(mkP(s[0],s[1],0x12c7d4,p[0],p[1],-10.01,0.25,'sign_glow',1));}
-
-// holo panels z=-10
-const holoMats=[];
-for(let i=0;i<2;i++){
-  const hv=0.30+i*0.02;
-  const p=uv2w(0.14,hv,-10);const s=fsz(0.08,0.14,-10);
-  const hm=new THREE.MeshBasicMaterial({color:0xff5fa8,transparent:true,opacity:0.85,side:THREE.DoubleSide});
-  const hp=new THREE.Mesh(new THREE.PlaneGeometry(s[0],s[1]),hm);
-  hp.position.set(p[0],p[1],-10);hp.name='holo_'+i;hp.renderOrder=1;scene.add(hp);
-  holoMats.push(hm);
-}
-// holo scan lines
-const holoScans=[];
-for(let p=0;p<2;p++){
-  for(let i=0;i<6;i++){
-    const hv=0.30+p*0.02-0.06+i*0.02;
-    const pos=uv2w(0.14,hv,-9.97);const s=fsz(0.07,0.004,-9.97);
-    const lm=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.4,side:THREE.DoubleSide});
-    const lp=new THREE.Mesh(new THREE.PlaneGeometry(s[0],s[1]),lm);
-    lp.position.set(pos[0],pos[1],-9.97);lp.name='holo_scan_'+p+'_'+i;lp.renderOrder=2;scene.add(lp);
-    holoScans.push({mesh:lp,panel:p,idx:i});
-  }
-}
-
-// lamps z=-10
-const lampUs=[0.18,0.26,0.34];
-for(let i=0;i<3;i++){
-  const p=uv2w(lampUs[i],0.12,-10);const s=fsz(0.035,0.035,-10);
-  scene.add(mkP(s[0],s[1],0xffb347,p[0],p[1],-10,1,'lamp_'+i,1));
-  // lamp glow
-  const gs=fsz(0.06,0.06,-10.01);
-  scene.add(mkP(gs[0],gs[1],0xffb347,p[0],p[1],-10.01,0.3,'lamp_glow_'+i,1));
-}
-
-// puddles z=-7.9
-const pudUs=[0.20,0.40,0.60,0.78];
-const pudRings=[];
-for(let i=0;i<4;i++){
-  const p=uv2w(pudUs[i],0.82,-7.9);const s=fsz(0.16,0.05,-7.9);
-  scene.add(mkP(s[0],s[1],0xa8c8dc,p[0],p[1],-7.9,0.55,'puddle_'+i,2));
-  for(let r=0;r<3;r++){
-    const rs=fsz(0.12-r*0.025,0.035-r*0.005,-7.88);
-    const rm=new THREE.MeshBasicMaterial({color:0xa8c8dc,transparent:true,opacity:0.3,side:THREE.DoubleSide});
-    const rp=new THREE.Mesh(new THREE.PlaneGeometry(rs[0],rs[1]),rm);
-    rp.position.set(p[0],p[1],-7.88);rp.name='puddle_ring_'+i+'_'+r;rp.renderOrder=2;scene.add(rp);
-    pudRings.push({mesh:rp,pi:i,ri:r});
-  }
-}
-
-// glass z=-4
-{const p=uv2w(0.5,0.5,-4);const s=fsz(0.80,0.80,-4);
-scene.add(mkP(s[0],s[1],0xa8c8dc,p[0],p[1],-4,0.06,'glass',4));}
-
-// Generate 64 UV positions
-const dropUV=[];
-for(let i=0;i<64;i++){dropUV.push({u:rnd(),v:rnd()});}
-
-// drops z=-3.9
-const dropMeshes=[];
-const dropD=4-(-3.9);
-const dropYH=dropD*TF;
-const dropXH=dropD*TF*AS;
-for(let i=0;i<64;i++){
-  const x=(dropUV[i].u-0.5)*2*dropXH;
-  const y=(0.5-dropUV[i].v)*2*dropYH;
-  const ds=fsz(6/800,6/600,-3.9);
-  const dm=new THREE.MeshBasicMaterial({color:0xa8c8dc,transparent:true,opacity:0.9,side:THREE.DoubleSide});
-  const dp=new THREE.Mesh(new THREE.PlaneGeometry(ds[0],ds[1]),dm);
-  dp.position.set(x,y,-3.9);dp.name='drop_'+i;dp.renderOrder=5;scene.add(dp);
-  dropMeshes.push({mesh:dp,x,y});
-}
-
-// rain z=-12
-const rainMeshes=[];
-const rainD=4-(-12);
-const rainYH=rainD*TF;
-const rainXH=rainD*TF*AS;
-for(let i=0;i<64;i++){
-  const x=(dropUV[i].u-0.5)*2*rainXH;
-  const y=(0.5-dropUV[i].v)*2*rainYH;
-  const rs=fsz(4/800,14/600,-12);
-  const rm=new THREE.MeshBasicMaterial({color:0xa8c8dc,transparent:true,opacity:0.45,side:THREE.DoubleSide});
-  const rp=new THREE.Mesh(new THREE.PlaneGeometry(rs[0],rs[1]),rm);
-  rp.position.set(x,y,-12);rp.name='rain_'+i;rp.renderOrder=3;scene.add(rp);
-  rainMeshes.push({mesh:rp,x,y});
-}
-
-// steam z=-10
-const steamUs=[0.20,0.24,0.28];
-const steamMeshes=[];
-for(let i=0;i<3;i++){
-  const p=uv2w(steamUs[i],0.40,-10);const s=fsz(0.04,0.12,-10);
-  const sm=new THREE.MeshBasicMaterial({color:0xffb347,transparent:true,opacity:0.5,side:THREE.DoubleSide});
-  const sp=new THREE.Mesh(new THREE.PlaneGeometry(s[0],s[1]),sm);
-  sp.position.set(p[0],p[1],-10);sp.name='steam_'+i;sp.renderOrder=6;scene.add(sp);
-  steamMeshes.push(sp);
-}
-// extra steam puffs
-for(let i=0;i<3;i++){
-  for(let j=1;j<=2;j++){
-    const p=uv2w(steamUs[i],0.40+j*0.03,-10);const s=fsz(0.03+j*0.01,0.04,-10);
-    const sm=new THREE.MeshBasicMaterial({color:0xffb347,transparent:true,opacity:0.3,side:THREE.DoubleSide});
-    const sp=new THREE.Mesh(new THREE.PlaneGeometry(s[0],s[1]),sm);
-    sp.position.set(p[0],p[1],-10);sp.name='steam_puff_'+i+'_'+j;sp.renderOrder=6;scene.add(sp);
-    steamMeshes.push(sp);
-  }
-}
-
-// state
-let t=0;
-const D_SPD=2.10;
-const R_SPD=D_SPD/3;
-const S_FRQ=0.77;
-const C_FRQ=0.25;
-const C_AMP=0.057;
-
-function steamOp(){return 0.25+0.45*(0.5+0.5*Math.sin(2*Math.PI*S_FRQ*t));}
-
-renderer.render(scene,camera);
-window.__ready=true;
-
-window.__probe=function(){
-  const objs=[];
-  scene.traverse(o=>{if(o.name)objs.push(o.name);});
-  return{
-    t:Math.round(t*10000)/10000,
-    objects:objs,
-    drops:[Math.round(dropMeshes[0].x*10000)/10000,Math.round(dropMeshes[0].y*10000)/10000],
-    steam:Math.round(steamOp()*10000)/10000
-  };
-};
-
-window.__step=function(dt){
-  t+=dt;
-
-  // camera drift
-  camera.position.x=C_AMP*Math.sin(2*Math.PI*C_FRQ*t);
-  camera.lookAt(0,0,-1);
-
-  // drops
-  for(let i=0;i<64;i++){
-    dropMeshes[i].y-=D_SPD*dt;
-    if(dropMeshes[i].y<-dropYH)dropMeshes[i].y+=2*dropYH;
-    dropMeshes[i].mesh.position.y=dropMeshes[i].y;
-  }
-
-  // rain
-  for(let i=0;i<64;i++){
-    rainMeshes[i].y-=R_SPD*dt;
-    if(rainMeshes[i].y<-rainYH)rainMeshes[i].y+=2*rainYH;
-    rainMeshes[i].mesh.position.y=rainMeshes[i].y;
-  }
-
-  // steam
-  const so=steamOp();
-  for(let i=0;i<steamMeshes.length;i++){
-    const base=i<3?so:so*0.6;
-    steamMeshes[i].material.opacity=base;
-  }
-
-  // sign blink
-  const sb=Math.sin(2*Math.PI*1.5*t);
-  signMat.opacity=sb>-0.4?1.0:0.2;
-
-  // holo scan
-  for(let i=0;i<holoScans.length;i++){
-    const hs=holoScans[i];
-    const ph=(t*0.6+hs.idx*0.17)%1.0;
-    const pv=0.30+hs.panel*0.02-0.07+ph*0.14;
-    const pp=uv2w(0.14,pv,-9.97);
-    hs.mesh.position.y=pp[1];
-    hs.mesh.material.opacity=0.2+0.5*Math.sin(ph*Math.PI);
-  }
-
-  // puddle rings
-  for(let i=0;i<pudRings.length;i++){
-    const pr=pudRings[i];
-    const ph=(t*0.25+pr.ri*0.33)%1.0;
-    const sc=0.4+ph*0.6;
-    pr.mesh.scale.set(sc,sc,1);
-    pr.mesh.material.opacity=0.35*(1-ph);
-  }
-
-  renderer.render(scene,camera);
-  return window.__probe();
-};
-</script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
+/* ---------- стена дома за киоском (z=-12) ---------- */
+{
+  const c = document.createElement('canvas'); c.width = 512; c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#1e1145'; g.fillRect(0, 0, 512, 512);
+  g.strokeStyle = 'rgba(10,6,28,0.9)'; g.lineWidth = 3;
+  for (let i = 1; i < 4; i++){ g.beginPath(); g.moveTo(i*128, 0); g.lineTo(i*128, 512); g.stroke(); }
+  for (let i = 1; i < 5; i++){ g.beginPath(); g.moveTo(0, i*102); g.lineTo(512, i*102); g.stroke(); }
+  // окна: тёмные + пара тёплых
+  for (let r = 0; r < 4; r++) for (let col = 0; col < 3; col++){
+    const x = 34 + col * 150, y = 30 + r * 102;
+    const warm = (r === 0 && col === 1) || (r === 0 && col === 2) || (r === 1 && col === 0) || (r === 1 && col === 1);
+    g.fillStyle = warm ? '#ffb347' : '#130b2e';
+    g.fillRect(x, y, 96, 56);
+    g.strokeStyle = '#130b2e'; g.lineWidth = 4;
+    g.strokeRect(x, y, 96, 56);
+    if (warm){ // крестовина переплёта
+      g.beginPath(); g.moveTo(x+48, y); g.lineTo(x+48, y+56); g.moveTo(x, y+28); g.lineTo(x+96, y+28); g.stroke();
     }
-    requestAnimationFrame(loop);
   }
+  // вывеска этажом выше по стене
+  g.fillStyle = '#12c7d4'; g.fillRect(300, 40, 150, 14);
+  g.fillStyle = 'rgba(18,199,212,0.25)'; g.fillRect(292, 32, 166, 30);
+  const m = new THREE.MeshBasicMaterial({ map: tex(c) });
+  scene.add(planeAt(-12, 0.56, 0.60, 0.28, 0.32, m));
+}
 
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
+/* ---------- асфальт (z=-8), от v=0.62 вниз ---------- */
+{
+  const c = document.createElement('canvas'); c.width = 1024; c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#1a1140'; g.fillRect(0, 0, 1024, 256);
+  // зерно
+  for (let i = 0; i < 900; i++){
+    const x = rnd()*1024, y = rnd()*256, r = 1 + rnd()*2.2;
+    g.fillStyle = rnd() < 0.5 ? 'rgba(12,7,32,0.8)' : 'rgba(41,26,82,0.5)';
+    g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+  }
+  // трещины
+  g.strokeStyle = 'rgba(10,6,26,0.8)'; g.lineWidth = 2;
+  for (let i = 0; i < 7; i++){
+    let x = rnd()*1024, y = 0;
+    g.beginPath(); g.moveTo(x, y);
+    while (y < 256){ y += 18 + rnd()*22; x += (rnd()-0.5)*46; g.lineTo(x, y); }
+    g.stroke();
+  }
+  // размытые отражения неона в мокрых местах
+  const refl = (u, col, hh) => {
+    const x = u*1024;
+    const gr = g.createLinearGradient(0, 0, 0, hh);
+    gr.addColorStop(0, col); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.fillRect(x-55, 0, 110, hh);
+  };
+  refl(0.12*1024, 'rgba(18,199,212,0.16)', 240);                           // от вывески
+  refl(0.37*1024, 'rgba(18,199,212,0.13)', 220);                        // от табло
+  refl(0.24*1024, 'rgba(255,179,71,0.20)', 250);                         // от прилавка
+  refl(0.68*1024, 'rgba(255,95,168,0.10)', 180);                         // от голопанелей
+  // мокрый блик
+  g.fillStyle = 'rgba(168,200,220,0.05)'; g.fillRect(0, 96, 1024, 3);
+  const m = new THREE.MeshBasicMaterial({ map: tex(c) });
+  const f = fr(-8);
+  const top = 0.62, fh = 1 - top;
+  const fl = new THREE.Mesh(new THREE.PlaneGeometry(f.w, fh * f.h), m);
+  fl.position.set(0, (0.5 - (top + fh/2)) * f.h, -8);
+  scene.add(fl);
+}
 
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
+/* ---------- киоск: корпус (3D коробка) ---------- */
+const kioskZ = -10;
+{
+  const f = fr(kioskZ);
+  const w = 0.20*f.w, h = 0.20*f.h;
+  const box = new THREE.Mesh(
+    new THREE.BoxGeometry(w, h, 0.55),
+    new THREE.MeshStandardMaterial({ color: 0x241452, roughness: 0.75, metalness: 0.25 })
+  );
+  box.position.set((0.24-0.5)*f.w, (0.5-0.47)*f.h, kioskZ - 0.27);
+  scene.add(box);
+  // навес
+  const aw = new THREE.Mesh(
+    new THREE.BoxGeometry(w*1.18, 0.05, 0.7),
+    new THREE.MeshStandardMaterial({ color: 0x2c1a5e, roughness: 0.8 })
+  );
+  aw.position.set(box.position.x, (0.5-0.375)*f.h, kioskZ);
+  scene.add(aw);
+  // бочки/ящики справа
+  const crate = new THREE.Mesh(new THREE.BoxGeometry(0.12,0.12,0.12),
+    new THREE.MeshStandardMaterial({ color: 0x2a1a60, roughness: 0.9 }));
+  crate.position.set((0.44-0.5)*f.w, (0.5-0.56)*f.h, kioskZ-0.1);
+  crate.rotation.y = 0.5; scene.add(crate);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.09,0.34,20),
+    new THREE.MeshStandardMaterial({ color: 0x221350, roughness: 0.85, metalness: 0.4 }));
+  barrel.position.set((0.50-0.5)*f.w, (0.5-0.535)*f.h, kioskZ-0.15);
+  scene.add(barrel);
+  // неоновое кольцо-акцент позади стойки
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.11, 0.014, 12, 40),
+    new THREE.MeshBasicMaterial({ color: 0xff5fa8, transparent: true, opacity: 0.9 }));
+  ring.position.copy(pos(-10.8, 0.42, 0.44));
+  scene.add(ring);
+}
+
+/* ---------- прилавок (свечение #ffb347) ---------- */
+{
+  const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+  const g = c.getContext('2d');
+  const gr = g.createLinearGradient(0, 0, 0, 64);
+  gr.addColorStop(0, '#ffd9a0'); gr.addColorStop(0.45, '#ffb347'); gr.addColorStop(1, '#d98a2e');
+  g.fillStyle = gr; g.fillRect(0, 0, 256, 64);
+  g.fillStyle = 'rgba(120,60,10,0.55)';
+  for (let i = 0; i < 6; i++){ g.fillRect(8 + i*44, 40, 26, 8); }
+  scene.add(planeAt(-7.85, 0.26, 0.05, 0.24, 0.62, new THREE.MeshBasicMaterial({ map: tex(c) })));
+  const f = fr(-9.6);
+  const under = new THREE.Mesh(new THREE.BoxGeometry(0.26*f.w, 0.10*f.h, 0.4),
+    new THREE.MeshStandardMaterial({ color: 0x241452, roughness: 0.8 }));
+  under.position.set((0.24-0.5)*f.w, (0.5-0.675)*f.h, -9.7);
+  scene.add(under);
+}
+
+/* ---------- табло над стойкой: иероглифы-полосы ---------- */
+const boardT = (() => {
+  const c = document.createElement('canvas'); c.width = 384; c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#12c7d4'; g.fillRect(0, 0, 384, 128);
+  g.fillStyle = 'rgba(255,255,255,0.35)'; g.fillRect(0, 0, 384, 8);
+  // 4 поперечные полосы-иероглифы высотой 0.01 кадра (10px от 128px)
+  g.fillStyle = '#0d3a44';
+  for (let r = 0; r < 4; r++){
+    const y = 16 + r * 28;
+    let x = 12;
+    while (x < 372){
+      const wSeg = 10 + rnd()*30;
+      if (rnd() < 0.8) g.fillRect(x, y, wSeg, 10);
+      x += wSeg + 6 + rnd()*14;
+    }
+  }
+  const t = tex(c);
+  return t;
 })();
+scene.add(planeAt(-9.8, 0.19, 0.09, 0.37, 0.40, new THREE.MeshBasicMaterial({ map: boardT })));
+{ // мягкое свечение за табло
+  const c = document.createElement('canvas'); c.width = 128; c.height = 64;
+  const g = c.getContext('2d');
+  const gr = g.createRadialGradient(64,32,6,64,32,62);
+  gr.addColorStop(0,'rgba(18,199,212,0.55)'); gr.addColorStop(1,'rgba(18,199,212,0)');
+  g.fillStyle = gr; g.fillRect(0,0,128,64);
+  const halo = planeAt(-10.35, 0.23, 0.12, 0.37, 0.40,
+    new THREE.MeshBasicMaterial({ map: tex(c), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  halo.renderOrder = 2; scene.add(halo);
+}
+
+/* ---------- вертикальный неон справа-сверху (мигание) ---------- */
+const signMat = (() => {
+  const c = document.createElement('canvas'); c.width = 64; c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#12c7d4'; g.fillRect(0, 0, 64, 256);
+  g.fillStyle = 'rgba(224,255,255,0.75)'; g.fillRect(24, 8, 16, 240);
+  g.fillStyle = '#0b4650';
+  for (let i = 0; i < 5; i++) g.fillRect(10, 22 + i*44, 44, 12);
+  return new THREE.MeshBasicMaterial({ map: tex(c), transparent: true });
+})();
+const sign = planeAt(-11.8, 0.06, 0.28, 0.12, 0.26, signMat);
+scene.add(sign);
+const signHalo = (() => {
+  const c = document.createElement('canvas'); c.width = 128; c.height = 512;
+  const g = c.getContext('2d');
+  const gr = g.createRadialGradient(64,256,10,64,256,250);
+  gr.addColorStop(0,'rgba(18,199,212,0.5)'); gr.addColorStop(1,'rgba(18,199,212,0)');
+  g.fillStyle = gr; g.fillRect(0,0,128,512);
+  const h = planeAt(-12.1, 0.12, 0.40, 0.12, 0.26,
+    new THREE.MeshBasicMaterial({ map: tex(c), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  h.renderOrder = 2; scene.add(h);
+  return h;
+})();
+
+/* ---------- голопанели (маджента, бегущая развёртка) ---------- */
+function holoTex(){
+  const c = document.createElement('canvas'); c.width = 256; c.height = 384;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ff5fa8'; g.fillRect(0, 0, 256, 384);
+  g.fillStyle = 'rgba(255,235,245,0.5)'; g.fillRect(0, 0, 256, 10); g.fillRect(0, 374, 256, 10);
+  g.fillStyle = 'rgba(90,10,50,0.75)';
+  for (let y = 14; y < 370; y += 14 + Math.floor(rnd()*10)){
+    let x = 10;
+    while (x < 240){
+      const wSeg = 12 + rnd()*40;
+      if (rnd() < 0.7) g.fillRect(x, y, wSeg, 5);
+      x += wSeg + 8;
+    }
+  }
+  const t = tex(c);
+  t.wrapS = THREE.ClampToEdgeWrapping; t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+const holoMats = [];
+[ [0.14, 0.30, -9.5], [0.30, 0.28, -9.5] ].forEach(([u, v, z], i) => {
+  const mat = new THREE.MeshBasicMaterial({ map: holoTex(), transparent: true, opacity: 0.92 });
+  const p = planeAt(z, 0.08, 0.14, u, v, mat);
+  p.renderOrder = 3;
+  scene.add(p);
+  holoMats.push(mat);
+  // рамка
+  const e = new THREE.Mesh(new THREE.PlaneGeometry(0.082*fr(z).w, 0.142*fr(z).h),
+    new THREE.MeshBasicMaterial({ color: 0xff5fa8, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }));
+  e.position.copy(p.position); e.position.z += 0.01; e.renderOrder = 3;
+  scene.add(e);
+});
+
+/* ---------- три тёплые лампы над стойкой ---------- */
+[0.18, 0.26, 0.34].forEach(u => {
+  const sph = new THREE.Mesh(new THREE.SphereGeometry(0.012*fr(-11.9).h/0.024*0.024, 20, 14),
+    new THREE.MeshBasicMaterial({ color: 0xffb347 }));
+  sph.position.copy(pos(-11.9, u, 0.12));
+  scene.add(sph);
+  // подвес
+  const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.35, 8),
+    new THREE.MeshBasicMaterial({ color: 0x2a1a5e }));
+  rod.position.set(sph.position.x, sph.position.y + 0.185, sph.position.z);
+  scene.add(rod);
+  // ореол
+  const c = document.createElement('canvas'); c.width = 128; c.height = 128;
+  const g = c.getContext('2d');
+  const gr = g.createRadialGradient(64,64,4,64,64,62);
+  gr.addColorStop(0,'rgba(255,179,71,0.55)'); gr.addColorStop(0.5,'rgba(255,179,71,0.18)'); gr.addColorStop(1,'rgba(255,179,71,0)');
+  g.fillStyle = gr; g.fillRect(0,0,128,128);
+  const halo = planeAt(-12.05, 0.09, 0.09, u, 0.12,
+    new THREE.MeshBasicMaterial({ map: tex(c), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  halo.renderOrder = 2; scene.add(halo);
+});
+
+/* ---------- пар над стойкой ---------- */
+function steamTex(){
+  const c = document.createElement('canvas'); c.width = 128; c.height = 256;
+  const g = c.getContext('2d');
+  for (let i = 0; i < 26; i++){
+    const y = 246 - i*9;
+    const x = 64 + Math.sin(i*0.7)*16 + (rnd()-0.5)*22;
+    const r = 16 + rnd()*20;
+    const gr = g.createRadialGradient(x,y,2,x,y,r);
+    gr.addColorStop(0,'rgba(255,179,71,0.5)');
+    gr.addColorStop(1,'rgba(255,179,71,0)');
+    g.fillStyle = gr;
+    g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+  }
+  return tex(c);
+}
+const steamMats = [0.20, 0.24, 0.28].map((u, i) => {
+  const mat = new THREE.MeshBasicMaterial({ map: steamTex(), transparent: true, depthWrite: false, opacity: 0.6 });
+  const p = planeAt(-9.9, 0.07, 0.22, u, 0.40, mat);
+  p.renderOrder = 4;
+  scene.add(p);
+  return { mat, phase: i * 2.047 };
+});
+
+/* ---------- лужи на асфальте (кольца-полосы) ---------- */
+function puddleTex(){
+  const c = document.createElement('canvas'); c.width = 512; c.height = 128;
+  const g = c.getContext('2d');
+  g.clearRect(0,0,512,128);
+  // основа — холодная вода #a8c8dc
+  const gr = g.createRadialGradient(256,64,10,256,64,260);
+  gr.addColorStop(0,'#c8ddef'); gr.addColorStop(0.55,'#a8c8dc'); gr.addColorStop(1,'#4d7392');
+  g.fillStyle = gr; g.fillRect(0,0,512,128);
+  // тёмные волнистые бороздки
+  g.strokeStyle = '#416a8a';
+  for (let i = 0; i < 6; i++){
+    const y = 14 + i*19 + rnd()*6;
+    g.lineWidth = 2 + rnd()*2;
+    g.beginPath();
+    for (let x = 0; x <= 512; x += 32) g.lineTo(x, y + Math.sin(x*0.07 + i*2)*4);
+    g.stroke();
+  }
+  // светлые бегущие кольца-отражения
+  for (let i = 0; i < 6; i++){
+    const y = 10 + i*20 + rnd()*5;
+    g.strokeStyle = '#e6f4fc';
+    g.lineWidth = 4 + rnd()*7;
+    g.beginPath();
+    for (let x = 0; x <= 512; x += 32) g.lineTo(x, y + Math.sin(x*0.05 + i)*3 + (rnd()-0.5)*3);
+    g.stroke();
+  }
+  const t = tex(c);
+  t.wrapS = THREE.RepeatWrapping;
+  return t;
+}
+const puddleMats = [];
+[0.20, 0.40, 0.60, 0.78].forEach(u => {
+  const mat = new THREE.MeshBasicMaterial({ map: puddleTex(), transparent: true, depthWrite: false });
+  const p = planeAt(-7.9, 0.16, 0.05, u, 0.82, mat);
+  p.renderOrder = 1;
+  scene.add(p);
+  puddleMats.push(mat);
+});
+
+/* ---------- мокрое стекло перед камерой (z=-4) ---------- */
+{
+  const c = document.createElement('canvas'); c.width = 512; c.height = 512;
+  const g = c.getContext('2d');
+  g.clearRect(0,0,512,512);
+  // вертикальные подтёки
+  for (let i = 0; i < 26; i++){
+    const x = rnd()*512, w = 1 + rnd()*2.4, a = 0.03 + rnd()*0.045;
+    g.fillStyle = `rgba(168,200,220,${a.toFixed(3)})`;
+    g.fillRect(x, 0, w, 512);
+  }
+  // диагональные мазки
+  g.lineWidth = 2;
+  for (let i = 0; i < 12; i++){
+    const x = rnd()*512, y = rnd()*512;
+    g.strokeStyle = `rgba(168,200,220,${(0.04+rnd()*0.05).toFixed(3)})`;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + (rnd()-0.5)*120, y + 40 + rnd()*90); g.stroke();
+  }
+  // конденсат снизу
+  const gr = g.createLinearGradient(0, 400, 0, 512);
+  gr.addColorStop(0,'rgba(168,200,220,0)'); gr.addColorStop(1,'rgba(168,200,220,0.08)');
+  g.fillStyle = gr; g.fillRect(0, 400, 512, 112);
+  const gl = planeAt(-4, 0.80, 0.80, 0.5, 0.5,
+    new THREE.MeshBasicMaterial({ map: tex(c), transparent: true, depthWrite: false }));
+  gl.renderOrder = 9; scene.add(gl);
+}
+
+/* ---------- капли на стекле (64, z=-3.9, ПЕРЕД стеклом) ---------- */
+const N = 64;
+const du = new Float32Array(N), dv = new Float32Array(N);
+for (let i = 0; i < N; i++){ du[i] = rnd(); dv[i] = rnd(); }
+const DD = CAMZ - (-3.9), DH = DD/8, DW = DH*ASPECT;
+const dropY = new Float32Array(N);
+for (let i = 0; i < N; i++) dropY[i] = (0.5 - dv[i]) * DH;
+const dropX = new Float32Array(N);
+for (let i = 0; i < N; i++) dropX[i] = (du[i] - 0.5) * DW;
+const dropGeo = new THREE.BufferGeometry();
+const dropPos = new Float32Array(N*3);
+for (let i = 0; i < N; i++){ dropPos[i*3] = dropX[i]; dropPos[i*3+1] = dropY[i]; dropPos[i*3+2] = -3.9; }
+dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPos, 3));
+const drops = new THREE.Points(dropGeo, new THREE.PointsMaterial({
+  color: 0xa8c8dc, size: 6, sizeAttenuation: false, transparent: true, opacity: 0.95, depthWrite: false
+}));
+drops.renderOrder = 8; drops.frustumCulled = false;
+scene.add(drops);
+
+/* ---------- струи дождя за стеклом (z=-12), те же точки, на треть медленнее ---------- */
+const RD = CAMZ - (-12), RH = RD/8, RW = RH*ASPECT;
+const rainY = new Float32Array(N);
+for (let i = 0; i < N; i++) rainY[i] = (0.5 - dv[i]) * RH;
+const rainX = new Float32Array(N);
+for (let i = 0; i < N; i++) rainX[i] = (du[i] - 0.5) * RW;
+const rainLen = 0.026 * RH; // ~27 px
+const rainGeo = new THREE.BufferGeometry();
+const rainPos = new Float32Array(N*6);
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+const rain = new THREE.LineSegments(rainGeo, new THREE.LineBasicMaterial({
+  color: 0x5c7f9e, transparent: true, opacity: 0.55, depthWrite: false
+}));
+rain.renderOrder = 1; rain.frustumCulled = false;
+rain.position.z = 0.02;
+scene.add(rain);
+
+/* ---------- время, анимация, probe ---------- */
+let t = 0;
+const STEAM0 = 0.55; // базовая прозрачность пара
+const objects = [
+  { n: 'sky', z: -45 }, { n: 'wall', z: -12 }, { n: 'floor', z: -8 },
+  { n: 'kiosk', z: kioskZ }, { n: 'board', z: -9.8 }, { n: 'sign', z: -11.8 },
+  { n: 'holo1', z: -9.5 }, { n: 'holo2', z: -9.5 },
+  { n: 'lamps', z: -11.9 }, { n: 'puddles', z: -8.15 },
+  { n: 'glass', z: -4 }, { n: 'drops', z: -3.9 }, { n: 'rain', z: -12 },
+  { n: 'steam', z: -9.9 }
+].map(o => ({ n: o.n, x: 0, y: 0, z: o.z }));
+
+function updateRain(){
+  for (let i = 0; i < N; i++){
+    rainPos[i*6] = rainX[i]; rainPos[i*6+1] = rainY[i]; rainPos[i*6+2] = -12;
+    rainPos[i*6+3] = rainX[i]; rainPos[i*6+4] = rainY[i] - rainLen; rainPos[i*6+5] = -12;
+  }
+  rainGeo.attributes.position.needsUpdate = true;
+}
+
+function windowStep(dt){
+  t += dt;
+  // капли: 2.10 ед/с вниз, заворачивание
+  for (let i = 0; i < N; i++){
+    dropY[i] -= 2.10 * dt;
+    if (dropY[i] < -DH/2) dropY[i] += DH;
+    dropPos[i*3+1] = dropY[i];
+  }
+  dropGeo.attributes.position.needsUpdate = true;
+  // дождь: на треть медленнее
+  for (let i = 0; i < N; i++){
+    rainY[i] -= (2.10/3) * dt;
+    if (rainY[i] < -RH/2) rainY[i] += RH;
+  }
+  updateRain();
+  // развёртка голопанелей
+  holoMats[0].map.offset.y = -(t * 0.45);
+  holoMats[1].map.offset.y = -(t * 0.45 + 0.5);
+  // кольца в лужах
+  puddleMats.forEach((m, i) => { m.map.offset.x = (t * 0.11) + i * 0.25; });
+  // неон: мигание
+  const blink = 0.85 + 0.15 * Math.sin(t * 2 * Math.PI * 1.6);
+  signMat.opacity = blink;
+  signHalo.material.opacity = 0.55 * blink;
+  // пар: прозрачность качается с частотой 0.77 Гц
+  steamMats.forEach(s => { s.mat.opacity = STEAM0 + 0.20 * Math.sin(2 * Math.PI * 0.77 * t + s.phase); });
+  // дрейф камеры
+  camera.position.x = 0.057 * Math.sin(2 * Math.PI * 0.25 * t);
+  camera.lookAt(0, 0, -10);
+  renderer.render(scene, camera);
+  return windowProbe();
+}
+
+function windowProbe(){
+  return {
+    t: Math.round(t * 10000) / 10000,
+    objects: objects,
+    drops: [ Math.round(dropX[0]*10000)/10000, Math.round(dropY[0]*10000)/10000 ],
+    steam: Math.round(steamMats[0].mat.opacity * 10000) / 10000
+  };
+}
+
+window.__step = windowStep;
+window.__probe = windowProbe;
+
+/* ---------- первый кадр ---------- */
+updateRain();
+camera.lookAt(0, 0, -10);
+renderer.render(scene, camera);
+window.__ready = true;
 </script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-18 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

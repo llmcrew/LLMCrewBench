@@ -2,9 +2,10 @@
 <html>
 <head>
 <meta charset="utf-8">
+<title>Boids — 12 agents</title>
 <style>
-body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#000}
-canvas{display:block}
+  html, body { margin: 0; padding: 0; background: #111; }
+  canvas { display: block; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
@@ -12,6 +13,35 @@ canvas{display:block}
 <script type="module">
 const THREE = window.THREE;
 
+// ---------- LCG ----------
+const LCG_MOD = 4294967296; // 2^32
+const LCG_MUL = 1664525;
+const LCG_ADD = 1013904223;
+
+function makeLcg(seed) {
+  let s = seed >>> 0;
+  return function () {
+    // 1664525 * s + 1013904223 < 2^53, so plain float math is exact
+    s = (s * LCG_MUL + LCG_ADD) % LCG_MOD;
+    return s / LCG_MOD;
+  };
+}
+
+// ---------- Initial state ----------
+const S0 = 694576027;
+const N = 12;
+const rand = makeLcg(S0);
+
+const agents = []; // {x, y, vx, vy}
+for (let i = 0; i < N; i++) {
+  const x = -4 + 8 * rand();
+  const y = -4 + 8 * rand();
+  const vx = -1.5 + 3 * rand();
+  const vy = -1.5 + 3 * rand();
+  agents.push({ x, y, vx, vy });
+}
+
+// ---------- Scene ----------
 const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
 renderer.setPixelRatio(1);
 renderer.setSize(800, 600, false);
@@ -19,162 +49,281 @@ document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 
-const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
-camera.position.set(0.0, 0.0, 18.0);
-camera.lookAt(0.0, 0.0, 0.0);
-
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-scene.add(ambientLight);
-const dirLight = new THREE.DirectionalLight(0xffffff, 1.8);
-dirLight.position.set(5.0, 5.0, 10.0);
-scene.add(dirLight);
-
-const backdropGeo = new THREE.PlaneGeometry(40, 40);
-const backdropMat = new THREE.MeshBasicMaterial({ color: 0x22303f });
-const backdrop = new THREE.Mesh(backdropGeo, backdropMat);
+// backdrop: 40x40 plane at z = -2
+const backdrop = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshLambertMaterial({ color: 0x22303f })
+);
 backdrop.name = 'backdrop';
 backdrop.position.set(0, 0, -2);
 scene.add(backdrop);
 
-let s = 694576027;
-function lcg() {
-  s = (1664525 * s + 1013904223) % 4294967296;
-  return s / 4294967296;
-}
-
-const N = 12;
-const agents = [];
-const agentMeshes = [];
-const sphereGeo = new THREE.SphereGeometry(0.3, 16, 12);
-const sphereMat = new THREE.MeshStandardMaterial({ color: 0xffb03a });
-
+// agents: 12 spheres of radius 0.3
+const sphereGeo = new THREE.SphereGeometry(0.3, 24, 16);
+const sphereMat = new THREE.MeshLambertMaterial({ color: 0xffb03a });
+const meshes = [];
 for (let i = 0; i < N; i++) {
-  const x  = -4 + 8 * lcg();
-  const y  = -4 + 8 * lcg();
-  const vx = -1.5 + 3 * lcg();
-  const vy = -1.5 + 3 * lcg();
-  agents.push({ x, y, vx, vy });
-
-  const mesh = new THREE.Mesh(sphereGeo, sphereMat);
-  mesh.name = 'agent-' + i;
-  mesh.position.set(x, y, 0);
-  scene.add(mesh);
-  agentMeshes.push(mesh);
+  const m = new THREE.Mesh(sphereGeo, sphereMat);
+  m.name = 'agent-' + i;
+  m.position.set(agents[i].x, agents[i].y, 0);
+  scene.add(m);
+  meshes.push(m);
 }
 
-const w_c = 0.4, w_s = 1.0, w_a = 0.3, r_sep = 2.5, max_speed = 2.5;
+// camera
+const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);
+camera.position.set(0.0, 0.0, 18.0);
+camera.lookAt(0.0, 0.0, 0.0);
+scene.add(camera);
+
+// lights
+const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+scene.add(ambient);
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.8);
+dirLight.position.set(5.0, 5.0, 10.0);
+scene.add(dirLight);
+
+// ---------- Simulation ----------
+const W_C = 0.4, W_S = 1.0, W_A = 0.3, R_SEP = 2.5, MAX_SPEED = 2.5;
 let steps = 0;
 
-window.__step = function (dt) {
-  const ax = new Float64Array(N);
-  const ay = new Float64Array(N);
-
+function step(dt) {
+  const ax = new Array(N), ay = new Array(N);
+  // accelerations from state at the beginning of the step
   for (let i = 0; i < N; i++) {
-    let comX = 0, comY = 0;
-    let avgVx = 0, avgVy = 0;
+    let comX = 0, comY = 0, avgVX = 0, avgVY = 0;
     let sepX = 0, sepY = 0;
-
     for (let j = 0; j < N; j++) {
       if (j === i) continue;
-      comX += agents[j].x;
-      comY += agents[j].y;
-      avgVx += agents[j].vx;
-      avgVy += agents[j].vy;
-
+      comX += agents[j].x; comY += agents[j].y;
+      avgVX += agents[j].vx; avgVY += agents[j].vy;
       const dx = agents[i].x - agents[j].x;
       const dy = agents[i].y - agents[j].y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist > 0 && dist < r_sep) {
-        sepX += dx / dist;
-        sepY += dy / dist;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d > 0 && d < R_SEP) {
+        sepX += dx / d;
+        sepY += dy / d;
       }
     }
-
-    comX /= 11;
-    comY /= 11;
-    avgVx /= 11;
-    avgVy /= 11;
-
-    ax[i] = w_c * (comX - agents[i].x) + w_s * sepX + w_a * (avgVx - agents[i].vx);
-    ay[i] = w_c * (comY - agents[i].y) + w_s * sepY + w_a * (avgVy - agents[i].vy);
+    comX /= 11; comY /= 11;
+    avgVX /= 11; avgVY /= 11;
+    ax[i] = W_C * (comX - agents[i].x) + W_S * sepX + W_A * (avgVX - agents[i].vx);
+    ay[i] = W_C * (comY - agents[i].y) + W_S * sepY + W_A * (avgVY - agents[i].vy);
   }
-
+  // simultaneous update
   for (let i = 0; i < N; i++) {
-    agents[i].vx += ax[i] * dt;
-    agents[i].vy += ay[i] * dt;
-
-    const speed = Math.sqrt(agents[i].vx * agents[i].vx + agents[i].vy * agents[i].vy);
-    if (speed > max_speed) {
-      agents[i].vx = agents[i].vx / speed * max_speed;
-      agents[i].vy = agents[i].vy / speed * max_speed;
+    let vx = agents[i].vx + ax[i] * dt;
+    let vy = agents[i].vy + ay[i] * dt;
+    const sp = Math.sqrt(vx * vx + vy * vy);
+    if (sp > MAX_SPEED) {
+      vx = (vx / sp) * MAX_SPEED;
+      vy = (vy / sp) * MAX_SPEED;
     }
-
-    agents[i].x += agents[i].vx * dt;
-    agents[i].y += agents[i].vy * dt;
-
-    agentMeshes[i].position.set(agents[i].x, agents[i].y, 0);
+    agents[i].vx = vx;
+    agents[i].vy = vy;
+    agents[i].x += vx * dt;
+    agents[i].y += vy * dt;
   }
-
   steps++;
+  // sync meshes
+  for (let i = 0; i < N; i++) {
+    meshes[i].position.set(agents[i].x, agents[i].y, 0);
+  }
   renderer.render(scene, camera);
-  return window.__probe();
-};
+  return probe();
+}
 
-function r4(v) {
+// ---------- Probe ----------
+function round4(v) {
   return Math.round(v * 10000) / 10000;
 }
 
-window.__probe = function () {
+function probe() {
   return {
     steps: steps,
     agents: agents.map(a => ({
-      x: r4(a.x),
-      y: r4(a.y),
-      vx: r4(a.vx),
-      vy: r4(a.vy)
+      x: round4(a.x),
+      y: round4(a.y),
+      vx: round4(a.vx),
+      vy: round4(a.vy)
     })),
-    camera: [r4(camera.position.x), r4(camera.position.y), r4(camera.position.z)],
-    objects: ['backdrop', ...agentMeshes.map((_, i) => 'agent-' + i)]
+    camera: camera.position.toArray().map(round4),
+    objects: ['backdrop'].concat(meshes.map(m => m.name))
   };
-};
+}
 
+// ---------- Boot ----------
+window.__step = step;
+window.__probe = probe;
+
+// first render (allowed via rAF), then mark ready
 renderer.render(scene, camera);
-window.__ready = true;
+requestAnimationFrame(() => {
+  window.__ready = true;
+});
 </script>
 
 <script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
+// Сцена играет сама: драйвер измеряет окно движения (сколько шагов подряд кадр
+// реально меняется), разворачивает его на несколько секунд и зацикливает
+// перезагрузкой. Без этого сцена выгорает за 1-2 с и стоит, как скриншот.
+// Отчёт и запись могут вмешаться сообщениями 'step', 'pause', 'play', 'reset'.
 (() => {
   const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
+  const QUIET = 90;          // столько шагов без изменений — окно кончилось
+  const MEASURE_CAP = 1200;  // предел замера в шагах
+  const MIN_WINDOW = 4;      // короче — сцена статична, повторять нечего
+  const SPAN_PER_STEP = 6;   // кадров на шаг показа (~0.1 с при 60 к/с)
+  const SPAN_MIN = 240;      // показ короче 4 с сливается
+  const SPAN_MAX = 600;      // ...а длиннее 10 с — затягивается
+  const HOLD_MS = 900;       // пауза перед повтором
+  const MEASURE_MS = 8;      // бюджет замера на кадр, чтобы не морозить вкладку
 
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
+  // three.js держит render собственным свойством экземпляра (this.render =
+  // render), поэтому обёртка прототипа его не видит: подменяем конструктор,
+  // а render перепривязываем на самом экземпляре. Так кадр обновляется, даже
+  // если страница рисует только в __probe — иначе сцена стоит, как скриншот.
+  let lastRender = null;
+  const wrap = () => {
+    const W = window.THREE && window.THREE.WebGLRenderer;
+    if (!W || W.__dbWrapped) return !!W;
+    const Wrapped = function (...args) {
+      const inst = new W(...args);
+      const orig = inst.render.bind(inst);
+      inst.render = function (scene, camera) { lastRender = [inst, scene, camera]; return orig(scene, camera); };
+      return inst;
+    };
+    Wrapped.prototype = W.prototype;
+    Object.setPrototypeOf(Wrapped, W);
+    Wrapped.__dbWrapped = true;
+    window.THREE.WebGLRenderer = Wrapped;
+    return true;
+  };
+  if (!wrap()) { let n = 0; const t = setInterval(() => { if (wrap() || ++n > 1500) clearInterval(t); }, 4); }
 
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
+  const step = () => { if (typeof window.__step === 'function') { try { window.__step(DT); } catch (e) {} } };
+  const probe = () => { if (typeof window.__probe === 'function') { try { window.__probe(); } catch (e) {} } };
+  const draw = () => { if (lastRender) { try { lastRender[0].render(lastRender[1], lastRender[2]); } catch (e) {} } };
+  // Один шаг — и сразу кадр: probe зовём всегда, часть страниц рисует в нём.
+  const beat = () => { step(); probe(); draw(); };
+
+  let oc = null, ox = null;
+  const sig = () => {  // дешёвая подпись кадра: 64x48 достаточно для «меняется/нет»
+    try {
+      const cs = document.querySelectorAll('canvas');
+      if (!cs.length) return -1;
+      if (!oc) { oc = document.createElement('canvas'); oc.width = 64; oc.height = 48; ox = oc.getContext('2d', {willReadFrequently: true}); }
+      // Сумма по ВСЕМ canvas: страница может держать два canvas, первый — WebGL без
+      // preserveDrawingBuffer, и подпись только по нему читалась как пустая:
+      // движущаяся сцена получала freeze=0 и показывалась статичным кадром.
+      let total = 0;
+      for (const c of cs) {
+        if (!c.width || !c.height) continue;
+        ox.clearRect(0, 0, 64, 48);
+        ox.drawImage(c, 0, 0, 64, 48);
+        const d = ox.getImageData(0, 0, 64, 48).data;
+        let s = 0;
+        for (let i = 0; i < d.length; i += 4) s = (s + d[i] + d[i + 1] * 3 + d[i + 2] * 7) % 1000003;
+        total = (total + s + cs.length * 7) % 1000003;
+      }
+      return total;
+    } catch (e) { return -2; }
+  };
+
+  // Замер должен пережить перезагрузку (её использует повтор): sessionStorage,
+  // а если он недоступен — window.name (оба живут в пределах вкладки).
+  const KEY = 'dailybench.scene:' + location.pathname;
+  const put = (v) => {
+    try { sessionStorage.setItem(KEY, JSON.stringify(v)); } catch (e) {}
+    try { window.name = 'dbscene:' + JSON.stringify(v); } catch (e) {}
+  };
+  const got = () => {
+    try { const v = sessionStorage.getItem(KEY); if (v) return JSON.parse(v); } catch (e) {}
+    try { if (window.name.indexOf('dbscene:') === 0) return JSON.parse(window.name.slice(8)); } catch (e) {}
+    return null;
+  };
+
+  let freeze = 0, span = SPAN_MAX, frames = 0, shown = 0, phase = 'measuring', holdUntil = 0, auto = true;
+  const scene = {mode: 'measuring', freeze: 0, step: 0};
+  // Ответы сами выставляют `window.__scene` (свой THREE.Scene) — у deepseek это
+  // уже занято, и модульный скрипт ответа исполняется ПОСЛЕ этого хука. Поэтому
+  // драйвер живёт под своим именем, а `__scene` остаётся странице.
+  window.__dbscene = scene;
+  window.__beat = beat;
+  const publish = () => {   // для записи и отладки: состояние драйвера наружу
+    scene.mode = phase; scene.freeze = freeze; scene.step = shown;
+    // seek(n) — ручной покадровый прогон до шага n (гарантирует первый кадр)
+    scene.seek = (n) => {
+      auto = false;
+      if (shown === 0) { beat(); shown++; }
+      while (shown < (n | 0)) { beat(); shown++; }
+      scene.step = shown;
+      return shown;
+    };
+  };
+  publish();
+
+  const play = () => {
+    const cache = got();
+    freeze = (cache && cache.freeze | 0) || 0;
+    // Окно движения разворачиваем примерно на 0.1 с на шаг: сцена из 240 шагов
+    // идёт 24 с — так движение видно, а не проскакивает за пару секунд.
+    span = Math.min(SPAN_MAX, Math.max(SPAN_MIN, freeze * SPAN_PER_STEP));
+    phase = freeze < MIN_WINDOW ? 'static' : 'play';
+    frames = 0; shown = 0;
+    publish();
+    if (phase === 'play') requestAnimationFrame(tick);
+  };
+
+  const tick = (now) => {
+    if (phase === 'play' && auto) {
+      frames++;
+      const target = Math.min(freeze, Math.round(frames * freeze / span));
+      while (shown < target) { beat(); shown++; }
+      scene.step = shown;
+      if (frames >= span) { phase = 'hold'; holdUntil = performance.now() + HOLD_MS; scene.mode = phase; }
+    } else if (phase === 'hold' && auto && performance.now() >= holdUntil) {
+      location.reload();  // сброса у страницы нет: повтор — только перезагрузкой
     }
-    requestAnimationFrame(loop);
+    requestAnimationFrame(tick);
+  };
+
+  if (got() === null) {
+    // Первый заход: дождаться кадра страницы, измерить окно движения и
+    // перезагрузиться — показ пойдёт с чистого состояния, замер уже в кэше.
+    const t0 = performance.now();
+    let prev = null, lastChange = 0, k = 0, started = false;
+    const measureFrame = () => {
+      const t1 = performance.now();
+      while (performance.now() - t1 < MEASURE_MS && k < MEASURE_CAP) {
+        beat(); k++;
+        const s = sig();
+        if (s !== prev) { lastChange = k; prev = s; }
+        else if (k - lastChange >= QUIET) break;
+      }
+      if ((k >= MEASURE_CAP || k - lastChange >= QUIET) && k > 0) {
+        put({freeze: lastChange});
+        location.reload();
+        return;
+      }
+      requestAnimationFrame(measureFrame);
+    };
+    const wait = () => {
+      if (window.__ready !== true && performance.now() - t0 < 8000) { requestAnimationFrame(wait); return; }
+      probe(); draw(); prev = sig();
+      if (!started) { started = true; requestAnimationFrame(measureFrame); }
+    };
+    requestAnimationFrame(wait);
+  } else {
+    play();
   }
 
+  const resume = () => { auto = true; if (phase !== 'play') { phase = 'play'; publish(); requestAnimationFrame(tick); } };
   window.addEventListener('message', (event) => {
     const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
+    if (cmd === 'step') { auto = false; beat(); shown++; scene.step = shown; }
+    else if (cmd === 'pause') { auto = false; }
+    else if (cmd === 'play') { resume(); }
     else if (cmd === 'reset') { window.location.reload(); }
     else return;
     window.dispatchEvent(new Event('dailybench-step'));
@@ -182,11 +331,28 @@ window.__ready = true;
 
   window.addEventListener('keydown', (event) => {
     if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
+    if (event.key === ' ') { event.preventDefault(); auto = !auto; if (auto) resume(); }
+    if (event.key === 'ArrowRight') { event.preventDefault(); auto = false; beat(); shown++; scene.step = shown; }
     if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
   });
 })();
 </script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · K-9 · пробел — пауза, → — шаг, R — сброс</div></body>
+<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · K-9 · пробел — пауза, → — шаг, R — сброс</div><script>
+(() => {
+  const fit = () => {
+    const canvas = document.querySelector('canvas');
+    if (!canvas) return;
+    const k = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+    document.documentElement.style.zoom = k === 1 ? '' : String(k);
+    document.body.style.overflow = 'hidden';
+    document.body.style.display = 'flex';
+    document.body.style.alignItems = 'center';
+    document.body.style.justifyContent = 'center';
+    document.body.style.height = '100vh';
+  };
+  window.addEventListener('resize', fit);
+  window.addEventListener('load', fit);
+  fit();
+})();
+</script></body>
 </html>

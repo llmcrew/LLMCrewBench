@@ -1,354 +1,412 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Orbital Station Escape</title>
-  <style>
-    body { margin: 0; overflow: hidden; background: #000; }
-    canvas { display: block; }
-  </style>
+<meta charset="utf-8">
+<title>Orbital Station</title>
+<style>
+  body { margin: 0; padding: 0; overflow: hidden; background: #000; }
+  canvas { display: block; }
+</style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
 <script type="module">
 const THREE = window.THREE;
 
-// LCG Randomness
 let lcg = 364651;
-function rnd() {
-  lcg = (lcg * 1103515245 + 12345) % 2147483648;
-  return lcg / 2147483648;
+function rnd() { lcg = (lcg*1103515245+12345) % 2147483648; return lcg/2147483648; }
+
+// ═══ Render ═══
+const renderer = new THREE.WebGLRenderer({preserveDrawingBuffer:true,antialias:false});
+renderer.setPixelRatio(1);
+renderer.setSize(1920,1080,false);
+renderer.setClearColor(0x010106,1.0);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40,1920/1080,0.1,500);
+const cam0 = new THREE.Vector3(0.26,0.25,2.2);
+const cam1 = new THREE.Vector3(-1.30,0.42,14);
+let camT = 0;
+
+scene.add(new THREE.AmbientLight(0x556688,0.3));
+const sun = new THREE.DirectionalLight(0xffffff,5.0);
+sun.position.set(20,10,15); scene.add(sun);
+scene.add(new THREE.DirectionalLight(0x304060,0.5).translateX(-10).translateY(-4).translateZ(-8));
+const earthGlow = new THREE.PointLight(0xff5500,15,100);
+earthGlow.position.set(0,-1,-20); scene.add(earthGlow);
+
+// ═══ Stars (2600) ═══
+{
+  const N=2600, pos=new Float32Array(N*3), sz=new Float32Array(N);
+  for(let i=0;i<N;i++){
+    const t=rnd()*6.283,p=Math.acos(2*rnd()-1),r=90+rnd()*120;
+    pos[i*3]=r*Math.sin(p)*Math.cos(t);
+    pos[i*3+1]=r*Math.sin(p)*Math.sin(t);
+    pos[i*3+2]=r*Math.cos(p);
+    sz[i]=0.3+rnd()*2.2;
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  g.setAttribute('aSize',new THREE.BufferAttribute(sz,1));
+  const m=new THREE.ShaderMaterial({
+    transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,
+    vertexShader:`attribute float aSize;void main(){vec4 mv=modelViewMatrix*vec4(position,1.0);gl_PointSize=aSize*45.0/(-mv.z);gl_Position=projectionMatrix*mv;}
+    `,
+    fragmentShader:`void main(){float d=length(gl_PointCoord-0.5)*2.0;if(d>1.0)return;gl_FragColor=vec4(1.0,0.9,0.8,smoothstep(1.0,0.0,d)*0.85);}`
+  });
+  const s=new THREE.Points(g,m); s.name='stars'; scene.add(s);
 }
 
-// Scene Setup
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x020205);
-scene.fog = new THREE.FogExp2(0x020205, 0.008);
-
-const camera = new THREE.PerspectiveCamera(45, 1920/1080, 0.1, 1000);
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
-renderer.setPixelRatio(1);
-renderer.setSize(1920, 1080, false);
-document.body.appendChild(renderer.domElement);
-
-// Lighting
-const ambientLight = new THREE.AmbientLight(0x303040, 0.6);
-scene.add(ambientLight);
-const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
-sunLight.position.set(5, 3, 5);
-scene.add(sunLight);
-
-// Earth
-const earthGeo = new THREE.SphereGeometry(3.6, 64, 64);
-const earthMat = new THREE.ShaderMaterial({
-  uniforms: {
-    time: { value: 0 },
-    crackIntensity: { value: 0 },
-    lightDir: { value: sunLight.position.clone().normalize() }
-  },
-  vertexShader: `
-    varying vec3 vNormal;
-    varying vec3 vPosition;
-    void main() {
-      vNormal = normalize(normalMatrix * normal);
-      vPosition = (modelMatrix * vec4(position, 1.0)).xyz;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+// ═══ Earth ═══
+const EP=new THREE.Vector3(0.4,-2.6,-22);
+const earthM=new THREE.ShaderMaterial({
+  uniforms:{uT:{value:0},uC:{value:1.0}},
+  vertexShader:`
+    varying vec2 vUV;
+    varying vec3 vNorm;
+    void main(){
+      vUV=uv;
+      vNorm=normalize(normalMatrix*normal);
+      gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);
     }
   `,
-  fragmentShader: `
-    uniform float time;
-    uniform float crackIntensity;
-    uniform vec3 lightDir;
-    varying vec3 vNormal;
-    varying vec3 vPosition;
-    
-    float hash(vec3 p) {
-      p = fract(p * 0.3183099 + vec3(.1, .2, .3));
-      p *= 17.0;
-      return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+  fragmentShader:`
+    uniform float uT,uC;
+    varying vec2 vUV;
+    varying vec3 vNorm;
+
+    float h2D(vec2 p){
+      return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);
     }
-    float noise(vec3 p) {
-      vec3 i = floor(p);
-      vec3 f = fract(p);
-      f = f * f * (3.0 - 2.0 * f);
-      return mix(
-        mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x),
-            mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
-        mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
-            mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+    float n2D(vec2 p){
+      vec2 i=floor(p),f=fract(p);
+      f=f*f*(3.0-2.0*f);
+      return mix(mix(h2D(i),h2D(i+vec2(1,0)),f.x),mix(h2D(i+vec2(0,1)),h2D(i+vec2(1,1)),f.x),f.y);
     }
-    
-    void main() {
-      vec3 pos = vPosition;
-      float n = noise(pos * 2.0 + time * 0.1);
-      float storms = smoothstep(0.4, 0.6, n);
-      float ash = smoothstep(0.6, 0.8, n);
-      
-      vec3 baseColor = mix(vec3(0.1, 0.2, 0.4), vec3(0.2, 0.3, 0.5), storms);
-      baseColor = mix(baseColor, vec3(0.5, 0.5, 0.5), ash);
-      
-      float cracks = smoothstep(0.7, 0.9, noise(pos * 5.0 + time * 0.05));
-      cracks *= crackIntensity;
-      
-      float diff = max(dot(vNormal, normalize(lightDir)), 0.0);
-      vec3 litColor = baseColor * (0.3 + 0.7 * diff);
-      vec3 finalColor = mix(litColor, vec3(1.0, 0.54, 0.3), cracks);
-      gl_FragColor = vec4(finalColor, 1.0);
+
+    void main(){
+      // Very dark surface - ocean/land/ash
+      float isLand=smoothstep(0.42,0.55,n2D(vUV*6.0+vec2(1.5,0.3)));
+      vec3 ocean=vec3(0.03,0.04,0.07);
+      vec3 land=vec3(0.05,0.03,0.02);
+      vec3 surface=mix(ocean,land,isLand);
+
+      // Ash layer
+      float ash=smoothstep(0.35,0.65,n2D(vUV*3.0+uT*vec2(0.03,0.01)*20.0));
+      surface=mix(surface,vec3(0.08,0.06,0.05),ash*0.3);
+
+      // Storm bands
+      float storm=smoothstep(0.4,0.65,n2D(vUV*4.0+vec2(uT*0.02,-uT*0.015)*30.0));
+      surface=mix(surface,vec3(0.12,0.10,0.08),storm*0.4);
+
+      // ══ CRACKS ══
+      // Simple crack: multi-scale noise with low threshold
+      float n1=n2D(vUV*20.0+vec2(7.3,1.1));
+      float n2=n2D(vUV*10.0+vec2(3.1,5.7));
+      float n3=n2D(vUV*40.0+vec2(13.0,8.2));
+      float n4=n2D(vUV*8.0+vec2(11.0,4.3));
+
+      // Crack probability at each scale
+      float s1=smoothstep(0.35,0.55,n1)*0.7;  // ~20% by itself
+      float s2=smoothstep(0.30,0.50,n2)*0.5;  // ~20%
+      float s3=smoothstep(0.35,0.55,n3)*0.3;  // ~10%
+      float s4=smoothstep(0.30,0.50,n4)*0.6;  // ~20%
+
+      float cracks=s1+s2+s3+s4;
+
+      // Impact sites with radial crack patterns
+      vec2 centers[5];
+      centers[0]=vec2(0.35,0.45);  // Big impact - NW
+      centers[1]=vec2(0.68,0.32);  // Big impact - NE  
+      centers[2]=vec2(0.52,0.72);  // Small impact - SE
+      centers[3]=vec2(0.22,0.68);  // Medium impact - SW
+      centers[4]=vec2(0.82,0.55);  // Small impact - E
+
+      float radial=0.0;
+      for(int k=0;k<5;k++){
+        float dist=length(vUV-centers[k]);
+        float rings=step(0.35,abs(fract(dist*14.0)-0.5));
+        float width=smoothstep(0.0,0.20,dist)*smoothstep(0.25,0.05,dist);
+        float rings2=step(0.50,abs(fract(dist*22.0+1.0)-0.5));
+        radial+=max(rings,width*max(rings2,0.5))*0.6;
+      }
+
+      // Crater rings
+      float ring0=smoothstep(0.03,0.16,length(vUV-centers[0]))*smoothstep(0.20,0.05,length(vUV-centers[0]))*2.0;
+      float ring1=smoothstep(0.02,0.12,length(vUV-centers[1]))*smoothstep(0.14,0.04,length(vUV-centers[1]))*1.5;
+      float ring2=smoothstep(0.02,0.10,length(vUV-centers[2]))*smoothstep(0.12,0.04,length(vUV-centers[2]))*1.0;
+
+      // Combine all
+      float crackVal=max(max(cracks,radial),max(ring0,max(ring1,ring2)));
+      crackVal*=uC;
+
+      // Pulsing
+      float pulse=pow(max(sin(uT*1.5)*0.5+0.5,0.0),0.6);
+      crackVal*=0.3+0.7*pulse;
+
+      // Color output
+      vec3 crackColor=vec3(1.0,0.541,0.298); // #ff8a4c hot orange
+      vec3 glowColor=vec3(1.0,0.75,0.42);    // inner glow
+      vec3 coreColor=vec3(1.0,0.95,0.75);     // hottest core
+
+      float crackMask=smoothstep(0.0,0.45,crackVal);
+      float glowMask=smoothstep(0.05,0.45,crackVal);
+
+      surface=mix(surface,vec3(0.02,0.02,0.01),crackMask*0.5);
+      surface+=crackColor*crackVal*2.5;
+      surface+=glowColor*glowMask*1.5*pulse;
+      surface+=coreColor*crackVal*0.5*pulse*smoothstep(0.2,0.5,crackVal);
+
+      // Lighting - cracks glow regardless, surface lit normally
+      vec3 L=normalize(vec3(2.0,0.8,1.5));
+      float diff=max(dot(vNorm,L),0.0);
+      vec3 lit=surface*(0.4+diff*0.7);
+      lit+=crackColor*crackVal*0.3;
+
+      gl_FragColor=vec4(lit,1.0);
     }
   `
 });
-const earth = new THREE.Mesh(earthGeo, earthMat);
-earth.position.set(0.4, -2.6, -22);
+
+const earth=new THREE.Mesh(new THREE.SphereGeometry(3.6,96,48),earthM);
+earth.name='earth';
+earth.position.copy(EP);
 scene.add(earth);
 
-// Atmosphere
-const atmosGeo = new THREE.SphereGeometry(3.85, 64, 64);
-const atmosMat = new THREE.ShaderMaterial({
-  uniforms: {
-    color: { value: new THREE.Color(0x5e9fe0) }
-  },
-  vertexShader: `
-    varying vec3 vNormal;
-    void main() {
-      vNormal = normalize(normalMatrix * normal);
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
-  fragmentShader: `
-    uniform vec3 color;
-    varying vec3 vNormal;
-    void main() {
-      float intensity = pow(0.65 - dot(vNormal, vec3(0,0,1)), 2.5);
-      gl_FragColor = vec4(color, intensity * 0.4);
-    }
-  `,
-  transparent: true,
-  side: THREE.FrontSide,
-  depthWrite: false
+// Surface craters
+for(let i=0;i<20;i++){
+  const th=rnd()*6.283,ph=Math.acos(2*rnd()-1);
+  const r=0.06+rnd()*0.3;
+  const rm=new THREE.Mesh(
+    new THREE.RingGeometry(r*0.1,r,28),
+    new THREE.MeshBasicMaterial({
+      color:new THREE.Color().setHSL(0.06+rnd()*0.03,0.9,0.4+rnd()*0.3),
+      side:THREE.DoubleSide,transparent:true,opacity:0.3+rnd()*0.3
+    })
+  );
+  const es=3.605;
+  rm.position.set(EP.x+es*Math.sin(ph)*Math.cos(th),EP.y+es*Math.sin(ph)*Math.sin(th),EP.z+es*Math.cos(ph));
+  rm.lookAt(EP);
+  scene.add(rm);
+}
+
+// ═══ Atmosphere #5e9fe0 ═══
+const atmos=new THREE.Mesh(
+  new THREE.SphereGeometry(3.92,64,48),
+  new THREE.ShaderMaterial({
+    uniforms:{uC:{value:new THREE.Color(0x5e9fe0)}},
+    transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,
+    vertexShader:`varying vec3 vN,vV;void main(){vN=normalize(normalMatrix*normal);vec4 mv=modelViewMatrix*vec4(position,1.0);vV=normalize(-mv.xyz);gl_Position=projectionMatrix*mv;}`,
+    fragmentShader:`uniform vec3 uC;varying vec3 vN,vV;void main(){float f=pow(1.0-max(dot(vN,vV),0.0),2.0);gl_FragColor=vec4(uC*0.9,f*0.6);}`
+  })
+);
+atmos.name='atmosphere';
+atmos.position.copy(EP);
+scene.add(atmos);
+
+// ═══ Broken Moon ═══
+const moonB=new THREE.Group();
+moonB.name='moon_broken';
+const moonS=new THREE.Mesh(
+  new THREE.SphereGeometry(0.9,64,32,0,6.28*1.35,0,3.14*0.75),
+  new THREE.MeshStandardMaterial({color:0x9a97a8,roughness:0.95,metalness:0.05})
+);
+moonS.name='moon_body';moonB.add(moonS);
+const moonCr=new THREE.Mesh(
+  new THREE.SphereGeometry(0.55,32,16),
+  new THREE.MeshStandardMaterial({color:0x1a1520,roughness:1.0})
+);
+moonCr.position.set(0.4,-0.2,0.5);moonCr.scale.set(1,0.7,1);moonB.add(moonCr);
+for(let i=0;i<15;i++){
+  const fr=0.02+rnd()*0.07;
+  const f=new THREE.Mesh(
+    new THREE.DodecahedronGeometry(fr,0),
+    new THREE.MeshStandardMaterial({color:0x7a7880,roughness:1.0,metalness:0.0})
+  );
+  const a=rnd()*6.283,d=0.4+rnd()*0.8;
+  f.position.set(Math.cos(a)*d+0.4,(rnd()-0.5)*0.5,Math.sin(a)*d+0.4);
+  moonB.add(f);
+}
+moonB.position.set(-2.6,2.2,-34);
+scene.add(moonB);
+
+// ═══ Station group ═══
+const st=new THREE.Group();
+st.name='station';
+st.position.set(0,0.2,3.6);
+const tm=new THREE.MeshStandardMaterial({color:0x4a5568,roughness:0.5,metalness:0.8});
+const hm=new THREE.MeshStandardMaterial({color:0x5a6578,roughness:0.4,metalness:0.7});
+const hull=new THREE.Mesh(new THREE.CylinderGeometry(0.28,0.28,2.4,16),hm);
+hull.rotation.x=Math.PI/2;hull.name='hull';st.add(hull);
+for(let i=-1;i<=1;i+=2){
+  const m=new THREE.Mesh(new THREE.CylinderGeometry(0.40,0.40,0.9,16),hm.clone());
+  m.rotation.x=Math.PI/2;m.position.z=i*0.6;m.name=i>0?'module_engine':'module_main';st.add(m);
+}
+for(let i=0;i<4;i++){
+  const a=(i/4)*6.283;
+  st.add((()=>{const t=new THREE.Mesh(new THREE.BoxGeometry(0.05,0.05,3.0),tm);
+    t.position.set(Math.cos(a)*0.36,Math.sin(a)*0.36,0);return t;})());
+}
+for(let i=0;i<3;i++){
+  const a=(i/3)*6.283+1.047;
+  const b=new THREE.Mesh(new THREE.CylinderGeometry(0.015,0.015,0.5,8),tm);
+  b.position.set(Math.cos(a)*0.36,Math.sin(a)*0.36,0);b.rotation.z=a;st.add(b);
+}
+// Solar panels
+const pmA=new THREE.MeshStandardMaterial({color:0x1a2a5e,roughness:0.3,metalness:0.2});
+const pmB=new THREE.MeshStandardMaterial({color:0x3a3a3a,roughness:0.6});
+for(let side=-1;side<=1;side+=2){
+  const pg=new THREE.Group();
+  pg.name=side>0?'panel_right':'panel_left';
+  pg.add(new THREE.Mesh(new THREE.BoxGeometry(1.8,0.025,1.0),pmA));
+  pg.add(new THREE.Mesh(new THREE.BoxGeometry(1.8,0.025,1.0),pmB));
+  const arm=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.025,0.55,8),tm);
+  arm.rotation.z=Math.PI/2;pg.add(arm);
+  pg.position.set(side*1.35,0.5,0);st.add(pg);
+}
+const nozzle=new THREE.Mesh(
+  new THREE.CylinderGeometry(0.20,0.35,0.45,16),
+  new THREE.MeshStandardMaterial({color:0x2a3040,roughness:0.3,metalness:0.9})
+);
+nozzle.rotation.x=Math.PI/2;nozzle.position.z=-1.45;nozzle.name='nozzle';st.add(nozzle);
+// Engine glow 3 spots #8fd8ff
+const gP=[
+  {n:'engine_glow_1',x:0.0,y:0.12,z:-1.70},
+  {n:'engine_glow_2',x:0.1,y:-0.06,z:-1.70},
+  {n:'engine_glow_3',x:-0.1,y:-0.06,z:-1.70}
+];
+const gM=[];
+for(const gp of gP){
+  const g=new THREE.Mesh(
+    new THREE.CircleGeometry(0.14+rnd()*0.04,16),
+    new THREE.ShaderMaterial({
+      uniforms:{uI:{value:1.0},uC:{value:new THREE.Color(0x8fd8ff)}},
+      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide,
+      vertexShader:`varying vec2 vU;void main(){vU=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+      fragmentShader:`uniform float uI;uniform vec3 uC;varying vec2 vU;
+      void main(){float d=length(vU-0.5)*2.0;if(d>1.0)discard;
+      float c=pow(smoothstep(1.0,0.0,d),1.0);vec3 col=mix(uC*0.5,vec3(1.0),c*0.5);
+      gl_FragColor=vec4(col*uI*3.0,c*uI);}`
+    })
+  );
+  g.position.set(gp.x,gp.y,gp.z);g.name=gp.n;st.add(g);gM.push(g);
+}
+const dish=new THREE.Mesh(
+  new THREE.SphereGeometry(0.20,16,8,0,3.14159*2,0,1.57),
+  new THREE.MeshStandardMaterial({color:0x7a8a9a,roughness:0.4,metalness:0.7})
+);
+dish.position.set(0.3,0.5,0);dish.name='antenna';st.add(dish);
+const pole=new THREE.Mesh(new THREE.CylinderGeometry(0.01,0.01,0.3,8),tm);
+pole.position.set(0.3,0.3,0);st.add(pole);
+const dock=new THREE.Mesh(new THREE.CylinderGeometry(0.18,0.23,0.35,12),hm);
+dock.rotation.x=Math.PI/2;dock.position.z=1.75;dock.name='dock_port';st.add(dock);
+for(let i=0;i<6;i++){
+  const a=(i/6)*6.283;
+  st.add(new THREE.Mesh(new THREE.SphereGeometry(0.018,6,6),
+    new THREE.MeshBasicMaterial({color:i%2===0?0xff4444:0x44ff44})).translateX(Math.cos(a)*0.29).translateY(Math.sin(a)*0.29).translateZ(0.5));
+}
+scene.add(st);
+
+// ═══ Dust ring (140) ═══
+const DN=140,dP=new Float32Array(DN*3),dV=[];
+for(let i=0;i<DN;i++){
+  const a=rnd()*6.283,r=2+rnd()*4.5,y=(rnd()-0.5)*1.8;
+  dP[i*3]=Math.cos(a)*r;dP[i*3+1]=y;dP[i*3+2]=Math.sin(a)*r;
+  dV.push({a,r,y,s:(0.08+rnd()*0.35)*(rnd()>0.5?1:-1),d:0.01+rnd()*0.03});
+}
+const dG=new THREE.BufferGeometry();
+dG.setAttribute('position',new THREE.BufferAttribute(dP,3));
+const dMat=new THREE.ShaderMaterial({
+  uniforms:{uC:{value:new THREE.Color(0xc8d4e4)}},
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,
+  vertexShader:`varying float vD;void main(){vD=length(position);vec4 mv=modelViewMatrix*vec4(position,1.0);gl_PointSize=max(1.5,25.0/(-mv.z));gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`uniform vec3 uC;varying float vD;void main(){float d=length(gl_PointCoord-0.5)*2.0;if(d>1.0)discard;gl_FragColor=vec4(uC*(0.65+0.35*sin(vD*2.0)),smoothstep(1.0,0.0,d)*0.6);}`
 });
-const atmosphere = new THREE.Mesh(atmosGeo, atmosMat);
-atmosphere.position.copy(earth.position);
-scene.add(atmosphere);
+const dr=new THREE.Points(dG,dMat);dr.name='dust_ring';scene.add(dr);
 
-// Moon
-const moonGeo = new THREE.SphereGeometry(0.9, 64, 64);
-const moonMat = new THREE.ShaderMaterial({
-  uniforms: {
-    cutoutPos: { value: new THREE.Vector3(-2.3, 2.5, -33.5) }
-  },
-  vertexShader: `
-    varying vec3 vPosition;
-    void main() {
-      vPosition = (modelMatrix * vec4(position, 1.0)).xyz;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
-  fragmentShader: `
-    uniform vec3 cutoutPos;
-    varying vec3 vPosition;
-    void main() {
-      float dist = distance(vPosition, cutoutPos);
-      if (dist < 0.9) discard;
-      float diff = max(dot(normalize(vPosition - cutoutPos), normalize(vec3(5,3,5))), 0.0);
-      vec3 color = vec3(0.6, 0.59, 0.66) * (0.4 + 0.6 * diff);
-      gl_FragColor = vec4(color, 1.0);
-    }
-  `
+// ═══ Debris belt (60) ═══
+const DB=60;
+const dS=new THREE.Vector3(0,0.2,2.5),dE=new THREE.Vector3(-0.1,-2.1,-12);
+const dD=[];
+for(let i=0;i<DB;i++){
+  const t=rnd();
+  dD.push(new THREE.Vector3(dS.x+(dE.x-dS.x)*t+(rnd()-0.5)*3.0,dS.y+(dE.y-dS.y)*t+(rnd()-0.5)*2.5,dS.z+(dE.z-dS.z)*t+(rnd()-0.5)*3.0));
+}
+const dBG=new THREE.BufferGeometry();
+const dBA=new Float32Array(DB*3);
+for(let i=0;i<DB;i++){dBA[i*3]=dD[i].x;dBA[i*3+1]=dD[i].y;dBA[i*3+2]=dD[i].z;}
+dBG.setAttribute('position',new THREE.BufferAttribute(dBA,3));
+const dbM=new THREE.ShaderMaterial({
+  uniforms:{uC:{value:new THREE.Color(0x8a8a96)}},
+  transparent:true,depthWrite:false,
+  vertexShader:`void main(){vec4 mv=modelViewMatrix*vec4(position,1.0);gl_PointSize=max(1.2,18.0/(-mv.z));gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`uniform vec3 uC;void main(){float d=length(gl_PointCoord-0.5)*2.0;if(d>1.0)discard;gl_FragColor=vec4(uC,smoothstep(1.0,0.0,d)*0.7);}`
 });
-const moon_broken = new THREE.Mesh(moonGeo, moonMat);
-moon_broken.position.set(-2.6, 2.2, -34);
-scene.add(moon_broken);
+const db=new THREE.Points(dBG,dbM);db.name='debris_belt';scene.add(db);
 
-// Station
-const station = new THREE.Group();
-station.position.set(0, 0.2, 3.6);
-
-const bodyGeo = new THREE.CylinderGeometry(0.3, 0.3, 1.5, 16);
-const bodyMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.5, metalness: 0.8 });
-const body = new THREE.Mesh(bodyGeo, bodyMat);
-body.rotation.x = Math.PI / 2;
-station.add(body);
-
-const panelGeo = new THREE.BoxGeometry(2.5, 0.1, 0.6);
-const panelMat = new THREE.MeshStandardMaterial({ color: 0x111133, roughness: 0.2, metalness: 0.9, emissive: 0x000022 });
-const panel1 = new THREE.Mesh(panelGeo, panelMat);
-panel1.position.set(0, 0.5, 0);
-station.add(panel1);
-const panel2 = panel1.clone();
-panel2.position.y = -0.5;
-station.add(panel2);
-
-const nozzleGeo = new THREE.ConeGeometry(0.2, 0.5, 16);
-const nozzleMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.8 });
-const nozzle = new THREE.Mesh(nozzleGeo, nozzleMat);
-nozzle.rotation.x = Math.PI / 2;
-nozzle.position.z = -1.0;
-station.add(nozzle);
-
-const glowGeo = new THREE.SphereGeometry(0.1, 16, 16);
-const glowMat = new THREE.MeshBasicMaterial({ color: 0x8fd8ff });
-const engine_glow1 = new THREE.Mesh(glowGeo, glowMat);
-engine_glow1.position.set(0, 0.1, -1.2);
-station.add(engine_glow1);
-const engine_glow2 = engine_glow1.clone();
-engine_glow2.position.set(0, -0.1, -1.2);
-station.add(engine_glow2);
-const engine_glow3 = engine_glow1.clone();
-engine_glow3.position.set(0, 0, -1.2);
-station.add(engine_glow3);
-
-const engineLight = new THREE.PointLight(0x8fd8ff, 2, 5);
-engineLight.position.set(0, 0, -1.2);
-station.add(engineLight);
-
-scene.add(station);
-
-// Dust Ring
-const dustCount = 140;
-const dustGeo = new THREE.BufferGeometry();
-const dustPos = new Float32Array(dustCount * 3);
-for (let i = 0; i < dustCount; i++) {
-  dustPos[i*3] = (rnd() - 0.5) * 4;
-  dustPos[i*3+1] = (rnd() - 0.5) * 4;
-  dustPos[i*3+2] = (rnd() - 0.5) * 4;
-}
-dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
-const dustMat = new THREE.PointsMaterial({ color: 0xc8d4e4, size: 0.05, transparent: true, opacity: 0.8 });
-const dust_ring = new THREE.Points(dustGeo, dustMat);
-scene.add(dust_ring);
-
-// Debris Belt
-const debrisCount = 60;
-const debrisGeo = new THREE.BufferGeometry();
-const debrisPos = new Float32Array(debrisCount * 3);
-for (let i = 0; i < debrisCount; i++) {
-  debrisPos[i*3] = (rnd() - 0.5) * 10;
-  debrisPos[i*3+1] = (rnd() - 0.5) * 6;
-  debrisPos[i*3+2] = -22 + rnd() * 26;
-}
-debrisGeo.setAttribute('position', new THREE.BufferAttribute(debrisPos, 3));
-const debrisMat = new THREE.PointsMaterial({ color: 0x555555, size: 0.08 });
-const debris_belt = new THREE.Points(debrisGeo, debrisMat);
-scene.add(debris_belt);
-
-// Stars
-const starsCount = 2600;
-const starsGeo = new THREE.BufferGeometry();
-const starsPos = new Float32Array(starsCount * 3);
-for (let i = 0; i < starsCount; i++) {
-  starsPos[i*3] = (rnd() - 0.5) * 200;
-  starsPos[i*3+1] = (rnd() - 0.5) * 200;
-  starsPos[i*3+2] = (rnd() - 0.5) * 200;
-}
-starsGeo.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
-const starsMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.1 });
-const stars = new THREE.Points(starsGeo, starsMat);
-scene.add(stars);
-
-// Camera Animation
-const camStart = new THREE.Vector3(0.26, 0.25, 2.2);
-const camEnd = new THREE.Vector3(-1.30, 0.42, 14);
-const camDuration = 5.66;
-let t = 0;
-
-// Probe & Step
-window.__probe = function() {
-  const dist = station.position.distanceTo(earth.position);
-  return {
-    t: t.toFixed(4),
-    objects: ['earth', 'atmosphere', 'moon_broken', 'dust_ring', 'station', 'debris_belt', 'stars'],
-    camera: [camera.position.x, camera.position.y, camera.position.z],
-    distance: dist.toFixed(4)
-  };
+// ═══ Animation ═══
+let aT=0,firstRender=true;
+window.__step=function(dt){
+  aT+=dt;const t=aT;
+  camT=Math.min(1.0,t/5.66);
+  camera.position.lerpVectors(cam0,cam1,1-Math.pow(1-camT,3));
+  const dz=0.2*t,dx=0.025*Math.sin(0.3*t),dy=0.015*Math.cos(0.2*t);
+  st.position.set(dx,0.2+dy,3.6+dz);st.rotation.y=0.06*t;
+  const ep=0.5+0.5*Math.sin(t*4.0);
+  for(const g of gM) g.material.uniforms.uI.value=0.6+0.4*ep;
+  const da=dG.getAttribute('position');
+  for(let i=0;i<DN;i++){const v=dV[i];v.a+=v.s*dt;
+    da.array[i*3]=Math.cos(v.a)*(v.r+v.d*t)+dx;
+    da.array[i*3+1]=v.y+dy+Math.sin(t+i*0.3)*0.04;
+    da.array[i*3+2]=Math.sin(v.a)*(v.r+v.d*t)+dz;}
+  da.needsUpdate=true;
+  const ba=dBG.getAttribute('position');
+  for(let i=0;i<DB;i++){dD[i].x+=0.01*Math.sin(t*0.3);dD[i].y+=0.005*Math.cos(t+i);dD[i].z-=dz*0.15;
+    ba.array[i*3]=dD[i].x;ba.array[i*3+1]=dD[i].y;ba.array[i*3+2]=dD[i].z;}
+  ba.needsUpdate=true;
+  earthM.uniforms.uC.value=0.6+0.4*ep;earthM.uniforms.uT.value=t;
+  moonB.rotation.y+=0.01*dt;
+  earthGlow.intensity=10+ep*10;
+  camera.lookAt(st.position);
+  renderer.render(scene,camera);
+  if(firstRender){firstRender=false;window.__ready=true;}
 };
-
-window.__step = function(dt) {
-  t += dt;
-  
-  // Station moves away
-  station.position.z -= dt * 0.5;
-  station.rotation.y += dt * 0.1;
-  
-  // Dust moves
-  const dPos = dust_ring.geometry.attributes.position.array;
-  for (let i = 0; i < dustCount; i++) {
-    dPos[i*3+2] -= dt * 0.2;
-    if (dPos[i*3+2] < station.position.z - 2) dPos[i*3+2] = station.position.z + 2;
-  }
-  dust_ring.geometry.attributes.position.needsUpdate = true;
-  
-  // Debris moves slowly
-  const bPos = debris_belt.geometry.attributes.position.array;
-  for (let i = 0; i < debrisCount; i++) {
-    bPos[i*3+2] -= dt * 0.1;
-    if (bPos[i*3+2] < earth.position.z + 5) bPos[i*3+2] = station.position.z - 2;
-  }
-  debris_belt.geometry.attributes.position.needsUpdate = true;
-  
-  // Earth cracks
-  earthMat.uniforms.time.value = t;
-  earthMat.uniforms.crackIntensity.value = Math.min(1.0, t * 0.5);
-  
-  // Camera
-  let progress = Math.min(1.0, t / camDuration);
-  camera.position.lerpVectors(camStart, camEnd, progress);
-  camera.lookAt(station.position);
-  
-  // Render
-  renderer.render(scene, camera);
-  
-  return window.__probe();
+window.__probe=function(){
+  const s=st.position;
+  return{t:parseFloat(aT.toFixed(4)),
+    objects:['earth','atmosphere','moon_broken','dust_ring','station','debris_belt','stars'],
+    camera:[parseFloat(camera.position.x.toFixed(4)),parseFloat(camera.position.y.toFixed(4)),parseFloat(camera.position.z.toFixed(4))],
+    distance:parseFloat(s.distanceTo(EP).toFixed(4))};
 };
+camera.position.copy(cam0);
+camera.lookAt(st.position);
+renderer.render(scene,camera);
+window.__ready=true;
 
-window.__ready = true;
-window.__step(0);
 </script>
-
 <script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
+(()=>{
+  const DT=1/60,step=()=>(typeof window.__step==='function'?window.__step(DT):null);
+  let acc=0,last=0;window.__auto=false;
+  window.addEventListener('load',()=>{
+    if(typeof window.__step==='function')try{window.__step(0);}catch(e){}
+    last=performance.now();requestAnimationFrame(loop);
   });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
+  function loop(now){const el=Math.min(0.2,(now-last)/1000);last=now;
+    if(window.__auto){acc+=el;while(acc>=DT){acc-=DT;step();}}requestAnimationFrame(loop);}
+  window.addEventListener('message',e=>{
+    const c=e.data;
+    if(c==='step'){window.__auto=false;acc=0;step();}
+    else if(c==='pause')window.__auto=false;
+    else if(c==='play'){window.__auto=true;acc=0;last=performance.now();}
+    else if(c==='reset')window.location.reload();
+    else return;window.dispatchEvent(new Event('dailybench-step'));});
+  window.addEventListener('keydown',ev=>{
+    if(ev.target&&/INPUT|TEXTAREA/.test(ev.target.tagName||''))return;
+    if(ev.key===' '){ev.preventDefault();window.__auto=!window.__auto;acc=0;last=performance.now();}
+    if(ev.key==='ArrowRight'){ev.preventDefault();window.__auto=false;acc=0;step();}
+    if(ev.key==='r'||ev.key==='R'||ev.key==='к'||ev.key==='К')window.location.reload();});
 })();
 </script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-29 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>
