@@ -408,8 +408,12 @@ new Promise((res) => {
                 js = f"window.__dbscene.seek({t});"
             else:
                 # Страница без драйвера: шагаем сами, один кадр клипа — один
-                # шаг её живого показа (шаг зовётся из rAF через DT).
-                js = f"window.__step({DT});"
+                # шаг её живого показа (шаг зовётся из rAF через DT). Следом —
+                # кадр: у части страниц рендер живёт только в __probe, так их
+                # зовёт живая витрина; без вызова клип остаётся чёрным
+                # (qwen36/L-4: __step лишь копит время, render — в __probe).
+                js = (f"try{{window.__step({DT});}}catch(e){{}} "
+                      "try{window.__probe&&window.__probe();}catch(e){}")
             # Подложка полей перерисовывается тем же evaluate: между шагом и
             # кадром нет round-trip, за который буфер отрисовки мог бы остаться
             # от прежнего шага.
@@ -433,7 +437,9 @@ def main() -> int:
     if len(sys.argv) < 4:
         print(__doc__)
         return 2
-    model, scene, out_dir = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+    # resolve: encode() зовёт ffmpeg с cwd=bin, относительный путь до кадров
+    # иначе ищется от bin/ и сборка падает.
+    model, scene, out_dir = sys.argv[1], sys.argv[2], Path(sys.argv[3]).resolve()
     secs = float(sys.argv[4]) if len(sys.argv) > 4 else 23.0
     warmup = float(sys.argv[5]) if len(sys.argv) > 5 else 0.6
     out_dir.mkdir(parents=True, exist_ok=True)
