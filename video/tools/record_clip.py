@@ -91,8 +91,15 @@ STYLE_JS = """
   window.__refill = () => {
     // Именно canvas сцены: `querySelector('canvas')` вернул бы подложку, если
     // страница добавит свой canvas позже (её appendChild идёт после нашего).
-    const c = [...document.querySelectorAll('canvas')].find((el) => el !== bg);
+    // Среди нескольких canvas сцены берём последний: `renderer.domElement`
+    // страница всегда добавляет после своей разметки, а пустой canvas-декой
+    // разметки (qwen36/L-2: `<canvas id="c">` в теле, сцена — в новом canvas,
+    // добавленном ниже) иначе попадает в кадр пустым и сжимает сцену в половину
+    // кадра. Остальные canvas-декои прячем, чтобы они не делили место в body.
+    const cs = [...document.querySelectorAll('canvas')].filter((el) => el !== bg);
+    const c = cs[cs.length - 1];
     if (!c || !c.width || !c.height) return false;
+    for (const el of cs) el.style.display = el === c ? 'block' : 'none';
     const k = Math.min(1920 / c.width, 1080 / c.height);
     c.style.width = `${Math.round(c.width * k)}px`;
     c.style.height = `${Math.round(c.height * k)}px`;
