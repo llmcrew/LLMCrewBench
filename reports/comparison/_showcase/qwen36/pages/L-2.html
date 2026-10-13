@@ -1,188 +1,208 @@
 <!DOCTYPE html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <style>body { margin: 0; overflow: hidden; background: #000; }</style>
-<script src='../../../_vendor/three.global.js'></script>
+<html>
+<head><meta charset="utf-8"><title>Synthwave Grid</title><script src='../../../_vendor/three.global.js'></script>
 </head>
-<body>
+<body style="margin:0;background:#000;overflow:hidden;">
+<canvas id="c" width="1920" height="1080"></canvas>
+<script type="importmap">
+{"imports":{"three":"./vendor/three.module.js"}}
+</script>
 <script type="module">
 const THREE = window.THREE;
 
+/* ── constants ─────────────────────────────── */
+const W = 1920, H = 1080;
+const HALF_F30 = 24.853;               // half-screen-height at z=-30
+const ASPECT  = W / H;                 // 1.77778
+const HALF_W30 = HALF_F30 * ASPECT;    // ~44.18
+const HALF_F295 = HALF_F30 * 29.5 / 30; // half-frame-y at z=-29.5
+
 const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
 renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
+renderer.setSize(W, H, false);
 document.body.appendChild(renderer.domElement);
 
+renderer.setClearColor(0x000000);
+
+/* ── scene / camera ──────────────────────── */
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 500);
 camera.position.set(0, 0, 0);
 camera.lookAt(0, 0, -1);
 
-// Sky
-const skyGeo = new THREE.PlaneGeometry(49.706, 27.338);
+/* ═══════════════════════  SKY  ════════════════ */
+const skyH = 2 * HALF_F30;            // full frustum height at z=-30
+const skyW = 2 * HALF_W30;
+const skyGeo = new THREE.PlaneGeometry(skyW, skyH);
 const skyMat = new THREE.ShaderMaterial({
+  side: THREE.FrontSide,
+  depthWrite: false,
   uniforms: {},
-  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
   fragmentShader: `
     varying vec2 vUv;
-    void main() {
-      vec3 top = vec3(0.1059, 0.0588, 0.2353);
-      vec3 bot = vec3(0.0980, 0.8784, 0.8667);
-      float t = smoothstep(0.0, 0.32, vUv.y);
-      gl_FragColor = vec4(mix(bot, top, t), 1.0);
-    }
-  `,
-  side: THREE.DoubleSide
+    void main(){
+      // vUv.y: 0 bottom (horizon), 1 top
+      vec3 bot = vec3(0.100, 0.878, 0.867);   // #19e0e8  (cyan horizon)
+      vec3 top = vec3(0.106, 0.059, 0.235);    // #1b0f3c  (dark purple)
+      vec3 col = mix(bot, top, smoothstep(0.0, 0.32, vUv.y));
+      gl_FragColor = vec4(col, 1.0);
+    }`
 });
+
+// Sky plane positioned so its frustum edges match the camera view at z=-30
 const sky = new THREE.Mesh(skyGeo, skyMat);
-sky.position.set(0, 11.184, -30);
 sky.name = 'sky';
+sky.position.set(0, 0, -30);
 scene.add(sky);
 
-// Ground
-const groundGeo = new THREE.PlaneGeometry(49.706, 120);
-const groundMat = new THREE.ShaderMaterial({
-  uniforms: { uOffset: { value: 0.0 } },
+/* ═══════════════════════  GROUND  ═════════════ */
+const GND_DIST = 120;                    // ground extends 120 units from camera
+const gGeo = new THREE.PlaneGeometry(skyW, GND_DIST);
+const gMat = new THREE.ShaderMaterial({
+  side: THREE.FrontSide,
+  depthWrite: false,
+  uniforms: { uOffset: { value: 0 } },
   vertexShader: `
-    varying vec2 vUv;
-    varying vec3 vWorldPos;
-    void main() {
+    varying vec2  vUv;
+    varying vec3  vWp;
+    void main(){
       vUv = uv;
-      vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
+      vWp = (modelMatrix * vec4(position,1.0)).xyz;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+    }`,
   fragmentShader: `
+    varying vec2  vUv;
+    varying vec3  vWp;
     uniform float uOffset;
-    varying vec2 vUv;
-    varying vec3 vWorldPos;
-    void main() {
-      vec3 near = vec3(0.0706, 0.0392, 0.1647);
-      vec3 far = vec3(0.1059, 0.0588, 0.2353);
-      vec3 base = mix(near, far, -vWorldPos.z / 120.0);
 
-      float lineX = step(0.9, fract(vWorldPos.x / 1.6));
-      float lineZ = step(0.9, fract((vWorldPos.z + uOffset) / 1.6));
-      float grid = max(lineX, lineZ);
+    void main(){
+      float dz = -vWp.z;                       // positive distance from camera (0..120)
+      float dx = abs(vWp.x);                   // abs to mirror both sides
 
-      float fade = smoothstep(1.0, 0.0, -vWorldPos.z / 120.0);
-      vec3 gridColor = vec3(1.0, 0.1843, 0.6902);
+      /* base colour ─ near dark-purplish, horizon deeper */
+      vec3 nearCol = vec3(0.071, 0.039, 0.165); // #120a2a
+      vec3 farCol  = vec3(0.106, 0.059, 0.235);  // #1b0f3c
+      vec3 col = mix(nearCol, farCol, clamp(dz/120.0, 0.0, 1.0));
 
-      gl_FragColor = vec4(mix(base, gridColor, grid * fade), 1.0);
-    }
-  `,
-  side: THREE.DoubleSide
+      /* grid lines */
+      const float STEP = 1.6;
+      float lineWidth = 0.045 * (1.0 + dz * 0.016);
+
+      float fz = fract((dz + uOffset) / STEP);
+      float nearZ = min(fz, 1.0 - fz);
+      float gridZ = 1.0 - smoothstep(lineWidth*0.25, lineWidth*1.25, nearZ);
+
+      float fx = fract(dx / STEP);
+      float nearX = min(fx, 1.0 - fx);
+      float gridX = 1.0 - smoothstep(lineWidth*0.25, lineWidth*1.25, nearX);
+
+      float grid = max(gridX, gridZ);
+
+      /* visibility masks */
+      float visible = smoothstep(0.5, 2.5, dz)              // hide right at camera
+                    * (1.0 - smoothstep(30.0, 100.0, dz));    // fade at horizon
+
+      vec3 gridCol = vec3(1.0, 0.184, 0.690);               // #ff2fb0
+      col = mix(col, gridCol, grid * visible);
+
+      gl_FragColor = vec4(col, 1.0);
+    }`
 });
-const ground = new THREE.Mesh(groundGeo, groundMat);
-ground.position.set(0, -2.485, -60);
-ground.rotation.x = -Math.PI / 2;
+
+const ground = new THREE.Mesh(gGeo, gMat);
 ground.name = 'ground';
+ground.rotation.x = -Math.PI / 2;       // X-axis stays, Y→-Z
+ground.position.set(0, -2.485, 0);      // far edge at z=-120, near at z≈0
 scene.add(ground);
 
-// Sun
-const sunGeo = new THREE.CircleGeometry(4.971, 32);
-const sunMat = new THREE.ShaderMaterial({
+/* ═══════════════════════  SUN  ═════════════════ */
+const sunR  = 4.971;                     // spec radius
+const sunY0 = (1.0 - 2.0*0.388) * HALF_F295;   // world-Y at 38.8% from top = ~5.47
+const sunZ  = -29.5;
+const dropPxTotal = (0.52 - 0.388) * H;   // ~142.56 px
+
+let sunWorldY = sunY0;
+
+const sGeo = new THREE.CircleGeometry(sunR, 96);
+const sMat = new THREE.ShaderMaterial({
+  side: THREE.DoubleSide,
+  depthWrite: false,
+  uniforms: {},
   vertexShader: `
     varying vec2 vUv;
-    void main() {
+    void main(){
       vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+    }`,
   fragmentShader: `
     varying vec2 vUv;
-    void main() {
-      if (length(vUv - 0.5) > 0.5) discard;
-      if (vUv.y < 0.333 && fract(vUv.y * 10.0) < 0.5) discard;
-      vec3 top = vec3(1.0, 0.6902, 0.2275);
-      vec3 bot = vec3(0.4, 0.2, 0.05);
-      vec3 col = mix(bot, top, vUv.y);
+    void main(){
+      // local disk: vUv(0,0)=bottom-left, centre=(0.5,0.5)
+      vec2 p = (vUv - 0.5) * 2.0;          // now centre=(0,0), extents=±0.5
+      float r = length(p);
+      if(r > 0.5) discard;
+
+      /* radial gradient – orange top/dark bottom */
+      float topFactor = (p.y + 0.5) / 1.0;   // 0 bottom → 1 top
+      vec3 sunTop = vec3(1.000, 0.690, 0.231); // #ffb03a
+      vec3 sunBot = vec3(0.550, 0.140, 0.080);
+      vec3 col = mix(sunBot, sunTop, topFactor);
+
+      /* horizontal stripes in lower 2/3 of the disk */
+      // p.y from -0.5 (bottom) to +0.5 (top)
+      // lower 2/3 ends at p.y = -0.5 + 2.0/3.0 = +0.1667
+      if(p.y < 0.167){
+        float stripe = step(0.0, sin((p.y + 0.22) * 48.0 + 1.0));
+        vec3 skyCol  = vec3(0.106, 0.059, 0.235); // #1b0f3c
+        col = mix(col, skyCol, 0.88 * stripe);
+      }
+
       gl_FragColor = vec4(col, 1.0);
-    }
-  `,
-  side: THREE.DoubleSide
+    }`
 });
-const sun = new THREE.Mesh(sunGeo, sunMat);
-sun.position.set(0, 5.46, -29.5);
-sun.rotation.x = Math.PI;
+
+const sun = new THREE.Mesh(sGeo, sMat);
 sun.name = 'sun';
+sun.position.set(0, sunWorldY, sunZ);
 scene.add(sun);
 
-let currentTime = 0.0;
-let sunY = 5.46;
-const sunDropRate = 1.222; // 0.025 * frame height in world units at z=-29.5
-const sunStopY = -0.9776;
+/* ═══════════════════  animation helpers  ══════ */
+let elapsed = 0;            // total simulated time in seconds
 
-window.__step = function(dt) {
-  currentTime += dt;
-  groundMat.uniforms.uOffset.value = (groundMat.uniforms.uOffset.value + 0.90 * dt) % 1.6;
-  sunY -= sunDropRate * dt;
-  if (sunY < sunStopY) sunY = sunStopY;
-  sun.position.y = sunY;
-  renderer.render(scene, camera);
-  window.__ready = true;
+window.__step = function(dt){
+  /* grid runs toward camera: uOffset grows  and wraps mod 1.6 */
+  gMat.uniforms.uOffset.value =
+      (gMat.uniforms.uOffset.value + 0.90 * dt) % 1.6;
+
+  /* sun drops 0.025 frame-height per sec  until centre at 52% */
+  const dropRate = 0.025 * H;                  // px / sec
+  const worldYPerPx = (2.0 * HALF_F295) / H;   // world-Y per screen px
+  elapsed += dt;
+  const pxDropped = Math.min(elapsed * dropRate, dropPxTotal);
+  sunWorldY -= pxDropped * worldYPerPx;
+  sun.position.y = sunWorldY;
+
   return window.__probe();
 };
 
-window.__probe = function() {
-  const halfH = 24.44;
-  const fullH = 48.88;
-  const yFrac = (halfH - sunY) / fullH;
+window.__probe = function(){
+  const dropRate = 0.025 * H;
+  const worldYPerPx = (2.0 * HALF_F295) / H;
+  const pxDropped = Math.min(elapsed * dropRate, dropPxTotal);
+  const sunSY = (0.388 * H + pxDropped) / H;      // screen-Y fraction
+
   return {
-    t: parseFloat(currentTime.toFixed(4)),
-    objects: ['sky', 'ground', 'sun'],
-    sun: [0.5, parseFloat(yFrac.toFixed(4))],
-    grid_z: parseFloat(groundMat.uniforms.uOffset.value.toFixed(4))
+    t:     elapsed.toFixed(4),
+    objects : ['sky','ground','sun'],
+    sun:   [0.5, sunSY],                          // [xFrac, yFrac]
+    grid_z : gMat.uniforms.uOffset.value            // current uOffset
   };
 };
+
+/* ── initial render → mark ready ─────────── */
+renderer.render(scene, camera);
+window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-2 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

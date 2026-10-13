@@ -1,220 +1,306 @@
 <!DOCTYPE html>
 <html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <title>Трамвай сквозь дождливый город</title>
-<script src='../../../_vendor/three.global.js'></script>
+<head><meta charset="utf-8">
+<title>Трамвай сквозь дождливый город</title>
+<style>
+html,body{margin:0;padding:0;background:#1a1230;overflow:hidden;width:1920px;height:1080px}
+canvas{display:block;width:1920px;height:1080px}
+</style><script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
 <script type="module">
 const THREE = window.THREE;
 
-// --- Deterministic LCG ---
-let lcg = 488641;
-function rnd() {
-  lcg = (lcg * 1103515245 + 12345) % 2147483648;
-  return lcg / 2147483648;
+/* ═══════════════════════ LCG ═══════════════════════ */
+let _L=488641;
+function lr(){ _L=(1103515245*_L+12345)%2147483648; return _L/2147483648; }
+
+/* ═══════════════════════ THREE.JS ═══════════════════════ */
+const W=1920, H=1080;
+const tanF=Math.tan(45*Math.PI/360); // tan(22.5°)
+const asp=W/H;
+
+function frustum(z){
+  const d=4-z;
+  return { hw:d*tanF*asp, hh:d*tanF };
 }
+function fx(u,z){ return -frustum(z).hw + u*2*frustum(z).hw; }
+function fy(v,z){ return frustum(z).hh - v*2*frustum(z).hh; }
 
-// --- Scene & Camera ---
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 100);
-camera.position.set(0, 0, 4);
-camera.lookAt(0, 0, -1);
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x1a1230);
+scene.fog=new THREE.Fog(0x1a1230, 32, 55);
 
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+const camera=new THREE.PerspectiveCamera(45, W/H, 0.1, 100);
+camera.position.set(0,0,4);
+camera.lookAt(0,0,-1);
+
+const renderer=new THREE.WebGLRenderer({preserveDrawingBuffer:true, antialias:false});
 renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
-renderer.setClearColor(0x1a1230, 1);
+renderer.setSize(W,H,false);
+document.body.style.margin='0';
+document.body.style.overflow='hidden';
+document.body.style.background='#1a1230';
 document.body.appendChild(renderer.domElement);
 
-// --- Helpers ---
-function ndc(u, v) { return { x: (u - 0.5) * 2, y: (v - 0.5) * 2 }; }
-function makePlane(w, h, color, opacity, z, u, v) {
-  const geo = new THREE.PlaneGeometry(w, h);
-  const mat = new THREE.MeshBasicMaterial({
-    color,
-    transparent: opacity < 1,
-    opacity,
-    depthWrite: false,
-    side: THREE.DoubleSide
-  });
-  const mesh = new THREE.Mesh(geo, mat);
-  const pos = ndc(u + w / 2, v + h / 2);
-  mesh.position.set(pos.x, pos.y, z);
-  return mesh;
-}
+/* ═══════════════════════ MATERIALS ═══════════════════════ */
+const mCabin   = new THREE.MeshStandardMaterial({color:0x1a1230, roughness:0.92, metalness:0});
+const mGlass   = new THREE.MeshPhysicalMaterial({
+  color:0xffffff, transparent:true, opacity:0.30,
+  roughness:0.08, metalness:0, side:THREE.DoubleSide, depthWrite:false
+});
+const mMull    = new THREE.MeshStandardMaterial({color:0x1a1230, roughness:0.88, metalness:0.1});
+const mRail    = new THREE.MeshBasicMaterial({color:0x12c7d4, transparent:true, opacity:0.40, depthWrite:false, side:THREE.DoubleSide});
+const mGlowT   = new THREE.MeshBasicMaterial({color:0xffa63c, transparent:true, opacity:0.50, depthWrite:false, side:THREE.DoubleSide});
+const mGlowB   = new THREE.MeshBasicMaterial({color:0xffa63c, transparent:true, opacity:0.45, depthWrite:false, side:THREE.DoubleSide});
 
-// --- Geometry Construction ---
-// night
-const night = makePlane(2, 2, 0x1a1230, 1, -45, 0, 0);
-night.name = 'night';
+/* ═══════════════════════ NIGHT ═══════════════════════ */
+const nf=frustum(-45);
+const night=new THREE.Mesh(
+  new THREE.PlaneGeometry(nf.hw*2+20, nf.hh*2+20),
+  new THREE.MeshBasicMaterial({color:0x1a1230, side:THREE.DoubleSide})
+);
+night.position.z=-45;
 scene.add(night);
 
-// cabin_top & cabin_low
-const cabin_top = makePlane(2, 0.2, 0x1a1230, 1, -4, 0, 0);
-cabin_top.name = 'cabin_top';
-scene.add(cabin_top);
+/* ═══════════════════════ CABIN (объёмные тела) ═══════════════════════ */
+// Потолок sala — box над окном, z=-2.0
+const cw1=2*frustum(-2).hw, ch1=0.9, cd1=0.22;
+const cab=new THREE.Mesh(new THREE.BoxGeometry(cw1,ch1,cd1), mCabin);
+cab.position.set(0, fy(0.05,-2), -2);
+scene.add(cab);
 
-const cabin_low = makePlane(2, 0.56, 0x1a1230, 1, -4, 0, 0.72);
-cabin_low.name = 'cabin_low';
-scene.add(cabin_low);
+// Пол и низовая стена — box под окном, z=-2
+const cabLow=new THREE.Mesh(new THREE.BoxGeometry(cw1, 1.0, cd1), mCabin);
+cabLow.position.set(0, fy(0.86,-2), -2);
+scene.add(cabLow);
 
-// mullion (two vertical)
-const mullion1 = makePlane(0.024, 1.24, 0x1a1230, 1, -4, 0.31, 0.10);
-const mullion2 = makePlane(0.024, 1.24, 0x1a1230, 1, -4, 0.65, 0.10);
-mullion1.name = 'mullion';
-mullion2.name = 'mullion';
-scene.add(mullion1, mullion2);
+// Левый и правый простенки (у стены кабины)
+const stGeo=new THREE.BoxGeometry(0.16, fy(0.05,-2)-fy(0.95,-2)+1.2, 0.22);
+const stL=new THREE.Mesh(stGeo, mCabin);
+stL.position.set(fx(0.045,-2), fy(0.5,-2), -2);
+scene.add(stL);
+const stR=new THREE.Mesh(stGeo.clone(), mCabin);
+stR.position.set(fx(0.955,-2), fy(0.5,-2), -2);
+scene.add(stR);
 
-// glass
-const glass = makePlane(1.56, 1.24, 0xffffff, 0.30, -4, 0.11, 0.10);
-glass.name = 'glass';
+// Задние стены кабины (за камерой, z=7) — уходят глубже = шире = обрамляют кадр
+const bkGeo=new THREE.BoxGeometry(0.01, 2*frustum(7).hh+2, 4);
+const bkL=new THREE.Mesh(bkGeo, mCabin);
+bkL.position.set(fx(0.045,7), fy(0.5,7), 7);
+scene.add(bkL);
+const bkR=new THREE.Mesh(bkGeo.clone(), mCabin);
+bkR.position.set(fx(0.955,7), fy(0.5,7), 7);
+scene.add(bkR);
+
+// Задний потолок/пол
+const bkHGeo=new THREE.BoxGeometry(2*frustum(7).hw+2, 0.01, 4);
+const bkT=new THREE.Mesh(bkHGeo, mCabin);
+bkT.position.set(0, fy(0.05,-2)+frustum(7).hh+0.5, 6);
+scene.add(bkT);
+const bkF=new THREE.Mesh(bkHGeo.clone(), mCabin);
+bkF.position.set(0, fy(0.9,-2)-frustum(7).hh-0.5, 6);
+scene.add(bkF);
+
+/* ═══════════════════════ GLASS ═══════════════════════ */
+const gw=0.78*frustum(-4).w, gh=0.62*frustum(-4).h;
+const glass=new THREE.Mesh(new THREE.PlaneGeometry(gw, gh), mGlass);
+glass.position.set(fx(0.5,-4), fy(0.41,-4), -4);
 scene.add(glass);
 
-// rail
-const rail = makePlane(1.56, 0.04, 0x12c7d4, 0.4, -4, 0.11, 0.58);
-rail.name = 'rail';
+/* ═══════════════════════ MULLIONS ═══════════════════════ */
+const mMz=-3.995;
+const mMv=0.014;
+const mMh=gh+0.12;
+const mGeoV=new THREE.BoxGeometry(mMv, 0.14, mMh);
+[0.31, 0.65].forEach(u=>{
+  const m=new THREE.Mesh(mGeoV.clone(), mMull);
+  m.position.set(fx(u, mMz), fy(0.41,-4), mMz);
+  scene.add(m);
+});
+// Горизонтальные рамы
+const mGeoH=new THREE.BoxGeometry(gw+0.03, 0.028, 0.14);
+const mTop=new THREE.Mesh(mGeoH, mMull);
+mTop.position.set(fx(0.5,-4), fy(0.10,-4)+0.014, mMz);
+scene.add(mTop);
+const mBot=new THREE.Mesh(mGeoH, mMull);
+mBot.position.set(fx(0.5,-4), fy(0.72,-4)-0.014, mMz);
+scene.add(mBot);
+
+/* ═══════════════════════ RAIL ═══════════════════════ */
+const rZ=-3.99;
+const rGeo=new THREE.PlaneGeometry(0.78*frustum(rZ).w, 0.02*frustum(rZ).h);
+const rail=new THREE.Mesh(rGeo, mRail);
+rail.position.set(fx(0.5,-4), fy(0.59,-4), rZ);
 scene.add(rail);
 
-// glow_top & glow_low
-const glow_top = makePlane(1.4, 0.1, 0xffa63c, 1, -3.95, 0.15, 0.145);
-glow_top.name = 'glow_top';
-scene.add(glow_top);
+/* ═══════════════════════ GLOW TOP ═══════════════════════ */
+const gtZ=-3.985;
+const gtGeo=new THREE.PlaneGeometry(0.70*frustum(gtZ).w, 0.05*frustum(gtZ).h);
+const glowTop=new THREE.Mesh(gtGeo, mGlowT);
+glowTop.position.set(fx(0.5,-4), fy(0.17,-4), gtZ);
+scene.add(glowTop);
 
-const glow_low = makePlane(1.24, 0.08, 0xffa63c, 1, -3.95, 0.19, 0.64);
-glow_low.name = 'glow_low';
-scene.add(glow_low);
+/* ═══════════════════════ GLOW LOW ═══════════════════════ */
+const glZ=-3.98;
+const glGeo=new THREE.PlaneGeometry(0.62*frustum(glZ).w, 0.04*frustum(glZ).h);
+const glowLow=new THREE.Mesh(glGeo, mGlowB);
+glowLow.position.set(fx(0.5,-4), fy(0.66,-4), glZ);
+scene.add(glowLow);
 
-// blobs (22 additive spots)
-const blobs = [];
-const blobGeo = new THREE.PlaneGeometry(1, 1);
-for (let i = 0; i < 22; i++) {
-  const size = 0.0175 + rnd() * (0.0325 - 0.0175); // 7..13 px in NDC
-  const mat = new THREE.MeshBasicMaterial({
-    color: 0x12c7d4,
-    transparent: true,
-    opacity: 0.85,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false
-  });
-  const mesh = new THREE.Mesh(blobGeo, mat);
-  mesh.scale.set(size, size, 1);
-  const x = rnd() * 2 - 1;
-  const y = rnd() * 0.62 + 0.10;
-  mesh.position.set(x, y, -14);
-  mesh.name = 'blobs';
-  scene.add(mesh);
-  blobs.push({ mesh, x, y, speed: 2 + rnd() * 2 });
+/* ═══════════════════════ LIGHT ═══════════════════════ */
+const pWarm1=new THREE.PointLight(0xffa63c, 10, 15);
+pWarm1.position.set(0, 3.2, -1);
+scene.add(pWarm1);
+
+const pWarm2=new THREE.PointLight(0xffa63c, 4, 8);
+pWarm2.position.set(0, 2.0, 1.5);
+scene.add(pWarm2);
+
+// неоновый свет с улицы
+const pNeon=new THREE.PointLight(0x12c7d4, 18, 30);
+pNeon.position.set(0, 0.8, -12);
+scene.add(pNeon);
+
+const pNeon2=new THREE.PointLight(0x12c7d4, 10, 22);
+pNeon2.position.set(5, -1, -10);
+scene.add(pNeon2);
+
+const pNeon3=new THREE.PointLight(0x12c7d4, 8, 18);
+pNeon3.position.set(-6, 2, -8);
+scene.add(pNeon3);
+
+scene.add(new THREE.AmbientLight(0x1a1230, 0.4));
+
+// subtle fill для cabin
+scene.add(new THREE.HemisphereLight(0x1a1230, 0x1a1230, 0.3));
+
+/* ═══════════════════════ BLOBS (22 неоновых пятна) ═══════════════════════ */
+// Glow-текстура (canvas)
+const _cb=document.createElement('canvas'); _cb.width=_cb.height=64;
+const _cx=_cb.getContext('2d');
+const _gr=_cx.createRadialGradient(32,32,0,32,32,32);
+_gr.addColorStop(0,'#12c7d4'); _gr.addColorStop(0.25,'#12c7d4');
+_gr.addColorStop(0.6,'#12c7d455'); _gr.addColorStop(1,'#12c7d400');
+_cx.fillStyle=_gr; _cx.fillRect(0,0,64,64);
+const blobTex=new THREE.CanvasTexture(_cb);
+
+const bD=[], bM=[];
+const f14=frustum(-14);
+
+for(let i=0;i<22;i++){
+  const sp=2+lr()*2.4;       // 2–4.4 speed
+  const rad=0.13+lr()*0.06;  // 7–13 px at z=-14
+  const bx=f14.hw*(lr()*2-1)*0.9; // within 90% of half-width
+  const by=fy(0.08+lr()*0.66, -14);
+  bD.push({x:bx, y:by, sp:sp, rad:rad});
 }
 
-// drops (60 raindrops)
-const drops = [];
-const dropGeo = new THREE.PlaneGeometry(1, 1);
-for (let i = 0; i < 60; i++) {
-  const mat = new THREE.MeshBasicMaterial({
-    color: 0xa8c8dc,
-    transparent: true,
-    opacity: 0.9,
-    depthWrite: false
+const bMat=new THREE.SpriteMaterial({
+  map:blobTex, transparent:true, blending:THREE.AdditiveBlending, depthWrite:false
+});
+bD.forEach((b,i)=>{
+  const s=new THREE.Sprite(bMat);
+  s.scale.set(b.rad*2.5, b.rad*2.5, 1);
+  s.position.set(b.x, b.y, -14);
+  scene.add(s);
+  bM.push(s);
+});
+
+/* ═══════════════════════ DROPS (60 капель) ═══════════════════════ */
+const _dd=document.createElement('canvas'); _dd.width=_dd.height=32;
+const _ddx=_dd.getContext('2d');
+const _dg=_ddx.createRadialGradient(16,16,0,16,16,16);
+_dg.addColorStop(0,'#a8c8dc'); _dg.addColorStop(0.5,'#a8c8dca9');
+_dg.addColorStop(0.8,'#a8c8dc30'); _dg.addColorStop(1,'#a8c8dc00');
+_ddx.fillStyle=_dg; _ddx.fillRect(0,0,32,32);
+const dropTex=new THREE.CanvasTexture(_dd);
+
+const dD=[], dM=[];
+const dU1=0.11, dU2=0.89, dV1=0.10, dV2=0.72;
+
+for(let i=0;i<60;i++){
+  dD.push({
+    x: fx(dU1+lr()*(dU2-dU1), -3.9),
+    y: fy(dV1+lr()*(dV2-dV1), -3.9)
   });
-  const mesh = new THREE.Mesh(dropGeo, mat);
-  mesh.scale.set(0.015, 0.015, 1); // 6 px
-  const x = rnd() * 0.78 + 0.11;
-  const y = rnd() * 0.62 + 0.10;
-  mesh.position.set((x - 0.5) * 2, (y - 0.5) * 2, -3.9);
-  mesh.name = 'drops';
-  scene.add(mesh);
-  drops.push({ mesh, x, y });
 }
 
-// --- Animation State ---
-let t = 0;
+for(let i=0;i<60;i++){
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({
+    map:dropTex, transparent:true, opacity:0.82, depthWrite:false
+  }));
+  sp.scale.set(0.038, 0.055, 1);
+  sp.position.set(dD[i].x, dD[i].y, -3.9);
+  scene.add(sp);
+  dM.push(sp);
+}
 
-// --- Public API ---
-window.__step = function(dt) {
-  t += dt;
+/* ═══════════════════════ ANIMATION ═══════════════════════ */
+let simTime=0;
 
-  // Camera rock
-  camera.position.x = Math.sin(t * 1.5) * 0.045;
-  camera.lookAt(0, 0, -1);
+function step(dt){
+  simTime+=dt;
 
-  // Move drops down
-  for (let d of drops) {
-    d.y -= 1.56 * dt;
-    if (d.y < 0.10) d.y += 0.62;
-    d.mesh.position.y = (d.y - 0.5) * 2;
+  // капли вниз: 1.56 units/s
+  const dTopY=fy(dV1,-3.9), dBotY=fy(dV2,-3.9);
+  for(let i=0;i<60;i++){
+    dD[i].y += (-1.56)*dt;
+    if(dD[i].y < dBotY){
+      dD[i].y = dTopY + (dBotY-dTopY)*lr()*0.15;
+      dD[i].x = fx(dU1+lr()*(dU2-dU1), -3.9);
+    }
+    dM[i].position.y = dD[i].y;
   }
 
-  // Move blobs sideways
-  for (let b of blobs) {
-    b.x += b.speed * dt;
-    if (b.x > 1.0) b.x -= 2.0;
-    if (b.x < -1.0) b.x += 2.0;
-    b.mesh.position.x = b.x;
+  // пятна вбок: скорость 2–4 units/s, заворачиваются
+  const bHalfW=f14.hw*0.95;
+  for(let i=0;i<22;i++){
+    bD[i].x += bD[i].sp * dt;
+    if(bD[i].x > bHalfW){
+      bD[i].x = -bHalfW;
+      bD[i].y = fy(0.08+lr()*0.66, -14);
+    }
+    bM[i].position.x = bD[i].x;
   }
+
+  // камерa: x колеблется на 0.045
+  camera.position.x = 0.045 * Math.sin(simTime*1.5);
 
   renderer.render(scene, camera);
-  return window.__probe();
-};
+}
 
-window.__probe = function() {
-  const firstBlob = blobs[0];
+function probe(){
   return {
-    t: t.toFixed(4),
-    objects: ['night', 'cabin_top', 'cabin_low', 'mullion', 'glass', 'blobs', 'rail', 'glow_top', 'glow_low', 'drops'],
-    blob: [parseFloat(firstBlob.x.toFixed(4)), parseFloat(firstBlob.y.toFixed(4))]
+    t: simTime.toFixed(4),
+    objects: [
+      {n:"night",      z:-45,        c:"#1a1230"                    },
+      {n:"cabin_top",  v:[0,0.10],   c:"#1a1230"                    },
+      {n:"cabin_low",  v:[0.72,1],   c:"#1a1230"                    },
+      {n:"cabin_left", u:[0,0.09],   c:"#1a1230"                    },
+      {n:"cabin_right",u:[0.91,1],   c:"#1a1230"                    },
+      {n:"mullion1",   u:0.31,       w:0.012,   c:"#1a1230"         },
+      {n:"mullion2",   u:0.65,       w:0.012,   c:"#1a1230"         },
+      {n:"glass",      z:-4,         op:0.30,    sz:[0.78,0.62]    },
+      {n:"blobs",      n:22,         z:-14,     c:"#12c7d4"        },
+      {n:"rail",       v:0.58,       h:0.02,    op:0.4,    c:"#12c7d4"},
+      {n:"glow_top",   v:0.17,       sz:[0.70,0.05], c:"#ffa63c"   },
+      {n:"glow_low",   v:0.66,       sz:[0.62,0.04], c:"#ffa63c"   },
+      {n:"drops",      n:60,         z:-3.9,    c:"#a8c8dc"        }
+    ],
+    blob: bM.length>0
+      ? [parseFloat(bM[0].position.x.toFixed(4)), parseFloat(bM[0].position.y.toFixed(4))]
+      : [0,0]
   };
-};
+}
 
-window.__ready = true;
+window.__step=step;
+window.__probe=probe;
+window.__ready=false;
+
+// first frame
+renderer.render(scene, camera);
+window.__ready=true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-19 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

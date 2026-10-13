@@ -1,463 +1,673 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
-    <meta charset="utf-8">
-    <title>Orbital Station</title>
-    <style>body { margin: 0; overflow: hidden; background: #000; }</style>
+<meta charset="UTF-8">
+<title>Orbital Station</title>
+<style> * { margin:0; padding:0; } body { overflow:hidden; background:#000; } canvas { display:block; width:1920px; height:1080px; } </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
+<script type="importmap">
+{ "imports": {"three": "./vendor/three.module.js"} }
+</script>
 <script type="module">
 const THREE = window.THREE;
 
-// LCG Random
-let lcgState = 9173;
-function lcg() {
-    lcgState = (lcgState * 1103515245 + 12345) % 2147483648;
-    return lcgState / 2147483648;
+// ═══ LCG ════════════════════════════════════════════════════════════
+let L = 9173;
+function LCG() {
+  L = (L * 1103515245 + 12345) % 2147483648;
+  return L / 2147483648;
 }
 
-// Scene & Camera
+// ═══ Renderer ═══════════════════════════════════════════════════════
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: false });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
 const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+
+// ═══ Camera ═════════════════════════════════════════════════════════
 const camera = new THREE.PerspectiveCamera(45, 1920/1080, 0.05, 4000);
 camera.position.set(0, 0.4, 6);
 camera.lookAt(0, 0, -6);
 
-// Renderer
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
-renderer.setPixelRatio(1);
-renderer.setSize(1920, 1080, false);
-document.body.appendChild(renderer.domElement);
+// ═══ Stars (2200 points) ══════════════════════════════════════════
+{
+  const starsGeo = new THREE.BufferGeometry();
+  const pos = new Float32Array(2200*3);
+  const col = new Float32Array(2200*3);
+  const R = 998;
+  for (let i=0; i<2200; i++) {
+    const th = LCG()*Math.PI*2;
+    const phi = Math.acos(2*LCG()-1);
+    pos[i*3]   = R*Math.sin(phi)*Math.cos(th);
+    pos[i*3+1] = R*Math.sin(phi)*Math.sin(th);
+    pos[i*3+2] = R*Math.cos(phi);
+    const b = 0.6+LCG()*0.4;
+    col[i*3] = b; col[i*3+1] = b; col[i*3+2] = b*(0.9+LCG()*0.1);
+  }
+  starsGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  starsGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const starsMat = new THREE.PointsMaterial({ size: 1.5, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
+  const stars = new THREE.Points(starsGeo, starsMat);
+  stars.name = 'stars';
+  scene.add(stars);
+}
 
-// Lights
-const sunLight = new THREE.DirectionalLight(0xffffff, 1.5);
-sunLight.position.set(5, 3, 5);
-scene.add(sunLight);
-scene.add(new THREE.AmbientLight(0x222244, 0.5));
+// ═══ Helpers: Noise in GLSL strings ════════════════════════════════
+const noisyFS = `
+float hash21(vec2 p) {
+  p = fract(p * vec2(234.34, 435.345));
+  p += dot(p, p + 34.43);
+  return fract(p.x * p.y);
+}
+float hash31(vec3 p) {
+  p = fract(p * vec3(234.34, 435.345, 455.345));
+  p += dot(p, p + 34.431);
+  return fract(p.x * p.y * p.z);
+}
+float n3(vec3 p) {
+  vec3 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float n = i.x * 157.0 + i.y * 31.0;
+  return mix(
+    mix(mix(hash31(i + vec3(0,0,0)), hash31(i + vec3(1,0,0)), f.x),
+        mix(hash31(i + vec3(0,1,0)), hash31(i + vec3(1,1,0)), f.x), f.y),
+    mix(mix(hash31(i + vec3(0,0,1)), hash31(i + vec3(1,0,1)), f.x),
+        mix(hash31(i + vec3(0,1,1)), hash31(i + vec3(1,1,1)), f.x), f.y), f.z);
+}
+float fbm(vec3 p, int oct) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 6; i++) {
+    if (i >= oct) break;
+    v += a * n3(p);
+    p *= 2.03; a *= 0.48;
+  }
+  return v;
+}
+`;
 
-// Earth
-const earthGeo = new THREE.SphereGeometry(4.0, 64, 64);
-const earthMat = new THREE.ShaderMaterial({
+// ═══ Earth ═════════════════════════════════════════════════════════
+{
+  const geo = new THREE.SphereGeometry(4.0, 128, 64);
+  const mat = new THREE.ShaderMaterial({
     uniforms: {
-        uSeaColor: { value: new THREE.Color('#13315e') },
-        uLandColor: { value: new THREE.Color('#2f6b46') },
-        uPolarColor: { value: new THREE.Color('#ffffff') },
-        uCityColor: { value: new THREE.Color('#ffd0d0') },
-        uTime: { value: 0 }
+      uSunDir: { value: new THREE.Vector3(1, 0.3, 0.5).normalize() },
+      uClock: { value: 0 }
     },
     vertexShader: `
-        varying vec2 vUv;
-        varying vec3 vNormal;
-        varying vec3 vWorldPos;
-        void main() {
-            vUv = uv;
-            vNormal = normalize(normalMatrix * normal);
-            vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
+      varying vec3 vWP, vWN;
+      void main(){
+        vWN = normalize((modelMatrix * vec4(normal,0.0)).xyz);
+        vWP = (modelMatrix * vec4(position,1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+      }
     `,
-    fragmentShader: `
-        uniform vec3 uSeaColor, uLandColor, uPolarColor, uCityColor;
-        uniform float uTime;
-        varying vec2 vUv;
-        varying vec3 vNormal;
-        varying vec3 vWorldPos;
-
-        float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-        float noise(vec2 p) {
-            vec2 i = floor(p); vec2 f = fract(p);
-            f = f*f*(3.0-2.0*f);
-            return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y);
-        }
-        float fbm(vec2 p) {
-            float v=0.0, a=0.5;
-            for(int i=0; i<4; i++) { v+=a*noise(p); p*=2.0; a*=0.5; }
-            return v;
-        }
-
-        void main() {
-            vec3 N = normalize(vNormal);
-            vec3 L = normalize(vec3(1.0, 0.5, 1.0));
-            float NdotL = dot(N, L);
-            float day = smoothstep(-0.1, 0.2, NdotL);
-
-            vec2 uv = vUv * 10.0;
-            float n = fbm(uv + 0.5);
-            float land = smoothstep(0.45, 0.55, n);
-            vec3 col = mix(uSeaColor, uLandColor, land);
-
-            float lat = abs(vUv.y - 0.5) * 2.0;
-            float polar = smoothstep(0.85, 0.95, lat);
-            col = mix(col, uPolarColor, polar);
-
-            vec3 night = vec3(0.0);
-            if (day < 0.5) {
-                float cn = fbm(uv * 3.0 + 10.0);
-                float city = smoothstep(0.7, 0.8, cn) * land;
-                night = uCityColor * city * (1.0 - day) * 2.0;
-            }
-
-            vec3 amb = vec3(0.05);
-            vec3 diff = max(0.0, NdotL) * vec3(1.0);
-            col = col * (amb + diff) + night;
-            gl_FragColor = vec4(col, 1.0);
-        }
+    fragmentShader: noisyFS + `
+      uniform vec3 uSunDir;
+      uniform float uClock;
+      varying vec3 vWP, vWN;
+      void main(){
+        float NdL = max(dot(normalize(vWN), uSunDir), 0.0);
+        float day = smoothstep(-0.1, 0.35, NdL);
+        
+        float land = fbm(vWP * 3.0 + vec3(0.0, uClock*0.01, 0.0), 6);
+        float landM = smoothstep(0.42, 0.58, land);
+        
+        vec3 ocean = vec3(0.075, 0.192, 0.369);
+        vec3 landC = vec3(0.184, 0.420, 0.275);
+        float lat = abs(vWP.y / 4.0);
+        float pol = smoothstep(0.65, 0.92, lat);
+        
+        vec3 terr = mix(ocean, landC, landM);
+        terr = mix(terr, vec3(0.95,0.95,0.97), pol * 0.7);
+        
+        float city = fbm(vWP * 8.0 + vec3(50.0, 100.0, 0.0), 5);
+        city = smoothstep(0.48, 0.58, city);
+        vec3 cityLight = vec3(0.996, 0.816, 0.816) * city;
+        
+        vec3 sun = terr * (0.15 + 0.85 * max(0.0, NdL));
+        vec3 sunset = vec3(0.8, 0.35, 0.15) * pow(1.0 - abs(NdL), 5.0) * 0.5 * (1.0 - pol);
+        vec3 nite = terr * 0.02 + cityLight * (1.0 - day) * 2.0;
+        
+        vec3 col = mix(nite, sun + sunset, day);
+        
+        gl_FragColor = vec4(col, 1.0);
+      }
     `
-});
-const earth = new THREE.Mesh(earthGeo, earthMat);
-earth.position.set(-1.2, -1.6, -14);
-earth.name = 'earth';
-scene.add(earth);
+  });
+  const earth = new THREE.Mesh(geo, mat);
+  earth.position.set(-1.2, -1.6, -14);
+  earth.name = 'earth';
+  scene.add(earth);
+}
 
-// Atmosphere
-const atmoGeo = new THREE.SphereGeometry(4.35, 64, 64);
-const atmoMat = new THREE.ShaderMaterial({
+// ═══ Atmosphere ═════════════════════════════════════════════════════
+{
+  const geo = new THREE.SphereGeometry(4.35, 64, 32);
+  const mat = new THREE.ShaderMaterial({
+    side: THREE.FrontSide,
     transparent: true,
     blending: THREE.AdditiveBlending,
-    side: THREE.BackSide,
+    depthWrite: false,
     vertexShader: `
-        varying vec3 vNormal;
-        varying vec3 vViewDir;
-        void main() {
-            vNormal = normalize(normalMatrix * normal);
-            vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
-            vViewDir = normalize(-mvPos.xyz);
-            gl_Position = projectionMatrix * mvPos;
-        }
+      varying vec3 vWN, vVD;
+      void main(){
+        vWN = normalize((modelMatrix * vec4(normal,0.0)).xyz);
+        vec4 wp = modelMatrix * vec4(position,1.0);
+        vVD = normalize(cameraPosition - wp.xyz);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+      }
     `,
     fragmentShader: `
-        varying vec3 vNormal;
-        varying vec3 vViewDir;
-        void main() {
-            float intensity = pow(0.65 - dot(vNormal, vViewDir), 2.0);
-            gl_FragColor = vec4(0.435, 0.714, 1.0, 1.0) * intensity;
-        }
+      varying vec3 vWN, vVD;
+      void main(){
+        float fr = pow(1.0 - max(dot(vVD, vWN), 0.0), 3.5);
+        float rim = smoothstep(0.4, 1.0, fr);
+        gl_FragColor = vec4(vec3(0.431, 0.714, 1.0) * 1.5, rim * 0.65);
+      }
     `
-});
-const atmosphere = new THREE.Mesh(atmoGeo, atmoMat);
-atmosphere.position.copy(earth.position);
-atmosphere.name = 'atmosphere';
-scene.add(atmosphere);
-
-// Clouds
-const cloudGeo = new THREE.SphereGeometry(4.10, 64, 64);
-const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.30, side: THREE.DoubleSide });
-const clouds = new THREE.Mesh(cloudGeo, cloudMat);
-clouds.position.copy(earth.position);
-clouds.name = 'clouds';
-scene.add(clouds);
-
-// Station
-const station = new THREE.Group();
-station.position.set(0.62, 0.40, 0);
-station.name = 'station';
-
-const bodyGeo = new THREE.BoxGeometry(0.9, 0.30, 0.30);
-const bodyMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.4 });
-const body = new THREE.Mesh(bodyGeo, bodyMat);
-station.add(body);
-
-const panelGeo = new THREE.PlaneGeometry(0.55, 0.16);
-const panelMat = new THREE.MeshStandardMaterial({ color: 0x112244, roughness: 0.2, metalness: 0.8, side: THREE.DoubleSide });
-const panelL = new THREE.Mesh(panelGeo, panelMat);
-panelL.position.set(-0.72, 0, 0);
-panelL.rotation.y = Math.PI / 2;
-station.add(panelL);
-const panelR = panelL.clone();
-panelR.position.set(0.72, 0, 0);
-station.add(panelR);
-
-const antGeo = new THREE.CylinderGeometry(0.01, 0.01, 0.4, 8);
-const antMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa });
-const antenna = new THREE.Mesh(antGeo, antMat);
-antenna.position.set(0, 0.35, 0);
-station.add(antenna);
-
-const winGeo = new THREE.BoxGeometry(0.08, 0.08, 0.01);
-const winMat = new THREE.MeshStandardMaterial({ color: 0x88ccff, emissive: 0x88ccff, emissiveIntensity: 0.5 });
-for(let i=0; i<3; i++) {
-    const win = new THREE.Mesh(winGeo, winMat);
-    win.position.set(-0.3 + i*0.3, 0, 0.151);
-    station.add(win);
+  });
+  const atmos = new THREE.Mesh(geo, mat);
+  atmos.position.set(-1.2, -1.6, -14);
+  atmos.name = 'atmosphere';
+  scene.add(atmos);
 }
 
-const lightGeo = new THREE.SphereGeometry(0.02, 8, 8);
-const lightMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-const blinkLight = new THREE.Mesh(lightGeo, lightMat);
-blinkLight.position.set(0.45, 0.15, 0.15);
-station.add(blinkLight);
-
-scene.add(station);
-
-// Stars
-const starGeo = new THREE.BufferGeometry();
-const starPos = [], starSizes = [];
-for(let i=0; i<2200; i++) {
-    let theta = lcg() * Math.PI * 2;
-    let phi = Math.acos(2 * lcg() - 1);
-    let r = 1000;
-    starPos.push(r*Math.sin(phi)*Math.cos(theta), r*Math.sin(phi)*Math.sin(theta), r*Math.cos(phi));
-    starSizes.push(0.5 + lcg() * 1.5);
-}
-starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
-starGeo.setAttribute('size', new THREE.Float32BufferAttribute(starSizes, 1));
-const starMat = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 } },
+// ═══ Clouds ═════════════════════════════════════════════════════════
+{
+  const geo = new THREE.SphereGeometry(4.10, 128, 64);
+  const mat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false,
+    uniforms: { uClock: { value: 0 } },
     vertexShader: `
-        attribute float size;
-        varying float vSize;
-        void main() {
-            vSize = size;
-            vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
-            gl_PointSize = size * (300.0 / -mvPos.z);
-            gl_Position = projectionMatrix * mvPos;
-        }
+      varying vec3 vWP, vWN;
+      void main(){
+        vWN = normalize((modelMatrix * vec4(normal,0.0)).xyz);
+        vWP = (modelMatrix * vec4(position,1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+      }
     `,
-    fragmentShader: `
-        varying float vSize;
-        void main() {
-            float d = length(gl_PointCoord - 0.5) * 2.0;
-            if(d > 1.0) discard;
-            float alpha = 1.0 - d;
-            gl_FragColor = vec4(1.0, 1.0, 1.0, alpha);
-        }
-    `,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false
-});
-const stars = new THREE.Points(starGeo, starMat);
-stars.name = 'stars';
-scene.add(stars);
-
-// Explosions
-const earthCenter = new THREE.Vector3(-1.2, -1.6, -14);
-const earthR = 4.0;
-const dirs = [
-    new THREE.Vector3(Math.sin(-0.136)*Math.cos(0.372), Math.sin(0.372), Math.cos(-0.136)*Math.cos(0.372)).normalize().multiplyScalar(earthR).add(earthCenter),
-    new THREE.Vector3(Math.sin(0.331)*Math.cos(-0.345), Math.sin(-0.345), Math.cos(0.331)*Math.cos(-0.345)).normalize().multiplyScalar(earthR).add(earthCenter)
-];
-
-function createExplosionMeshes(pos) {
-    const group = new THREE.Group();
-    group.position.copy(pos);
-
-    const flashGeo = new THREE.SphereGeometry(0.05, 16, 16);
-    const flashMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, blending: THREE.AdditiveBlending });
-    const flash = new THREE.Mesh(flashGeo, flashMat);
-    flash.name = 'flash';
-    group.add(flash);
-
-    const domeGeo = new THREE.SphereGeometry(0.1, 16, 16, 0, Math.PI*2, 0, Math.PI/2);
-    const domeMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0.25, side: THREE.DoubleSide, blending: THREE.AdditiveBlending });
-    const dome = new THREE.Mesh(domeGeo, domeMat);
-    dome.name = 'dome';
-    group.add(dome);
-
-    const ringGeo = new THREE.RingGeometry(0.05, 0.1, 32);
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0.5, side: THREE.DoubleSide, blending: THREE.AdditiveBlending });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.name = 'ring';
-    ring.rotation.x = -Math.PI/2;
-    group.add(ring);
-
-    const mushColGeo = new THREE.CylinderGeometry(0.05, 0.08, 0.2, 16);
-    const mushCapGeo = new THREE.SphereGeometry(0.15, 16, 16);
-    const mushMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, blending: THREE.AdditiveBlending });
-    const mushCol = new THREE.Mesh(mushColGeo, mushMat);
-    mushCol.position.y = 0.1;
-    const mushCap = new THREE.Mesh(mushCapGeo, mushMat);
-    mushCap.position.y = 0.25;
-    const mushroom = new THREE.Group();
-    mushroom.add(mushCol, mushCap);
-    mushroom.name = 'mushroom';
-    group.add(mushroom);
-
-    return group;
-}
-
-const exp1 = createExplosionMeshes(dirs[0]);
-exp1.name = 'exp1';
-scene.add(exp1);
-const exp2 = createExplosionMeshes(dirs[1]);
-exp2.name = 'exp2';
-scene.add(exp2);
-
-// Post-processing
-const rt = new THREE.WebGLRenderTarget(1920, 1080);
-const postScene = new THREE.Scene();
-const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
-    uniforms: {
-        tDiffuse: { value: rt.texture },
-        uTime: { value: 0 }
-    },
-    vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`,
-    fragmentShader: `
-        uniform sampler2D tDiffuse;
-        uniform float uTime;
-        varying vec2 vUv;
-        void main() {
-            vec2 uv = vUv;
-            vec4 col = texture2D(tDiffuse, uv);
-            vec4 blur = vec4(0.0);
-            for(int x=-2; x<=2; x++) for(int y=-2; y<=2; y++) {
-                blur += texture2D(tDiffuse, uv + vec2(float(x), float(y)) * 0.002);
-            }
-            blur /= 25.0;
-            col += blur * 0.5;
-
-            float ca = 0.003;
-            col.r = texture2D(tDiffuse, uv + vec2(ca, 0.0)).r;
-            col.b = texture2D(tDiffuse, uv - vec2(ca, 0.0)).b;
-
-            float grain = fract(sin(dot(uv * uTime, vec2(12.9898, 78.233))) * 43758.5453);
-            col.rgb += (grain - 0.5) * 0.05;
-
-            float vig = 1.0 - length(uv - 0.5) * 0.8;
-            col.rgb *= vig;
-
-            gl_FragColor = clamp(col, 0.0, 1.0);
-        }
+    fragmentShader: noisyFS + `
+      uniform float uClock;
+      varying vec3 vWP, vWN;
+      void main(){
+        float NdL = max(dot(normalize(vWN), vec3(1.,0.3,0.5)), 0.0);
+        float day = smoothstep(-0.1, 0.3, NdL);
+        vec3 cUV = vWP * 0.5 + vec3(uClock * 0.03, 0.0, 0.0);
+        float cloud = fbm(cUV * 2.5, 6);
+        cloud = smoothstep(0.35, 0.62, cloud);
+        vec3 col = vec3(1.0) * (0.5 + 0.5 * day);
+        gl_FragColor = vec4(col, cloud * 0.30 * day);
+      }
     `
-}));
-postScene.add(postQuad);
+  });
+  const clouds = new THREE.Mesh(geo, mat);
+  clouds.position.set(-1.2, -1.6, -14);
+  clouds.name = 'clouds';
+  scene.add(clouds);
+}
 
-// State
-let t = 0;
-let currentBoomAge = 0;
+// ═══ Station ════════════════════════════════════════════════════════
+const stationGroup = new THREE.Group();
+{
+  // Body
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(0.9, 0.30, 0.30),
+    new THREE.MeshStandardMaterial({ color: 0x888899, metalness: 0.7, roughness: 0.3 })
+  );
+  body.name = 'station_body';
+  stationGroup.add(body);
+  
+  // Solar panels
+  const panMat = new THREE.MeshStandardMaterial({ color: 0x2233aa, metalness: 0.5, roughness: 0.4, side: THREE.DoubleSide });
+  const panL = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.16), panMat);
+  panL.position.set(-0.375, 0, 0);
+  stationGroup.add(panL);
+  const panR = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.16), panMat);
+  panR.position.set(0.375, 0, 0);
+  stationGroup.add(panR);
+  
+  // Antenna
+  const antMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.8, roughness: 0.2 });
+  const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.4, 8), antMat);
+  ant.position.set(0, 0.35, 0);
+  stationGroup.add(ant);
+  const dish = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 8), antMat);
+  dish.position.set(0, 0.55, 0);
+  stationGroup.add(dish);
+  
+  // Windows
+  const winMat = new THREE.MeshStandardMaterial({ color: 0x88ccff, emissive: 0x3388bb, emissiveIntensity: 0.8 });
+  for (let i = 0; i < 3; i++) {
+    const w = new THREE.Mesh(new THREE.CircleGeometry(0.04, 12), winMat);
+    w.position.set(-0.2 + i * 0.2, 0, 0.151);
+    stationGroup.add(w);
+  }
+}
+stationGroup.position.set(0.7, 0.1, 4.2);
+stationGroup.scale.setScalar(0.65);
+stationGroup.name = 'station';
+scene.add(stationGroup);
 
-const expData = [
-    { start: 0, flash: {s:0.05, e:0.34, dur:0.5}, dome: {s:0, e:0.9, dur:1.6}, ring: {s:0, e:1.8, dur:2.4}, mush: {s:0, e:0.5, dur:2.0} },
-    { start: 1.5, flash: {s:0.05, e:0.34, dur:0.5}, dome: {s:0, e:0.9, dur:1.6}, ring: {s:0, e:1.8, dur:2.4}, mush: {s:0, e:0.5, dur:2.0} }
+// ═══ Lights ═════════════════════════════════════════════════════════
+const sunD = new THREE.Vector3(1, 0.3, 0.5).normalize();
+scene.add(new THREE.DirectionalLight(0xfff5e0, 2.5).copy({ position: sunD.clone().multiplyScalar(50) }));
+scene.add(new THREE.AmbientLight(0x111122, 0.3));
+
+// ═══ Earth pos ══════════════════════════════════════════════════════
+const earthPos = new THREE.Vector3(-1.2, -1.6, -14);
+
+function surfacePoint(a, e, radius) {
+  return new THREE.Vector3(
+    Math.sin(a)*Math.cos(e)*radius + earthPos.x,
+    Math.sin(e)*radius + earthPos.y,
+    Math.cos(a)*Math.cos(e)*radius + earthPos.z
+  );
+}
+
+// ═══ Explosions ═════════════════════════════════════════════════════
+const expDefs = [
+  { a: -0.136, e: 0.372, delay: 0, idx:0 },
+  { a:  0.331, e:-0.345, delay: 1.5, idx:1 }
 ];
+const explosions = [];
+const expStarted = {};
 
-function updateAnimations(dt) {
-    t += dt;
-    clouds.rotation.y += dt * 0.05;
-    station.rotation.y += dt * 0.2;
-    blinkLight.material.opacity = (Math.sin(t * 5) > 0) ? 1.0 : 0.2;
+// --- Flash ---
+const flash = new THREE.Mesh(
+  new THREE.SphereGeometry(0.05, 16, 16),
+  new THREE.ShaderMaterial({
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+    uniforms: { uOp: { value: 0 } },
+    vertexShader: `varying vec3 vA,vB; void main(){
+      vA=normalize((modelMatrix*vec4(normal,0.)).xyz);
+      vB=normalize(cameraPosition-(modelMatrix*vec4(position,1.)).xyz);
+      gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);
+    }`,
+    fragmentShader: `uniform float uOp; varying vec3 vA,vB; void main(){
+      float fr=pow(1.-max(dot(vB,vA),0.),2.5);
+      gl_FragColor=vec4(vec3(1.,0.851,0.627)*(1.5+fr*2.),fr*uOp);
+    }`
+  })
+);
+flash.name = 'flash';
+scene.add(flash);
 
-    camera.position.x = 0 + Math.sin(t * 1.5) * 0.023;
-    camera.position.y = 0.4 + Math.sin(t * 1.2) * 0.0138;
-    camera.lookAt(0, 0, -6);
+// --- Dome ---
+const dome = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 32, 16, 0, Math.PI*2, 0, Math.PI*0.5),
+  new THREE.ShaderMaterial({
+    transparent: true, blending: THREE.AdditiveBlending, side: THREE.FrontSide, depthWrite: false,
+    uniforms: { uOp: { value: 0 } },
+    vertexShader: `varying vec3 vA,vB; void main(){
+      vA=normalize((modelMatrix*vec4(normal,0.)).xyz);
+      vB=normalize(cameraPosition-(modelMatrix*vec4(position,1.)).xyz);
+      gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);
+    }`,
+    fragmentShader: `uniform float uOp; varying vec3 vA,vB; void main(){
+      float fr=pow(1.-max(dot(vB,vA),0.),2.);
+      gl_FragColor=vec4(vec3(1.,0.851,0.627)*1.5,(fr*.5+.2)*uOp);
+    }`
+  })
+);
+dome.name = 'dome';
+scene.add(dome);
 
-    let maxAge = 0;
-    expData.forEach((data, i) => {
-        const age = t - data.start;
-        if (age < 0) return;
-        const exp = (i === 0) ? exp1 : exp2;
-        const flash = exp.getObjectByName('flash');
-        const dome = exp.getObjectByName('dome');
-        const ring = exp.getObjectByName('ring');
-        const mushroom = exp.getObjectByName('mushroom');
+// --- Ring ---
+const ring = new THREE.Mesh(
+  new THREE.RingGeometry(0.05, 0.15, 64),
+  new THREE.ShaderMaterial({
+    transparent: true, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false,
+    uniforms: { uOp: { value: 0 } },
+    vertexShader: `varying vec3 vA,vB; varying vec2 vUV; void main(){
+      vA=normalize((modelMatrix*vec4(normal,0.)).xyz);
+      vB=normalize(cameraPosition-(modelMatrix*vec4(position,1.)).xyz);
+      vUV=uv;
+      gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);
+    }`,
+    fragmentShader: `uniform float uOp; varying vec3 vA,vB; varying vec2 vUV; void main(){
+      float ed=smoothstep(0.,.15,vUV.x)*(1.-smoothstep(.85,1.,vUV.x));
+      float fr=pow(1.-max(dot(vB,vA),0.),1.5);
+      gl_FragColor=vec4(vec3(1.,0.851,0.627)*2.,(ed*fr*1.5+.1)*uOp);
+    }`
+  })
+);
+ring.name = 'ring';
+scene.add(ring);
 
-        let fs = data.flash.s;
-        if (age < data.flash.dur) fs = data.flash.s + (data.flash.e - data.flash.s) * (age / data.flash.dur);
-        else fs = data.flash.e * Math.max(0, 1.0 - (age - data.flash.dur) / 0.5);
-        flash.scale.setScalar(fs);
-        flash.material.opacity = fs / data.flash.e;
+// --- Mushroom ---
+const mushMat = new THREE.ShaderMaterial({
+  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+  uniforms: { uOp: { value: 0 } },
+  vertexShader: `varying vec3 vA,vB; void main(){
+    vA=normalize((modelMatrix*vec4(normal,0.)).xyz);
+    vB=normalize(cameraPosition-(modelMatrix*vec4(position,1.)).xyz);
+    gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);
+  }`,
+  fragmentShader: `uniform float uOp; varying vec3 vA,vB; void main(){
+    float fr=pow(1.-max(dot(vB,vA),0.),2.);
+    gl_FragColor=vec4(vec3(1.,0.8,0.6)*2.,(0.5+fr*.5)*uOp*.8);
+  }`
+});
+const mushGroup = new THREE.Group();
+mushGroup.add(new THREE.Mesh(new THREE.CylinderGeometry(0.08,0.15,0.3,12), mushMat));
+const mushCap = new THREE.Mesh(new THREE.SphereGeometry(0.2,16,12), mushMat);
+mushCap.position.y = 0.25;
+mushGroup.add(mushCap);
+mushGroup.name = 'mushroom';
+scene.add(mushGroup);
 
-        let ds = data.dome.s;
-        if (age < data.dome.dur) ds = data.dome.s + (data.dome.e - data.dome.s) * (age / data.dome.dur);
-        else ds = data.dome.e * Math.max(0, 1.0 - (age - data.dome.dur) / 1.0);
-        dome.scale.setScalar(ds);
-        dome.material.opacity = Math.max(0, (ds / data.dome.e) * 0.25);
+// ═══ Post-processing targets ═══════════════════════════════════════
+const rtA = new THREE.WebGLRenderTarget(1920,1080, { minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter, format:THREE.RGBAFormat, type:THREE.HalfFloatType });
+const rtB = new THREE.WebGLRenderTarget(1920,1080, { minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter, format:THREE.RGBAFormat, type:THREE.HalfFloatType });
+const rtC = new THREE.WebGLRenderTarget(960,540, { minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter, format:THREE.RGBAFormat, type:THREE.HalfFloatType });
+const rtD = new THREE.WebGLRenderTarget(960,540, { minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter, format:THREE.RGBAFormat, type:THREE.HalfFloatType });
 
-        let rs = data.ring.s;
-        if (age < data.ring.dur) rs = data.ring.s + (data.ring.e - data.ring.s) * (age / data.ring.dur);
-        else rs = data.ring.e * Math.max(0, 1.0 - (age - data.ring.dur) / 1.0);
-        ring.scale.setScalar(rs);
-        ring.material.opacity = Math.max(0, (rs / data.ring.e) * 0.5);
+const cam2D = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+const qGeo = new THREE.PlaneGeometry(2,2);
 
-        let ms = data.mush.s;
-        if (age < data.mush.dur) ms = data.mush.s + (data.mush.e - data.mush.s) * (age / data.mush.dur);
-        else ms = data.mush.e * Math.max(0, 1.0 - (age - data.mush.dur) / 1.0);
-        mushroom.position.y = ms;
-        mushroom.scale.setScalar(Math.max(0, 1.0 - (age - data.mush.dur) / 1.0));
-
-        if (age > maxAge) maxAge = age;
-    });
-
-    currentBoomAge = maxAge;
-    earthMat.uniforms.uTime.value = t;
-    starMat.uniforms.uTime.value = t;
-    postQuad.material.uniforms.uTime.value = t;
+// Grain texture
+const gCanvas = document.createElement('canvas');
+gCanvas.width = gCanvas.height = 512;
+const gCtx = gCanvas.getContext('2d');
+const gImg = gCtx.createImageData(512,512);
+for (let i = 0; i < gImg.data.length; i += 4) {
+  const v = Math.floor(LCG() * 256);
+  gImg.data[i] = gImg.data[i+1] = gImg.data[i+2] = v;
+  gImg.data[i+3] = 255;
 }
+gCtx.putImageData(gImg, 0, 0);
+const grainTex = new THREE.CanvasTexture(gCanvas);
+grainTex.wrapS = grainTex.wrapT = THREE.RepeatWrapping;
 
-function render() {
-    renderer.autoClear = false;
-    renderer.clear();
-    renderer.render(scene, camera);
-    renderer.clearDepth();
-    renderer.render(postScene, postCamera);
-    renderer.autoClear = true;
-}
+// Bright pass
+const M_bright = new THREE.ShaderMaterial({
+  uniforms: { t: { value: null } },
+  vertexShader: `varying vec2 u; void main(){ u=uv; gl_Position=vec4(position,1.); }`,
+  fragmentShader: `uniform sampler2D t; varying vec2 u; void main(){
+    vec3 c=texture2D(t,u).rgb;
+    gl_FragColor=vec4(c*smoothstep(.3,.9,dot(c,vec3(.299,.587,.114))),1.);
+  }`
+});
+const Q_bright = new THREE.Mesh(qGeo, M_bright);
 
-window.__step = function(dt) {
-    updateAnimations(dt);
-    render();
-    return window.__probe();
-};
+// Blur H
+const M_bH = new THREE.ShaderMaterial({
+  uniforms: { t:{value:null}, r:{value:new THREE.Vector2(960,540)} },
+  vertexShader: `varying vec2 u; void main(){ u=uv; gl_Position=vec4(position,1.); }`,
+  fragmentShader: `uniform sampler2D t; uniform vec2 r; varying vec2 u; void main(){
+    vec2 px=1./r, c=vec3(0.);
+    c+=texture2D(t,u+vec2(-4*px.x,0.)).rgb*.02;
+    c+=texture2D(t,u+vec2(-3*px.x,0.)).rgb*.06;
+    c+=texture2D(t,u+vec2(-2*px.x,0.)).rgb*.12;
+    c+=texture2D(t,u+vec2(-px.x,0.)).rgb*.20;
+    c+=texture2D(t,u).rgb*.26;
+    c+=texture2D(t,u+vec2(px.x,0.)).rgb*.20;
+    c+=texture2D(t,u+vec2(2*px.x,0.)).rgb*.12;
+    c+=texture2D(t,u+vec2(3*px.x,0.)).rgb*.06;
+    c+=texture2D(t,u+vec2(4*px.x,0.)).rgb*.02;
+    gl_FragColor=vec4(c,1.);
+  }`
+});
+const Q_bH = new THREE.Mesh(qGeo, M_bH);
+
+// Blur V
+const M_bV = new THREE.ShaderMaterial({
+  uniforms: { t:{value:null}, r:{value:new THREE.Vector2(960,540)} },
+  vertexShader: `varying vec2 u; void main(){ u=uv; gl_Position=vec4(position,1.); }`,
+  fragmentShader: `uniform sampler2D t; uniform vec2 r; varying vec2 u; void main(){
+    vec2 px=1./r; vec3 c=vec3(0.);
+    c+=texture2D(t,u+vec2(0.,-4*px.y)).rgb*.02;
+    c+=texture2D(t,u+vec2(0.,-3*px.y)).rgb*.06;
+    c+=texture2D(t,u+vec2(0.,-2*px.y)).rgb*.12;
+    c+=texture2D(t,u+vec2(0.,-px.y)).rgb*.20;
+    c+=texture2D(t,u).rgb*.26;
+    c+=texture2D(t,u+vec2(0.,px.y)).rgb*.20;
+    c+=texture2D(t,u+vec2(0.,2*px.y)).rgb*.12;
+    c+=texture2D(t,u+vec2(0.,3*px.y)).rgb*.06;
+    c+=texture2D(t,u+vec2(0.,4*px.y)).rgb*.02;
+    gl_FragColor=vec4(c,1.);
+  }`
+});
+const Q_bV = new THREE.Mesh(qGeo, M_bV);
+
+// Bloom combine
+const M_bc = new THREE.ShaderMaterial({
+  uniforms: { s:{value:null}, b:{value:null} },
+  vertexShader: `varying vec2 u; void main(){ u=uv; gl_Position=vec4(position,1.); }`,
+  fragmentShader: `uniform sampler2D s,b; varying vec2 u; void main(){
+    gl_FragColor=vec4(texture2D(s,u).rgb+texture2D(b,u).rgb*.7,1.);
+  }`
+});
+const Q_bc = new THREE.Mesh(qGeo, M_bc);
+
+// Final FX
+const M_final = new THREE.ShaderMaterial({
+  uniforms: { t:{value:null}, g:{value:grainTex} },
+  vertexShader: `varying vec2 u; void main(){ u=uv; gl_Position=vec4(position,1.); }`,
+  fragmentShader: `uniform sampler2D t,g; varying vec2 u; void main(){
+    vec2 uv=u;
+    vec2 dir=uv-.5;
+    float d=length(dir);
+    float ca=(0.003+.002*d*d)*d*2.;
+    vec2 co=normalize(dir+.001)*ca;
+    vec3 col=vec3(texture2D(t,uv+co).r, texture2D(t,uv).g, texture2D(t,uv-co).b);
+    col*=1.-d*d*.8;
+    float gn=texture2D(g,uv*100.).r;
+    col+=gn*.06+.02-.03;
+    col*=1.1;
+    col.b*=1.02;
+    gl_FragColor=vec4(col,1.);
+  }`
+});
+const Q_final = new THREE.Mesh(qGeo, M_final);
+
+// ═══ Probe & Step ═════════════════════════════════════════════════
+let simT = 0;
+let shakeA = 0;
 
 window.__probe = function() {
-    return {
-        t: t.toFixed(4),
-        objects: ['earth', 'atmosphere', 'clouds', 'station', 'flash', 'dome', 'ring', 'mushroom', 'stars'],
-        camera: [camera.position.x, camera.position.y],
-        boom: currentBoomAge.toFixed(4)
-    };
+  const objs = [
+    {name:'earth', pos:[earthPos.x, earthPos.y, earthPos.z]},
+    {name:'atmosphere', pos:[earthPos.x, earthPos.y, earthPos.z]},
+    {name:'clouds', pos:[earthPos.x, earthPos.y, earthPos.z]},
+    {name:'station', pos:[stationGroup.position.x, stationGroup.position.y, stationGroup.position.z]},
+    {name:'stars', count:2200}
+  ];
+  for (const e of explosions) {
+    if (e.t < 6) objs.push({name:'expl'+e.idx, pos:[e.pos.x,e.pos.y,e.pos.z], age:Math.round(e.t*1000)/1000});
+  }
+  let boom = -1;
+  for (let i=explosions.length-1; i>=0; i--) {
+    if (explosions[i].t < 6) { boom=Math.round(explosions[i].t*1000)/1000; break; }
+  }
+  return {
+    t: Math.round(simT*1000)/1000,
+    objects: objs,
+    camera: [Math.round(camera.position.x*1e4)/1e4, Math.round(camera.position.y*1e4)/1e4],
+    boom: boom
+  };
 };
 
-window.__ready = true;
-window.__step(0);
-</script>
+window.__step = function(dt) {
+  simT += dt;
+  shakeA += dt * 3.7;
 
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
+  // Fire explosions
+  for (const d of expDefs) {
+    const key = d.a + '_' + d.e;
+    if (simT >= d.delay && !expStarted[key]) {
+      explosions.push({ idx:d.idx, t:0, pos: surfacePoint(d.a, d.e, 4.0) });
+      expStarted[key] = true;
     }
-    requestAnimationFrame(loop);
   }
 
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
+  for (const e of explosions) {
+    e.t += dt;
+    const N = e.pos.clone().sub(earthPos).normalize();
 
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
+    // Flash: 0->0.5 grow, 0.5->1.0 fade
+    if (e.t < 1.0) {
+      flash.visible = true;
+      flash.position.copy(e.pos);
+      if (e.t <= 0.5) {
+        const p = e.t / 0.5;
+        flash.scale.setScalar(0.05 + 0.29*p);
+        flash.material.uniforms.uOp.value = Math.min(1, p*2);
+      } else {
+        const f = 1-(e.t-0.5)/0.5;
+        flash.material.uniforms.uOp.value = Math.max(0,f);
+      }
+    } else flash.visible = false;
+
+    // Dome: .15->1.75 expand, 1.75->2.55 fade
+    if (e.t < 2.55) {
+      dome.visible = true;
+      dome.position.copy(e.pos);
+      dome.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), N);
+      dome.scale.setScalar(0.01);
+      if (e.t >= 0.15 && e.t < 1.75) {
+        const p = (e.t-0.15)/1.6;
+        dome.scale.setScalar(p*0.9+0.01);
+        dome.material.uniforms.uOp.value = Math.min(0.25, p*0.5);
+      } else if (e.t >= 1.75) {
+        const f = 1-(e.t-1.75)/0.8;
+        dome.material.uniforms.uOp.value = Math.max(0, 0.25*f);
+      } else {
+        dome.material.uniforms.uOp.value = 0;
+      }
+    } else dome.visible = false;
+
+    // Ring: .3->2.7 expand, 2.7->4.2 fade
+    if (e.t < 4.2) {
+      ring.visible = true;
+      ring.position.copy(e.pos);
+      ring.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), N);
+      ring.scale.setScalar(0.05);
+      if (e.t >= 0.3 && e.t < 2.7) {
+        const p = (e.t-0.3)/2.4;
+        ring.scale.set(p*1.8, p*1.8, 1);
+        ring.material.uniforms.uOp.value = 0.5;
+      } else if (e.t >= 2.7) {
+        const f = 1-(e.t-2.7)/1.5;
+        ring.material.uniforms.uOp.value = Math.max(0, 0.5*f);
+      } else {
+        ring.material.uniforms.uOp.value = 0;
+      }
+    } else ring.visible = false;
+
+    // Mushroom: .4->2.4 rise, 2.4->4.4 fade
+    if (e.t < 4.5) {
+      mushGroup.visible = true;
+      const rise = Math.min(0.5, (e.t - 0.4) * 0.25);
+      mushGroup.position.copy(e.pos.clone().add(N.clone().multiplyScalar(0.05 + rise)));
+      mushGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), N);
+      if (e.t >= 0.4 && e.t < 2.4) {
+        const p = (e.t-0.4)/2;
+        const ms = 0.3 + 0.7*Math.min(1, p*2);
+        mushGroup.scale.setScalar(ms);
+        if (mushGroup.children[0]) mushGroup.children[0].scale.set(1, 0.5+2*p, 1);
+        mushMat.uniforms.uOp.value = Math.min(0.8, p*1.2);
+      } else if (e.t >= 2.4 && e.t < 2.4+2) {
+        const f = 1-(e.t-2.4)/2;
+        mushMat.uniforms.uOp.value = Math.max(0, 0.8*f);
+      } else {
+        mushMat.uniforms.uOp.value = 0;
+      }
+    } else mushGroup.visible = false;
+  }
+
+  // Station
+  stationGroup.rotation.y = simT * 0.3;
+  stationGroup.rotation.x = Math.sin(simT*0.2)*0.05;
+
+  // Clouds
+  clouds.material.uniforms.uClock.value = simT;
+
+  // World rotation
+  earth.rotation.y = simT*0.02;
+  atmos.rotation.y = simT*0.02;
+  clouds.rotation.y = simT*0.015;
+
+  // Camera shake
+  const sx = Math.sin(shakeA)*0.023 + Math.sin(shakeA*1.7)*0.012;
+  const sy = Math.cos(shakeA*1.3)*0.023*0.6 + Math.cos(shakeA*2.1)*0.008;
+  camera.position.set(sx, 0.4+sy, 6);
+  camera.lookAt(0, 0, -6);
+
+  // Cleanup
+  for (let i=explosions.length-1; i>=0; i--) {
+    if (explosions[i].t > 8) explosions.splice(i, 1);
+  }
+};
+
+// ═══ Render ═════════════════════════════════════════════════════════
+let firstFrame = true;
+
+function render() {
+  // Sim
+  for (let s=0; s<1; s++) window.__step(1/30);
+
+  // Scene -> rtA
+  renderer.setRenderTarget(rtA);
+  renderer.setViewport(0,0,1920,1080);
+  renderer.setScissor(0,0,1920,1080);
+  renderer.render(scene, camera);
+
+  // Bloom bright -> rtC
+  renderer.setRenderTarget(rtC);
+  renderer.setViewport(0,0,960,540);
+  Q_bright.material.uniforms.t.value = rtA.texture;
+  renderer.render(new THREE.Scene(), cam2D);
+
+  // Blur H rtC->rtD
+  renderer.setRenderTarget(rtD);
+  renderer.setViewport(0,0,960,540);
+  Q_bH.material.uniforms.t.value = rtC.texture;
+  renderer.render(new THREE.Scene(), cam2D);
+
+  // Blur V rtD->rtC
+  renderer.setRenderTarget(rtC);
+  Q_bV.material.uniforms.t.value = rtD.texture;
+  renderer.render(new THREE.Scene(), cam2D);
+
+  // 2nd blur for strength
+  renderer.setRenderTarget(rtD);
+  Q_bH.material.uniforms.t.value = rtC.texture;
+  renderer.render(new THREE.Scene(), cam2D);
+  renderer.setRenderTarget(rtC);
+  Q_bV.material.uniforms.t.value = rtD.texture;
+  renderer.render(new THREE.Scene(), cam2D);
+
+  // Combine -> rtB
+  renderer.setRenderTarget(rtB);
+  renderer.setViewport(0,0,1920,1080);
+  renderer.setScissor(0,0,1920,1080);
+  Q_bc.material.uniforms.s.value = rtA.texture;
+  Q_bc.material.uniforms.b.value = rtC.texture;
+  renderer.render(new THREE.Scene(), cam2D);
+
+  // Final FX -> screen
+  renderer.setRenderTarget(null);
+  renderer.setViewport(0,0,1920,1080);
+  Q_final.material.uniforms.t.value = rtB.texture;
+  renderer.render(new THREE.Scene(), cam2D);
+
+  if (firstFrame) {
+    firstFrame = false;
+    window.__ready = true;
+    console.log('__probe:', JSON.stringify(window.__probe(), null, 2));
+  }
+}
+
+render();
+requestAnimationFrame(function loop() { render(); requestAnimationFrame(loop); });
 </script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-25 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

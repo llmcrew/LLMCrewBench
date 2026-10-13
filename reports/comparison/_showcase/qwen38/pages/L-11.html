@@ -2,10 +2,10 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<title>Жидкий металл и стекло</title>
 <style>
-*{margin:0;padding:0}
-body{background:#000;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden}
-canvas{display:block}
+  html, body { margin: 0; padding: 0; background: #0a0714; overflow: hidden; }
+  canvas { display: block; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
@@ -13,51 +13,87 @@ canvas{display:block}
 <script type="module">
 const THREE = window.THREE;
 
+// ---------- renderer ----------
 const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
 renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
+renderer.setSize(1920, 1080, false);
 document.body.appendChild(renderer.domElement);
 
+// ---------- scene ----------
 const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0714);
 scene.fog = new THREE.Fog(0x0a0714, 14, 45);
 
-const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 100);
-camera.position.set(0, 0.5, 4.0);
-camera.lookAt(0, 0.1, 0);
-
-// --- Environment map: DataTexture 8x64 ---
-function makeEnvMap() {
-  const W = 8, H = 64;
-  const data = new Uint8Array(W * H * 4);
-  const stops = [
-    { t: 0.0,  c: [0x0a, 0x07, 0x14] },
-    { t: 1/3,  c: [0x0d, 0x1b, 0x2e] },
-    { t: 2/3,  c: [0x1b, 0x4a, 0x5e] },
-    { t: 1.0,  c: [0x8f, 0xd3, 0xff] }
-  ];
-  for (let y = 0; y < H; y++) {
-    const v = y / (H - 1);
-    let i = 0;
-    while (i < stops.length - 2 && v > stops[i + 1].t) i++;
-    const t0 = stops[i].t, t1 = stops[i + 1].t;
-    const f = (v - t0) / (t1 - t0);
-    const r = Math.round(stops[i].c[0] + f * (stops[i + 1].c[0] - stops[i].c[0]));
-    const g = Math.round(stops[i].c[1] + f * (stops[i + 1].c[1] - stops[i].c[1]));
-    const b = Math.round(stops[i].c[2] + f * (stops[i + 1].c[2] - stops[i].c[2]));
-    for (let x = 0; x < W; x++) {
-      const idx = (y * W + x) * 4;
-      data[idx] = r; data[idx+1] = g; data[idx+2] = b; data[idx+3] = 255;
-    }
-  }
-  const tex = new THREE.DataTexture(data, W, H);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.mapping = THREE.EquirectangularReflectionMapping;
-  tex.needsUpdate = true;
-  return tex;
+// ---------- env map: DataTexture 8x64, equirect ----------
+function hexToRgb(h) {
+  return [(h >> 16) & 255, (h >> 8) & 255, h & 255];
 }
-scene.environment = makeEnvMap();
+const ENV_W = 8, ENV_H = 64;
+const envStops = [
+  { t: 0.00, c: hexToRgb(0x0a0714) },
+  { t: 0.45, c: hexToRgb(0x0d1b2e) },
+  { t: 0.85, c: hexToRgb(0x1b4a5e) },
+  { t: 1.00, c: hexToRgb(0x8fd3ff) }
+];
+const envData = new Uint8Array(ENV_W * ENV_H * 4);
+function lerpStops(stops, t) {
+  let a = stops[0], b = stops[stops.length - 1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (t >= stops[i].t && t <= stops[i + 1].t) { a = stops[i]; b = stops[i + 1]; break; }
+  }
+  const span = (b.t - a.t) || 1;
+  const k = (t - a.t) / span;
+  return [
+    a.c[0] + (b.c[0] - a.c[0]) * k,
+    a.c[1] + (b.c[1] - a.c[1]) * k,
+    a.c[2] + (b.c[2] - a.c[2]) * k
+  ];
+}
+for (let y = 0; y < ENV_H; y++) {         // row 0 = bottom (v=0)
+  const t = y / (ENV_H - 1);
+  const [r, g, b] = lerpStops(envStops, t);
+  for (let x = 0; x < ENV_W; x++) {
+    const i = (y * ENV_W + x) * 4;
+    envData[i] = Math.round(r);
+    envData[i + 1] = Math.round(g);
+    envData[i + 2] = Math.round(b);
+    envData[i + 3] = 255;
+  }
+}
+const envMap = new THREE.DataTexture(envData, ENV_W, ENV_H);
+envMap.colorSpace = THREE.SRGBColorSpace;
+envMap.mapping = THREE.EquirectangularReflectionMapping;
+envMap.needsUpdate = true;
+scene.environment = envMap;
 
-// --- Sphere ---
+// ---------- background gradient texture: #0a0714 (bottom) -> #4d7fa8 (top) ----------
+const BG_W = 2, BG_H = 256;
+const bgData = new Uint8Array(BG_W * BG_H * 4);
+const bgBot = hexToRgb(0x0a0714), bgTop = hexToRgb(0x4d7fa8);
+for (let y = 0; y < BG_H; y++) {
+  const k = y / (BG_H - 1);
+  const r = bgBot[0] + (bgTop[0] - bgBot[0]) * k;
+  const g = bgBot[1] + (bgTop[1] - bgBot[1]) * k;
+  const b = bgBot[2] + (bgTop[2] - bgBot[2]) * k;
+  for (let x = 0; x < BG_W; x++) {
+    const i = (y * BG_W + x) * 4;
+    bgData[i] = Math.round(r);
+    bgData[i + 1] = Math.round(g);
+    bgData[i + 2] = Math.round(b);
+    bgData[i + 3] = 255;
+  }
+}
+const bgTex = new THREE.DataTexture(bgData, BG_W, BG_H);
+bgTex.colorSpace = THREE.SRGBColorSpace;
+bgTex.needsUpdate = true;
+
+// ---------- camera ----------
+const camera = new THREE.PerspectiveCamera(42, 1920 / 1080, 0.1, 100);
+camera.position.set(0, 0.85, 5.4);
+camera.lookAt(-0.15, 0.42, 0.2);
+
+// ---------- geometry & materials ----------
+// liquid-metal sphere
 const sphere = new THREE.Mesh(
   new THREE.SphereGeometry(0.8, 48, 32),
   new THREE.MeshPhysicalMaterial({
@@ -72,7 +108,7 @@ sphere.name = 'sphere';
 sphere.position.set(0, 0.40, 0.60);
 scene.add(sphere);
 
-// --- Torus ---
+// glass torus
 const torus = new THREE.Mesh(
   new THREE.TorusGeometry(0.80, 0.28, 16, 64),
   new THREE.MeshPhysicalMaterial({
@@ -84,9 +120,10 @@ const torus = new THREE.Mesh(
 );
 torus.name = 'torus';
 torus.position.set(-1.45, -0.25, -0.6);
+torus.rotation.z = 0.18;
 scene.add(torus);
 
-// --- Floor ---
+// floor
 const floor = new THREE.Mesh(
   new THREE.PlaneGeometry(40, 40),
   new THREE.MeshPhysicalMaterial({
@@ -95,147 +132,84 @@ const floor = new THREE.Mesh(
     roughness: 0.30
   })
 );
+floor.name = 'floor';
 floor.rotation.x = -Math.PI / 2;
 floor.position.y = -1.20;
 scene.add(floor);
 
-// --- Background plane ---
-function makeBgTexture() {
-  const W = 8, H = 64;
-  const data = new Uint8Array(W * H * 4);
-  const bot = [0x0a, 0x07, 0x14];
-  const top = [0x4d, 0x7f, 0xa8];
-  for (let y = 0; y < H; y++) {
-    const v = y / (H - 1);
-    const r = Math.round(bot[0] + v * (top[0] - bot[0]));
-    const g = Math.round(bot[1] + v * (top[1] - bot[1]));
-    const b = Math.round(bot[2] + v * (top[2] - bot[2]));
-    for (let x = 0; x < W; x++) {
-      const idx = (y * W + x) * 4;
-      data[idx] = r; data[idx+1] = g; data[idx+2] = b; data[idx+3] = 255;
-    }
-  }
-  const tex = new THREE.DataTexture(data, W, H);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.needsUpdate = true;
-  return tex;
-}
-const bgPlane = new THREE.Mesh(
+// background wall
+const back = new THREE.Mesh(
   new THREE.PlaneGeometry(40, 40),
-  new THREE.MeshBasicMaterial({ map: makeBgTexture() })
+  new THREE.MeshBasicMaterial({ map: bgTex, fog: true })
 );
-bgPlane.position.z = -6;
-scene.add(bgPlane);
+back.name = 'background';
+back.position.set(0, 14.0, -6); // plane bottom hides under the floor; visible slice shows the darker lower part of the gradient
+scene.add(back);
 
-// --- Lights ---
+// ---------- lights ----------
 const dirLight = new THREE.DirectionalLight(0xffffff, 4.0);
 dirLight.position.set(2.0, 4.0, 3.0);
 scene.add(dirLight);
 
-const sparkLight = new THREE.PointLight(0xf2f6fb, 120, 25);
-sparkLight.position.set(0.6, 2.6, 2.2);
-scene.add(sparkLight);
+const spark = new THREE.PointLight(0xf2f6fb, 120, 25);
+spark.position.set(0.6, 2.6, 2.2);
+scene.add(spark);
 
-const orbitLight1 = new THREE.PointLight(0x33d1c6, 45, 25);
-const orbitLight2 = new THREE.PointLight(0xe0733c, 45, 25);
-scene.add(orbitLight1);
-scene.add(orbitLight2);
+const orbitA = new THREE.PointLight(0x33d1c6, 45, 25);
+const orbitB = new THREE.PointLight(0xe0733c, 45, 25);
+scene.add(orbitA, orbitB);
 
-const ambientLight = new THREE.AmbientLight(0x223044, 0.3);
-scene.add(ambientLight);
+scene.add(new THREE.AmbientLight(0x223044, 0.3));
 
-// --- Orbit update ---
-function updateOrbit(time) {
-  const a = 0.900 * time + 0.052;
-  const x = 3.2 * Math.cos(a);
-  const z = 3.2 * Math.sin(a) + 2.0;
-  orbitLight1.position.set(x, 0, z);
-  orbitLight2.position.set(x, 0, z);
+const ORBIT_R = 3.2, ORBIT_SPEED = 0.900, ORBIT_PHASE = 0.052, ORBIT_Y = 1.6;
+function orbitPos(t) {
+  const a = ORBIT_SPEED * t + ORBIT_PHASE;
+  return { x: ORBIT_R * Math.cos(a), y: ORBIT_Y, z: ORBIT_R * Math.sin(a) + 2.0 };
 }
-updateOrbit(0);
 
-// --- Render ---
-function render() {
-  renderer.render(scene, camera);
-}
-render();
-window.__ready = true;
-
-// --- State ---
+// ---------- state & API ----------
 let t = 0;
+function applyOrbit() {
+  const p = orbitPos(t);
+  orbitA.position.set(p.x, p.y, p.z);
+  orbitB.position.set(p.x, p.y, p.z);
+}
+function round4(v) { return Math.round(v * 10000) / 10000; }
 
-window.__step = function(dt) {
+window.__probe = function () {
+  const p = orbitPos(t);
+  return {
+    t: round4(t),
+    objects: [
+      { name: 'sphere', position: [0.0, 0.40, 0.60], rotationY: round4(sphere.rotation.y), rotationX: round4(sphere.rotation.x) },
+      { name: 'torus',  position: [-1.45, -0.25, -0.60], rotationY: round4(torus.rotation.y) },
+      { name: 'floor',  position: [0.0, -1.20, 0.0] },
+      { name: 'background', position: [0.0, 14.0, -6.0] }
+    ],
+    angle: round4(sphere.rotation.y),
+    light: [round4(p.x), round4(p.y), round4(p.z)]
+  };
+};
+
+window.__step = function (dt) {
   t += dt;
   sphere.rotation.y += 1.100 * dt;
   sphere.rotation.x += 0.4 * dt;
   torus.rotation.y += 0.7 * dt;
-  updateOrbit(t);
-  render();
+  applyOrbit();
+  renderer.render(scene, camera);
   return window.__probe();
 };
 
-window.__probe = function() {
-  const a = 0.900 * t + 0.052;
-  const lx = 3.2 * Math.cos(a);
-  const lz = 3.2 * Math.sin(a) + 2.0;
-  return {
-    t: Math.round(t * 10000) / 10000,
-    objects: ['sphere', 'torus'],
-    angle: Math.round(sphere.rotation.y * 10000) / 10000,
-    light: [
-      Math.round(lx * 10000) / 10000,
-      0,
-      Math.round(lz * 10000) / 10000
-    ]
-  };
-};
+// initial frame (t = 0)
+applyOrbit();
+renderer.render(scene, camera);
+window.__ready = true;
+
+// safety net: if the GL context is restored (rare, headless GPUs), repaint
+renderer.domElement.addEventListener('webglcontextrestored', () => {
+  renderer.render(scene, camera);
+});
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-11 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

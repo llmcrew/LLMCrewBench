@@ -2,33 +2,83 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<title>Lava Lamp</title>
 <style>
-*{margin:0;padding:0}
-body{background:#000;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden}
-canvas{display:block}
+  html, body { margin: 0; padding: 0; background: #16092b; overflow: hidden; }
+  canvas { display: block; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
+<canvas id="frame"></canvas>
 <script type="module">
 const THREE = window.THREE;
 
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+// ---- renderer: 1920x1080, pixelRatio 1, deterministic ----
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('frame'), preserveDrawingBuffer: true, antialias: false });
 renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
-document.body.appendChild(renderer.domElement);
+renderer.setSize(1920, 1080, false);
 
-const scene = new THREE.Scene();
+// camera: 45 deg, at 2.0 units -> half-height of frame = tan(22.5deg) * 2 = 0.8284
 const camera = new THREE.PerspectiveCamera(45, 4 / 3, 0.1, 10);
-camera.position.set(0, 0, 2.0);
+camera.position.set(0, 0, 2);
 camera.lookAt(0, 0, 0);
 
-const halfH = 0.8284;
-const halfW = halfH * 4 / 3;
-const planeW = halfW * 2;
-const planeH = halfH * 2;
+const scene = new THREE.Scene();
 
-const blobData = [
+// single plane filling the frame exactly: half-height 0.8284, half-width 4/3 times that
+const HALF_H = Math.tan(THREE.MathUtils.degToRad(45 / 2)) * 2; // 0.8284
+const plane = new THREE.Mesh(
+  new THREE.PlaneGeometry(HALF_H * (4 / 3) * 2, HALF_H * 2),
+  new THREE.ShaderMaterial({
+    uniforms: {
+      uB: { value: new Float32Array(27) } // per blob: x, y (p-coords), r
+    },
+    vertexShader: /* glsl */`
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */`
+      precision highp float;
+      varying vec2 vUv;
+      uniform vec3 uB[9]; // x, y in p-coords, radius (fraction of frame height)
+
+      vec3 BG   = vec3(22.0, 9.0, 43.0) / 255.0;   // #16092b dark plum
+      vec3 HALO = vec3(255.0, 45.0, 107.0) / 255.0; // #ff2d6b glow
+      vec3 BODY = vec3(255.0, 107.0, 26.0) / 255.0; // #ff6b1a lava body
+      vec3 CORE = vec3(255.0, 223.0, 61.0) / 255.0; // #ffdf3d hot core
+
+      void main() {
+        // x in fractions of frame height, y in fractions of frame height
+        vec2 p = (vUv - 0.5) * vec2(1.3333, 1.0);
+
+        // metaball field F(p) = sum r_i^2 / max(|p - c_i|^2, 1e-4)
+        float F = 0.0;
+        for (int i = 0; i < 9; i++) {
+          vec2 d = p - uB[i].xy;
+          float r = uB[i].z;
+          F += (r * r) / max(dot(d, d), 0.0001);
+        }
+
+        // bands of the field: halo F ~0.3..0.62, body F ~0.85..1.3, core F ~2.4..3.2
+        // (core color carries on deeper; outer halo bleeds in softly)
+        vec3 col = BG;
+        col = mix(col, HALO, smoothstep(0.27, 0.34, F));
+        col = mix(col, BODY, smoothstep(0.82, 0.87, F));
+        col = mix(col, CORE, smoothstep(2.36, 2.44, F));
+
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `
+  })
+);
+scene.add(plane);
+
+// ---- blobs: [cx (fraction of width), cy0 (fraction of height), r (fraction of height), A, w, phase] ----
+const BLOBS = [
   [0.333, 0.604, 0.089, 0.126, 0.497, 1.59],
   [0.457, 0.657, 0.102, 0.106, 0.478, 3.21],
   [0.120, 0.672, 0.081, 0.112, 0.679, 4.65],
@@ -37,178 +87,54 @@ const blobData = [
   [0.779, 0.713, 0.103, 0.175, 1.136, 0.39],
   [0.472, 0.318, 0.079, 0.178, 0.656, 1.23],
   [0.192, 0.509, 0.101, 0.161, 1.014, 3.99],
-  [0.892, 0.486, 0.102, 0.115, 0.862, 2.83]
+  [0.892, 0.486, 0.102, 0.115, 0.862, 2.83],
 ];
 
-const N = 9;
-const centers = [];
-const radii = [];
-for (let i = 0; i < N; i++) {
-  const [fx, fy, r] = blobData[i];
-  centers.push(new THREE.Vector2((fx - 0.5) * 1.3333, (fy - 0.5) * 1.0));
-  radii.push(r);
+// time advances only via window.__step(dt)
+let t = 0;
+
+function blobYs() {
+  return BLOBS.map(b => b[1] + b[3] * Math.sin(b[4] * t + b[5]));
 }
 
-const vertexShader = `
-varying vec2 vUv;
-void main(){
-  vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}`;
-
-const fragmentShader = `
-precision highp float;
-varying vec2 vUv;
-uniform vec2 uCenters[${N}];
-uniform float uRadii[${N}];
-
-void main(){
-  vec2 p = (vUv - 0.5) * vec2(1.3333, 1.0);
-
-  float F = 0.0;
-  for(int i = 0; i < ${N}; i++){
-    vec2 d = p - uCenters[i];
-    float d2 = max(dot(d, d), 0.0001);
-    F += uRadii[i] * uRadii[i] / d2;
-  }
-
-  vec3 bg      = vec3(0.0863, 0.0353, 0.1686);
-  vec3 halo    = vec3(1.0,    0.1765, 0.4196);
-  vec3 surface = vec3(1.0,    0.4196, 0.1020);
-  vec3 core    = vec3(1.0,    0.8745, 0.2392);
-
-  vec3 col;
-  if(F < 0.28){
-    col = bg;
-  } else if(F < 0.32){
-    col = mix(bg, halo, (F - 0.28) / 0.04);
-  } else if(F < 0.62){
-    col = halo;
-  } else if(F < 0.85){
-    float t = (F - 0.62) / 0.23;
-    col = mix(halo, surface, t * t * (3.0 - 2.0 * t));
-  } else if(F < 1.3){
-    col = surface;
-  } else if(F < 2.4){
-    float t = (F - 1.3) / 1.1;
-    col = mix(surface, core, t * t * (3.0 - 2.0 * t));
-  } else {
-    col = core;
-  }
-
-  // subtle depth: slight brightness modulation from field
-  float lum = 1.0 + 0.03 * clamp(F - 0.5, 0.0, 2.0) / 2.0;
-  col *= lum;
-
-  gl_FragColor = vec4(col, 1.0);
-}`;
-
-const geometry = new THREE.PlaneGeometry(planeW, planeH);
-const material = new THREE.ShaderMaterial({
-  vertexShader,
-  fragmentShader,
-  uniforms: {
-    uCenters: { value: centers },
-    uRadii:   { value: radii }
-  },
-  side: THREE.FrontSide
-});
-
-const mesh = new THREE.Mesh(geometry, material);
-mesh.name = 'lavaPlane';
-scene.add(mesh);
-
-let time = 0;
-
-function updateBlobs() {
-  for (let i = 0; i < N; i++) {
-    const [fx, fy0, , A, w, p] = blobData[i];
-    const fy = fy0 + A * Math.sin(w * time + p);
-    material.uniforms.uCenters.value[i].set(
-      (fx - 0.5) * 1.3333,
-      (fy - 0.5) * 1.0
-    );
+function updateUniforms() {
+  const ys = blobYs();
+  const arr = plane.material.uniforms.uB.value;
+  for (let i = 0; i < BLOBS.length; i++) {
+    const b = BLOBS[i];
+    // to p-coords: x in fractions of frame height, y in fractions of height
+    arr[i * 3 + 0] = (b[0] - 0.5) * (4 / 3);
+    arr[i * 3 + 1] = ys[i] - 0.5;
+    arr[i * 3 + 2] = b[2];
   }
 }
 
-function render() {
-  updateBlobs();
+const r4 = v => Math.round(v * 10000) / 10000;
+
+window.__probe = function () {
+  const ys = blobYs();
+  const blobs = BLOBS.map((b, i) => ({ x: r4(b[0]), y: r4(ys[i]), r: r4(b[2]) }));
+  return {
+    t: r4(t),
+    objects: blobs.map((b, i) => ({ id: i, type: 'blob', x: b.x, y: b.y, r: b.r })),
+    blobs,
+  };
+};
+
+function draw() {
+  updateUniforms();
   renderer.render(scene, camera);
 }
 
-// Initial frame at t=0
-render();
+// first frame — start of the scene
+draw();
 window.__ready = true;
 
-window.__step = function(dt) {
-  time += dt;
-  render();
+window.__step = function (dt) {
+  t += dt;
+  draw();
   return window.__probe();
 };
-
-window.__probe = function() {
-  const blobs = [];
-  for (let i = 0; i < N; i++) {
-    const [fx, fy0, , A, w, p] = blobData[i];
-    const fy = fy0 + A * Math.sin(w * time + p);
-    blobs.push([
-      Math.round(fx * 10000) / 10000,
-      Math.round(fy * 10000) / 10000
-    ]);
-  }
-  return {
-    t: Math.round(time * 10000) / 10000,
-    objects: scene.children.map(o => o.name),
-    blobs: blobs
-  };
-};
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-13 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

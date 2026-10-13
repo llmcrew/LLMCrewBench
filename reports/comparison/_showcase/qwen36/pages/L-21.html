@@ -1,290 +1,333 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <title>Аналоговая рубка с дождём</title>
 <script src='../../../_vendor/three.global.js'></script>
-</head>
-<body>
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<script type="importmap">{"imports":{"three":"./vendor/three.module.js"}}</script>
 <script type="module">
 const THREE = window.THREE;
 
-// --- LCG Determinism ---
-let lcg = 782736;
-function rnd() {
-  lcg = (lcg * 1103515245 + 12345) % 2147483648;
-  return lcg / 2147483648;
-}
+/* ── LCG only ── */
+let _lcg = 782736;
+function lcgNext() { _lcg = (_lcg * 1103515245 + 12345) % 2147483648; }
+function rnd()  { lcgNext(); return _lcg / 2147483648; }
 
-// --- Renderer & Camera ---
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
-renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
-document.body.appendChild(renderer.domElement);
+/* ── colours ── */
+const COL = {
+  body:    0x2a1c4a,
+  green:   0x57e08a,
+  amber:   0xffd166,
+  rain:    0xa8c8dc,
+  building:0x1a2140,
+};
 
+/* ── scene, camera, renderer ── */
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 100);
+scene.background = new THREE.Color(COL.body);
+scene.fog = new THREE.Fog(COL.body, 50, 80);
+
+const camera = new THREE.PerspectiveCamera(60, 1920 / 1080, 0.1, 100);
 camera.position.set(0, 0, 4);
 camera.lookAt(0, 0, -1);
 
-// Scale factor to map 800x600 pixels to reasonable 3D units
-const S = 0.01;
+const canvas = document.createElement('canvas');
+canvas.style.display = 'block';
+const renderer = new THREE.WebGLRenderer({ canvas, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(canvas);
 
-// --- Colors ---
-const COL_DARK = 0x2a1c4a;
-const COL_GREEN = 0x57e08a;
-const COL_AMBER = 0xffd166;
-const COL_COLD = 0xa8c8dc;
-const COL_DARK_BLUE = 0x1a2140;
-
-// --- Scene Objects ---
-const objects = {};
-
-// night
-const nightGeo = new THREE.PlaneGeometry(10, 10);
-const nightMat = new THREE.MeshBasicMaterial({ color: COL_DARK });
-objects.night = new THREE.Mesh(nightGeo, nightMat);
-objects.night.position.z = -0.45;
-scene.add(objects.night);
-
-// glass
-const glassGeo = new THREE.PlaneGeometry(6.24, 2.76);
-const glassMat = new THREE.MeshBasicMaterial({ color: COL_COLD, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
-objects.glass = new THREE.Mesh(glassGeo, glassMat);
-objects.glass.position.set(0, 3.9, -0.05);
-scene.add(objects.glass);
-
-// canopy above glass
-const canopyGeo = new THREE.PlaneGeometry(6.24, 0.72);
-const canopyMat = new THREE.MeshBasicMaterial({ color: COL_DARK });
-objects.canopy = new THREE.Mesh(canopyGeo, canopyMat);
-objects.canopy.position.set(0, 5.28, -0.05);
-scene.add(objects.canopy);
-
-// rain
-const rainCount = 44;
-const rainGeo = new THREE.BufferGeometry();
-const rainPos = new Float32Array(rainCount * 3);
-for (let i = 0; i < rainCount; i++) {
-  rainPos[i * 3] = rnd() * 8;
-  rainPos[i * 3 + 1] = 2.52 + rnd() * 2.76;
-  rainPos[i * 3 + 2] = -0.12;
+/* ═══════  HELPER: world-coord from fractional viewport at given z  ════ */
+function vp(x, y, z) {
+  // fovY=60, camZ=4, plane at z → distance = 4 - z
+  const d = 4 - z;
+  const hfovHalf = (Math.PI / 6);  // 30° half-angle
+  const halfH = d * Math.tan(hfovHalf);
+  const halfW = halfH * (1920 / 1080);
+  return new THREE.Vector3(
+    (x - 0.5) * 2 * halfW,
+    (y - 0.5) * 2 * halfH,
+    z
+  );
 }
-rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
-const rainMat = new THREE.PointsMaterial({ color: COL_COLD, size: 0.05, blending: THREE.AdditiveBlending, depthWrite: false });
-objects.rain = new THREE.Points(rainGeo, rainMat);
-scene.add(objects.rain);
 
-// skyline
-const skylineGroup = new THREE.Group();
-const buildings = [
-  { w: 0.8, h: 1.5, x: 1.0 },
-  { w: 1.2, h: 2.0, x: 2.5 },
-  { w: 0.6, h: 1.2, x: 4.0 },
-  { w: 1.0, h: 1.8, x: 5.5 },
-  { w: 0.9, h: 1.4, x: 7.0 }
-];
-buildings.forEach(b => {
-  const geo = new THREE.BoxGeometry(b.w, b.h, 0.1);
-  const mat = new THREE.MeshBasicMaterial({ color: COL_DARK_BLUE });
+/* ═══════  glass window (cockpit window)  ═══════ */
+{
+  const p = vp(0.5, 0.56, -5);               // centre of glass
+  const gH = 0.46 * 2 * (4 + 5) * Math.tan(Math.PI / 6) * (1920 / 1080);
+  const gW = 0.78 * gH;
+  const glassGeo = new THREE.PlaneGeometry(gW, gH);
+  const glassMat = new THREE.MeshBasicMaterial({
+    color: COL.body,
+    transparent: true,
+    opacity: 0.35,
+    side: THREE.DoubleSide,
+  });
+  const glassPlane = new THREE.Mesh(glassGeo, glassMat);
+  glassPlane.position.copy(p);
+  scene.add(glassPlane);
+}
+
+/* ═══════  night backdrop (z=-45)  ═══════ */
+{
+  const p = vp(0.5, 0.56, -45);
+  const d = 4 + 45;
+  const halfH = d * Math.tan(Math.PI / 6);
+  const halfW = halfH * (1920 / 1080);
+  const geo = new THREE.PlaneGeometry(halfW * 4, halfH * 4);
+  const mat = new THREE.MeshBasicMaterial({ color: COL.body });
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.set(b.x, 2.52 + b.h / 2, -0.14);
-  skylineGroup.add(mesh);
-});
-objects.skyline = skylineGroup;
-scene.add(objects.skyline);
-
-// drops
-const dropsCount = 58;
-const dropsGeo = new THREE.BufferGeometry();
-const dropsPos = new Float32Array(dropsCount * 3);
-for (let i = 0; i < dropsCount; i++) {
-  dropsPos[i * 3] = rnd() * 8;
-  dropsPos[i * 3 + 1] = 2.52 + rnd() * 2.76;
-  dropsPos[i * 3 + 2] = -0.049;
+  mesh.position.copy(p);
+  scene.add(mesh);
 }
-dropsGeo.setAttribute('position', new THREE.BufferAttribute(dropsPos, 3));
-const dropsMat = new THREE.PointsMaterial({ color: COL_COLD, size: 0.06, blending: THREE.AdditiveBlending, depthWrite: false });
-objects.drops = new THREE.Points(dropsGeo, dropsMat);
-scene.add(objects.drops);
 
-// panel
-const panelGeo = new THREE.PlaneGeometry(6.72, 0.84);
-const panelMat = new THREE.MeshBasicMaterial({ color: COL_DARK });
-objects.panel = new THREE.Mesh(panelGeo, panelMat);
-objects.panel.position.set(4, 1.8, 0);
-objects.panel.rotation.x = 0.25;
-scene.add(objects.panel);
+/* ═══════  buildings on horizon (z=-14)  ═══════ */
+{
+  const grp = new THREE.Group();
+  for (let i = 0; i < 5; i++) {
+    const bx = -4 + (i % 5) * 2;
+    const hh = 1.5 + rnd() * 3;
+    const bw = 0.6 + rnd() * 0.8;
+    const geo = new THREE.PlaneGeometry(bw, hh);
+    const mat = new THREE.MeshBasicMaterial({ color: COL.building });
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(bx, hh / 2, -14);
+    grp.add(m);
+  }
+  scene.add(grp);
+}
 
-// screens
-const screenGeo = new THREE.PlaneGeometry(0.88, 0.60);
-const screenUniforms = { uTime: { value: 0 } };
-const screenMat = new THREE.ShaderMaterial({
-  uniforms: screenUniforms,
-  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-  fragmentShader: `
-    uniform float uTime;
-    varying vec2 vUv;
-    void main() {
-      vec3 col = vec3(0.345, 0.878, 0.541);
-      float scan = smoothstep(0.02, 0.0, abs(vUv.y - fract(uTime * 0.5)));
-      col += scan * 0.4;
-      gl_FragColor = vec4(col, 1.0);
-    }
-  `
+/* ═══════  lightning flash (z=-14)  ═══════ */
+const flashPlane = (() => {
+  const p = vp(0.34, 0.34, -14);
+  const d = 4 + 14;
+  const halfH = 0.4 * d * Math.tan(Math.PI / 6);
+  const halfW = halfH * (1920 / 1080);
+  const geo = new THREE.PlaneGeometry(halfW * 2, halfH * 2);
+  const mat = new THREE.MeshBasicMaterial({
+    color: COL.rain,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(p);
+  scene.add(mesh);
+  return mesh;
+})();
+
+/* ═══════  rain streaks (z=-12, 44 sprites)  ═══════ */
+const RAIN_COUNT = 44;
+const RAIN_SPEED = 1.80;
+const RAIN_Y_MIN = -10, RAIN_Y_MAX = 12;
+const rainGeo = new THREE.PlaneGeometry(0.04, 0.5);  // 5 px streak
+const rainMat = new THREE.MeshBasicMaterial({
+  color: COL.rain,
+  transparent: true,
+  opacity: 0.7,
+  blending: THREE.AdditiveBlending,
+  side: THREE.DoubleSide,
+  depthWrite: false,
 });
-objects.screens = [];
+const rainGroup = new THREE.Group();
+const rainArr = [];
+for (let i = 0; i < RAIN_COUNT; i++) {
+  const m = new THREE.Mesh(rainGeo, rainMat);
+  const x = rnd() * 8 - 4;
+  const y = rnd() * (RAIN_Y_MAX - RAIN_Y_MIN) + RAIN_Y_MIN;
+  m.position.set(x, y, -12);
+  rainGroup.add(m);
+  rainArr.push(m);
+}
+scene.add(rainGroup);
+
+/* ═══════  glass droplets (z=-4.9, 58 sprites)  ═══════ */
+const DROP_COUNT = 58;
+const DROP_Y_MIN = -4.5, DROP_Y_MAX = 5.5;
+const dropGeo = new THREE.PlaneGeometry(0.06, 0.06);  // 6 px
+const dropMat = new THREE.MeshBasicMaterial({
+  color: COL.rain,
+  transparent: true,
+  opacity: 0.45,
+  blending: THREE.AdditiveBlending,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+const dropGroup = new THREE.Group();
+const droplets = [];
+for (let i = 0; i < DROP_COUNT; i++) {
+  const m = new THREE.Mesh(dropGeo, dropMat);
+  const x = rnd() * 6 - 3;
+  const y = rnd() * (DROP_Y_MAX - DROP_Y_MIN) + DROP_Y_MIN;
+  m.position.set(x, y, -4.9);
+  dropGroup.add(m);
+  droplets.push(m);
+}
+scene.add(dropGroup);
+
+/* ═══════  instrument panel (84%×14% at u=0.50,v=0.30, tilt 0.25)  ═══════ */
+const camZ = 4, panelZ = -2.5;
+{
+  const d = camZ - panelZ;
+  const fullH = 2 * d * Math.tan(Math.PI / 6);
+  const fullW = fullH * (1920 / 1080);
+  const pPanelW = 0.84 * fullW;
+  const pPanelH = 0.14 * fullH;
+  const panelGeo = new THREE.PlaneGeometry(pPanelW, pPanelH);
+  const panelMat = new THREE.MeshBasicMaterial({ color: COL.body, side: THREE.DoubleSide });
+  const panelMesh = new THREE.Mesh(panelGeo, panelMat);
+  const panelWorld = vp(0.50, 0.30, panelZ);
+  panelMesh.position.copy(panelWorld);
+  panelMesh.rotation.x = 0.25;
+  scene.add(panelMesh);
+}
+
+/* ── 4 screens  ── */
+function makeScreenTex() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 128;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#0a2a1a';
+  ctx.fillRect(0, 0, 256, 128);
+  // green bars / data
+  ctx.fillStyle = '#57e08a';
+  ctx.font = '14px monospace';
+  ctx.fillText('SYS OK', 10, 28);
+  ctx.fillText('NAV  ', 10, 56);
+  ctx.fillText('PWR  ', 10, 84);
+  ctx.fillText('COM  ', 10, 112);
+  // grid lines
+  ctx.strokeStyle = '#2a5a3a';
+  ctx.lineWidth = 1;
+  for (let y = 20; y < 128; y += 16) { ctx.beginPath(); ctx.moveTo(80, y); ctx.lineTo(250, y); ctx.stroke(); }
+  return new THREE.CanvasTexture(c);
+}
+const screenTex = makeScreenTex();
+const screenGroup = new THREE.Group();
+const screenObjs = [];
+const SCREEN_SPREAD = 0.60; // 0.20..0.80 on frame
 for (let i = 0; i < 4; i++) {
-  const u = 0.20 + i * 0.20;
-  const mesh = new THREE.Mesh(screenGeo, screenMat.clone());
-  mesh.position.set(u * 8, 1.8, 0.01);
-  scene.add(mesh);
-  objects.screens.push(mesh);
+  const t = (i + 0.5) / 4;
+  const sx = vp(0.5 - SCREEN_SPREAD / 2 + t * SCREEN_SPREAD, 0.30, panelZ);
+  const d = camZ - panelZ;
+  const fullH = 2 * d * Math.tan(Math.PI / 6);
+  const fh = 0.10 * fullH;
+  const fw = fh * (0.11 / 0.10);
+  const geo = new THREE.PlaneGeometry(fw, fh);
+  const mat = new THREE.MeshBasicMaterial({ color: COL.green, transparent: true, opacity: 0.95 });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(sx);
+  m.position.z += 0.005;
+  m.userData = { idx: i, screenTex };
+  screenGroup.add(m);
+  screenObjs.push(m);
 }
+scene.add(screenGroup);
 
-// dials
-objects.dials = [];
+/* ── 5 dials (amber, u=0.45..0.55)  ── */
+const dialGroup = new THREE.Group();
+const dialObjs = [];
 for (let i = 0; i < 5; i++) {
-  const u = 0.45 + i * 0.025;
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.1), new THREE.MeshBasicMaterial({ color: COL_AMBER }));
-  mesh.position.set(u * 8, 2.12, 0.02);
-  scene.add(mesh);
-  objects.dials.push(mesh);
+  const ux = 0.45 + i * 0.025; // spread across 0.45..0.55 center range
+  const dx = vp(ux, 0.30, panelZ);
+  const d = camZ - panelZ;
+  const scale = (panelZ - camZ) * 2 * Math.tan(Math.PI / 6) * (1920 / 1080) / 1920 * 28;
+  const geo = new THREE.CylinderGeometry(scale, scale, 0.08, 32);
+  geo.rotateX(Math.PI / 2);  // face camera
+  const mat = new THREE.MeshBasicMaterial({ color: COL.amber });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(dx);
+  m.position.z += 0.01;
+  dialGroup.add(m);
+  dialObjs.push(m);
 }
+scene.add(dialGroup);
 
-// toggles
-objects.toggles = [];
+/* ── 5 toggles (amber, under dials)  ── */
+const toggleGroup = new THREE.Group();
+const toggleObjs = [];
 for (let i = 0; i < 5; i++) {
-  const u = 0.45 + i * 0.025;
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.08), new THREE.MeshBasicMaterial({ color: COL_AMBER }));
-  mesh.position.set(u * 8, 2.32, 0.03);
-  scene.add(mesh);
-  objects.toggles.push(mesh);
+  const ux = 0.45 + i * 0.025;
+  const tx = vp(ux, 0.30 + 0.04, panelZ);
+  const d = camZ - panelZ;
+  const scale = (panelZ - camZ) * 2 * Math.tan(Math.PI / 6) / 1080 * 18;
+  const geo = new THREE.BoxGeometry(scale, scale * 1.4, scale * 0.3);
+  const mat = new THREE.MeshBasicMaterial({ color: COL.amber });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(tx);
+  m.position.z += 0.008;
+  toggleGroup.add(m);
+  toggleObjs.push(m);
+}
+scene.add(toggleGroup);
+
+/* ═══════  dark floor (from 52% down)  ═══════ */
+{
+  const floorZ = 0;  // extends toward camera and beyond
+  const p = vp(0.5, 0.62, floorZ - 20);
+  const d = camZ - (floorZ - 20);
+  const halfH = d * Math.tan(Math.PI / 6);
+  const halfW = halfH * (1920 / 1080);
+  const geo = new THREE.PlaneGeometry(halfW * 6, halfH * 3);
+  geo.rotateX(Math.PI / 2);
+  const mat = new THREE.MeshBasicMaterial({ color: COL.body });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(0, -3, -18);
+  scene.add(m);
 }
 
-// floor
-const floorGeo = new THREE.PlaneGeometry(8, 3.12);
-const floorMat = new THREE.MeshBasicMaterial({ color: COL_DARK });
-objects.floor = new THREE.Mesh(floorGeo, floorMat);
-objects.floor.position.set(4, 1.56, -0.01);
-scene.add(objects.floor);
+/* ═══════  state  ═══════ */
+const state = { t: 0, flash: 0 };
 
-// flash
-const flashGeo = new THREE.PlaneGeometry(4, 2.4);
-const flashMat = new THREE.MeshBasicMaterial({ color: COL_COLD, blending: THREE.AdditiveBlending, depthWrite: false });
-objects.flash = new THREE.Mesh(flashGeo, flashMat);
-objects.flash.position.set(2.72, 2.04, -0.14);
-scene.add(objects.flash);
+/* ═══════  animation step  ═══════ */
+const FLASH_FREQ = 0.94;
+const CAM_DRIFT = 0.059;
 
-// --- State & Animation ---
-let t = 0;
-const speed = 0.018; // 1.80 * S
+window.__step = function (dt) {
+  state.t += dt;
+  state.flash = 0.5 + 0.5 * Math.sin(state.t * 2 * Math.PI * FLASH_FREQ);
+  camera.position.x = Math.sin(state.t * CAM_DRIFT) * 0.3;
+  camera.position.y = -0.03 * Math.sin(state.t * CAM_DRIFT * 0.7);
+  camera.lookAt(0, 0, -1);
 
-window.__probe = () => {
-  const flashBright = 0.5 + 0.5 * Math.sin(2 * Math.PI * 0.94 * t);
-  return {
-    t: t.toFixed(4),
-    objects: ["night", "glass", "rain", "skyline", "drops", "panel", "screen", "dial", "toggle", "floor", "flash"],
-    flash: parseFloat(flashBright.toFixed(4))
-  };
-};
-
-window.__step = (dt) => {
-  t += dt;
-
-  // Camera drift
-  camera.position.x += 0.059 * dt;
-
-  // Update rain
-  const rPos = objects.rain.geometry.attributes.position.array;
-  for (let i = 0; i < rainCount; i++) {
-    rPos[i * 3 + 1] -= speed * dt;
-    if (rPos[i * 3 + 1] < 2.52) rPos[i * 3 + 1] += 3.5;
+  // rain
+  for (let i = 0; i < RAIN_COUNT; i++) {
+    rainArr[i].position.y -= RAIN_SPEED * dt;
+    if (rainArr[i].position.y < RAIN_Y_MIN) rainArr[i].position.y += RAIN_Y_MAX - RAIN_Y_MIN;
   }
-  objects.rain.geometry.attributes.position.needsUpdate = true;
-
-  // Update drops
-  const dPos = objects.drops.geometry.attributes.position.array;
-  for (let i = 0; i < dropsCount; i++) {
-    dPos[i * 3 + 1] -= speed * dt;
-    if (dPos[i * 3 + 1] < 2.52) dPos[i * 3 + 1] += 3.5;
+  // droplets
+  for (let i = 0; i < DROP_COUNT; i++) {
+    droplets[i].position.y -= RAIN_SPEED * dt;
+    if (droplets[i].position.y < DROP_Y_MIN) droplets[i].position.y += DROP_Y_MAX - DROP_Y_MIN;
   }
-  objects.drops.geometry.attributes.position.needsUpdate = true;
-
-  // Flash brightness oscillation
-  const flashBright = 0.5 + 0.5 * Math.sin(2 * Math.PI * 0.94 * t);
-  objects.flash.material.opacity = flashBright;
-
-  // Indicators & toggles brightness oscillation
-  const indBright = 0.5 + 0.5 * Math.sin(2 * Math.PI * 1.5 * t);
-  const amberColor = new THREE.Color(COL_AMBER);
-  objects.dials.forEach(m => {
-    m.material.color.copy(amberColor.multiplyScalar(indBright));
-  });
-  objects.toggles.forEach(m => {
-    m.material.color.copy(amberColor.multiplyScalar(indBright));
-  });
-
-  // Scanline update
-  screenUniforms.uTime.value = t;
-
+  // flash brightness
+  flashPlane.material.opacity = state.flash * 0.55;
+  // screen brightness oscillation
+  for (let i = 0; i < 4; i++) {
+    screenObjs[i].material.opacity = 0.85 + 0.15 * Math.sin(state.t * (0.8 + i * 0.3));
+  }
   return window.__probe();
 };
 
-// --- Initial Render & Ready ---
-function render() {
-  renderer.render(scene, camera);
-}
+window.__probe = function () {
+  return {
+    t: state.t.toFixed(4),
+    flash: state.flash.toFixed(4),
+    objects: screenObjs.map(s => s.material.opacity.toFixed(4)),
+  };
+};
 
-render();
+// expose internals for testing
+rainArr.rainCount = RAIN_COUNT;
+window.rainArr = rainArr;
+window.droplets = droplets;
+window.camera = camera;
+window.flashPlane = flashPlane;
+window.screenObjs = screenObjs;
+window.canvas = canvas;
+
+/* ═══════  initial render  ═══════ */
+renderer.render(scene, camera);
 window.__ready = true;
-</script>
 
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-21 · пробел — пауза, → — шаг, R — сброс</div></body>
-</html>
+</script></html>

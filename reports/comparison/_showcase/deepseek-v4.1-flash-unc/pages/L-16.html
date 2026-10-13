@@ -1,10 +1,11 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Orbits</title>
 <style>
-  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #080f22; overflow: hidden; }
+  html, body { margin: 0; padding: 0; height: 100%; background: #080f22; overflow: hidden; }
   canvas { display: block; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
@@ -13,268 +14,306 @@
 <script type="module">
 const THREE = window.THREE;
 
-/* ---------- константы сцены ---------- */
-const W = 800, H = 600;
-const HALF_H  = 1.657;   // полувысота кадра на плоскости z = 0
-const FRAME_H = 3.314;   // полная высота кадра в единицах сцены
-const DT_TAIL = 0.0167;  // шаг времени между точками хвоста
-const TAIL_N  = 60;      // число точек в хвосте
+// ---------------------------------------------------------------------------
+// Fixed frame geometry.  PerspectiveCamera(45, 800/600, 0.1, 100) at (0,0,4)
+// looking at the origin: the half-height of the visible frame on the z=0 plane
+// is tan(22.5deg) * 4 = 1.657 units, so a scene coordinate equals a fraction of
+// the frame equal to coord / 3.314.
+// ---------------------------------------------------------------------------
+const HALF_H = 1.657;
+const HALF_W = HALF_H * (800 / 600); // 2.20933
+const FRAME_DIV = 2 * HALF_H;        // 3.314
+const STEP = 0.0167;                 // seconds per tail sample
+const NTAIL = 60;
+const TAU = Math.PI * 2;
 
-/* ---------- рендерер / камера ---------- */
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
-renderer.setPixelRatio(1);
-renderer.setSize(W, H, false);
-renderer.setClearColor(0x080f22, 1);
-document.body.appendChild(renderer.domElement);
+// ---------------------------------------------------------------------------
+// Deterministic random (mulberry32) -- no Math.random anywhere.
+// ---------------------------------------------------------------------------
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
-const scene  = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 100);
+// ---------------------------------------------------------------------------
+// Scene / renderer / camera
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 100);
 camera.position.set(0, 0, 4.0);
 camera.lookAt(0, 0, 0);
 
-/* ---------- утилита: радиальная текстура ---------- */
-function radialTexture(stops, size) {
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------------------
+// Background: a full-frame plane of flat dark colour so the frame corners are
+// never black emptiness.
+// ---------------------------------------------------------------------------
+{
+  const bgGeo = new THREE.PlaneGeometry(40, 30);
+  const bgMat = new THREE.MeshBasicMaterial({ color: 0x080f22, depthWrite: false });
+  const bg = new THREE.Mesh(bgGeo, bgMat);
+  bg.position.set(0, 0, -12);
+  bg.renderOrder = -10;
+  scene.add(bg);
+}
+
+// ---------------------------------------------------------------------------
+// Lights: give the bodies volume, but keep the palette readable.
+// ---------------------------------------------------------------------------
+scene.add(new THREE.AmbientLight(0xbfd0ff, 1.15));
+{
+  const key = new THREE.PointLight(0xffe9a8, 3.2, 30, 1.6);
+  key.position.set(0, 0.6, 1.4);
+  scene.add(key);
+  const rim = new THREE.DirectionalLight(0x6f8cff, 0.7);
+  rim.position.set(-2, 3, 2);
+  scene.add(rim);
+}
+
+// ---------------------------------------------------------------------------
+// Soft round glow sprite texture (used by tails, halos and the central core).
+// ---------------------------------------------------------------------------
+function makeGlowTexture(inner) {
+  const s = 128;
   const c = document.createElement('canvas');
-  c.width = c.height = size;
+  c.width = c.height = s;
   const ctx = c.getContext('2d');
-  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  for (let i = 0; i < stops.length; i++) g.addColorStop(stops[i][0], stops[i][1]);
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0.0, 'rgba(255,255,255,1)');
+  g.addColorStop(inner, 'rgba(255,255,255,0.55)');
+  g.addColorStop(1.0, 'rgba(255,255,255,0)');
   ctx.fillStyle = g;
-  ctx.fillRect(0, 0, size, size);
+  ctx.fillRect(0, 0, s, s);
   const tex = new THREE.CanvasTexture(c);
-  tex.minFilter = THREE.LinearFilter;
-  tex.magFilter = THREE.LinearFilter;
-  tex.generateMipmaps = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
   return tex;
 }
+const glowTex = makeGlowTexture(0.35);
 
-/* ---------- фон: плоскость во весь кадр ---------- */
-const bg = new THREE.Mesh(
-  new THREE.PlaneGeometry(80, 80),
-  new THREE.MeshBasicMaterial({ color: 0x080f22 })
-);
-bg.name = 'background';
-bg.position.set(0, 0, -4);
-scene.add(bg);
+// ---------------------------------------------------------------------------
+// Central body: compact radial-gradient disc from #ffe9a8 to the background.
+// ---------------------------------------------------------------------------
+const CORE_R = 0.22 * HALF_H; // 0.36454 scene units
+{
+  // Bright small core sphere for volume.
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(CORE_R * 0.28, 32, 24),
+    new THREE.MeshStandardMaterial({
+      color: 0xffe9a8, emissive: 0xffe9a8, emissiveIntensity: 1.35,
+      roughness: 0.4, metalness: 0.0
+    })
+  );
+  scene.add(core);
 
-/* ---------- центр: компактное светящееся пятно ---------- */
-const coreTex = radialTexture([
-  [0.00, 'rgba(255,233,168,1)'],
-  [0.10, 'rgba(255,233,168,0.92)'],
-  [0.30, 'rgba(255,222,145,0.45)'],
-  [0.60, 'rgba(255,205,125,0.14)'],
-  [1.00, 'rgba(8,15,34,0)']
-], 256);
+  // Radial gradient disc (additive so it fades into the background).
+  const s = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0.00, 'rgba(255,233,168,1)');
+  g.addColorStop(0.18, 'rgba(255,224,150,0.72)');
+  g.addColorStop(0.45, 'rgba(255,214,130,0.28)');
+  g.addColorStop(1.00, 'rgba(255,210,125,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  const discTex = new THREE.CanvasTexture(c);
+  discTex.colorSpace = THREE.SRGBColorSpace;
+  const disc = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      map: discTex, transparent: true, blending: THREE.AdditiveBlending,
+      depthWrite: false
+    })
+  );
+  disc.scale.set(CORE_R * 2.0, CORE_R * 2.0, 1);
+  disc.position.set(0, 0, 0.01);
+  scene.add(disc);
 
-const core = new THREE.Mesh(
-  new THREE.CircleGeometry(0.22 * HALF_H, 64),
-  new THREE.MeshBasicMaterial({ map: coreTex, transparent: true, depthWrite: false })
-);
-core.name = 'core';
-core.renderOrder = 1;
-scene.add(core);
+  // Wide faint halo.
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex, color: 0xffe9a8, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.6
+  }));
+  halo.scale.set(CORE_R * 3.2, CORE_R * 3.2, 1);
+  halo.position.set(0, 0, 0);
+  scene.add(halo);
+}
 
-/* ---------- текстуры для шаров и хвостов ---------- */
-const haloTex = radialTexture([
-  [0.00, 'rgba(255,255,255,1)'],
-  [0.35, 'rgba(255,255,255,0.85)'],
-  [0.55, 'rgba(255,255,255,0.45)'],
-  [0.80, 'rgba(255,255,255,0.14)'],
-  [1.00, 'rgba(255,255,255,0)']
-], 128);
-
-const dotTex = radialTexture([
-  [0.00, 'rgba(255,255,255,1)'],
-  [0.30, 'rgba(255,255,255,0.90)'],
-  [0.60, 'rgba(255,255,255,0.40)'],
-  [1.00, 'rgba(255,255,255,0)']
-], 64);
-
-/* ---------- описание орбит ---------- */
-const SPHERES = [
-  { a: 0.603, inc: 0.765, t0: 2.567, T: 5.76, color: '#ff4d6d' },
-  { a: 0.784, inc: 0.780, t0: 5.254, T: 8.40, color: '#ffd166' },
-  { a: 0.668, inc: 0.754, t0: 2.690, T: 5.09, color: '#4dd0e1' },
-  { a: 0.691, inc: 0.620, t0: 6.163, T: 8.27, color: '#9b6dff' },
-  { a: 0.321, inc: 0.520, t0: 3.844, T: 6.70, color: '#ff4d6d' },
-  { a: 0.507, inc: 0.688, t0: 3.682, T: 5.89, color: '#ffd166' }
+// ---------------------------------------------------------------------------
+// Orbits definition
+// ---------------------------------------------------------------------------
+const spheres = [
+  { a: 0.603, inc: 0.765, t0: 2.567, T: 5.76, color: 0xff4d6d },
+  { a: 0.784, inc: 0.780, t0: 5.254, T: 8.40, color: 0xffd166 },
+  { a: 0.668, inc: 0.754, t0: 2.690, T: 5.09, color: 0x4dd0e1 },
+  { a: 0.691, inc: 0.620, t0: 6.163, T: 8.27, color: 0x9b6dff },
+  { a: 0.321, inc: 0.520, t0: 3.844, T: 6.70, color: 0xff4d6d },
+  { a: 0.507, inc: 0.688, t0: 3.682, T: 5.89, color: 0xffd166 }
 ];
 
-const bodies = [];
+const BODY_R = 0.086; // scene units (visible fraction ~0.052 of frame height)
 
-for (let i = 0; i < SPHERES.length; i++) {
-  const s = SPHERES[i];
-  const col = new THREE.Color(s.color);
-
-  /* светящийся шар */
-  const mesh = new THREE.Mesh(
-    new THREE.SphereGeometry(0.07, 20, 14),
-    new THREE.MeshBasicMaterial({ color: col })
-  );
-  mesh.name = 'sphere' + (i + 1);
-  scene.add(mesh);
-
-  /* мягкое гало вокруг шара */
-  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: haloTex,
-    color: col,
-    transparent: true,
-    depthWrite: false,
-    blending: THREE.NormalBlending
-  }));
-  halo.name = 'halo' + (i + 1);
-  halo.scale.set(0.26, 0.26, 1);
-  halo.renderOrder = 3;
-  scene.add(halo);
-
-  /* хвост: цепочка точек */
-  const positions = new Float32Array(TAIL_N * 3);
-  const colors    = new Float32Array(TAIL_N * 3);
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('color',    new THREE.BufferAttribute(colors, 3));
-
-  const mat = new THREE.PointsMaterial({
-    size: 0.10,
-    sizeAttenuation: true,
-    vertexColors: true,
-    map: dotTex,
-    transparent: true,
-    depthWrite: false,
-    blending: THREE.NormalBlending
-  });
-
-  const pts = new THREE.Points(geo, mat);
-  pts.name = 'tail' + (i + 1);
-  pts.frustumCulled = false;
-  pts.renderOrder = 2;
-  scene.add(pts);
-
-  bodies.push({ spec: s, col, mesh, halo, pts, positions, colors, geo });
+function orbitPos(sp, theta, out) {
+  const r = sp.a * HALF_H;
+  const ct = Math.cos(theta), st = Math.sin(theta);
+  out.set(r * ct, r * st * Math.cos(sp.inc), r * st * Math.sin(sp.inc));
+  return out;
 }
 
-/* ---------- состояние ---------- */
-let simTime = 0;
-const angles = SPHERES.map(s => s.t0);
+const _tmp = new THREE.Vector3();
 
-/* ---------- обновление геометрии ---------- */
-function updateScene() {
-  for (let k = 0; k < bodies.length; k++) {
-    const b = bodies[k];
-    const s = b.spec;
-    const th = angles[k];
-    const r  = s.a * HALF_H;
-    const ci = Math.cos(s.inc);
-    const si = Math.sin(s.inc);
-    const w  = 2 * Math.PI / s.T;
+for (const sp of spheres) {
+  const col = new THREE.Color(sp.color);
 
-    const px = r * Math.cos(th);
-    const py = r * Math.sin(th) * ci;
-    const pz = r * Math.sin(th) * si;
+  // Solid glowing body.
+  const body = new THREE.Mesh(
+    new THREE.SphereGeometry(BODY_R, 32, 24),
+    new THREE.MeshStandardMaterial({
+      color: col.clone().multiplyScalar(0.85),
+      emissive: col.clone(),
+      emissiveIntensity: 0.95,
+      roughness: 0.32,
+      metalness: 0.05
+    })
+  );
+  scene.add(body);
+  sp.body = body;
 
-    b.mesh.position.set(px, py, pz);
-    b.halo.position.set(px, py, pz);
+  // Halo sprite around the body.
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex, color: col.clone(), transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.75
+  }));
+  halo.scale.set(BODY_R * 5.0, BODY_R * 5.0, 1);
+  scene.add(halo);
+  sp.halo = halo;
 
-    const pos = b.positions;
-    const col = b.colors;
-
-    for (let i = 0; i < TAIL_N; i++) {
-      const ti  = th - i * DT_TAIL * w;      // положение в момент -i*dt
-      const idx = (TAIL_N - 1 - i) * 3;      // рисуем от конца к шару
-      const c2 = Math.cos(ti);
-      const s2 = Math.sin(ti);
-
-      pos[idx]     = r * c2;
-      pos[idx + 1] = r * s2 * ci;
-      pos[idx + 2] = r * s2 * si;
-
-      const f = 1.0 + (0.06 - 1.0) * (i / (TAIL_N - 1));
-      col[idx]     = b.col.r * f;
-      col[idx + 1] = b.col.g * f;
-      col[idx + 2] = b.col.b * f;
+  // Faint orbit ring to read the inclination as real perspective.
+  {
+    const seg = 128;
+    const pts = new Float32Array(seg * 3);
+    for (let i = 0; i < seg; i++) {
+      const phi = (i / seg) * TAU;
+      orbitPos(sp, phi, _tmp);
+      pts[i * 3 + 0] = _tmp.x;
+      pts[i * 3 + 1] = _tmp.y;
+      pts[i * 3 + 2] = _tmp.z;
     }
+    const ringGeo = new THREE.BufferGeometry();
+    ringGeo.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+    const ring = new THREE.LineLoop(ringGeo, new THREE.LineBasicMaterial({
+      color: col.clone(), transparent: true, opacity: 0.16,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    }));
+    scene.add(ring);
+  }
 
-    b.geo.attributes.position.needsUpdate = true;
-    b.geo.attributes.color.needsUpdate = true;
+  // Tail: NTAIL additive glow points fading from 1.0 to 0.06.
+  const tpos = new Float32Array(NTAIL * 3);
+  const tcol = new Float32Array(NTAIL * 3);
+  const tailGeo = new THREE.BufferGeometry();
+  tailGeo.setAttribute('position', new THREE.BufferAttribute(tpos, 3));
+  tailGeo.setAttribute('color', new THREE.BufferAttribute(tcol, 3));
+  const tail = new THREE.Points(tailGeo, new THREE.PointsMaterial({
+    size: BODY_R * 1.35,
+    map: glowTex,
+    vertexColors: true,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true
+  }));
+  tail.frustumCulled = false;
+  scene.add(tail);
+  sp.tail = tail;
+  sp.tailGeo = tailGeo;
+}
+
+// ---------------------------------------------------------------------------
+// Simulation
+// ---------------------------------------------------------------------------
+let simTime = 0;
+
+function updateScene() {
+  for (const sp of spheres) {
+    const theta = sp.t0 + TAU * simTime / sp.T;
+
+    orbitPos(sp, theta, _tmp);
+    sp.body.position.copy(_tmp);
+    sp.body.position.z += 0.0;
+    sp.halo.position.copy(_tmp);
+
+    const tpos = sp.tailGeo.attributes.position.array;
+    const tcol = sp.tailGeo.attributes.color.array;
+    const base = new THREE.Color(sp.color);
+    for (let i = 0; i < NTAIL; i++) {
+      const ti = simTime - i * STEP;
+      const thi = sp.t0 + TAU * ti / sp.T;
+      orbitPos(sp, thi, _tmp);
+      tpos[i * 3 + 0] = _tmp.x;
+      tpos[i * 3 + 1] = _tmp.y;
+      tpos[i * 3 + 2] = _tmp.z;
+
+      const b = 1.0 + (0.06 - 1.0) * (i / (NTAIL - 1));
+      tcol[i * 3 + 0] = base.r * b;
+      tcol[i * 3 + 1] = base.g * b;
+      tcol[i * 3 + 2] = base.b * b;
+    }
+    sp.tailGeo.attributes.position.needsUpdate = true;
+    sp.tailGeo.attributes.color.needsUpdate = true;
   }
 }
 
-/* ---------- probe ---------- */
-window.__probe = function () {
-  return {
-    t: Number(simTime.toFixed(4)),
-    objects: scene.children.map(o => o.name),
-    orbits: angles.map(a => Number(a.toFixed(4))),
-    planets: bodies.map(b => [
-      Number((b.mesh.position.x / FRAME_H).toFixed(4)),
-      Number((b.mesh.position.y / FRAME_H).toFixed(4)),
-      Number((b.mesh.position.z / FRAME_H).toFixed(4))
-    ])
-  };
-};
+function r4(x) { return Math.round(x * 10000) / 10000; }
 
-/* ---------- шаг анимации ---------- */
+function probe() {
+  const objects = [];
+  const orbits = [];
+  const planets = [];
+  for (const sp of spheres) {
+    const theta = sp.t0 + TAU * simTime / sp.T;
+    orbitPos(sp, theta, _tmp);
+    orbits.push(r4(theta));
+    planets.push([r4(_tmp.x / FRAME_DIV), r4(_tmp.y / FRAME_DIV)]);
+    objects.push({
+      name: 'sphere',
+      color: '#' + new THREE.Color(sp.color).getHexString(),
+      position: [r4(_tmp.x), r4(_tmp.y), r4(_tmp.z)]
+    });
+  }
+  return {
+    t: r4(simTime),
+    objects: objects,
+    orbits: orbits,
+    planets: planets
+  };
+}
+
 window.__step = function (dt) {
   simTime += dt;
-  for (let k = 0; k < bodies.length; k++) {
-    angles[k] += 2 * Math.PI * dt / SPHERES[k].T;
-  }
   updateScene();
   renderer.render(scene, camera);
-  return window.__probe();
+  return probe();
 };
 
-/* ---------- первый кадр ---------- */
+window.__probe = probe;
+
 updateScene();
 renderer.render(scene, camera);
 window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-16 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

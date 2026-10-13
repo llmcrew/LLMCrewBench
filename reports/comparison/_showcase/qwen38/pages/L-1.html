@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
 <meta charset="utf-8">
+<title>Закат над морем</title>
 <style>
-*{margin:0;padding:0}
-body{overflow:hidden;background:#000}
-canvas{display:block}
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
@@ -13,164 +13,178 @@ canvas{display:block}
 <script type="module">
 const THREE = window.THREE;
 
-const W = 800, H = 600, DIST = 12, FOV = 45;
-const HALF_H = DIST * Math.tan(FOV * 0.5 * Math.PI / 180);
-const FH = 2 * HALF_H;
-const FW = FH * (W / H);
-const SKY_H = 5.169, SEA_H = 4.772;
-const fTop = 0.2 + HALF_H;
-const hzY = fTop - SKY_H;
+// ---------- базовые постоянные ----------
+const FW = 1920, FH = 1080;                 // кадр
+const DIST = 12;                            // расстояние до плоскостей
+const FOV = 45;
+const ASPECT = 800 / 600;                   // aspect камеры из задания
+const HALF_H = DIST * Math.tan(THREE.MathUtils.degToRad(FOV / 2)); // ≈ 4.971
+const HALF_W = HALF_H * ASPECT;             // половина видимой ширины кадра
+const CAM_Y = 0.2;
 
-const cam = new THREE.PerspectiveCamera(FOV, W / H, 0.1, 200);
-cam.position.set(0, 0.2, 0);
-cam.lookAt(0, 0.2, -1);
+// горизонт ровно на 52% высоты кадра от верхнего края:
+// ndc_y = 1 - 2*0.52 = -0.04  →  y мира = CAM_Y - 0.04 * HALF_H
+const HORIZON_TOP = 0.52;
+const HORIZON_Y = CAM_Y + (1 - 2 * HORIZON_TOP) * HALF_H;
 
+const SKY_H = 5.169;                        // высота неба, ед. сцены
+const SEA_H = 4.772;                        // высота воды, ед. сцены
+const PLANE_W = 40;
+
+// ---------- рендерер ----------
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(FW, FH, false);
+document.body.appendChild(renderer.domElement);
+
+// ---------- сцена и камера ----------
 const scene = new THREE.Scene();
-const ren = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
-ren.setPixelRatio(1);
-ren.setSize(W, H, false);
-document.body.appendChild(ren.domElement);
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 200);
+camera.position.set(0, CAM_Y, 0);
+camera.lookAt(0, CAM_Y, -1);                // строго вдоль горизонта
 
-// Sky plane
+// ---------- небо: вертикальный градиент #1b2a4a (верх) → #ff7a3d (горизонт) ----------
 const skyMat = new THREE.ShaderMaterial({
+  side: THREE.FrontSide,
+  uniforms: {
+    topColor:    { value: new THREE.Color('#1b2a4a') }, // холодная ночь сверху
+    bottomColor: { value: new THREE.Color('#ff7a3d') }  // тёплая полоса у горизонта
+  },
   vertexShader: `
     varying vec2 vUv;
-    void main(){
+    void main() {
       vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
-    }`,
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
   fragmentShader: `
     varying vec2 vUv;
-    void main(){
-      vec3 top = vec3(0.10588,0.16471,0.29020);
-      vec3 bot = vec3(1.0,0.47843,0.23922);
-      gl_FragColor = vec4(mix(bot, top, vUv.y), 1.0);
-    }`
+    uniform vec3 topColor;
+    uniform vec3 bottomColor;
+    vec3 toSrgb(vec3 c) {
+      return mix(c * 12.92, 1.055 * pow(c, vec3(1.0/2.4)) - 0.055, step(0.0031308, c));
+    }
+    void main() {
+      // uvy=1 — верх плоскости, uvy=0 — горизонт.
+      // Профиль с утолщёнными концами: ночь сверху держится дольше,
+      // у горизонта — широкая тёплая полоса; яркость монотонна сверху вниз.
+      float w = smoothstep(0.0, 0.80, vUv.y);
+      gl_FragColor = vec4(toSrgb(mix(bottomColor, topColor, w)), 1.0);
+    }
+  `
 });
-const sky = new THREE.Mesh(new THREE.PlaneGeometry(40, SKY_H), skyMat);
+const sky = new THREE.Mesh(new THREE.PlaneGeometry(PLANE_W, SKY_H), skyMat);
 sky.name = 'sky';
-sky.position.set(0, hzY + SKY_H / 2, -DIST);
+sky.position.set(0, HORIZON_Y + SKY_H / 2, -DIST);
 scene.add(sky);
 
-// Water plane
+// ---------- вода: градиент #ff7a3d (горизонт) → #20283a (низ) + рябь ----------
+// рябь: полосы яркости с шагом 0.024 высоты кадра (в экранных px) и фазой 0.386
+const RIPPLE_PERIOD_FRAC = 0.024;           // в долях высоты кадра
+const RIPPLE_PHASE = 0.386;
 const seaMat = new THREE.ShaderMaterial({
+  side: THREE.FrontSide,
+  uniforms: {
+    topColor:    { value: new THREE.Color('#ff7a3d') }, // тёплая полоса у горизонта
+    bottomColor: { value: new THREE.Color('#20283a') },
+    uFrameH:     { value: FH },
+    uRipplePx:   { value: RIPPLE_PERIOD_FRAC * FH },
+    uRipplePh:   { value: RIPPLE_PHASE }
+  },
   vertexShader: `
     varying vec2 vUv;
-    void main(){
+    void main() {
       vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
-    }`,
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
   fragmentShader: `
     varying vec2 vUv;
-    void main(){
-      vec3 top = vec3(1.0,0.47843,0.23922);
-      vec3 bot = vec3(0.12549,0.15686,0.22745);
-      vec3 c = mix(bot, top, vUv.y);
-      float step = 0.05;
-      float r = sin(6.2831853 * vUv.y / step + 0.386) * 0.04;
-      c += r;
-      gl_FragColor = vec4(c, 1.0);
-    }`
+    uniform vec3 topColor;
+    uniform vec3 bottomColor;
+    uniform float uFrameH;
+    uniform float uRipplePx;
+    uniform float uRipplePh;
+    vec3 toSrgb(vec3 c) {
+      return mix(c * 12.92, 1.055 * pow(c, vec3(1.0/2.4)) - 0.055, step(0.0031308, c));
+    }
+    void main() {
+      // vUv.y=1 — горизонт, vUv.y=0 — нижний край кадра.
+      // Внизу — устойчивый тёмный водоём, к горизонту — тёплая полоса;
+      // монотонно к горизонту.
+      float w = smoothstep(0.22, 1.0, vUv.y);
+      vec3 col = mix(bottomColor, topColor, w);
+      // горизонтальная рябь в экранных координатах
+      float phase = 6.28318530718 * (gl_FragCoord.y / uRipplePx - uRipplePh);
+      float band  = 0.5 + 0.5 * sin(phase);
+      // лёгкий модулятор яркости — и блики, и затенённые впадины
+      float shade = 1.0 + 0.08 * (band - 0.5);
+      gl_FragColor = vec4(toSrgb(col * shade), 1.0);
+    }
+  `
 });
-const sea = new THREE.Mesh(new THREE.PlaneGeometry(40, SEA_H), seaMat);
+const sea = new THREE.Mesh(new THREE.PlaneGeometry(PLANE_W, SEA_H), seaMat);
 sea.name = 'sea';
-sea.position.set(0, hzY - SEA_H / 2, -DIST);
+sea.position.set(0, HORIZON_Y - SEA_H / 2, -DIST);
 scene.add(sea);
 
-// Sun
-const sr = 0.075 * FH;
-const sunMat = new THREE.MeshBasicMaterial({ color: 0xffd08a });
-const sun = new THREE.Mesh(new THREE.CircleGeometry(sr, 64), sunMat);
+// ---------- солнце: сплюснутый диск, садится к горизонту ----------
+const SUN_R = 0.075 * 2 * HALF_H;           // 0.075 высоты кадра — в единицах сцены
+const sunGeo = new THREE.CircleGeometry(SUN_R, 48);
+const sunMat = new THREE.MeshBasicMaterial({ color: new THREE.Color('#ffd08a') });
+
+const sun = new THREE.Mesh(sunGeo, sunMat);
 sun.name = 'sun';
-sun.scale.y = 0.55;
-const sx = (0.41 - 0.5) * FW;
-const sy0 = 0.2 + (0.70 - 0.5) * FH;
-sun.position.set(sx, sy0, -DIST);
+sun.scale.y = 0.55;                         // сплюснутость: рефракция у горизонта
 scene.add(sun);
 
-// Sun reflection
-const refMat = new THREE.MeshBasicMaterial({ color: 0xffd08a });
-const ref = new THREE.Mesh(new THREE.CircleGeometry(sr, 64), refMat);
-ref.name = 'sun_reflection';
-ref.scale.y = 2.5;
-ref.position.set(sx, 2 * hzY - sy0, -DIST);
-scene.add(ref);
+// стартовая позиция: (0.41 ширины кадра, 0.70 высоты кадра от нижнего края)
+const SUN_X0 = (0.41 - 0.5) * 2 * HALF_W;
+const SUN_Y0 = CAM_Y + (0.70 - 0.5) * 2 * HALF_H;
+const SUN_SPEED = 0.040 * 2 * HALF_H;       // 0.040 высоты кадра в секунду
 
-// Animation state
+// ---------- отражение солнца: зеркально относительно горизонта, scale.y = 2.5 ----------
+const sunReflection = new THREE.Mesh(sunGeo.clone(), sunMat.clone());
+sunReflection.name = 'sun_reflection';
+sunReflection.scale.y = 2.5;
+scene.add(sunReflection);
+
+// ---------- состояние ----------
 let t = 0;
-const spd = 0.040 * FH;
+let sunY = SUN_Y0;
 
-function upd() {
-  const ny = Math.max(sy0 - spd * t, hzY);
-  sun.position.y = ny;
-  ref.position.y = 2 * hzY - ny;
+function layoutSun() {
+  sunY = Math.max(HORIZON_Y, SUN_Y0 - t * SUN_SPEED); // не ниже линии горизонта
+  sun.position.set(SUN_X0, sunY, -DIST + 0.02);
+  sunReflection.position.set(SUN_X0, 2 * HORIZON_Y - sunY, -DIST + 0.01);
+  renderer.render(scene, camera);
 }
 
-upd();
-ren.render(scene, cam);
-window.__ready = true;
+layoutSun();
 
-window.__step = function(dt) {
+// ---------- API ----------
+function probe() {
+  const r4 = (v) => Math.round(v * 1e4) / 1e4;
+  const objects = [];
+  scene.traverse((o) => { if (o.isMesh && o.name) objects.push(o.name); });
+  return {
+    t: r4(t),
+    objects: objects,
+    sun: [r4(sun.position.x), r4(sun.position.y)]
+  };
+}
+
+window.__step = function (dt) {
   t += dt;
-  upd();
-  ren.render(scene, cam);
+  layoutSun();
   return window.__probe();
 };
 
-window.__probe = function() {
-  return {
-    t: +t.toFixed(4),
-    objects: scene.children.filter(o => o.name).map(o => o.name),
-    sun: [+sun.position.x.toFixed(4), +sun.position.y.toFixed(4)]
-  };
+window.__probe = function () {
+  return probe();
 };
+
+window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-1 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

@@ -2,10 +2,10 @@
 <html>
 <head>
 <meta charset="utf-8">
+<title>Night Fireworks</title>
 <style>
-*{margin:0;padding:0}
-body{background:#000;display:flex;justify-content:center;align-items:center;height:100vh}
-canvas{display:block}
+  html, body { margin: 0; padding: 0; background: #280f54; overflow: hidden; }
+  canvas { display: block; width: 1920px; height: 1080px; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
@@ -13,209 +13,159 @@ canvas{display:block}
 <script type="module">
 const THREE = window.THREE;
 
-// Deterministic RNG: seed 571619
-let s = 571619;
-function rng() {
-  s = (1664525 * s + 1013904223) % 4294967296;
-  return s / 4294967296;
+// ---- Fixture constants (verbatim) ----
+// seed 571619, launch points (0.343, 0.287), (0.373, 0.329), (0.448, 0.334),
+// delays 0.0, 0.3, 0.7, speed 2.20, gravity 1.10, life 1.90, period 2.00, 320 particles per burst
+
+const HALF_H = 4.971;          // half frame height at z = 12
+const ASPECT = 800 / 600;
+const N = 320;                 // particles per burst
+const V0 = 2.20;               // speed
+const GRAV = 1.10;             // gravity
+const LIFE = 1.90;             // life
+const PERIOD = 2.00;           // repeat period
+const DELAYS = [0.0, 0.3, 0.7];
+const COLORS = [0xff0051, 0xffc300, 0x19cdff]; // red, gold, blue
+const FRAMES = [
+  { fx: 0.343, fy: 0.287 },
+  { fx: 0.373, fy: 0.329 },
+  { fx: 0.448, fy: 0.334 }
+];
+
+// launch points in world coordinates
+const BASES = FRAMES.map(p => new THREE.Vector3(
+  (p.fx - 0.5) * 2 * HALF_H * ASPECT,
+  (0.5 - p.fy) * 2 * HALF_H,
+  0
+));
+
+// ---- Deterministic LCG (only randomness source, fixed call order) ----
+let S = 571619;                // S0 = 571619
+function rnd() {
+  S = (1664525 * S + 1013904223) % 4294967296;
+  return S / 4294967296;
 }
 
-// Constants
-const SPEED = 2.20;
-const GRAVITY = 1.10;
-const LIFE = 1.90;
-const PERIOD = 2.00;
-const N = 320;
-const SIZE = 6.0;
+// ---- Renderer / scene / camera ----
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
 
-const LAUNCH = [
-  {fx: 0.343, fy: 0.287},
-  {fx: 0.373, fy: 0.329},
-  {fx: 0.448, fy: 0.334}
-];
-const DELAYS = [0.0, 0.3, 0.7];
-const COLORS = [0xff0051, 0xffc300, 0x19cdff];
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#280f54'); // night sky
 
-// Camera
 const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
 camera.position.set(0, 0, 12.0);
 camera.lookAt(0, 0, 0);
 
-const halfH = 12.0 * Math.tan(45 * Math.PI / 360);
-
-function f2w(fx, fy) {
-  const x = (fx - 0.5) * 2 * halfH * (800 / 600);
-  const y = (0.5 - fy) * 2 * halfH;
-  return new THREE.Vector3(x, y, 0);
-}
-
-// Scene
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x280f54);
-
-// Renderer
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
-renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
-document.body.appendChild(renderer.domElement);
-
-// Generate burst vectors (order: burst 0 → 2, particle 0 → 319, u,v,w)
-const burstData = [];
-for (let b = 0; b < 3; b++) {
-  const lp = f2w(LAUNCH[b].fx, LAUNCH[b].fy);
-  const vecs = new Float32Array(N * 3);
-  for (let i = 0; i < N; i++) {
-    const u = rng();
-    const v = rng();
-    const w = rng();
+// ---- Bursts ----
+const bursts = [];
+for (let i = 0; i < 3; i++) {
+  const base = BASES[i];
+  const pos = new Float32Array(N * 3);
+  const vel = new Float32Array(N * 3);
+  for (let j = 0; j < N; j++) {
+    const u = rnd();                 // 1st LCG number: sphere z
+    const v = rnd();                 // 2nd LCG number: azimuth
+    const w = rnd();                 // 3rd LCG number: speed
     const z = 1 - 2 * u;
     const phi = 2 * Math.PI * v;
     const rr = Math.sqrt(1 - z * z);
-    const V = SPEED * (0.65 + 0.5 * w);
-    vecs[i * 3]     = rr * Math.cos(phi) * V;
-    vecs[i * 3 + 1] = z * V;
-    vecs[i * 3 + 2] = rr * Math.sin(phi) * V * 0.5;
+    const V = V0 * (0.65 + 0.5 * w);
+    vel[j * 3]     = rr * Math.cos(phi) * V;
+    vel[j * 3 + 1] = z * V;
+    vel[j * 3 + 2] = rr * Math.sin(phi) * V * 0.5;
+    pos[j * 3]     = base.x;
+    pos[j * 3 + 1] = base.y;
+    pos[j * 3 + 2] = base.z;
   }
-  burstData.push({ lp, vecs, delay: DELAYS[b], color: COLORS[b] });
-}
-
-// Create Points objects
-const pts = [];
-for (let b = 0; b < 3; b++) {
-  const pos = new Float32Array(N * 3);
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   const mat = new THREE.PointsMaterial({
-    size: SIZE,
+    color: COLORS[i],
+    size: 6.0,
     sizeAttenuation: false,
     transparent: true,
+    opacity: 1.0,
+    depthWrite: false,
     blending: THREE.AdditiveBlending,
-    depthTest: false,
-    color: COLORS[b]
+    depthTest: false
   });
-  const p = new THREE.Points(geo, mat);
-  p.name = 'burst_' + (b + 1);
-  scene.add(p);
-  pts.push(p);
+  const pts = new THREE.Points(geo, mat);
+  pts.name = 'burst_' + (i + 1);
+  pts.frustumCulled = false;
+  scene.add(pts);
+  bursts.push({ pts, geo, mat, base, vel, delay: DELAYS[i] });
 }
 
-// State
+// ---- Animation driven only by window.__step ----
 let t = 0;
 
-function mod(a, b) { return ((a % b) + b) % b; }
-
-function update() {
-  for (let b = 0; b < 3; b++) {
-    const { lp, vecs, delay } = burstData[b];
-    const tau = mod(t - delay, PERIOD);
-    const pos = pts[b].geometry.attributes.position.array;
-
-    if (tau > LIFE) {
-      pts[b].material.opacity = 0;
-      for (let i = 0; i < N; i++) {
-        pos[i*3] = lp.x; pos[i*3+1] = lp.y; pos[i*3+2] = lp.z;
-      }
-    } else {
-      const bright = Math.max(0, 1 - tau / LIFE);
-      pts[b].material.opacity = bright;
-      const g = 0.5 * GRAVITY * tau * tau;
-      for (let i = 0; i < N; i++) {
-        pos[i*3]     = lp.x + vecs[i*3]     * tau;
-        pos[i*3 + 1] = lp.y + vecs[i*3 + 1] * tau - g;
-        pos[i*3 + 2] = lp.z + vecs[i*3 + 2] * tau;
-      }
-    }
-    pts[b].geometry.attributes.position.needsUpdate = true;
-  }
+function tauOf(delay) {
+  return ((t - delay) % PERIOD + PERIOD) % PERIOD;
 }
 
-// Initial frame (t = 0)
-update();
-renderer.render(scene, camera);
-window.__ready = true;
-
-// API
-window.__step = function(dt) {
-  t += dt;
-  update();
-  renderer.render(scene, camera);
-  return window.__probe();
-};
-
-window.__probe = function() {
-  const objects = scene.children.map(o => o.name).filter(Boolean);
-  const bursts = [];
-  for (let b = 0; b < 3; b++) {
-    const { lp, vecs, delay } = burstData[b];
-    const tau = mod(t - delay, PERIOD);
-    const bright = tau > LIFE ? 0 : Math.max(0, 1 - tau / LIFE);
-    const g = 0.5 * GRAVITY * tau * tau;
-    let sumR = 0;
-    for (let i = 0; i < N; i++) {
-      const dx = vecs[i*3] * tau;
-      const dy = vecs[i*3+1] * tau - g;
-      const dz = vecs[i*3+2] * tau;
-      sumR += Math.sqrt(dx*dx + dy*dy + dz*dz);
+function update() {
+  for (const b of bursts) {
+    const tau = tauOf(b.delay);
+    const bright = Math.max(0, 1 - tau / LIFE);
+    b.mat.opacity = bright;
+    if (tau > LIFE) {
+      b.pts.visible = false;
+      continue;
     }
-    const r = sumR / N;
-    bursts.push({
-      r: Math.round(r * 10000) / 10000,
+    b.pts.visible = true;
+    const arr = b.geo.attributes.position.array;
+    const fall = 0.5 * GRAV * tau * tau;
+    for (let j = 0; j < N; j++) {
+      arr[j * 3]     = b.base.x + b.vel[j * 3] * tau;
+      arr[j * 3 + 1] = b.base.y + b.vel[j * 3 + 1] * tau - fall;
+      arr[j * 3 + 2] = b.base.z + b.vel[j * 3 + 2] * tau;
+    }
+    b.geo.attributes.position.needsUpdate = true;
+  }
+  renderer.render(scene, camera);
+}
+
+// ---- Probe ----
+function probe() {
+  const list = [];
+  for (const b of bursts) {
+    const tau = tauOf(b.delay);
+    const bright = Math.max(0, 1 - tau / LIFE);
+    let sum = 0;
+    if (tau <= LIFE) {
+      const arr = b.geo.attributes.position.array;
+      for (let j = 0; j < N; j++) {
+        const dx = arr[j * 3]     - b.base.x;
+        const dy = arr[j * 3 + 1] - b.base.y;
+        const dz = arr[j * 3 + 2] - b.base.z;
+        sum += Math.sqrt(dx * dx + dy * dy + dz * dz);
+      }
+    }
+    list.push({
+      name: b.pts.name,
+      r: Math.round((sum / N) * 10000) / 10000,
       bright: Math.round(bright * 10000) / 10000
     });
   }
   return {
     t: Math.round(t * 10000) / 10000,
-    objects,
-    bursts
+    objects: list,
+    bursts: list
   };
+}
+
+// first frame: scene start (t = 0)
+update();
+window.__ready = true;
+window.__probe = probe;
+window.__step = function (dt) {
+  t += dt;
+  update();
+  return window.__probe();
 };
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-7 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

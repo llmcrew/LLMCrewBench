@@ -1,25 +1,35 @@
-<html>
-<head><meta charset="utf-8"><script src='../../../_vendor/three.global.js'></script>
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Галактика — спиральный диск из частиц</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #1d1638; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
 </head>
-<body style="margin:0;overflow:hidden;background:#000">
+<body>
 <script type="module">
 const THREE = window.THREE;
 
-// === LCG: seed 800660 ===
-let s = 800660;
-function lcg() {
-  s = (1664525 * s + 1013904223) % 4294967296;
-  return s / 4294967296;
+/* ============ Детерминированный генератор (ЛЦГ) ============ */
+function makeLCG(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s = (1664525 * s + 1013904223) % 4294967296;
+    return s / 4294967296;
+  };
 }
+const rand = makeLCG(800660);          // S0 = 800660, строго заданный порядок обращений
+const skyRand = makeLCG(800661);       // отдельный поток только для фона
 
-// === Constants ===
-const HALF_H = 10 * Math.tan(22.5 * Math.PI / 180); // ≈ 4.142
-const R = 0.44 * HALF_H; // disk radius ≈ 1.8225
-const SPEED = 0.55; // рад/с
+/* ============ Камера и сцена ============ */
+const HALF_H = 10.0 * Math.tan(45 * Math.PI / 360);   // полувысота кадра ≈ 4.142
+const R = 0.44 * HALF_H;                              // радиус диска = 0.44 полувысоты
 
-// === Scene ===
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1e1848);
+scene.background = new THREE.Color(0x1d1638);
 
 const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
 camera.position.set(0, 0, 10.0);
@@ -27,256 +37,216 @@ camera.lookAt(0, 0, 0);
 
 const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
 renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
+renderer.setSize(1920, 1080, false);
 document.body.appendChild(renderer.domElement);
 
-// === Generate arm points: 7000, two branches ===
-const armData = [];
-for (let i = 0; i < 7000; i++) {
-  const u = lcg();
-  const v = lcg();
-  const w = lcg();
-  const g = lcg() + lcg() + lcg() - 1.5;
+/* ============ Ночное небо (плоскость с градиентом и звёздами) ============ */
+function makeSkyCanvas() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 384;
+  const x = c.getContext('2d');
+  // мягкая фиолетовая дымка: светлее в центре, #1d1638 по краям
+  x.save();
+  x.translate(256, 192);
+  x.scale(1, 192 / 256); // эллипс под аспектом кадра 4:3
+  const g = x.createRadialGradient(0, 0, 0, 0, 0, 256);
+  g.addColorStop(0.00, 'rgb(95,70,128)');
+  g.addColorStop(0.45, 'rgb(62,46,96)');
+  g.addColorStop(0.85, 'rgb(46,34,78)');
+  g.addColorStop(1.00, 'rgb(29,22,56)');
+  x.fillStyle = g;
+  x.beginPath();
+  x.arc(0, 0, 256, 0, Math.PI * 2);
+  x.fill();
+  x.restore();
+  // редкие далёкие звёзды
+  for (let i = 0; i < 180; i++) {
+    const px = skyRand() * 512;
+    const py = skyRand() * 384;
+    const b = 90 + skyRand() * 150;
+    const rr = 0.4 + skyRand() * 0.9;
+    x.fillStyle = 'rgba(' + (Math.min(255, b + 40) | 0) + ',' +
+                    (Math.min(255, b + 8) | 0) + ',' +
+                    (Math.min(255, b + 30) | 0) + ',0.9)';
+    x.beginPath();
+    x.arc(px, py, rr, 0, Math.PI * 2);
+    x.fill();
+  }
+  return c;
+}
+const skyTex = new THREE.CanvasTexture(makeSkyCanvas());
+skyTex.colorSpace = THREE.SRGBColorSpace;
+const sky = new THREE.Mesh(
+  new THREE.PlaneGeometry(16, 12),
+  new THREE.MeshBasicMaterial({ map: skyTex, transparent: false, depthWrite: false })
+);
+sky.position.set(0, 0, -3);
+sky.renderOrder = 0;
+sky.name = 'sky';
+scene.add(sky);
 
+/* ============ Тёплые свечения ядра ============ */
+function makeGlowCanvas(stops, size) {
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  for (const [o, col] of stops) g.addColorStop(o, col);
+  x.fillStyle = g;
+  x.fillRect(0, 0, size, size);
+  return c;
+}
+const glowMats = [
+  {
+    name: 'nebula_glow', size: 2.9, order: 1,
+    stops: [[0, 'rgba(255,170,70,0.30)'], [0.45, 'rgba(255,120,50,0.10)'], [1, 'rgba(255,100,30,0)']]
+  },
+  {
+    name: 'core_glow', size: 0.55 * R, order: 2,
+    stops: [[0, 'rgba(255,205,110,0.95)'], [0.3, 'rgba(255,170,60,0.55)'],
+            [0.65, 'rgba(255,120,40,0.15)'], [1, 'rgba(255,100,30,0)']]
+  }
+];
+for (const gm of glowMats) {
+  const tex = new THREE.CanvasTexture(makeGlowCanvas(gm.stops, 256));
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(gm.size, gm.size),
+    new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, blending: THREE.AdditiveBlending,
+      depthTest: false, depthWrite: false
+    })
+  );
+  m.position.set(0, 0, 0.02);
+  m.renderOrder = gm.order;
+  m.name = gm.name;
+  scene.add(m);
+}
+
+/* ============ Частицы: зоны и материал ============ */
+// Зоны: ядро (до q=0.38), средние рукава (0.38..0.70), периферия (>=0.70)
+const zones = {
+  core: { name: 'stars_core', size: 3.2, color: new THREE.Color('#ffbf00'), list: [] },
+  arm:  { name: 'stars_arm',  size: 2.8, color: new THREE.Color('#ff0080'), list: [] },
+  edge: { name: 'stars_edge', size: 2.4, color: new THREE.Color('#0cb7f0'), list: [] }
+};
+const TAU = Math.PI * 2;
+
+// --- Рукава: 7000 точек, две ветви, закрученных на 1.60 оборота ---
+for (let i = 0; i < 7000; i++) {
+  const u = rand();
+  const v = rand();
+  const w = rand();
+  const g = u + v + w - 1.5;
   const q = 0.14 + 0.86 * Math.pow(u, 0.62);
   const r = R * q;
-  const theta = 1.60 * 2 * Math.PI * q + Math.PI * Math.floor(v * 2) + g * 0.50 * (1 - 0.45 * q);
+  const theta = 1.60 * TAU * q + Math.PI * Math.floor(v * 2) + g * 0.50 * (1 - 0.45 * q);
   const z = (w - 0.5) * 0.10 * r * (0.4 + q);
-
-  let zone;
-  if (q < 0.38) zone = 0;
-  else if (q < 0.70) zone = 1;
-  else zone = 2;
-
-  armData.push({ theta0: theta, r, z, zone });
+  const zone = q < 0.38 ? zones.core : (q < 0.70 ? zones.arm : zones.edge);
+  zone.list.push({ r, a: theta, z, q });
 }
 
-// === Generate core cluster: 2500 points ===
-const coreData = [];
+// --- Ядро-сгусток: 2500 тёплых точек ---
 for (let i = 0; i < 2500; i++) {
-  const u = lcg();
-  const a = 2 * Math.PI * u;
+  const u = rand();
+  const a = TAU * u;
   const r = 0.22 * R * Math.pow(u, 0.55);
   const z = (u - 0.5) * 0.09 * R;
-  coreData.push({ theta0: a, r, z });
+  zones.core.list.push({ r, a, z, q: r / R });
 }
 
-// === Generate dust halo: 1500 points ===
-const haloData = [];
+// --- Пылевое гало: 1500 точек на периферии ---
 for (let i = 0; i < 1500; i++) {
-  const u = lcg();
+  const u = rand();
   const r = R * (0.60 + 0.85 * u);
-  const a = 2 * Math.PI * u;
-  haloData.push({ theta0: a, r, z: 0 });
+  const a = TAU * u;
+  zones.edge.list.push({ r, a, z: 0, q: r / R });
 }
 
-// === Group by zone ===
-const armZone0 = armData.filter(d => d.zone === 0);
-const armZone1 = armData.filter(d => d.zone === 1);
-const armZone2 = armData.filter(d => d.zone === 2);
-
-// === stars_core: core(2500) + arm zone0, size 3.2, #ffbf00 ===
-const coreCount = coreData.length + armZone0.length;
-const corePos = new Float32Array(coreCount * 3);
-const coreTheta = new Float32Array(coreCount);
-const coreRad = new Float32Array(coreCount);
-const coreZ = new Float32Array(coreCount);
-{
-  let idx = 0;
-  for (const d of coreData) { coreTheta[idx] = d.theta0; coreRad[idx] = d.r; coreZ[idx] = d.z; idx++; }
-  for (const d of armZone0) { coreTheta[idx] = d.theta0; coreRad[idx] = d.r; coreZ[idx] = d.z; idx++; }
+/* ============ Собираем Points-объекты ============ */
+const SPEED = 0.55; // рад/с, дифференциальное вращение
+const groups = [];
+for (const key of ['core', 'arm', 'edge']) {
+  const z = zones[key];
+  const n = z.list.length;
+  const pos = new Float32Array(n * 3);
+  const col = new Float32Array(n * 3);
+  const a0 = new Float32Array(n);
+  const radii = new Float32Array(n);
+  const zz = new Float32Array(n);
+  const om = new Float32Array(n);
+  const ringCount = [0, 0, 0, 0];
+  for (let i = 0; i < n; i++) {
+    const p = z.list[i];
+    a0[i] = p.a;
+    radii[i] = p.r;
+    zz[i] = p.z;
+    om[i] = SPEED / (0.25 + p.q);
+    col[i * 3] = z.color.r;
+    col[i * 3 + 1] = z.color.g;
+    col[i * 3 + 2] = z.color.b;
+    ringCount[Math.min(3, Math.floor(p.q / 0.25))]++;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const pts = new THREE.Points(geo, new THREE.PointsMaterial({
+    sizeAttenuation: false,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthTest: false,
+    vertexColors: true,
+    size: z.size
+  }));
+  pts.name = z.name;
+  pts.renderOrder = 3;
+  scene.add(pts);
+  groups.push({ geo, pos, a0, radii, zz, om, n, rings: ringCount });
 }
-const coreGeom = new THREE.BufferGeometry();
-coreGeom.setAttribute('position', new THREE.BufferAttribute(corePos, 3));
-const coreMat = new THREE.PointsMaterial({
-  size: 3.2, sizeAttenuation: false, transparent: true,
-  blending: THREE.AdditiveBlending, depthTest: false,
-  color: 0xffbf00, opacity: 0.55
-});
-const starsCore = new THREE.Points(coreGeom, coreMat);
-starsCore.name = 'stars_core';
-scene.add(starsCore);
 
-// === stars_arm: arm zone1, size 2.8, #ff0080 ===
-const armCount = armZone1.length;
-const armPos = new Float32Array(armCount * 3);
-const armTheta = new Float32Array(armCount);
-const armRad = new Float32Array(armCount);
-const armZ = new Float32Array(armCount);
-for (let i = 0; i < armCount; i++) { armTheta[i] = armZone1[i].theta0; armRad[i] = armZone1[i].r; armZ[i] = armZone1[i].z; }
-const armGeom = new THREE.BufferGeometry();
-armGeom.setAttribute('position', new THREE.BufferAttribute(armPos, 3));
-const armMat = new THREE.PointsMaterial({
-  size: 2.8, sizeAttenuation: false, transparent: true,
-  blending: THREE.AdditiveBlending, depthTest: false,
-  color: 0xff0080, opacity: 0.55
-});
-const starsArm = new THREE.Points(armGeom, armMat);
-starsArm.name = 'stars_arm';
-scene.add(starsArm);
+const rings = [0, 0, 0, 0];
+for (const g of groups) for (let i = 0; i < 4; i++) rings[i] += g.rings[i];
 
-// === stars_edge: arm zone2 + halo(1500), size 2.4, #0cb7f0 ===
-const edgeCount = armZone2.length + haloData.length;
-const edgePos = new Float32Array(edgeCount * 3);
-const edgeTheta = new Float32Array(edgeCount);
-const edgeRad = new Float32Array(edgeCount);
-const edgeZ = new Float32Array(edgeCount);
-{
-  let idx = 0;
-  for (const d of armZone2) { edgeTheta[idx] = d.theta0; edgeRad[idx] = d.r; edgeZ[idx] = d.z; idx++; }
-  for (const d of haloData) { edgeTheta[idx] = d.theta0; edgeRad[idx] = d.r; edgeZ[idx] = d.z; idx++; }
-}
-const edgeGeom = new THREE.BufferGeometry();
-edgeGeom.setAttribute('position', new THREE.BufferAttribute(edgePos, 3));
-const edgeMat = new THREE.PointsMaterial({
-  size: 2.4, sizeAttenuation: false, transparent: true,
-  blending: THREE.AdditiveBlending, depthTest: false,
-  color: 0x0cb7f0, opacity: 0.55
-});
-const starsEdge = new THREE.Points(edgeGeom, edgeMat);
-starsEdge.name = 'stars_edge';
-scene.add(starsEdge);
-
-// === core_glow: additive radial gradient plane, size 0.55*R ===
-const glowR = 0.55 * R;
-const gc = document.createElement('canvas');
-gc.width = 256; gc.height = 256;
-const gctx = gc.getContext('2d');
-const grad = gctx.createRadialGradient(128, 128, 0, 128, 128, 128);
-grad.addColorStop(0.0, 'rgba(255,200,50,0.9)');
-grad.addColorStop(0.2, 'rgba(255,180,30,0.6)');
-grad.addColorStop(0.5, 'rgba(255,140,10,0.25)');
-grad.addColorStop(0.8, 'rgba(255,100,0,0.06)');
-grad.addColorStop(1.0, 'rgba(255,80,0,0)');
-gctx.fillStyle = grad;
-gctx.fillRect(0, 0, 256, 256);
-const glowTex = new THREE.CanvasTexture(gc);
-const glowGeom = new THREE.PlaneGeometry(glowR * 2, glowR * 2);
-const glowMat = new THREE.MeshBasicMaterial({
-  map: glowTex, transparent: true,
-  blending: THREE.AdditiveBlending, depthTest: false,
-  side: THREE.DoubleSide
-});
-const coreGlow = new THREE.Mesh(glowGeom, glowMat);
-coreGlow.name = 'core_glow';
-coreGlow.position.set(0, 0, 0);
-scene.add(coreGlow);
-
-// === Animation state ===
+/* ============ Время и обновление позиций ============ */
+const OMEGA0 = 0.55;
 let t = 0;
 let spin = 0;
 
 function updatePositions() {
-  for (let i = 0; i < coreCount; i++) {
-    const th = coreTheta[i] + SPEED * t / (0.25 + coreRad[i] / R);
-    corePos[i * 3]     = coreRad[i] * Math.cos(th);
-    corePos[i * 3 + 1] = coreRad[i] * Math.sin(th);
-    corePos[i * 3 + 2] = coreZ[i];
+  for (const g of groups) {
+    const pos = g.pos;
+    for (let i = 0; i < g.n; i++) {
+      const th = g.a0[i] + g.om[i] * t;
+      pos[i * 3] = g.radii[i] * Math.cos(th);
+      pos[i * 3 + 1] = g.radii[i] * Math.sin(th);
+      pos[i * 3 + 2] = g.zz[i];
+    }
+    g.geo.attributes.position.needsUpdate = true;
   }
-  coreGeom.attributes.position.needsUpdate = true;
-
-  for (let i = 0; i < armCount; i++) {
-    const th = armTheta[i] + SPEED * t / (0.25 + armRad[i] / R);
-    armPos[i * 3]     = armRad[i] * Math.cos(th);
-    armPos[i * 3 + 1] = armRad[i] * Math.sin(th);
-    armPos[i * 3 + 2] = armZ[i];
-  }
-  armGeom.attributes.position.needsUpdate = true;
-
-  for (let i = 0; i < edgeCount; i++) {
-    const th = edgeTheta[i] + SPEED * t / (0.25 + edgeRad[i] / R);
-    edgePos[i * 3]     = edgeRad[i] * Math.cos(th);
-    edgePos[i * 3 + 1] = edgeRad[i] * Math.sin(th);
-    edgePos[i * 3 + 2] = edgeZ[i];
-  }
-  edgeGeom.attributes.position.needsUpdate = true;
 }
 
-// Initial positions at t=0
-updatePositions();
+function probe() {
+  return {
+    t: Math.round(t * 10000) / 10000,
+    spin: Math.round(spin * 10000) / 10000,
+    objects: ['sky', 'nebula_glow', 'core_glow', 'stars_core', 'stars_arm', 'stars_edge'],
+    rings: rings
+  };
+}
 
-// First render
-renderer.render(scene, camera);
-window.__ready = true;
-
-// === API ===
-window.__step = function(dt) {
+window.__step = function (dt) {
   t += dt;
-  spin += SPEED * dt;
+  spin += OMEGA0 * dt;
   updatePositions();
   renderer.render(scene, camera);
   return window.__probe();
 };
+window.__probe = probe;
 
-window.__probe = function() {
-  const rings = [0, 0, 0, 0];
-  for (let i = 0; i < coreCount; i++) {
-    const q = coreRad[i] / R;
-    if (q < 0.25) rings[0]++; else if (q < 0.5) rings[1]++; else if (q < 0.75) rings[2]++; else rings[3]++;
-  }
-  for (let i = 0; i < armCount; i++) {
-    const q = armRad[i] / R;
-    if (q < 0.25) rings[0]++; else if (q < 0.5) rings[1]++; else if (q < 0.75) rings[2]++; else rings[3]++;
-  }
-  for (let i = 0; i < edgeCount; i++) {
-    const q = edgeRad[i] / R;
-    if (q < 0.25) rings[0]++; else if (q < 0.5) rings[1]++; else if (q < 0.75) rings[2]++; else rings[3]++;
-  }
-
-  return {
-    t: Math.round(t * 10000) / 10000,
-    spin: Math.round(spin * 10000) / 10000,
-    objects: scene.children.map(o => o.name).filter(n => n),
-    rings: rings
-  };
-};
+/* ============ Первый кадр (t = 0) ============ */
+updatePositions();
+renderer.render(scene, camera);
+window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-6 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

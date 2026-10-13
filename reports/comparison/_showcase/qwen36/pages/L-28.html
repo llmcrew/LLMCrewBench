@@ -1,302 +1,717 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
-    <meta charset="utf-8">
-    <style>body { margin: 0; overflow: hidden; background: #000; }</style>
+<meta charset="UTF-8">
+<title>Destructing Planet System</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.js"
+  }
+}
+</script>
 <script type="module">
 const THREE = window.THREE;
 
-// --- LCG Randomness ---
-let lcg = 701695;
+/* ========== Deterministic LCG ========== */
+let lcgState = 701695;
+function lcgReset() { lcgState = 701695; }
 function rnd() {
-    lcg = (lcg * 1103515245 + 12345) % 2147483648;
-    return lcg / 2147483648;
+  lcgState = (lcgState * 1103515245 + 12345) % 2147483648;
+  return lcgState / 2147483648;
 }
+function rndRange(a, b) { return a + rnd() * (b - a); }
 
-// --- Scene Setup ---
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(60, 1920 / 1080, 0.1, 500);
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+/* ---------- Camera path ---------- */
+const camStart = new THREE.Vector3(0.6, 0.4, 4);
+const camEnd   = new THREE.Vector3(-0.19, 1.16, 12);
+let cameraAngle = 0; // 0 = start, 1 = end
+
+/* ---------- Scene objects ---------- */
+let earth, atmosphere, auroraTop, auroraBot, core, cloudDebris,
+    orbitRings = [], satellites = [], station, nebula, stars;
+
+let nebulaPlane, debrisPoints, starPoints;
+
+/* ---------- Renderer / Scene / Camera ---------- */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
 renderer.setPixelRatio(1);
 renderer.setSize(1920, 1080, false);
 document.body.appendChild(renderer.domElement);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
 
-// Lights
-scene.add(new THREE.AmbientLight(0x333333));
-const coreLight = new THREE.PointLight(0xff9a5a, 3, 50);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x020208);
+
+const camera = new THREE.PerspectiveCamera(55, 1920 / 1080, 0.1, 500);
+camera.position.copy(camStart);
+
+/* ---------- Lights ---------- */
+const ambientLight = new THREE.AmbientLight(0x222244, 0.5);
+scene.add(ambientLight);
+
+const coreLight = new THREE.PointLight(0xff8844, 40, 50, 1.5);
 coreLight.position.set(-3.2, 1.4, -12);
 scene.add(coreLight);
-const earthLight = new THREE.PointLight(0x6fb6ff, 2, 40);
-earthLight.position.set(3.0, -2.2, -14);
+
+const earthLight = new THREE.PointLight(0x6688cc, 8, 40, 1.8);
+earthLight.position.set(3.0, -2.2, -10);
 scene.add(earthLight);
 
-// --- Objects ---
-// Earth
-const earthGeo = new THREE.SphereGeometry(3.0, 64, 64);
-const earthMat = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 } },
+const stationLight = new THREE.PointLight(0xffffff, 5, 20, 2);
+stationLight.position.set(-10, 1, 2);
+scene.add(stationLight);
+
+/* ========== 1. StARS (2400) ========== */
+function createStars() {
+  lcgReset();
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(2400 * 3);
+  const sizes = new Float32Array(2400);
+  for (let i = 0; i < 2400; i++) {
+    const theta = rnd() * Math.PI * 2;
+    const phi   = Math.acos(2 * rnd() - 1);
+    const r = 80 + rnd() * 120;
+    pos[i*3]   = r * Math.sin(phi) * Math.cos(theta);
+    pos[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+    pos[i*3+2] = r * Math.cos(phi);
+    sizes[i] = 0.5 + rnd() * 2.0;
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+  const starMat = new THREE.ShaderMaterial({
+    uniforms: {},
     vertexShader: `
-        varying vec2 vUv;
-        void main() {
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-    `,
+      attribute float size;
+      varying float vSize;
+      void main(){
+        vSize = size;
+        vec4 mv = modelViewMatrix * vec4(position,1.0);
+        gl_PointSize = size * (200.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }`,
     fragmentShader: `
-        uniform float uTime;
-        varying vec2 vUv;
-        void main() {
-            vec3 col = vec3(0.1, 0.25, 0.45);
-            float n = fract(sin(dot(vUv * 15.0, vec2(12.9898, 78.233))) * 43758.5453);
-            float storm = smoothstep(0.4, 0.6, n) * 0.2;
-            float flash = step(0.97, fract(uTime * 0.3 + n * 20.0)) * 0.4;
-            col += storm + flash;
-            gl_FragColor = vec4(col, 1.0);
-        }
-    `
-});
-const earth = new THREE.Mesh(earthGeo, earthMat);
-earth.position.set(3.0, -2.2, -14);
-earth.name = 'earth';
-scene.add(earth);
-
-// Atmosphere
-const atmoGeo = new THREE.SphereGeometry(3.15, 32, 32);
-const atmoMat = new THREE.MeshBasicMaterial({ color: 0x6fb6ff, transparent: true, opacity: 0.3, side: THREE.BackSide });
-const atmosphere = new THREE.Mesh(atmoGeo, atmoMat);
-atmosphere.position.copy(earth.position);
-atmosphere.name = 'atmosphere';
-scene.add(atmosphere);
-
-// Aurora
-const auroraGeo = new THREE.TorusGeometry(3.6, 0.25, 16, 64);
-const auroraMat = new THREE.MeshBasicMaterial({ color: 0x7bf0c8, transparent: true, opacity: 0.6, side: THREE.DoubleSide });
-const aurora1 = new THREE.Mesh(auroraGeo, auroraMat);
-aurora1.position.set(3.0, 3.0, -14);
-aurora1.scale.y = 0.1;
-aurora1.name = 'aurora';
-scene.add(aurora1);
-const aurora2 = aurora1.clone();
-aurora2.position.y = -3.0;
-scene.add(aurora2);
-
-// Core
-const coreGeo = new THREE.SphereGeometry(1.1, 16, 16);
-const coreMat = new THREE.MeshBasicMaterial({ color: 0xff9a5a, emissive: 0xff9a5a, emissiveIntensity: 2 });
-const core = new THREE.Mesh(coreGeo, coreMat);
-core.position.set(-3.2, 1.4, -12);
-core.name = 'core';
-scene.add(core);
-
-// Cloud Debris
-const debrisCount = 200;
-const debrisGeo = new THREE.BufferGeometry();
-const debrisPos = new Float32Array(debrisCount * 3);
-const debrisVel = new Float32Array(debrisCount * 3);
-for (let i = 0; i < debrisCount; i++) {
-    debrisPos[i * 3]   = -3.2 + (rnd() - 0.5) * 2;
-    debrisPos[i * 3 + 1] = 1.4 + (rnd() - 0.5) * 2;
-    debrisPos[i * 3 + 2] = -12 + (rnd() - 0.5) * 2;
-    let tx = 3.0 + (rnd() - 0.5) * 10;
-    let ty = -2.2 + (rnd() - 0.5) * 6;
-    let tz = -14 + (rnd() - 0.5) * 10;
-    let dx = tx - debrisPos[i * 3];
-    let dy = ty - debrisPos[i * 3 + 1];
-    let dz = tz - debrisPos[i * 3 + 2];
-    let len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-    let speed = 0.5 + rnd() * 1.5;
-    debrisVel[i * 3]   = (dx / len) * speed;
-    debrisVel[i * 3 + 1] = (dy / len) * speed;
-    debrisVel[i * 3 + 2] = (dz / len) * speed;
-}
-debrisGeo.setAttribute('position', new THREE.BufferAttribute(debrisPos, 3));
-const debrisMat = new THREE.PointsMaterial({ color: 0xffb070, size: 0.15, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.8 });
-const cloud_debris = new THREE.Points(debrisGeo, debrisMat);
-cloud_debris.name = 'cloud_debris';
-scene.add(cloud_debris);
-
-// Orbits
-const orbitRadii = [4.5, 5.5, 6.5, 7.5];
-const orbits = [];
-orbitRadii.forEach(r => {
-    const geo = new THREE.RingGeometry(r, r + 0.02, 64);
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.copy(earth.position);
-    mesh.rotation.x = Math.PI / 2;
-    mesh.name = 'orbits';
-    scene.add(mesh);
-    orbits.push(mesh);
-});
-
-// Satellites
-const satMeshes = [];
-const satAngles = [];
-const satSpeeds = [];
-for (let i = 0; i < 5; i++) {
-    const geo = new THREE.SphereGeometry(0.08, 8, 8);
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.name = 'satellites';
-    scene.add(mesh);
-    satMeshes.push(mesh);
-    satAngles.push(rnd() * Math.PI * 2);
-    satSpeeds.push(0.2 + rnd() * 0.3);
-}
-
-// Station
-const station = new THREE.Group();
-station.position.set(-8, 0, 0);
-station.name = 'station';
-const box1 = new THREE.Mesh(new THREE.BoxGeometry(1, 0.2, 0.5), new THREE.MeshStandardMaterial({ color: 0x888888 }));
-const box2 = new THREE.Mesh(new THREE.BoxGeometry(0.2, 1, 0.2), new THREE.MeshStandardMaterial({ color: 0x888888 }));
-const box3 = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.2, 1), new THREE.MeshStandardMaterial({ color: 0x888888 }));
-station.add(box1, box2, box3);
-scene.add(station);
-
-// Nebula
-const nebulaGeo = new THREE.PlaneGeometry(100, 100);
-const nebulaMat = new THREE.MeshBasicMaterial({ color: 0x5a4a8f, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
-const nebula = new THREE.Mesh(nebulaGeo, nebulaMat);
-nebula.position.z = -60;
-nebula.name = 'nebula';
-scene.add(nebula);
-
-// Stars
-const starsCount = 2400;
-const starsGeo = new THREE.BufferGeometry();
-const starsPos = new Float32Array(starsCount * 3);
-for (let i = 0; i < starsCount; i++) {
-    let r = 50 + rnd() * 100;
-    let theta = rnd() * Math.PI * 2;
-    let phi = Math.acos(2 * rnd() - 1);
-    starsPos[i * 3]   = r * Math.sin(phi) * Math.cos(theta);
-    starsPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-    starsPos[i * 3 + 2] = r * Math.cos(phi);
-}
-starsGeo.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
-const starsMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.1 });
-const stars = new THREE.Points(starsGeo, starsMat);
-stars.name = 'stars';
-scene.add(stars);
-
-// --- Camera Init ---
-const startPos = new THREE.Vector3(0.6, 0.4, 4);
-const endPos = new THREE.Vector3(-0.19, 1.16, 12);
-camera.position.copy(startPos);
-camera.lookAt(0, -2, -10);
-
-// --- Animation & Probe ---
-let t = 0;
-
-// Initial render for "zero steps" frame
-renderer.render(scene, camera);
-window.__ready = true;
-
-window.__step = function(dt) {
-    t += dt;
-
-    // Camera animation
-    let camT = Math.min(t / 6, 1);
-    camera.position.lerpVectors(startPos, endPos, camT);
-    camera.lookAt(0, -2, -10);
-
-    // Debris flight
-    const posAttr = debrisGeo.attributes.position;
-    for (let i = 0; i < debrisCount; i++) {
-        posAttr.array[i * 3]   += debrisVel[i * 3]   * dt;
-        posAttr.array[i * 3 + 1] += debrisVel[i * 3 + 1] * dt;
-        posAttr.array[i * 3 + 2] += debrisVel[i * 3 + 2] * dt;
-    }
-    posAttr.needsUpdate = true;
-
-    // Satellites orbit
-    for (let i = 0; i < 5; i++) {
-        let angle = satAngles[i] + satSpeeds[i] * dt;
-        let r = orbitRadii[i % 4];
-        satMeshes[i].position.set(
-            earth.position.x + r * Math.cos(angle),
-            earth.position.y,
-            earth.position.z + r * Math.sin(angle)
-        );
-    }
-
-    // Aurora flicker
-    aurora1.material.opacity = 0.5 + 0.2 * Math.sin(t * 2);
-    aurora2.material.opacity = 0.5 + 0.2 * Math.cos(t * 2.5);
-
-    // Earth shader time
-    earthMat.uniforms.uTime.value = t;
-
-    renderer.render(scene, camera);
-    return __probe();
-};
-
-window.__probe = function() {
-    let ahead = 0;
-    const posAttr = debrisGeo.attributes.position;
-    for (let i = 0; i < debrisCount; i++) {
-        let dx = posAttr.array[i * 3] - (-8);
-        let dy = posAttr.array[i * 3 + 1] - 0;
-        let dz = posAttr.array[i * 3 + 2] - 0;
-        if (dx * dx + dy * dy + dz * dz < 2.76 * 2.76) ahead++;
-    }
-    return {
-        t: t.toFixed(4),
-        objects: ['earth', 'atmosphere', 'aurora', 'core', 'cloud_debris', 'orbits', 'satellites', 'station', 'nebula', 'stars'],
-        ahead: ahead
-    };
-};
-</script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
+      varying float vSize;
+      void main(){
+        float d = length(gl_PointCoord - 0.5)*2.0;
+        if(d > 1.0) discard;
+        float a = 1.0 - d*d;
+        float b = a*a;
+        vec3 c = mix(vec3(0.6,0.7,1.0), vec3(1.0,0.95,0.8), vSize/2.5);
+        gl_FragColor = vec4(c, b * 0.9);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
   });
 
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
+  starPoints = new THREE.Points(geo, starMat);
+  starPoints.name = 'stars';
+  scene.add(starPoints);
+}
+
+/* ========== 2. NEBULA (large plane z=-60) ========== */
+function createNebula() {
+  // Main nebula - large, fills background
+  const geo1 = new THREE.PlaneGeometry(200, 140);
+  const mat1 = new THREE.MeshBasicMaterial({
+    color: 0x5a4a8f,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  nebulaPlane = new THREE.Mesh(geo1, mat1);
+  nebulaPlane.position.set(-2, 0, -60);
+  nebulaPlane.rotation.z = 0.3;
+  nebulaPlane.name = 'nebula';
+  scene.add(nebulaPlane);
+
+  // Secondary nebula layer for depth
+  const geo2 = new THREE.PlaneGeometry(180, 120);
+  const mat2 = new THREE.MeshBasicMaterial({
+    color: 0x4a3a7f,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  const neb2 = new THREE.Mesh(geo2, mat2);
+  neb2.position.set(3, 3, -65);
+  neb2.rotation.z = -0.4;
+  neb2.name = 'nebula';
+  scene.add(neb2);
+
+  // Third nebula spread near center
+  const geo3 = new THREE.PlaneGeometry(160, 90);
+  const mat3 = new THREE.MeshBasicMaterial({
+    color: 0x6a5a9f,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  const neb3 = new THREE.Mesh(geo3, mat3);
+  neb3.position.set(0, -3, -55);
+  neb3.rotation.z = 0.6;
+  neb3.name = 'nebula';
+  scene.add(neb3);
+}
+
+/* ========== 3. EARTH ========== */
+function createEarth() {
+  // Procedural surface texture via canvas
+  const texCanvas = document.createElement('canvas');
+  texCanvas.width = 512; texCanvas.height = 256;
+  const ctx = texCanvas.getContext('2d');
+  // Base ocean
+  ctx.fillStyle = '#1a3a6a';
+  ctx.fillRect(0, 0, 512, 256);
+  // Procedural continents
+  for (let i = 0; i < 300; i++) {
+    const x = rnd() * 512;
+    const y = rnd() * 256;
+    const r = 3 + rnd() * 25;
+    const g = Math.floor(rnd() * 80 + 40);
+    ctx.fillStyle = `rgb(${Math.floor(rnd()*40+30)},${g},${Math.floor(rnd()*30+10)})`;
+    ctx.beginPath();
+    ctx.ellipse(x, y, r, r * 0.6, rnd() * 1.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Ice caps
+  const grad1 = ctx.createLinearGradient(0,0,0,30);
+  grad1.addColorStop(0,'rgba(200,220,255,0.8)'); grad1.addColorStop(1,'rgba(200,220,255,0)');
+  ctx.fillStyle = grad1; ctx.fillRect(0,0,512,30);
+  const grad2 = ctx.createLinearGradient(0,226,0,256);
+  grad2.addColorStop(0,'rgba(200,220,255,0)'); grad2.addColorStop(1,'rgba(200,220,255,0.8)');
+  ctx.fillStyle = grad2; ctx.fillRect(0,226,512,30);
+
+  const tex = new THREE.CanvasTexture(texCanvas);
+  tex.wrapS = THREE.RepeatWrapping;
+
+  const geo = new THREE.SphereGeometry(3.0, 64, 48);
+  const mat = new THREE.MeshStandardMaterial({
+    map: tex,
+    roughness: 0.7,
+    metalness: 0.1,
+    emissive: 0x112244,
+    emissiveIntensity: 0.15
+  });
+  earth = new THREE.Mesh(geo, mat);
+  earth.position.set(3.0, -2.2, -14);
+  earth.name = 'earth';
+  scene.add(earth);
+
+  /* --- atmosphere halo --- */
+  const atmosGeo = new THREE.SphereGeometry(3.35, 64, 48);
+  const atmosMat = new THREE.ShaderMaterial({
+    uniforms: { color: { value: new THREE.Color(0x6fb6ff) } },
+    vertexShader: `
+      varying vec3 vNormal;
+      varying vec3 vViewPos;
+      void main(){
+        vNormal = normalize(normalMatrix * normal);
+        vec4 mv = modelViewMatrix * vec4(position,1.0);
+        vViewPos = mv.xyz;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform vec3 color;
+      varying vec3 vNormal;
+      varying vec3 vViewPos;
+      void main(){
+        vec3 viewDir = normalize(-vViewPos);
+        float rim = 1.0 - max(0.0, dot(viewDir, vNormal));
+        rim = pow(rim, 2.5);
+        gl_FragColor = vec4(color, rim * 0.7);
+      }`,
+    transparent: true,
+    side: THREE.BackSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+  atmosphere = new THREE.Mesh(atmosGeo, atmosMat);
+  atmosphere.position.copy(earth.position);
+  atmosphere.name = 'atmosphere';
+  scene.add(atmosphere);
+
+  /* --- aurora tori --- */
+  const torusGeo = new THREE.TorusGeometry(3.5, 0.18, 16, 64);
+  const auroraMat = new THREE.MeshBasicMaterial({
+    color: 0x7bf0c8,
+    transparent: true,
+    opacity: 0.6,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+
+  auroraTop = new THREE.Mesh(torusGeo, auroraMat.clone());
+  auroraTop.position.copy(earth.position);
+  auroraTop.position.y += 2.6;
+  auroraTop.scale.set(1, 0.12, 1);
+  auroraTop.rotation.x = Math.PI / 2;
+  auroraTop.name = 'aurora';
+  scene.add(auroraTop);
+
+  auroraBot = new THREE.Mesh(torusGeo.clone(), auroraMat.clone());
+  auroraBot.position.copy(earth.position);
+  auroraBot.position.y -= 2.6;
+  auroraBot.scale.set(1, 0.12, 1);
+  auroraBot.rotation.x = Math.PI / 2;
+  auroraBot.name = 'aurora';
+  scene.add(auroraBot);
+
+  /* --- lightning / storm flashes --- */
+  const flashGeo = new THREE.SphereGeometry(3.02, 48, 36);
+  const flashMat = new THREE.ShaderMaterial({
+    uniforms: {
+      flashIntensity: { value: 0.0 },
+      flashPos: { value: new THREE.Vector3(0.5, 0.8, 0.3) }
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vNor;
+      void main(){
+        vUv = uv;
+        vNor = normal;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+      }`,
+    fragmentShader: `
+      uniform float flashIntensity;
+      uniform vec3 flashPos;
+      varying vec2 vUv;
+      varying vec3 vNor;
+      void main(){
+        vec2 uv = vUv * 7.0;
+        float n = sin(uv.x * 45.0 + flashPos.x * 13.0) *
+                  cos(uv.y * 55.0 + flashPos.y * 17.0) * 0.5 + 0.5;
+        float dist = length(vUv - flashPos);
+        float flash = smoothstep(0.5, 0.0, dist) * n * flashIntensity;
+        gl_FragColor = vec4(0.8, 0.85, 1.0, flash * 0.5);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.FrontSide
+  });
+  const flashMesh = new THREE.Mesh(flashGeo, flashMat);
+  flashMesh.position.copy(earth.position);
+  flashMesh.name = 'earth_flash';
+  scene.add(flashMesh);
+}
+
+/* ========== 4. CORE (destroyed planet remnant) ========== */
+function createCore() {
+  const geo = new THREE.SphereGeometry(1.1, 48, 36);
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xff9a5a,
+    emissive: 0xff6622,
+    emissiveIntensity: 2.5,
+    roughness: 0.9,
+    metalness: 0.0
+  });
+  core = new THREE.Mesh(geo, mat);
+  core.position.set(-3.2, 1.4, -12);
+  core.name = 'core';
+  scene.add(core);
+
+  // Glow shell
+  const glowGeo = new THREE.SphereGeometry(1.6, 32, 24);
+  const glowMat = new THREE.ShaderMaterial({
+    uniforms: { color: { value: new THREE.Color(0xff7733) } },
+    vertexShader: `
+      varying vec3 vNormal;
+      varying vec3 vViewPos;
+      void main(){
+        vNormal = normalize(normalMatrix * normal);
+        vec4 mv = modelViewMatrix * vec4(position,1.0);
+        vViewPos = mv.xyz;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform vec3 color;
+      varying vec3 vNormal;
+      varying vec3 vViewPos;
+      void main(){
+        vec3 vd = normalize(-vViewPos);
+        float rim = 1.0 - max(0.0, dot(vd, vNormal));
+        rim = pow(rim, 2.0);
+        gl_FragColor = vec4(color, rim * 0.6);
+      }`,
+    transparent: true,
+    side: THREE.BackSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+  const glow = new THREE.Mesh(glowGeo, glowMat);
+  glow.position.copy(core.position);
+  glow.name = 'core_glow';
+  scene.add(glow);
+}
+
+/* ========== 5. CLOUD DEBRIS (200 additive points) ========== */
+function createDebris() {
+  lcgReset();
+  // Skip to after stars (2400 rnds)
+  for (let i = 0; i < 2400; i++) rnd();
+
+  const count = 200;
+  const geo = new THREE.BufferGeometry();
+  const positions = new Float32Array(count * 3);
+  const velocities = new Float32Array(count * 3);
+  const sizes = new Float32Array(count);
+
+  const corePos = new THREE.Vector3(-3.2, 1.4, -12);
+  const earthPos = new THREE.Vector3(3.0, -2.2, -14);
+
+  for (let i = 0; i < count; i++) {
+    // Spread out from core in a cloud expanding outward
+    const theta = rnd() * Math.PI * 2;
+    const phi = rnd() * Math.PI;
+    const speed = 0.3 + rnd() * 2.5;
+
+    // Varying directions: some toward Earth, some past station, some away
+    let dir = new THREE.Vector3(
+      Math.sin(phi) * Math.cos(theta),
+      Math.sin(phi) * Math.sin(theta),
+      Math.cos(phi)
+    );
+
+    // Bias some toward Earth
+    if (rnd() < 0.4) {
+      const toEarth = earthPos.clone().sub(corePos).normalize();
+      dir.lerp(toEarth, 0.6);
+      dir.normalize();
+      speed *= 0.7;
     }
-    requestAnimationFrame(loop);
+
+    // Initial position near core
+    const spread = 0.5 + rnd() * 3;
+    positions[i*3]   = corePos.x + dir.x * spread;
+    positions[i*3+1] = corePos.y + dir.y * spread;
+    positions[i*3+2] = corePos.z + dir.z * spread;
+
+    velocities[i*3]   = dir.x * speed;
+    velocities[i*3+1] = dir.y * speed;
+    velocities[i*3+2] = dir.z * speed;
+
+    sizes[i] = (0.5 + rnd() * 2.5) * 2.0;
   }
 
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      time: { value: 0 }
+    },
+    vertexShader: `
+      attribute float size;
+      uniform float time;
+      varying float vBright;
+      void main(){
+        float flicker = 0.7 + 0.3 * sin(time * 3.0 + position.x * 2.0 + position.y * 3.0);
+        vBright = flicker;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = size * (150.0 / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      varying float vBright;
+      void main(){
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        if(d > 1.0) discard;
+        float a = pow(1.0 - d, 2.0);
+        vec3 c = mix(vec3(1.0,0.7,0.3), vec3(1.0,0.95,0.7), 1.0 - d);
+        gl_FragColor = vec4(c, a * vBright * 0.9);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
   });
 
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  debrisPoints = new THREE.Points(geo, mat);
+  debrisPoints.name = 'cloud_debris';
+  scene.add(debrisPoints);
+
+  window._debrisVelocities = velocities;
+  window._debrisPositions = (function(){
+    const a = positions;
+    return {
+      get: (i,x) => a[i*3+x],
+      set: (i,x,v) => a[i*3+x] = v
+    };
+  })();
+}
+
+/* ========== 6. ORBIT RINGS (4 around Earth) ========== */
+function createOrbits() {
+  const earthPos = new THREE.Vector3(3.0, -2.2, -14);
+  const radii = [4.2, 4.8, 5.5, 6.2];
+  const angles = [0.3, -0.5, 0.8, -0.2];
+
+  for (let i = 0; i < 4; i++) {
+    const geo = new THREE.TorusGeometry(radii[i], 0.008, 8, 128);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x7bf0c8,
+      transparent: true,
+      opacity: 0.25,
+      depthWrite: false
+    });
+    const ring = new THREE.Mesh(geo, mat);
+    ring.position.copy(earthPos);
+    ring.rotation.x = Math.PI / 2 + angles[i];
+    ring.rotation.z = angles[i] * 0.5;
+    ring.name = 'orbit';
+    scene.add(ring);
+    orbitRings.push(ring);
+  }
+}
+
+/* ========== 7. SATELLITES (5 on orbits) ========== */
+function createSatellites() {
+  const earthPos = new THREE.Vector3(3.0, -2.2, -14);
+  const radii = [4.2, 4.8, 5.5, 6.2];
+  const angles = [0.3, -0.5, 0.8, -0.2];
+  const speeds = [0.4, -0.3, 0.25, -0.35];
+
+  lcgReset();
+  for (let i = 0; i < 2400 + 200; i++) rnd(); // skip stars + debris
+  for (let i = 0; i < 16; i++) rnd(); // skip some debris
+
+  for (let i = 0; i < 5; i++) {
+    const ringIdx = i % 4;
+    const geo = new THREE.SphereGeometry(0.06, 8, 6);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xaaffee,
+      blending: THREE.AdditiveBlending
+    });
+    const sat = new THREE.Mesh(geo, mat);
+    const theta = rnd() * Math.PI * 2;
+    const r = radii[ringIdx];
+    const ang = angles[ringIdx];
+
+    sat.userData = { ringIdx, theta, ringRadius: r, ringAngle: ang, speed: speeds[ringIdx] };
+    sat.name = 'satellite';
+    scene.add(sat);
+    satellites.push(sat);
+  }
+}
+
+/* ========== 8. STATION (group at left edge) ========== */
+function createStation() {
+  station = new THREE.Group();
+  station.position.set(-10, 1, 2);
+  station.name = 'station';
+
+  // Central module
+  const bodyGeo = new THREE.CylinderGeometry(0.25, 0.25, 1.5, 12);
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: 0x8899aa,
+    roughness: 0.3,
+    metalness: 0.8
   });
-})();
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  body.rotation.z = Math.PI / 2;
+  station.add(body);
+
+  // Solar panels
+  const panelGeo = new THREE.BoxGeometry(3.5, 0.02, 1.0);
+  const panelMat = new THREE.MeshStandardMaterial({
+    color: 0x2244aa,
+    roughness: 0.2,
+    metalness: 0.5,
+    emissive: 0x112255,
+    emissiveIntensity: 0.3
+  });
+  for (let side = -1; side <= 1; side += 2) {
+    const panel = new THREE.Mesh(panelGeo, panelMat);
+    panel.position.set(0, 0.4 * side, 0);
+    station.add(panel);
+
+    const frameGeo = new THREE.BoxGeometry(3.6, 0.01, 1.1);
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x667788, metalness: 0.7 });
+    const frame = new THREE.Mesh(frameGeo, frameMat);
+    frame.position.set(0, 0.39 * side, 0);
+    station.add(frame);
+  }
+
+  // Antenna dish
+  const dishGeo = new THREE.SphereGeometry(0.4, 16, 8, 0, Math.PI * 2, 0, Math.PI * 0.4);
+  const dishMat = new THREE.MeshStandardMaterial({
+    color: 0xccccdd,
+    roughness: 0.2,
+    metalness: 0.9,
+    side: THREE.DoubleSide
+  });
+  const dish = new THREE.Mesh(dishGeo, dishMat);
+  dish.position.set(-0.8, 0, 0);
+  dish.rotation.y = Math.PI / 4;
+  station.add(dish);
+
+  // Link struts
+  for (let i = 0; i < 3; i++) {
+    const strutGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.8, 6);
+    const strutMat = new THREE.MeshStandardMaterial({ color: 0x778899, metalness: 0.8 });
+    const strut = new THREE.Mesh(strutGeo, strutMat);
+    const angle = (i / 3) * Math.PI * 2;
+    strut.position.set(Math.cos(angle) * 0.3, 0, Math.sin(angle) * 0.3);
+    strut.rotation.x = Math.PI / 2;
+    station.add(strut);
+  }
+
+  // Blinking lights on station
+  station.userData = { lightPhase: 0 };
+
+  scene.add(station);
+}
+
+/* ========== BUILD ========== */
+lcgReset();
+createStars();
+createNebula();
+createCore();
+createEarth();
+createDebris();
+createOrbits();
+createSatellites();
+createStation();
+
+/* ========== __step & __probe ========== */
+let simTime = 0;
+
+function __step(dt) {
+  simTime += dt;
+  let t = simTime;
+
+  /* --- Camera movement (0→6 s) --- */
+  const duration = 6;
+  const alpha = Math.min(1, t / duration);
+  // Smooth easing
+  const eased = alpha < 0.5 ? 2*alpha*alpha : 1 - Math.pow(-2*alpha + 2, 2) / 2;
+  camera.position.lerpVectors(camStart, camEnd, eased);
+  camera.lookAt(0, -1, -8);
+  cameraAngle = alpha;
+
+  /* --- Core rotation --- */
+  if (core) { core.rotation.y += dt * 0.4; core.rotation.x += dt * 0.15; }
+
+  /* --- Aurora flicker --- */
+  const auroraFlicker = 0.4 + 0.3 * Math.sin(t * 2.1) * Math.sin(t * 3.7);
+  if (auroraTop) auroraTop.material.opacity = auroraFlicker;
+  if (auroraBot) auroraBot.material.opacity = 0.5 + 0.3 * Math.cos(t * 1.8) * Math.sin(t * 4.1);
+  if (auroraTop) auroraTop.rotation.z = Math.sin(t * 0.5) * 0.1;
+  if (auroraBot) auroraBot.rotation.z = Math.cos(t * 0.6) * 0.08;
+
+  /* --- Earth slow rotation --- */
+  if (earth) earth.rotation.y += dt * 0.05;
+
+  /* --- Debris motion --- */
+  if (debrisPoints && window._debrisVelocities) {
+    const posA = window._debrisPositions;
+    const velA = window._debrisVelocities;
+    const count = 200;
+    for (let i = 0; i < count; i++) {
+      const px = posA.get(i, 0) + velA[i*3] * dt;
+      const py = posA.get(i, 1) + velA[i*3+1] * dt;
+      const pz = posA.get(i, 2) + velA[i*3+2] * dt;
+      posA.set(i, 0, px);
+      posA.set(i, 1, py);
+      posA.set(i, 2, pz);
+    }
+    debrisPoints.geometry.attributes.position.needsUpdate = true;
+    debrisPoints.material.uniforms.time.value = t;
+  }
+
+  /* --- Satellite motion --- */
+  for (const sat of satellites) {
+    const { ringIdx, ringRadius, ringAngle, speed } = sat.userData;
+    const earthPos = new THREE.Vector3(3.0, -2.2, -14);
+    sat.userData.theta += speed * dt;
+    const th = sat.userData.theta;
+    const rx = Math.cos(th) * ringRadius;
+    const rz = Math.sin(th) * ringRadius;
+    sat.position.set(
+      earthPos.x + rx,
+      earthPos.y + Math.sin(th) * ringRadius * Math.sin(ringAngle) * 0.15,
+      earthPos.z + rz
+    );
+  }
+
+  /* --- Flash on Earth --- */
+  const flashes = scene.children.filter(c => c.name === 'earth_flash');
+  for (const flash of flashes) {
+    const fi = flash.material.uniforms.flashIntensity;
+    const phase = (t * 0.5) % 1;
+    fi.value = Math.max(0, 1 - phase * 3) * (Math.sin(phase * 20) * 0.5 + 0.5) * 0.8;
+    flash.material.uniforms.flashPos.value.set(
+      0.3 + 0.3 * Math.sin(t * 1.3),
+      0.3 + 0.3 * Math.cos(t * 0.9),
+      0.3 + 0.3 * Math.sin(t * 0.7)
+    );
+  }
+
+  /* --- Core pulse --- */
+  if (coreLight) {
+    coreLight.intensity = 35 + 15 * Math.sin(t * 4) * Math.sin(t * 7);
+  }
+
+  /* --- Nebula slow drift --- */
+  const allNebulae = scene.children.filter(c => c.name === 'nebula');
+  for (const neb of allNebulae) {
+    neb.rotation.z += dt * 0.003;
+  }
+
+  /* --- Station light blink --- */
+  if (station) {
+    station.userData.lightPhase += dt;
+  }
+
+  /* --- Render --- */
+  renderer.render(scene, camera);
+
+  return __probe();
+}
+
+function __probe() {
+  const stationPos = new THREE.Vector3(-10, 1, 2);
+  let ahead = 0;
+
+  // Count debris within 2.76 of station
+  if (debrisPoints) {
+    const pos = debrisPoints.geometry.attributes.position;
+    for (let i = 0; i < 200; i++) {
+      const dx = pos.getX(i) - stationPos.x;
+      const dy = pos.getY(i) - stationPos.y;
+      const dz = pos.getZ(i) - stationPos.z;
+      if (Math.sqrt(dx*dx + dy*dy + dz*dz) < 2.76) ahead++;
+    }
+  }
+
+  // List of named objects for probe
+  const objects = [];
+  scene.traverse(obj => { if (obj.name) objects.push(obj.name); });
+
+  return {
+    t: simTime.toFixed(4),
+    objects: [...new Set(objects)], // unique names
+    ahead
+  };
+}
+
+/* ---------- Make public ---------- */
+window.__ready = false;
+window.__step = __step;
+window.__probe = __probe;
+
+// First render → set ready
+__step(0);
+window.__ready = true;
+
 </script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-28 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

@@ -1,10 +1,11 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
 <meta charset="utf-8">
+<title>Аналоговая рубка: дождь за стеклом</title>
 <style>
-body{margin:0;background:#000;overflow:hidden}
-canvas{display:block}
+  html,body{margin:0;padding:0;background:#0d0a18;overflow:hidden}
+  canvas{display:block}
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
@@ -12,284 +13,388 @@ canvas{display:block}
 <script type="module">
 const THREE = window.THREE;
 
-let lcg = 782736n;
-function rnd(){
-  lcg = (lcg * 1103515245n + 12345n) % 2147483648n;
-  return Number(lcg) / 2147483648;
-}
+// ---------- детерминированный LCG ----------
+let lcg = 782736;
+function rnd(){ lcg = (lcg * 1103515245 + 12345) % 2147483648; return lcg / 2147483648; }
 
-const renderer = new THREE.WebGLRenderer({preserveDrawingBuffer:true});
+// ---------- рендерер ----------
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
 renderer.setPixelRatio(1);
-renderer.setSize(800,600,false);
+renderer.setSize(1920, 1080, false);
 document.body.appendChild(renderer.domElement);
-
-const FOV = 50*Math.PI/180;
-const ASPECT = 800/600;
-const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 200);
-camera.position.set(0,0,4);
-camera.lookAt(0,0,-1);
-
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x2a1c4a);
 
-function s2w(u,v,z){
-  const d=4-z;
-  const hH=d*Math.tan(FOV/2);
-  const hW=hH*ASPECT;
-  return new THREE.Vector3((u-0.5)*2*hW,(0.5-v)*2*hH,z);
-}
+// ---------- камера: (0,0,4) -> (0,0,-1) ----------
+const HALF_H0 = 1.625;             // половина видимой высоты на z=0
+const HALF_W0 = HALF_H0 * 16 / 9;
+const camera = new THREE.PerspectiveCamera(
+  THREE.MathUtils.radToDeg(2 * Math.atan(HALF_H0 / 4)), 16 / 9, 0.05, 300);
+camera.position.set(0, 0, 4);
+camera.lookAt(0, 0, -1);
 
-// night
-{
-  const m=new THREE.Mesh(new THREE.PlaneGeometry(120,90),new THREE.MeshBasicMaterial({color:0x2a1c4a}));
-  m.position.set(0,0,-45);m.name='night';scene.add(m);
-}
+// экранные доли (u: 0..1 слева-направо, v: 0..1 сверху-вниз) -> мир на глубине z
+const SZ = z => (4 - z) / 4;
+const WX = (u, z) => (2 * u - 1) * HALF_W0 * SZ(z);
+const WY = (v, z) => (1 - 2 * v) * HALF_H0 * SZ(z);
 
-// glass
-{
-  const d=9,hH=d*Math.tan(FOV/2),hW=hH*ASPECT;
-  const w=0.78*2*hW,h=0.46*2*hH;
-  const c=s2w(0.5,0.35,-5);
-  const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0xa8c8dc,transparent:true,opacity:0.35,side:THREE.DoubleSide,depthWrite:false}));
-  m.position.copy(c);m.name='glass';scene.add(m);
-}
+// ---------- палитра ----------
+const C_BODY  = 0x2a1c4a;
+const C_GREEN = 0x57e08a;
+const C_AMBER = 0xffd166;
+const C_COOL  = 0xa8c8dc;
 
-// visor
-{
-  const d=9,hH=d*Math.tan(FOV/2),hW=hH*ASPECT;
-  const w=2*hW*1.1,h=0.12*2*hH;
-  const c=s2w(0.5,0.06,-5);
-  const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0x2a1c4a}));
-  m.position.copy(c);m.name='visor';scene.add(m);
-}
+const bodyMat  = new THREE.MeshStandardMaterial({ color: C_BODY, roughness: 0.55, metalness: 0.3 });
+const darkMat  = new THREE.MeshStandardMaterial({ color: 0x221640, roughness: 0.7,  metalness: 0.2 });
 
-// rain
-const RAIN_N=44;
-const rainGeo=new THREE.BufferGeometry();
-{
-  const pos=new Float32Array(RAIN_N*3);
-  for(let i=0;i<RAIN_N;i++){
-    const u=0.11+rnd()*0.78;
-    const v=0.12+rnd()*0.11;
-    const p=s2w(u,v,-12);
-    pos[i*3]=p.x;pos[i*3+1]=p.y;pos[i*3+2]=p.z;
+// ---------- свет ----------
+scene.add(new THREE.HemisphereLight(0x9a86d9, 0x1c1236, 1.25));
+const amberLight = new THREE.PointLight(C_AMBER, 10, 12, 2);
+amberLight.position.set(0, 1.25, 1.0);
+scene.add(amberLight);
+const coolLight = new THREE.PointLight(C_COOL, 100, 20, 2);
+coolLight.position.set(0, 2.9, -3.0);
+scene.add(coolLight);
+const ceilLight = new THREE.PointLight(0x8f7fd0, 9, 12, 2);
+ceilLight.position.set(0, 3.0, 0.0);
+scene.add(ceilLight);
+const kickLight = new THREE.PointLight(0x6a5aa8, 4, 10, 2);
+kickLight.position.set(-1.6, 0.6, 2.6);
+scene.add(kickLight);
+
+// ---------- night: глухая ночь за стеклом (z=-45) ----------
+const night = new THREE.Mesh(
+  new THREE.PlaneGeometry(220, 220),
+  new THREE.MeshBasicMaterial({ color: C_BODY }));
+night.position.set(0, 0, -45);
+scene.add(night);
+
+// ---------- skyline: пять силуэтов домов (z=-14) ----------
+const skylineMat = new THREE.MeshBasicMaterial({ color: 0x1a2140 });
+const ZSK = -14;
+const skyline = new THREE.Group();
+for (let i = 0; i < 5; i++) {
+  const u  = 0.22 + i * 0.15 + (rnd() - 0.5) * 0.05;
+  const w  = 0.06 + rnd() * 0.08;              // доля ширины кадра
+  const vtop = 0.16 + rnd() * 0.16;            // верх дома в долях кадра
+  const x = WX(u, ZSK);
+  const baseY = -0.3;
+  const topY = WY(vtop, ZSK);
+  const bh = Math.max(0.4, topY - baseY), bw = Math.max(0.5, 2 * w * HALF_W0 * SZ(ZSK));
+  const b = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, 0.5), skylineMat);
+  b.position.set(x, baseY + bh / 2, ZSK);
+  skyline.add(b);
+  // пара антенн/шахт на крыше для силуэта
+  if (i % 2 === 0) {
+    const a = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.7, 0.12), skylineMat);
+    a.position.set(x + (rnd() - 0.5) * bw * 0.5, topY + 0.35, ZSK);
+    skyline.add(a);
   }
-  rainGeo.setAttribute('position',new THREE.BufferAttribute(pos,3));
 }
-const rainMat=new THREE.PointsMaterial({color:0xa8c8dc,size:5,sizeAttenuation:false,blending:THREE.AdditiveBlending,transparent:true,depthWrite:false});
-const rain=new THREE.Points(rainGeo,rainMat);rain.name='rain';scene.add(rain);
+scene.add(skyline);
 
-// skyline
+// ---------- фоновая холодная дымка грозы (за стеклом, в верхней части стекла) ----------
+const fogBlob = new THREE.Mesh(
+  new THREE.PlaneGeometry(2 * 0.85 * HALF_W0 * SZ(-13.7), 2 * 0.24 * HALF_H0 * SZ(-13.7)),
+  new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { uA: { value: 0.9 } },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+    fragmentShader: 'uniform float uA; varying vec2 vUv; void main(){ float d = length(vUv-0.5)*2.0; float a = (1.0-smoothstep(0.05,1.0,d))*uA; gl_FragColor = vec4(0.66,0.78,0.86,a); }'
+  }));
+fogBlob.position.set(WX(0.5, -13.7), WY(0.21, -13.7), -13.7);
+scene.add(fogBlob);
+
+// ---------- flash: вспышка грозы (0.5x0.4 кадра, u=0.34 v=0.34, z=-14) ----------
+const flashMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  uniforms: { uA: { value: 0.0 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+  fragmentShader: 'uniform float uA; varying vec2 vUv; void main(){ float d = length(vUv-0.5)*2.0; float a = (1.0-smoothstep(0.08,1.0,d))*uA; gl_FragColor = vec4(0.66,0.78,0.86,a); }'
+});
+const flash = new THREE.Mesh(
+  new THREE.PlaneGeometry(2 * 0.5 * HALF_W0 * SZ(-13.9), 2 * 0.4 * HALF_H0 * SZ(-13.9)),
+  flashMat);
+flash.position.set(WX(0.34, -13.9), WY(0.34, -13.9), -13.9);
+scene.add(flash);
+
+// ---------- rain: 44 струи за стеклом (z=-12) ----------
+const NRAIN = 44, RAIN_SPEED = 1.80, ZRAIN = -12;
+const rainX = new Float32Array(NRAIN), rainY = new Float32Array(NRAIN);
+const rainYMax = WY(0.135, ZRAIN), rainYMin = WY(0.28, ZRAIN);
+for (let i = 0; i < NRAIN; i++) {
+  const u = 0.13 + rnd() * 0.74;
+  rainX[i] = WX(u, ZRAIN);
+  rainY[i] = rainYMin + rnd() * (rainYMax - rainYMin);
+}
+const rainGeo = new THREE.BufferGeometry();
+const rainPos = new Float32Array(NRAIN * 3);
+for (let i = 0; i < NRAIN; i++) { rainPos[i*3] = rainX[i]; rainPos[i*3+1] = rainY[i]; rainPos[i*3+2] = ZRAIN; }
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+const rain = new THREE.Points(rainGeo, new THREE.PointsMaterial({
+  color: C_COOL, size: 5, sizeAttenuation: false, transparent: true,
+  opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false }));
+scene.add(rain);
+
+// ---------- glass: стекло рубки (0.78x46%, верх на 12%, z=-5, opacity 0.35) ----------
+const ZGL = -5, SGL = SZ(ZGL);
+const glass = new THREE.Mesh(
+  new THREE.PlaneGeometry(0.78 * 2 * HALF_W0 * SGL, 0.46 * 2 * HALF_H0 * SGL),
+  new THREE.MeshPhongMaterial({
+    color: C_COOL, transparent: true, opacity: 0.35, shininess: 140,
+    specular: 0xdfeeff, side: THREE.DoubleSide, depthWrite: false }));
+glass.position.set(0, WY(0.35, ZGL), ZGL);
+scene.add(glass);
+
+// ---------- drops: 58 капель по стеклу (z=-4.9) ----------
+const NDROPS = 58, ZDR = -4.9;
+const dropX = new Float32Array(NDROPS), dropY = new Float32Array(NDROPS);
+const dropYMax = WY(0.13, ZDR), dropYMin = WY(0.38, ZDR);
+for (let i = 0; i < NDROPS; i++) {
+  const u = 0.12 + rnd() * 0.76;
+  dropX[i] = WX(u, ZDR);
+  dropY[i] = dropYMin + rnd() * (dropYMax - dropYMin);
+}
+const dropGeo = new THREE.BufferGeometry();
+const dropPos = new Float32Array(NDROPS * 3);
+for (let i = 0; i < NDROPS; i++) { dropPos[i*3] = dropX[i]; dropPos[i*3+1] = dropY[i]; dropPos[i*3+2] = ZDR; }
+dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPos, 3));
+const drops = new THREE.Points(dropGeo, new THREE.PointsMaterial({
+  color: C_COOL, size: 6, sizeAttenuation: false, transparent: true,
+  opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false }));
+scene.add(drops);
+
+// ---------- верхний козырёк и боковые стойки (над стеклом / по краям) ----------
 {
-  const d=18,hH=d*Math.tan(FOV/2),hW=hH*ASPECT;
-  const us=[0.15,0.30,0.50,0.70,0.85];
-  const hs=[0.15,0.22,0.18,0.25,0.12];
-  const ws=[0.08,0.10,0.09,0.11,0.07];
-  const grp=new THREE.Group();grp.name='skyline';
-  for(let i=0;i<5;i++){
-    const w=ws[i]*2*hW,h=hs[i]*2*hH;
-    const c=s2w(us[i],0.58-hs[i]/2,-14);
-    const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0x1a2140}));
-    m.position.copy(c);grp.add(m);
+  const z = -4.75, s = SZ(z);
+  const visorMat = bodyMat.clone();
+  visorMat.emissive = new THREE.Color(0x3a2c6e);
+  visorMat.emissiveIntensity = 0.45;
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(1.9 * HALF_W0 * 2 * s, 0.13 * 2 * HALF_H0 * s, 1.1), visorMat);
+  visor.position.set(0, WY(0.065, z), z);
+  scene.add(visor);
+  for (const su of [-1, 1]) {
+    const col = new THREE.Mesh(new THREE.BoxGeometry(0.11 * 2 * HALF_W0 * s, 2.1 * HALF_H0 * s, 1.3), bodyMat);
+    col.position.set(su * 0.445 * 2 * HALF_W0 * s, WY(0.48, z), z);
+    scene.add(col);
   }
-  scene.add(grp);
+  // нижний карниз под стеклом
+  const sill = new THREE.Mesh(new THREE.BoxGeometry(1.9 * HALF_W0 * 2 * s, 0.05 * 2 * HALF_H0 * s, 0.5), darkMat);
+  sill.position.set(0, WY(0.60, z), z);
+  scene.add(sill);
 }
 
-// drops
-const DROP_N=58;
-const dropGeo=new THREE.BufferGeometry();
-{
-  const pos=new Float32Array(DROP_N*3);
-  for(let i=0;i<DROP_N;i++){
-    const u=0.11+rnd()*0.78;
-    const v=0.12+rnd()*0.46;
-    const p=s2w(u,v,-4.9);
-    pos[i*3]=p.x;pos[i*3+1]=p.y;pos[i*3+2]=p.z;
+// ---------- floor: тёмный пол от 52% вниз ----------
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(120, 70),
+  new THREE.MeshBasicMaterial({ color: 0x211740 }));
+floor.rotation.x = -Math.PI / 2;
+floor.position.set(0, -0.35, -51);
+scene.add(floor);
+// нижний корпус рубки (тёмная полоса-"пояс" под стеклом)
+const hull = new THREE.Mesh(new THREE.BoxGeometry(10, 1.9, 1.0),
+  new THREE.MeshStandardMaterial({ color: C_BODY, roughness: 0.75, metalness: 0.25 }));
+hull.position.set(0, -1.05, -1.15);
+scene.add(hull);
+{ // горизонтальные швы на корпусе
+  const inMat = new THREE.MeshStandardMaterial({ color: 0x1e1538, roughness: 0.6, metalness: 0.35 });
+  for (const gy of [-0.72, -1.35]) {
+    const groove = new THREE.Mesh(new THREE.BoxGeometry(9.7, 0.06, 0.05), inMat);
+    groove.position.set(0, gy, -0.63);
+    scene.add(groove);
   }
-  dropGeo.setAttribute('position',new THREE.BufferAttribute(pos,3));
-}
-const dropMat=new THREE.PointsMaterial({color:0xa8c8dc,size:6,sizeAttenuation:false,transparent:true,depthWrite:false});
-const drops=new THREE.Points(dropGeo,dropMat);drops.name='drops';scene.add(drops);
-
-// panel
-const PZ=-3;
-const pD=4-PZ;
-const pHalfH=pD*Math.tan(FOV/2);
-const pHalfW=pHalfH*ASPECT;
-{
-  const w=0.84*2*pHalfW,h=0.14*2*pHalfH;
-  const c=s2w(0.5,0.3,PZ);
-  const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0x2a1c4a}));
-  m.position.copy(c);m.rotation.x=0.25;m.name='panel';scene.add(m);
 }
 
-// screens
-const screenMeshes=[];
-{
-  const us=[0.20,0.40,0.60,0.80];
-  const w=0.11*2*pHalfW,h=0.10*2*pHalfH;
-  const grp=new THREE.Group();grp.name='screen';
-  for(let i=0;i<4;i++){
-    const c=s2w(us[i],0.3,PZ+0.01);
-    const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0x57e08a}));
-    m.position.copy(c);m.rotation.x=0.25;
-    screenMeshes.push(m);grp.add(m);
+// ---------- console: пульт (panel 84%x14%, u=0.5 v=0.4... v=0.3, наклон 0.25 рад) ----------
+const ZP = -2, SP = SZ(ZP);
+const Pw = 0.84 * 2 * HALF_W0 * SP, Ph = 0.14 * 2 * HALF_H0 * SP;
+const consoleG = new THREE.Group();
+consoleG.position.set(WX(0.5, ZP), WY(0.3, ZP), ZP);
+consoleG.rotation.x = -0.25;
+scene.add(consoleG);
+
+// панель
+const panel = new THREE.Mesh(new THREE.BoxGeometry(Pw, Ph, 0.12), bodyMat);
+consoleG.add(panel);
+// корпус под панелью (выступает вниз кадра)
+const trunk = new THREE.Mesh(new THREE.BoxGeometry(Pw * 0.78, 0.20 * 2 * HALF_H0 * SP, 0.34), darkMat);
+trunk.position.set(0, (0.3 - 0.49) / 0.14 * Ph, -0.1);
+consoleG.add(trunk);
+
+const yOf = v => (0.3 - v) / 0.14 * Ph;   // v кадра -> локальный y на панели
+const u2x = u => (0.5 - u) * Pw;
+
+// ---------- screen: 4 экрана 0.11x0.10 в ряд (u = 0.21..0.79) ----------
+const screens = [];
+const screenU = [0.21, 0.39, 0.61, 0.79];
+const SW = 0.11 * 2 * HALF_W0 * SP, SH = 0.10 * 2 * HALF_H0 * SP;
+function hash3(a, b, c) {
+  let h = (a * 73856093) ^ (b * 19349663) ^ (c * 83492791);
+  h = Math.imul(h, 2654435761) >>> 0;
+  return h % 1000 / 1000;
+}
+for (let i = 0; i < 4; i++) {
+  const cv = document.createElement('canvas');
+  cv.width = 192; cv.height = 140;
+  const ctx = cv.getContext('2d');
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.LinearFilter;
+  const s = { ctx, tex, phase: i * 0.293, seed: i + 3 };
+  screens.push(s);
+  const bez = new THREE.Mesh(new THREE.BoxGeometry(SW + 0.1, SH + 0.1, 0.05), darkMat);
+  bez.position.set((u2x(screenU[i])), yOf(0.275), 0.07);
+  consoleG.add(bez);
+  const scr = new THREE.Mesh(new THREE.PlaneGeometry(SW, SH),
+    new THREE.MeshBasicMaterial({ map: tex }));
+  scr.position.set((u2x(screenU[i])), yOf(0.275), 0.10);
+  consoleG.add(scr);
+}
+// рисуем экраны с бегущей развёрткой
+function drawScreen(s, t) {
+  const { ctx } = s, w = 192, h = 140;
+  ctx.fillStyle = '#57e08a'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(10,60,35,0.35)';
+  for (let yy = 0; yy < h; yy += 14) ctx.fillRect(0, yy, w, 1);
+  const bit = Math.floor(t * 3);
+  for (let r = 0; r < 9; r++) {
+    const y = 8 + r * 14;
+    for (let c = 0; c < 16; c++) {
+      const on = hash3(s.seed + r, c, bit + r * 2) < 0.62;
+      ctx.fillStyle = on ? '#a9ffcd' : '#2ea463';
+      ctx.fillRect(4 + c * 11.7, y, 8.4, 7.2);
+    }
   }
-  scene.add(grp);
+  const sy = ((t * 30 + s.phase * h) % (h + 26)) - 13;
+  ctx.fillStyle = 'rgba(160,255,205,0.30)'; ctx.fillRect(0, sy - 5, w, 11);
+  ctx.fillStyle = 'rgba(230,255,242,0.95)'; ctx.fillRect(0, sy, w, 2);
+  s.tex.needsUpdate = true;
 }
 
-// dials
-const dialMeshes=[];
-{
-  const us=[0.45,0.475,0.50,0.525,0.55];
-  const grp=new THREE.Group();grp.name='dial';
-  for(let i=0;i<5;i++){
-    const v=0.26+i*0.012;
-    const c=s2w(us[i],v,PZ+0.02);
-    const r=0.008*2*pHalfW;
-    const m=new THREE.Mesh(new THREE.CircleGeometry(r,12),new THREE.MeshBasicMaterial({color:0xffd166}));
-    m.position.copy(c);m.rotation.x=0.25;
-    dialMeshes.push(m);grp.add(m);
-  }
-  scene.add(grp);
+// ---------- dial: 5 янтарных индикаторов (u = 0.45..0.55) ----------
+const amberBase = new THREE.Color(C_AMBER);
+const dials = [], dialMats = [];
+for (let i = 0; i < 5; i++) {
+  const u = 0.45 + i * 0.025;
+  const x = (u - 0.5) * Pw;
+  const bez = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.05, 24), darkMat);
+  bez.rotation.x = Math.PI / 2;
+  bez.position.set(x, yOf(0.335), 0.08);
+  consoleG.add(bez);
+  const m = new THREE.MeshBasicMaterial({ color: C_AMBER });
+  const d = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.06, 24), m);
+  d.rotation.x = Math.PI / 2;
+  d.position.set(x, yOf(0.335), 0.082);
+  consoleG.add(d);
+  dials.push(d); dialMats.push(m);
 }
 
-// toggles
-const toggleMeshes=[];
-{
-  const us=[0.45,0.475,0.50,0.525,0.55];
-  const grp=new THREE.Group();grp.name='toggle';
-  for(let i=0;i<5;i++){
-    const v=0.34+i*0.012;
-    const c=s2w(us[i],v,PZ+0.02);
-    const w=0.015*2*pHalfW,h=0.022*2*pHalfH;
-    const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0xffd166}));
-    m.position.copy(c);m.rotation.x=0.25;
-    toggleMeshes.push(m);grp.add(m);
-  }
-  scene.add(grp);
+// ---------- toggle: 5 тумблеров под индикаторами ----------
+for (let i = 0; i < 5; i++) {
+  const u = 0.45 + i * 0.025;
+  const x = (u - 0.5) * Pw;
+  const g = new THREE.Group();
+  g.position.set(x, yOf(0.365) - 0.06, 0.09);
+  const pivot = new THREE.Group();
+  pivot.rotation.x = (rnd() * 1.1 - 0.55);
+  g.add(pivot);
+  const lever = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.13, 0.06),
+    new THREE.MeshStandardMaterial({ color: C_AMBER, roughness: 0.4, metalness: 0.4,
+      emissive: new THREE.Color(C_AMBER).multiplyScalar(0.3) }));
+  lever.position.y = 0.065;
+  pivot.add(lever);
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.05, 16, 12),
+    new THREE.MeshStandardMaterial({ color: C_AMBER, roughness: 0.35, metalness: 0.3 }));
+  knob.position.y = 0.14;
+  pivot.add(knob);
+  consoleG.add(g);
 }
 
-// floor
-{
-  const topY=s2w(0.5,0.52,PZ).y;
-  const botY=s2w(0.5,1.0,PZ).y;
-  const h=topY-botY,w=2*pHalfW*1.2;
-  const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:0x2a1c4a}));
-  m.position.set(0,(topY+botY)/2,PZ);m.name='floor';scene.add(m);
+// янтарная подсветочная полоса по центру панели
+const strip = new THREE.Mesh(new THREE.BoxGeometry(0.13 * 2 * HALF_W0 * SP, 0.028 * 2 * HALF_H0 * SP, 0.04),
+  new THREE.MeshBasicMaterial({ color: C_AMBER }));
+strip.position.set(0, yOf(0.368), 0.07);
+consoleG.add(strip);
+
+// декор: вентиляционные решётки по бокам панели
+for (const side of [-1, 1]) {
+  const vent = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.26, 0.06), darkMat);
+  vent.position.set(side * 2.55, yOf(0.335), 0.07);
+  consoleG.add(vent);
+  for (let k = 0; k < 3; k++) {
+    const slat = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.03, 0.08),
+      new THREE.MeshStandardMaterial({ color: C_BODY, roughness: 0.5, metalness: 0.4 }));
+    slat.position.set(side * 2.55, yOf(0.335) + 0.08 - k * 0.08, 0.075);
+    consoleG.add(slat);
+  }
 }
 
-// flash
-const fD=18,fHH=fD*Math.tan(FOV/2),fHW=fHH*ASPECT;
-const flashMat=new THREE.MeshBasicMaterial({color:0xa8c8dc,transparent:true,opacity:0.5,blending:THREE.AdditiveBlending,depthWrite:false});
-{
-  const w=0.5*2*fHW,h=0.4*2*fHH;
-  const c=s2w(0.34,0.34,-14);
-  const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),flashMat);
-  m.position.copy(c);m.name='flash';scene.add(m);
+// ---------- состояние и шаг ----------
+let t = 0;
+let flashB = 0;
+const CAM_AMP = 0.236, CAM_W = 0.25;   // |dx/dt|max = 0.059 ед/с
+
+const PROBE_OBJECTS = [
+  { name: 'night', count: 1 }, { name: 'glass', count: 1 },
+  { name: 'rain', count: NRAIN }, { name: 'skyline', count: 7 },
+  { name: 'drops', count: NDROPS }, { name: 'panel', count: 1 },
+  { name: 'screen', count: 4 }, { name: 'dial', count: 5 },
+  { name: 'toggle', count: 5 }, { name: 'floor', count: 2 }, { name: 'flash', count: 1 }
+];
+
+function stepRain(arrX, arrY, pos, yMin, yMax, dt) {
+  const range = yMax - yMin;
+  for (let i = 0; i < arrX.length; i++) {
+    let y = arrY[i] - RAIN_SPEED * dt;
+    if (y < yMin) y = yMin + ((y - yMin) % range + range) % range;
+    else if (y > yMax) y = yMax - (((yMax - y) % range) + range) % range;
+    arrY[i] = y;
+    pos[i * 3 + 1] = y;
+  }
 }
 
-// state
-let t=0;
+window.__step = function (dt) {
+  t += dt;
 
-renderer.render(scene,camera);
-window.__ready=true;
+  // дрейф камеры 0.059 ед/с по x (синусоида с такой же пиковой скоростью)
+  camera.position.x = CAM_AMP * Math.sin(CAM_W * t);
 
-window.__probe=function(){
-  const objects=[];
-  scene.traverse(o=>{if(o.name)objects.push(o.name);});
-  const fb=0.5+0.5*Math.sin(2*Math.PI*0.94*t);
-  return{t:Math.round(t*10000)/10000,objects,flash:Math.round(fb*10000)/10000};
-};
+  // дождь и капли
+  stepRain(rainX, rainY, rainPos, rainYMin, rainYMax, dt);
+  stepRain(dropX, dropY, dropPos, dropYMin, dropYMax, dt);
+  rainGeo.attributes.position.needsUpdate = true;
+  dropGeo.attributes.position.needsUpdate = true;
 
-window.__step=function(dt){
-  t+=dt;
-  camera.position.x=0.059*t;
+  // вспышка грозы, 0.94 Гц
+  const s = 0.5 + 0.5 * Math.sin(2 * Math.PI * 0.94 * t);
+  flashB = Math.pow(s, 1.8);
+  flashMat.uniforms.uA.value = 0.03 + 0.52 * flashB;
+  fogBlob.material.uniforms.uA.value = 0.9 + 0.1 * flashB;
 
-  // rain
-  const rp=rainGeo.attributes.position.array;
-  const rTop=s2w(0.5,0.12,-12).y,rBot=s2w(0.5,0.23,-12).y;
-  for(let i=0;i<RAIN_N;i++){
-    rp[i*3+1]-=1.80*dt;
-    if(rp[i*3+1]<rBot)rp[i*3+1]+=(rTop-rBot);
-  }
-  rainGeo.attributes.position.needsUpdate=true;
-
-  // drops
-  const dp=dropGeo.attributes.position.array;
-  const dTop=s2w(0.5,0.12,-4.9).y,dBot=s2w(0.5,0.58,-4.9).y;
-  for(let i=0;i<DROP_N;i++){
-    dp[i*3+1]-=1.80*dt;
-    if(dp[i*3+1]<dBot)dp[i*3+1]+=(dTop-dBot);
-  }
-  dropGeo.attributes.position.needsUpdate=true;
-
-  // flash
-  const fb=0.5+0.5*Math.sin(2*Math.PI*0.94*t);
-  flashMat.opacity=0.2+0.6*fb;
-
-  // dials
-  for(let i=0;i<5;i++){
-    const b=0.6+0.4*Math.sin(2*Math.PI*0.94*t+i*1.256);
-    dialMeshes[i].material.color.setRGB(b,0.82*b,0.4*b);
+  // индикаторы дышат
+  for (let i = 0; i < 5; i++) {
+    const k = 0.5 + 0.5 * Math.sin(2 * Math.PI * 0.94 * t + i * 2.1);
+    dialMats[i].color.copy(amberBase).multiplyScalar(0.55 + 0.45 * k);
   }
 
-  // screens scanline
-  for(let i=0;i<4;i++){
-    const s=0.75+0.25*Math.sin(2*Math.PI*1.5*t+i*1.57);
-    screenMeshes[i].material.color.setRGB(0.34*s,0.88*s,0.54*s);
-  }
+  // экраны с бегущей развёрткой
+  for (let i = 0; i < 4; i++) drawScreen(screens[i], t);
 
-  renderer.render(scene,camera);
+  renderer.render(scene, camera);
   return window.__probe();
 };
+
+window.__probe = function () {
+  return {
+    t: +t.toFixed(4),
+    objects: PROBE_OBJECTS,
+    flash: +flashB.toFixed(4)
+  };
+};
+
+// первый кадр — начало сцены
+for (let i = 0; i < 4; i++) drawScreen(screens[i], 0);
+renderer.render(scene, camera);
+window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-21 · пробел — пауза, → — шаг, R — сброс</div></body>
+</head>
+</body>
 </html>

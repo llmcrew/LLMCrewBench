@@ -1,175 +1,113 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
 <meta charset="utf-8">
+<title>Mandelbrot fullscreen</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; width: 1920px; height: 1080px; }
+</style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
+<canvas id="c" width="1920" height="1080"></canvas>
 <script type="module">
 const THREE = window.THREE;
 
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, preserveDrawingBuffer: true });
 renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
-document.body.appendChild(renderer.domElement);
+renderer.setSize(1920, 1080, false);
 
 const scene = new THREE.Scene();
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-const vertexShader = `
-varying vec2 vPos;
-void main() {
-    vPos = position.xy;
+// Fragment shader computes the whole fractal: the full screen is a single 2x2 quad.
+const vertexShader = /* glsl */`
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
     gl_Position = vec4(position.xy, 0.0, 1.0);
-}
+  }
 `;
 
-const fragmentShader = `
-precision highp float;
-varying vec2 vPos;
-uniform float uZoom;
+const fragmentShader = /* glsl */`
+  precision highp float;
+  varying vec2 vUv;
+  uniform float uZoom; // starts at 1.500
 
-void main() {
-    float halfH = 1.2 / uZoom;
-    float halfW = 1.6 / uZoom;
-    float cr = -0.600 + vPos.x * halfW;
-    float ci = 0.000 + vPos.y * halfH;
+  const int    MAX_ITER = 160;   // maximum 160 iterations
+  const float  ESCAPE_R = 2.0;   // escape radius 2.0
 
-    vec2 z = vec2(0.0, 0.0);
-    vec2 c = vec2(cr, ci);
+  vec3 colA() { return vec3(27.0/255.0, 18.0/255.0, 64.0/255.0); }   // #1b1240
+  vec3 colB() { return vec3(24.0/255.0, 183.0/255.0, 172.0/255.0); } // #18b7ac
+  vec3 colC() { return vec3(184.0/255.0, 242.0/255.0, 74.0/255.0); } // #b8f24a
+  vec3 colD() { return vec3(255.0/255.0, 95.0/255.0, 126.0/255.0); } // #ff5f7e
 
-    int iter = 0;
-    bool escaped = false;
+  void main() {
+    vec2 p = vUv * 2.0 - 1.0;                 // screen square
+    // region: half-height 1.2 / uZoom, width 4/3 of height,
+    // center c = (-0.600, 0.000) at the middle of the frame
+    vec2 c = vec2(-0.600, 0.000) + p * (vec2(4.0/3.0, 1.0) * 1.2 / uZoom);
 
-    for (int i = 0; i < 160; i++) {
-        z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
-        if (dot(z, z) > 4.0) {
-            escaped = true;
-            iter = i;
-            break;
-        }
+    vec2 z = vec2(0.0);
+    int i = 0;
+    for (i = 0; i < MAX_ITER; i++) {
+      float zz = z.x * z.x + z.y * z.y;
+      if (zz > ESCAPE_R * ESCAPE_R) break;    // |z| > 2.0 -> escaped
+      z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c; // z = z*z + c
     }
 
-    float t;
-    if (escaped) {
-        t = log(float(iter + 1)) / log(161.0);
-    } else {
-        t = 1.0;
-    }
+    bool inside = (i >= MAX_ITER); // did not escape in 160 iterations
+    float t = inside ? 1.0 : log(float(i) + 1.0) / log(161.0);
 
-    vec3 c1 = vec3(27.0, 18.0, 64.0) / 255.0;
-    vec3 c2 = vec3(24.0, 183.0, 172.0) / 255.0;
-    vec3 c3 = vec3(184.0, 242.0, 74.0) / 255.0;
-    vec3 c4 = vec3(255.0, 95.0, 126.0) / 255.0;
-
-    vec3 color;
-    if (t < 0.30) {
-        color = c1;
-    } else if (t < 0.40) {
-        color = mix(c1, c2, smoothstep(0.30, 0.40, t));
-    } else if (t < 0.55) {
-        color = c2;
-    } else if (t < 0.62) {
-        color = mix(c2, c1, smoothstep(0.55, 0.62, t));
-    } else if (t < 0.70) {
-        color = c1;
-    } else if (t < 0.76) {
-        color = mix(c1, c3, smoothstep(0.70, 0.76, t));
-    } else if (t < 0.90) {
-        color = c3;
-    } else if (t < 0.96) {
-        color = mix(c3, c4, smoothstep(0.90, 0.96, t));
-    } else {
-        color = c4;
-    }
-
-    gl_FragColor = vec4(color, 1.0);
-}
+    vec3 col = colA();                                   // t = 0 -> #1b1240
+    col = mix(col, colB(), smoothstep(0.30, 0.40, t));   // to #18b7ac
+    col = mix(col, colA(), smoothstep(0.55, 0.62, t));   // back to dark
+    col = mix(col, colC(), smoothstep(0.70, 0.76, t));   // to #b8f24a
+    col = mix(col, colD(), smoothstep(0.90, 0.96, t));   // to #ff5f7e
+    if (inside) col = colD();                            // interior -> #ff5f7e
+    gl_FragColor = vec4(col, 1.0);
+  }
 `;
-
 const material = new THREE.ShaderMaterial({
-    vertexShader,
-    fragmentShader,
-    uniforms: {
-        uZoom: { value: 1.500 }
-    }
+  vertexShader,
+  fragmentShader,
+  uniforms: { uZoom: { value: 1.500 } }
 });
 
-const geometry = new THREE.PlaneGeometry(2, 2);
-const mesh = new THREE.Mesh(geometry, material);
-mesh.name = 'mandelbrot';
-scene.add(mesh);
+const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+quad.name = 'mandelbrot';
+scene.add(quad);
 
-let time = 0;
+let t = 0.0;
+const r4 = (x) => Math.round(x * 10000) / 10000;
 
-function render() {
-    material.uniforms.uZoom.value = 1.500 * Math.exp(0.350 * time);
-    renderer.render(scene, camera);
+function applyZoom() {
+  material.uniforms.uZoom.value = 1.500 * Math.exp(0.350 * t);
 }
 
-render();
+function probe() {
+  return {
+    t: r4(t),
+    objects: scene.children.map((o) => o.name),
+    zoom: r4(material.uniforms.uZoom.value)
+  };
+}
+window.__probe = probe;
+
+function step(dt) {
+  t += dt;
+  applyZoom();
+  renderer.render(scene, camera);
+  return probe();
+}
+window.__step = step;
+
+// initial frame
+applyZoom();
+renderer.render(scene, camera);
 window.__ready = true;
-
-window.__step = function (dt) {
-    time += dt;
-    render();
-    return window.__probe();
-};
-
-window.__probe = function () {
-    return {
-        t: Math.round(time * 10000) / 10000,
-        objects: scene.children.map(function (o) { return o.name; }),
-        zoom: Math.round(material.uniforms.uZoom.value * 10000) / 10000
-    };
-};
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-10 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

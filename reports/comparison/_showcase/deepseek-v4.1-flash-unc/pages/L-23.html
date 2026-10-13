@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <title>Космическая заправка под дождём</title>
 <style>
-  html,body{margin:0;padding:0;background:#000;overflow:hidden}
-  canvas{display:block}
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
@@ -13,276 +13,484 @@
 <script type="module">
 const THREE = window.THREE;
 
-/* ================= deterministic LCG ================= */
-let lcg = 865521;
-function rnd(){
-  lcg = (lcg * 1103515245 + 12345) % 2147483648;
-  return lcg / 2147483648;
-}
+/* ---------- deterministic LCG ---------- */
+let seed = 865521;
+const lcg = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
+const rnd = () => lcg() / 2147483648;
 
-/* ================= renderer / scene / camera ================= */
-const VW = 800, VH = 600;
-const renderer = new THREE.WebGLRenderer({preserveDrawingBuffer: true});
+/* ---------- frame / camera setup ---------- */
+const W = 1920, H = 1080;
+const FOV = 50;
+const tanF = Math.tan((FOV / 2) * Math.PI / 180);
+const ASPECT = W / H;
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
 renderer.setPixelRatio(1);
-renderer.setSize(VW, VH, false);
+renderer.setSize(W, H, false);
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(50, VW / VH, 0.1, 500);
+scene.background = new THREE.Color(0x120a26);
+scene.fog = new THREE.Fog(0x241644, 22, 75);
+
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 300);
 camera.position.set(0, 0, 4);
 
-const TAN_HALF = Math.tan(50 * Math.PI / 360);
-const CAM_Z0 = 4;
-const LOOK_OFF = 0.3;
-
-function frameAt(z){
-  const d = CAM_Z0 - z;
-  const h = 2 * d * TAN_HALF;
-  const w = h * (VW / VH);
-  return {d, h, w};
+/* map (u,v,z) fractions of frame -> world position assuming camera (0,0,4)->(0,0,-1) */
+function posAt(u, v, z) {
+  const d = 4 - z;
+  const hh = 2 * d * tanF;
+  const ww = hh * ASPECT;
+  return new THREE.Vector3((u - 0.5) * ww, (0.5 - v) * hh, z);
 }
-function offXAt(z){ return -LOOK_OFF / 5 * (CAM_Z0 - z); }
+function frameSize(z) {
+  const d = 4 - z;
+  const hh = 2 * d * tanF;
+  return { w: hh * ASPECT, h: hh };
+}
 
-const objectNames = [];
-function reg(mesh, name){
-  mesh.name = name;
+/* ---------- palette ---------- */
+const C_NIGHT = 0x241644;
+const C_CYAN  = 0x35d5e6;
+const C_AMBER = 0xffb347;
+const C_RAIN  = 0xa8c8dc;
+
+/* ---------- lights ---------- */
+scene.add(new THREE.AmbientLight(0x5a4a8a, 0.55));
+const hemi = new THREE.HemisphereLight(0x8fb8ff, 0x241644, 0.5);
+scene.add(hemi);
+
+const hullLight = new THREE.PointLight(0x7f9bff, 320, 90, 2);
+hullLight.position.set(-8, 5, -12);
+scene.add(hullLight);
+const rimLight = new THREE.PointLight(0xb46bff, 300, 90, 2);
+rimLight.position.set(14, 6, -14);
+scene.add(rimLight);
+
+const padLight = new THREE.PointLight(C_CYAN, 900, 60, 2);
+padLight.position.set(0.3, 0.2, -6);
+scene.add(padLight);
+
+const roverLight = new THREE.PointLight(C_AMBER, 260, 40, 2);
+roverLight.position.set(0.8, -0.1, -4.6);
+scene.add(roverLight);
+
+const towerLight = new THREE.PointLight(C_AMBER, 320, 55, 2);
+towerLight.position.set(-6.6, 2.5, -11.5);
+scene.add(towerLight);
+
+/* ---------- helpers ---------- */
+const basic = (color, opts = {}) => new THREE.MeshBasicMaterial(Object.assign({ color }, opts));
+const glowTex = (() => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0.0, 'rgba(255,255,255,1)');
+  grd.addColorStop(0.35, 'rgba(255,255,255,0.55)');
+  grd.addColorStop(1.0, 'rgba(255,255,255,0)');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+})();
+function addGlow(color, x, y, z, scale, opacity = 0.9) {
+  const m = new THREE.SpriteMaterial({
+    map: glowTex, color, transparent: true, opacity,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const s = new THREE.Sprite(m);
+  s.position.set(x, y, z);
+  s.scale.set(scale, scale, 1);
+  scene.add(s);
+  return s;
+}
+function cylinderBetween(a, b, radius, mat) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  const geo = new THREE.CylinderGeometry(radius, radius, len, 10, 1);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(a).addScaledVector(dir, 0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
   scene.add(mesh);
-  objectNames.push(name);
-  return mesh;
-}
-function makePlane(fw, fh, u, v, z, color, opacity){
-  const {h, w} = frameAt(z);
-  const geo = new THREE.PlaneGeometry(fw * w, fh * h);
-  const mat = new THREE.MeshBasicMaterial({
-    color, transparent: opacity < 1, opacity, depthWrite: opacity >= 1
-  });
-  const m = new THREE.Mesh(geo, mat);
-  m.position.set((u - 0.5) * w + offXAt(z), (0.5 - v) * h, z);
-  return m;
-}
-function makeSegment(x1, y1, x2, y2, z, width, color, opacity){
-  const dx = x2 - x1, dy = y2 - y1;
-  const len = Math.hypot(dx, dy);
-  const geo = new THREE.PlaneGeometry(len, width);
-  const mat = new THREE.MeshBasicMaterial({
-    color, transparent: opacity < 1, opacity, depthWrite: false
-  });
-  const m = new THREE.Mesh(geo, mat);
-  m.position.set((x1 + x2) / 2, (y1 + y2) / 2, z);
-  m.rotation.z = Math.atan2(dy, dx);
-  return m;
-}
-
-/* ================= night sky + station hull ================= */
-reg(makePlane(2.4, 2.4, 0.5, 0.5, -45, 0x241644, 1), 'night');
-reg(makePlane(1.9, 0.80, 0.5, 0.88, -18, 0x241644, 1), 'hull');
-
-/* cyan windows on the hull */
-for (let i = 0; i < 6; i++){
-  reg(makePlane(0.022, 0.016, 0.10 + i * 0.16, 0.80, -17.9, 0x35d5e6, 0.85), 'win' + i);
-}
-
-/* ================= landing pad ================= */
-reg(makePlane(0.58, 0.14, 0.52, 0.62, -10.06, 0x241644, 1), 'padBase');
-const pad = reg(makePlane(0.52, 0.10, 0.52, 0.62, -10, 0x35d5e6, 0.5), 'pad');
-
-/* ================= rover ================= */
-const rover = new THREE.Group();
-{
-  const {h, w} = frameAt(-9.5);
-  rover.position.set((0.55 - 0.5) * w + offXAt(-9.5), (0.5 - 0.55) * h, -9.5);
-}
-scene.add(rover);
-objectNames.push('rover');
-
-function addChild(parent, mesh, name){
-  mesh.name = name;
-  parent.add(mesh);
-  objectNames.push(name);
   return mesh;
 }
 
-/* body (0.60 of object height) */
-const body = new THREE.Mesh(
-  new THREE.PlaneGeometry(5.0, 1.50),
-  new THREE.MeshBasicMaterial({color: 0x3a2a63})
-);
-body.position.set(0, -0.10, 0);
-addChild(rover, body, 'roverBody');
-
-/* cabin (0.30 of object height) */
-const cabin = new THREE.Mesh(
-  new THREE.PlaneGeometry(2.4, 0.75),
-  new THREE.MeshBasicMaterial({color: 0x35d5e6, transparent: true, opacity: 0.75, depthWrite: false})
-);
-cabin.position.set(0, 1.03, 0.01);
-addChild(rover, cabin, 'roverCabin');
-
-/* two wheels */
-const wheelMat = new THREE.MeshBasicMaterial({color: 0x241644});
-for (let i = 0; i < 2; i++){
-  const wm = new THREE.Mesh(new THREE.CircleGeometry(0.50, 22), wheelMat);
-  wm.position.set(i === 0 ? -1.70 : 1.70, -1.00, 0.02);
-  addChild(rover, wm, 'roverWheel' + i);
-}
-
-/* three amber lights (0.10 of frame width each) */
-const lightMat = new THREE.MeshBasicMaterial({color: 0xffb347});
-for (let i = 0; i < 3; i++){
-  const lm = new THREE.Mesh(new THREE.PlaneGeometry(1.30, 0.42), lightMat);
-  lm.position.set((i - 1) * 1.60, -0.10, 0.03);
-  addChild(rover, lm, 'roverLight' + i);
-}
-
-/* ================= fuel tower ================= */
-const towerZ = -12;
-reg(makePlane(0.05, 0.46, 0.25, 0.30, towerZ, 0x241644, 1), 'tower');
-const towerGlow = reg(makePlane(0.010, 0.44, 0.25, 0.30, towerZ + 0.05, 0x35d5e6, 0.9), 'towerGlow');
-reg(makePlane(0.040, 0.040, 0.25, 0.44, towerZ + 0.06, 0xffb347, 1), 'towerLamp0');
-reg(makePlane(0.030, 0.030, 0.25, 0.30, towerZ + 0.06, 0xffb347, 1), 'towerLamp1');
-
-/* hose: arc of three cyan segments from tower base to rover */
+/* ---------- wet ground ---------- */
 {
-  const p0 = [-5.90, -0.50];
-  const p1 = [-3.80, -1.90];
-  const p2 = [-1.80, -1.90];
-  const p3 = [-0.30, -1.00];
-  reg(makeSegment(p0[0], p0[1], p1[0], p1[1], -11, 0.25, 0x35d5e6, 0.95), 'hose0');
-  reg(makeSegment(p1[0], p1[1], p2[0], p2[1], -11, 0.25, 0x35d5e6, 0.95), 'hose1');
-  reg(makeSegment(p2[0], p2[1], p3[0], p3[1], -11, 0.25, 0x35d5e6, 0.95), 'hose2');
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(240, 240),
+    new THREE.MeshStandardMaterial({ color: 0x1b1136, roughness: 0.32, metalness: 0.65 })
+  );
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.set(0, -2.6, -20);
+  scene.add(ground);
 }
 
-/* ================= cyan holo panels behind the tower ================= */
+/* ---------- night backdrop + stars ---------- */
+{
+  const f = frameSize(-45);
+  const night = new THREE.Mesh(new THREE.PlaneGeometry(f.w * 1.6, f.h * 1.6), basic(C_NIGHT));
+  night.position.set(0, 0, -45);
+  night.name = 'night';
+  scene.add(night);
+
+  const starGeo = new THREE.BufferGeometry();
+  const N = 260;
+  const arr = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const f2 = frameSize(-44);
+    arr[i * 3]     = (rnd() - 0.5) * f2.w * 1.4;
+    arr[i * 3 + 1] = (0.5 - rnd() * 0.55) * f2.h * 1.4;
+    arr[i * 3 + 2] = -44 - rnd() * 2;
+  }
+  starGeo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({
+    color: 0xcfe3f2, size: 2.2, sizeAttenuation: false, transparent: true, opacity: 0.8
+  }));
+  scene.add(stars);
+}
+
+/* ---------- station hull (z = -18, #241644) ---------- */
+const hullGroup = new THREE.Group();
+hullGroup.name = 'hull';
+{
+  const mat = new THREE.MeshStandardMaterial({ color: C_NIGHT, roughness: 0.85, metalness: 0.25 });
+  const edge = new THREE.MeshStandardMaterial({ color: 0x33235f, roughness: 0.7, metalness: 0.35, emissive: 0x150c2c });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(34, 13, 6), mat);
+  body.position.set(0, 2.2, -18);
+  hullGroup.add(body);
+
+  const wingL = new THREE.Mesh(new THREE.BoxGeometry(8, 7, 5), edge);
+  wingL.position.set(-16, 0.0, -17.5);
+  hullGroup.add(wingL);
+  const wingR = new THREE.Mesh(new THREE.BoxGeometry(8, 7, 5), edge);
+  wingR.position.set(16, 0.0, -17.5);
+  hullGroup.add(wingR);
+
+  const spire = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 1.1, 12, 8), edge);
+  spire.position.set(-6, 10, -19);
+  hullGroup.add(spire);
+
+  // cyan window strips
+  const winMat = basic(C_CYAN);
+  for (let r = 0; r < 2; r++) {
+    for (let c = -7; c <= 7; c++) {
+      if ((c + r) % 3 === 0) continue;
+      const win = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.55, 0.2), winMat);
+      win.position.set(c * 2.0, 4.4 - r * 2.4, -14.95);
+      hullGroup.add(win);
+    }
+  }
+  // hull beacon (amber)
+  addGlow(0xffb347, -6, 16.2, -19, 3.0, 0.7);
+
+  // cyan neon signage on the hull
+  for (let i = 0; i < 4; i++) {
+    const sign = new THREE.Mesh(new THREE.BoxGeometry(6.5, 0.34, 0.15), basic(C_CYAN));
+    sign.position.set(-9 + (i % 2) * 19, 6.4 - i * 1.2, -14.85);
+    sign.rotation.z = (i % 2 ? 1 : -1) * 0.05;
+    hullGroup.add(sign);
+  }
+  // amber service sign
+  const asign = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.5, 0.15), basic(C_AMBER));
+  asign.position.set(9.5, 3.0, -14.8);
+  hullGroup.add(asign);
+  addGlow(C_CYAN, -9, 6.4, -14.2, 4.0, 0.25);
+}
+scene.add(hullGroup);
+
+/* ---------- landing pad (u=0.52, v=0.62) ---------- */
+const padGroup = new THREE.Group();
+padGroup.name = 'pad';
+{
+  const f = frameSize(-6);
+  const padW = 0.52 * f.w;
+  const padD = 2.6;
+  const topV = posAt(0.52, 0.62, -6);
+  const baseMat = new THREE.MeshStandardMaterial({ color: C_NIGHT, roughness: 0.9, metalness: 0.2 });
+  const glowMat = new THREE.MeshBasicMaterial({ color: C_CYAN, transparent: true, opacity: 0.5 });
+
+  // dark foundation under the platform
+  const base = new THREE.Mesh(new THREE.BoxGeometry(padW * 0.94, 1.4, padD), baseMat);
+  base.position.set(topV.x, topV.y - 0.95, -6);
+  padGroup.add(base);
+
+  // platform slab
+  const slab = new THREE.Mesh(new THREE.BoxGeometry(padW, 0.22, padD), baseMat);
+  slab.position.set(topV.x, topV.y - 0.11, -6);
+  padGroup.add(slab);
+
+  // glowing top surface (50% opacity cyan)
+  const top = new THREE.Mesh(new THREE.BoxGeometry(padW, 0.05, padD), glowMat);
+  top.position.set(topV.x, topV.y + 0.02, -6);
+  padGroup.add(top);
+
+  // cyan charge strips
+  const stripMat = basic(C_CYAN);
+  for (let s = -1; s <= 1; s++) {
+    const strip = new THREE.Mesh(new THREE.BoxGeometry(padW * 0.86, 0.05, 0.14), stripMat);
+    strip.position.set(topV.x, topV.y + 0.06, -6 + s * 0.75);
+    padGroup.add(strip);
+  }
+  // under-lights
+  for (let s = -1; s <= 1; s++) addGlow(C_CYAN, topV.x + s * padW * 0.3, topV.y - 1.4, -5.0, 2.2, 0.5);
+}
+scene.add(padGroup);
+
+/* ---------- rover (u=0.55, v=0.55) ---------- */
+const roverGroup = new THREE.Group();
+roverGroup.name = 'rover';
+let roverLights = [];
+{
+  const RX = 0.78, RZ = -5.4;
+  const baseY = posAt(0.55, 0.62, RZ).y; // sits on pad top
+  roverGroup.position.set(RX, baseY, RZ);
+
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x3a2a62, roughness: 0.55, metalness: 0.5, emissive: 0x120a26 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: C_NIGHT, roughness: 0.8, metalness: 0.4 });
+  const glass  = new THREE.MeshStandardMaterial({ color: 0x0d2233, roughness: 0.2, metalness: 0.9, emissive: 0x0a2b38 });
+
+  // wheels
+  const wheelGeo = new THREE.TorusGeometry(0.42, 0.16, 10, 20);
+  for (const sx of [-1, 1]) {
+    const w = new THREE.Mesh(wheelGeo, darkMat);
+    w.rotation.y = Math.PI / 2;
+    w.position.set(sx * 1.05, 0.45, 0.0);
+    roverGroup.add(w);
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.36, 10), basic(C_CYAN));
+    hub.rotation.z = Math.PI / 2;
+    hub.position.set(sx * 1.05, 0.45, 0.0);
+    roverGroup.add(hub);
+  }
+
+  // body (0.60 of object height)
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.2, 1.7), bodyMat);
+  body.position.set(0, 1.15, 0);
+  roverGroup.add(body);
+  const skirt = new THREE.Mesh(new THREE.BoxGeometry(2.75, 0.25, 1.85), darkMat);
+  skirt.position.set(0, 0.6, 0);
+  roverGroup.add(skirt);
+
+  // cabin (0.30)
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.7, 1.3), bodyMat);
+  cabin.position.set(0, 2.1, -0.05);
+  roverGroup.add(cabin);
+  const glassP = new THREE.Mesh(new THREE.BoxGeometry(1.28, 0.42, 0.06), glass);
+  glassP.position.set(0, 2.12, 0.62);
+  roverGroup.add(glassP);
+
+  // three amber lights across the front
+  for (const lx of [-0.78, 0, 0.78]) {
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.21, 14, 12), basic(C_AMBER));
+    lamp.position.set(lx, 1.32, 0.9);
+    roverGroup.add(lamp);
+  }
+  roverLights = roverGroup.children.filter(o => o.material && o.material.color && o.material.color.getHex() === C_AMBER);
+
+  // headlight beam
+  const beam = new THREE.Mesh(
+    new THREE.ConeGeometry(1.1, 3.2, 18, 1, true),
+    new THREE.MeshBasicMaterial({ color: C_AMBER, transparent: true, opacity: 0.09, side: THREE.DoubleSide, depthWrite: false })
+  );
+  beam.rotation.x = Math.PI / 2;
+  beam.position.set(0, 1.32, 2.6);
+  roverGroup.add(beam);
+
+  // antenna with cyan tip
+  const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.1, 6), darkMat);
+  ant.position.set(-1.0, 3.0, -0.4);
+  roverGroup.add(ant);
+  addGlow(C_CYAN, RX - 1.0, baseY + 3.55, RZ - 0.4, 1.0, 0.9);
+}
+scene.add(roverGroup);
+addGlow(C_AMBER, roverGroup.position.x, roverGroup.position.y + 1.32, -4.3, 3.0, 0.75);
+
+/* ---------- fuel tower (u=0.25, v=0.30) + hose ---------- */
+const towerGroup = new THREE.Group();
+towerGroup.name = 'tower';
+{
+  const c = posAt(0.25, 0.30, -12);
+  const f = frameSize(-12);
+  const tw = 0.05 * f.w;   // width
+  const th = 0.46 * f.h;   // height
+
+  const mat = new THREE.MeshStandardMaterial({ color: C_NIGHT, roughness: 0.8, metalness: 0.4 });
+  const steel = new THREE.MeshStandardMaterial({ color: 0x2e1e56, roughness: 0.6, metalness: 0.6 });
+  const trunk = new THREE.Mesh(new THREE.BoxGeometry(tw, th, tw), mat);
+  trunk.position.copy(c);
+  towerGroup.add(trunk);
+
+  // ring collars
+  for (let i = -2; i <= 2; i++) {
+    const ring = new THREE.Mesh(new THREE.BoxGeometry(tw * 1.35, 0.12, tw * 1.35), steel);
+    ring.position.set(c.x, c.y + i * th * 0.2, c.z);
+    towerGroup.add(ring);
+  }
+  // cyan vertical neon
+  for (const sx of [-1, 1]) {
+    const neon = new THREE.Mesh(new THREE.BoxGeometry(0.06, th * 0.9, 0.06), basic(C_CYAN));
+    neon.position.set(c.x + sx * tw * 0.5, c.y, c.z + tw * 0.5);
+    towerGroup.add(neon);
+  }
+  // amber top lamp
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.34, 14, 12), basic(C_AMBER));
+  lamp.position.set(c.x, c.y + th * 0.5 + 0.25, c.z);
+  towerGroup.add(lamp);
+  addGlow(C_AMBER, c.x, c.y + th * 0.5 + 0.25, c.z + 0.4, 3.0, 0.8);
+
+  // small cyan readout panels on trunk
+  for (let i = 0; i < 3; i++) {
+    const p = new THREE.Mesh(new THREE.BoxGeometry(tw * 0.8, 0.16, 0.05), basic(C_CYAN));
+    p.position.set(c.x, c.y + 1.2 + i * 0.5, c.z + tw * 0.55);
+    towerGroup.add(p);
+  }
+
+  // hose: bent arc of three segments from tower to rover
+  const hoseMat = basic(C_CYAN);
+  const p0 = new THREE.Vector3(c.x + 0.4, c.y - th * 0.32, c.z + 0.7);
+  const p1 = new THREE.Vector3(c.x + 2.8, c.y - th * 0.42, c.z + 2.4);
+  const p2 = new THREE.Vector3(0.0,  -1.0,      -8.2);
+  const p3 = new THREE.Vector3(0.55, -1.05,     -5.8);
+  cylinderBetween(p0, p1, 0.09, hoseMat);
+  cylinderBetween(p1, p2, 0.09, hoseMat);
+  cylinderBetween(p2, p3, 0.09, hoseMat);
+}
+scene.add(towerGroup);
+
+/* ---------- holograms (three cyan panels) ---------- */
+const holoGroup = new THREE.Group();
+holoGroup.name = 'holo';
 const holoMats = [];
-for (let i = 0; i < 3; i++){
-  const m = makePlane(0.09, 0.12, 0.16 + i * 0.09, 0.28, -14, 0x35d5e6, 0.55);
-  reg(m, 'holo' + i);
-  holoMats.push(m.material);
+{
+  const z = -14.5;
+  const f = frameSize(z);
+  const pw = 0.09 * f.w;
+  const ph = 0.12 * f.h;
+  const us = [0.14, 0.25, 0.36];
+  for (let i = 0; i < us.length; i++) {
+    const p = posAt(us[i], 0.28, z);
+    const mat = new THREE.MeshBasicMaterial({
+      color: C_CYAN, transparent: true, opacity: 0.42,
+      side: THREE.DoubleSide, depthWrite: false
+    });
+    holoMats.push(mat);
+    const panel = new THREE.Mesh(new THREE.PlaneGeometry(pw, ph), mat);
+    panel.position.copy(p);
+    panel.rotation.y = -0.25 + i * 0.12;
+    holoGroup.add(panel);
+    // frame
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(pw * 1.04, ph * 1.04, 0.04), basic(C_CYAN));
+    frame.position.set(p.x, p.y, p.z - 0.05);
+    frame.rotation.y = panel.rotation.y;
+    holoGroup.add(frame);
+    // scan lines
+    for (let k = 0; k < 4; k++) {
+      const ln = new THREE.Mesh(new THREE.PlaneGeometry(pw * 0.8, 0.05),
+        new THREE.MeshBasicMaterial({ color: 0xd7f7ff, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false }));
+      ln.position.set(p.x, p.y + ph * 0.3 - k * ph * 0.18, p.z + 0.03);
+      ln.rotation.y = panel.rotation.y;
+      holoGroup.add(ln);
+    }
+    addGlow(C_CYAN, p.x, p.y, p.z + 0.2, 3.2, 0.35);
+  }
+}
+scene.add(holoGroup);
+
+/* ---------- fog bands (two layers, #a8c8dc) ---------- */
+const fogLayers = [];
+for (const [v, z] of [[0.72, -9.5], [0.44, -15.0]]) {
+  const f = frameSize(z);
+  const mat = new THREE.MeshBasicMaterial({
+    color: C_RAIN, transparent: true, opacity: 0.27,
+    side: THREE.DoubleSide, depthWrite: false
+  });
+  const band = new THREE.Mesh(new THREE.PlaneGeometry(f.w * 1.5, 0.95), mat);
+  const p = posAt(0.5, v, z);
+  band.position.set(p.x, p.y, z);
+  band.name = 'fog';
+  scene.add(band);
+  fogLayers.push(band);
 }
 
-/* ================= fog layers ================= */
-reg(makePlane(1.7, 0.20, 0.5, 0.72, -6.0, 0xa8c8dc, 0.27), 'fog0');
-reg(makePlane(1.7, 0.20, 0.5, 0.44, -5.5, 0xa8c8dc, 0.27), 'fog1');
-
-/* ================= rain drops ================= */
-const N_DROPS = 76;
-const dropGeo = new THREE.BufferGeometry();
-const dropPos = new Float32Array(N_DROPS * 3);
-for (let i = 0; i < N_DROPS; i++){
-  dropPos[i * 3]     = (rnd() - 0.5) * 14.0;
-  dropPos[i * 3 + 1] = (rnd() - 0.5) * 10.0;
-  dropPos[i * 3 + 2] = -3.9;
+/* ---------- rain drops (76, z=-3.9) ---------- */
+const drops = [];
+{
+  const zBase = -3.9;
+  const f = frameSize(zBase);
+  const rainMat = new THREE.MeshBasicMaterial({
+    color: C_RAIN, transparent: true, opacity: 0.7,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+  });
+  for (let i = 0; i < 76; i++) {
+    const x = (rnd() - 0.5) * f.w * 1.15;
+    const y = (rnd() - 0.5) * f.h * 1.15;
+    const z = zBase - rnd() * 0.6;
+    const tall = 0.20 + rnd() * 0.18;
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.06, tall), rainMat.clone());
+    mesh.position.set(x, y, z);
+    mesh.name = 'drop';
+    mesh.userData.baseX = x;
+    mesh.userData.baseY = y;
+    mesh.userData.speed = 2.20;
+    scene.add(mesh);
+    drops.push(mesh);
+  }
 }
-dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPos, 3));
-const dropMat = new THREE.PointsMaterial({
-  color: 0xa8c8dc, size: 6, sizeAttenuation: false, depthWrite: false
-});
-const drops = new THREE.Points(dropGeo, dropMat);
-drops.name = 'drops';
-scene.add(drops);
-objectNames.push('drops');
 
-/* ================= animation state ================= */
+/* ---------- objects manifest for probe ---------- */
+const objectNames = ['night', 'hull', 'pad', 'rover', 'tower', 'holo', 'fog', 'drops'];
+
+/* ---------- state ---------- */
 let t = 0;
 const PAD_OPACITY = 0.5;
 
-function updateDrops(dt){
-  const arr = dropGeo.attributes.position.array;
-  for (let i = 0; i < N_DROPS; i++){
-    arr[i * 3 + 1] -= 2.20 * dt;
-    if (arr[i * 3 + 1] < -5.5) arr[i * 3 + 1] += 11.0;
+function updateScene(time, dt) {
+  // rain fall (analytic + wrap, deterministic)
+  const span = 8.4;
+  for (const d of drops) {
+    let y = d.userData.baseY - d.userData.speed * time;
+    y = -4.2 + (((y + 4.2) % span) + span) % span;
+    d.position.y = y;
   }
-  dropGeo.attributes.position.needsUpdate = true;
+
+  // neon flicker (deterministic)
+  const flick = 0.75 + 0.25 * Math.sin(time * 7.13) * Math.sin(time * 2.31);
+  for (const m of holoMats) m.opacity = 0.30 + 0.28 * flick;
+  for (const l of roverLights) l.material.color.setHex(C_AMBER);
+  padLight.intensity = 1150 + 320 * flick;
+  towerLight.intensity = 260 + 220 * Math.abs(Math.sin(time * 3.7));
+
+  // camera orbit around rover
+  const cx = 0.7 * Math.sin(2 * Math.PI * 0.25 * time);
+  const cz = Math.max(2.0, 4 - 1.58 * time);
+  camera.position.set(cx, 0.0, cz);
+  camera.lookAt(-0.3, 0.15, -1);
 }
 
-function updateNeon(){
-  for (let i = 0; i < holoMats.length; i++){
-    holoMats[i].opacity = 0.28 + 0.42 * (0.5 + 0.5 * Math.sin(t * 3.0 + i * 1.1));
-  }
-  towerGlow.material.opacity = 0.55 + 0.40 * (0.5 + 0.5 * Math.sin(t * 4.3));
-}
+function render() { renderer.render(scene, camera); }
 
-function updateCamera(){
-  const x = 0.7 * Math.sin(2 * Math.PI * 0.25 * t);
-  const z = Math.max(2.0, 4 - 1.58 * t);
-  camera.position.set(x, 0, z);
-  camera.lookAt(x - 0.3, 0, -1);
-}
-
-function probe(){
+function __probe() {
   return {
     t: Number(t.toFixed(4)),
     objects: objectNames.slice(),
-    camera: [
-      Number(camera.position.x.toFixed(4)),
-      Number(camera.position.z.toFixed(4))
-    ],
-    pad: Number(PAD_OPACITY.toFixed(4))
+    camera: [camera.position.x, camera.position.z],
+    pad: PAD_OPACITY.toFixed(4)
   };
 }
-window.__probe = probe;
 
-window.__step = function(dt){
+function __step(dt) {
   t += dt;
-  updateDrops(dt);
-  updateNeon();
-  updateCamera();
-  renderer.render(scene, camera);
-  return probe();
-};
+  updateScene(t, dt);
+  render();
+  return __probe();
+}
 
-/* ================= first frame ================= */
-updateCamera();
-updateNeon();
-renderer.render(scene, camera);
+window.__step = __step;
+window.__probe = __probe;
+
+updateScene(0, 0);
+render();
 window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-23 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

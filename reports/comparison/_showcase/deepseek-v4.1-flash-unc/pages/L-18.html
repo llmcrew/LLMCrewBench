@@ -2,10 +2,10 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>Neon Noodle Shop in Rain</title>
+<title>Neon Noodle Bar in the Rain</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
-  canvas { display: block; }
+  html,body{margin:0;padding:0;background:#000;overflow:hidden;}
+  canvas{display:block;}
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
@@ -13,314 +13,400 @@
 <script type="module">
 const THREE = window.THREE;
 
-/* ================= deterministic LCG ================= */
+/* ============================================================
+   Deterministic LCG  --  no Math.random() anywhere
+   ============================================================ */
 let lcg = 23268;
-function rnd() {
-  lcg = (lcg * 1103515245 + 12345) % 2147483648;
-  return lcg / 2147483648;
-}
+const rnd = () => { lcg = (lcg * 1103515245 + 12345) % 2147483648; return lcg / 2147483648; };
+const rr  = (a, b) => a + (b - a) * rnd();
 
-/* ================= renderer / camera ================= */
-const W = 800, H = 600;
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+/* ============================================================
+   Frame / camera maths
+   ============================================================ */
+const W = 1920, H = 1080, ASPECT = W / H;
+const CAM_Z = 4, FOV = 45;
+const visH = z => 2 * Math.tan(THREE.MathUtils.degToRad(FOV / 2)) * (CAM_Z - z);
+const visW = z => visH(z) * ASPECT;
+// world position of frame-fraction (u,v) at depth z  (v measured from top)
+const proj = (u, v, z) => new THREE.Vector3((u - 0.5) * visW(z), (0.5 - v) * visH(z), z);
+const sz   = (fu, fv, z) => [fu * visW(z), fv * visH(z)];
+const pxW  = z => visH(z) / H;          // world units per pixel at depth z
+
+/* ============================================================
+   Palette
+   ============================================================ */
+const C = {
+  night: 0x1e1145,
+  cyan:  0x12c7d4,
+  warm:  0xffb347,
+  mag:   0xff5fa8,
+  drop:  0xa8c8dc,
+};
+
+/* ============================================================
+   Renderer / scene / camera
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
 renderer.setPixelRatio(1);
 renderer.setSize(W, H, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 400);
-camera.position.set(0, 0, 4);
+scene.background = new THREE.Color(C.night);
+
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 200);
+camera.position.set(0, 0, CAM_Z);
 camera.lookAt(0, 0, -1);
 
-const TAN = Math.tan(50 * Math.PI / 360);
-const ASPECT = W / H;
+/* ============================================================
+   Lights (volume on standard bodies)
+   ============================================================ */
+scene.add(new THREE.AmbientLight(0x9aa8d8, 0.45));
+const key = new THREE.DirectionalLight(0xbfd0ff, 0.30); key.position.set(-2, 4, 3); scene.add(key);
+const lampLight = new THREE.PointLight(C.warm, 1.6, 26, 2); lampLight.position.copy(proj(0.26, 0.12, -6)); scene.add(lampLight);
+const signLight = new THREE.PointLight(C.cyan, 1.4, 32, 2); signLight.position.copy(proj(0.84, 0.30, -8)); scene.add(signLight);
+const holoLight = new THREE.PointLight(C.mag, 1.1, 24, 2); holoLight.position.copy(proj(0.20, 0.30, -7)); scene.add(holoLight);
 
-function uvToWorld(u, v, z) {
-  const d = 4 - z;
-  const h = 2 * d * TAN;
-  const w = h * ASPECT;
-  return { x: (u - 0.5) * w, y: (0.5 - v) * h, w, h };
+/* ============================================================
+   Materials
+   ============================================================ */
+const matNight = new THREE.MeshStandardMaterial({ color: C.night, emissive: C.night, emissiveIntensity: 0.85, roughness: 0.95, metalness: 0.0 });
+const matNightFlat = new THREE.MeshBasicMaterial({ color: C.night });
+const matFloor = new THREE.MeshStandardMaterial({ color: 0x0a0721, emissive: 0x0a0721, emissiveIntensity: 0.9, roughness: 1.0 });
+const matDark  = new THREE.MeshBasicMaterial({ color: 0x0d0824 });
+const matCyan  = new THREE.MeshBasicMaterial({ color: C.cyan });
+const matWarm  = new THREE.MeshBasicMaterial({ color: C.warm });
+const matMag   = new THREE.MeshBasicMaterial({ color: C.mag });
+
+const objects = [];
+function add(name, mesh){ mesh.name = name; scene.add(mesh); objects.push(name); return mesh; }
+function plane(name, u, v, z, fu, fv, mat){
+  const [w, h] = sz(fu, fv, z);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+  m.position.copy(proj(u, v, z));
+  return add(name, m);
+}
+function box(name, u, v, z, fu, fv, dz, mat){
+  const [w, h] = sz(fu, fv, z);
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, dz), mat);
+  m.position.copy(proj(u, v, z));
+  return add(name, m);
+}
+const addMat = (color, opacity) => new THREE.MeshBasicMaterial({ color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false });
+
+/* ============================================================
+   Backdrop: night sky / wall
+   ============================================================ */
+plane('sky', 0.5, 0.5, -45, 1.06, 1.06, matNightFlat);
+plane('wall', 0.5, 0.5, -12, 1.04, 1.04, matNightFlat);
+
+// wall texture: dark panels + lit window slits for depth
+const grime = new THREE.MeshBasicMaterial({ color: 0x251757, transparent: true, opacity: 0.5 });
+for (let i = 0; i < 16; i++){
+  plane('wall_panel', rr(0.02, 0.96), rr(0.03, 0.52), -11.6, rr(0.04, 0.12), rr(0.03, 0.10), grime);
+}
+for (let i = 0; i < 12; i++){
+  const lit = rnd() > 0.5;
+  plane('wall_window', rr(0.05, 0.95), rr(0.04, 0.50), -11.4, rr(0.01, 0.03), rr(0.015, 0.04),
+    new THREE.MeshBasicMaterial({ color: lit ? 0x6a7fb5 : 0x0a0620, transparent: true, opacity: 0.85 }));
 }
 
-const objectNames = [];
+/* ============================================================
+   Floor (wet asphalt) from v = 0.62 down, slightly receding
+   ============================================================ */
+{
+  const zf = -8;
+  const [w, h] = sz(1.10, 0.48, zf);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), matFloor);
+  const top = proj(0.5, 0.62, zf);
+  m.position.set(0, top.y - h / 2 + 0.02, zf);
+  m.rotation.x = -0.12;
+  add('floor', m);
 
-function addPlane(name, u, v, wf, hf, z, color, opts) {
-  opts = opts || {};
-  const p = uvToWorld(u, v, z);
-  const geo = new THREE.PlaneGeometry(wf * p.w, hf * p.h);
-  const opacity = (opts.opacity !== undefined) ? opts.opacity : 1;
-  const mat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(color),
-    transparent: true,
-    opacity: opacity,
-    depthWrite: (opts.depthWrite !== undefined) ? opts.depthWrite : (opacity >= 1),
-    blending: opts.additive ? THREE.AdditiveBlending : THREE.NormalBlending,
-    side: THREE.DoubleSide
-  });
-  const m = new THREE.Mesh(geo, mat);
-  m.position.set(p.x, p.y, z);
-  m.name = name;
-  scene.add(m);
-  objectNames.push(name);
-  return m;
-}
-
-/* ================= background ================= */
-addPlane('sky',  0.5, 0.5, 3.0, 3.0, -45, 0x1e1145);
-addPlane('wall', 0.5, 0.5, 1.8, 1.8, -12, 0x1e1145);
-addPlane('floor', 0.5, 0.81, 1.0, 0.38, -8.0, 0x1e1145);
-
-/* ================= kiosk ================= */
-addPlane('kiosk_edge', 0.24, 0.47, 0.215, 0.215, -7.92, 0x3a2a6e);
-addPlane('kiosk',      0.24, 0.47, 0.200, 0.200, -7.90, 0x1e1145);
-addPlane('kiosk_base', 0.24, 0.595, 0.200, 0.055, -7.88, 0x1e1145);
-addPlane('counter',    0.24, 0.62, 0.260, 0.050, -7.70, 0xffb347);
-
-/* ================= board (cyan sign over the counter) ================= */
-addPlane('board', 0.37, 0.40, 0.19, 0.10, -7.80, 0x12c7d4);
-for (let i = 0; i < 4; i++) {
-  addPlane('board_line_' + i, 0.37, 0.360 + i * 0.025, 0.17, 0.008, -7.78, 0x0a4a55);
-}
-
-/* ================= vertical neon sign (right) ================= */
-const sign = addPlane('sign', 0.86, 0.26, 0.06, 0.28, -7.50, 0x12c7d4);
-addPlane('sign_glow', 0.86, 0.26, 0.11, 0.34, -7.55, 0x12c7d4,
-         { opacity: 0.22, additive: true, depthWrite: false });
-
-/* ================= holo panels (left) ================= */
-const holoA = addPlane('holo_a', 0.14, 0.30, 0.08, 0.14, -7.50, 0xff5fa8,
-                       { opacity: 0.75, depthWrite: false });
-const holoB = addPlane('holo_b', 0.14, 0.32, 0.08, 0.14, -7.45, 0xff5fa8,
-                       { opacity: 0.75, depthWrite: false });
-
-const holoScans = [];
-for (let i = 0; i < 6; i++) {
-  const panel = i < 3 ? 0 : 1;
-  const v0 = panel === 0 ? 0.23 : 0.25;
-  const v1 = panel === 0 ? 0.37 : 0.39;
-  const y0 = uvToWorld(0.14, v0, -7.44).y;
-  const y1 = uvToWorld(0.14, v1, -7.44).y;
-  const m = addPlane('holo_scan_' + i, 0.14, v0, 0.075, 0.008, -7.44, 0xffe0f0,
-                     { opacity: 0.6, depthWrite: false });
-  holoScans.push({ mesh: m, y0: y0, y1: y1, phase: i * 0.16 });
-}
-
-/* ================= warm lamps ================= */
-const lampU = [0.18, 0.26, 0.34];
-for (let i = 0; i < 3; i++) {
-  addPlane('lamp_glow_' + i, lampU[i], 0.12, 0.11, 0.11, -7.45, 0xffb347,
-           { opacity: 0.25, additive: true, depthWrite: false });
-  addPlane('lamp_' + i, lampU[i], 0.12, 0.06, 0.06, -7.40, 0xffb347);
-}
-
-/* ================= puddles on the asphalt ================= */
-const puddleU = [0.20, 0.40, 0.60, 0.78];
-for (let i = 0; i < 4; i++) {
-  addPlane('puddle_' + i, puddleU[i], 0.82, 0.16, 0.05, -7.60, 0xa8c8dc,
-           { opacity: 0.95, depthWrite: false });
-}
-
-const puddleRings = [];
-for (let i = 0; i < 4; i++) {
-  for (let j = 0; j < 2; j++) {
-    const m = addPlane('puddle_ring_' + i + '_' + j, puddleU[i], 0.82, 0.018, 0.05,
-                       -7.55, 0xd0e8f4, { opacity: 0.5, depthWrite: false });
-    puddleRings.push({ mesh: m, u0: puddleU[i], phase: j * 0.5 + i * 0.13 });
+  // dark asphalt patches
+  const patch = new THREE.MeshBasicMaterial({ color: 0x0c0722, transparent: true, opacity: 0.7, depthWrite: false });
+  for (let i = 0; i < 10; i++){
+    plane('asphalt_patch', rr(0.05, 0.95), rr(0.66, 0.98), zf + 0.05, rr(0.05, 0.18), rr(0.01, 0.035), patch);
   }
+  // curb / gutter line
+  plane('curb', 0.5, 0.635, zf + 0.08, 1.10, 0.012, matDark);
 }
 
-/* ================= wet reflections on the asphalt ================= */
-const reflU = [0.18, 0.24, 0.30, 0.37, 0.86];
-for (let i = 0; i < reflU.length; i++) {
-  addPlane('refl_' + i, reflU[i], 0.72, 0.025, 0.20, -7.65, 0xa8c8dc,
-           { opacity: 0.45, depthWrite: false });
+/* ============================================================
+   Kiosk body + counter
+   ============================================================ */
+box('kiosk', 0.24, 0.47, -7, 0.20, 0.20, 0.55, matNight);
+box('counter', 0.24, 0.62, -6.6, 0.26, 0.05, 0.60, matWarm);
+plane('counter_shadow', 0.24, 0.658, -6.5, 0.26, 0.03, matDark);
+// warm light spilling off the counter onto the stall
+plane('counter_glow', 0.24, 0.60, -6.35, 0.34, 0.15, addMat(C.warm, 0.16));
+plane('counter_glow2', 0.24, 0.50, -6.5, 0.30, 0.16, addMat(C.warm, 0.10));
+// soft warm haze around the stall opening (behind the counter)
+plane('stall_glow', 0.24, 0.57, -6.75, 0.42, 0.24, addMat(C.warm, 0.13));
+// lit awning / stall roof above the counter (warm, top half)
+plane('awning', 0.24, 0.20, -7.2, 0.30, 0.05, matWarm);
+plane('awning_edge', 0.24, 0.228, -7.15, 0.30, 0.012, matDark);
+
+// kettles (котлы) on the counter
+const matPot = new THREE.MeshStandardMaterial({ color: 0x2a2050, roughness: 0.6, metalness: 0.4, emissive: 0x1a1338, emissiveIntensity: 0.5 });
+for (let i = 0; i < 3; i++){
+  const u = 0.17 + i * 0.06;
+  const [w, h] = sz(0.05, 0.05, -6.4);
+  const pot = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.42, w * 0.34, h, 16), matPot);
+  pot.position.copy(proj(u, 0.583, -6.4));
+  add('kettle', pot);
 }
 
-/* ================= steam columns ================= */
-const steamCols = [];
-for (let i = 0; i < 3; i++) {
-  const m = addPlane('steam_' + i, 0.20 + i * 0.04, 0.42, 0.06, 0.36, -7.30, 0xffb347,
-                     { opacity: 0.4, depthWrite: false });
-  steamCols.push(m);
+/* ============================================================
+   Cyan board sign with glyph bars
+   ============================================================ */
+const BZ = -8.6;
+plane('board_glow', 0.37, 0.40, BZ - 0.10, 0.245, 0.155, addMat(C.cyan, 0.12));
+const board = plane('board', 0.37, 0.40, BZ, 0.19, 0.095, matCyan);
+for (let i = 0; i < 3; i++){
+  plane('glyph', 0.37, 0.370 + i * 0.030, BZ + 0.02, 0.150, 0.008, matDark);
 }
 
-/* ================= wet glass in front of the camera ================= */
-addPlane('glass', 0.5, 0.5, 0.80, 0.80, -4.0, 0xa8c8dc,
-         { opacity: 0.06, depthWrite: false });
-for (let i = 0; i < 12; i++) {
-  const u = 0.10 + rnd() * 0.80;
-  addPlane('glass_streak_' + i, u, 0.5, 0.005, 0.80, -3.98, 0xa8c8dc,
-           { opacity: 0.10, depthWrite: false });
+/* ============================================================
+   Vertical neon sign (right) with flicker
+   ============================================================ */
+plane('sign_glow', 0.84, 0.26, -8.75, 0.15, 0.47, addMat(C.cyan, 0.12));
+const signMat = new THREE.MeshBasicMaterial({ color: C.cyan });
+const sign = plane('sign', 0.84, 0.26, -8.6, 0.06, 0.28, signMat);
+plane('sign_frame', 0.84, 0.26, -8.58, 0.040, 0.262, matDark);
+for (let i = 0; i < 6; i++){
+  plane('sign_glyph', 0.84, 0.155 + i * 0.038, -8.54, 0.032, 0.010, matCyan);
 }
 
-/* ================= drops in front of the glass ================= */
-const DROP_N = 64;
-const drops = [];
-const dropPos = new Float32Array(DROP_N * 3);
-for (let i = 0; i < DROP_N; i++) {
-  const x = -4.5 + rnd() * 9.0;
-  const y = -3.3 + rnd() * 6.6;
-  drops.push({ x: x, y: y });
-  dropPos[i * 3]     = x;
-  dropPos[i * 3 + 1] = y;
-  dropPos[i * 3 + 2] = 0;
-}
-const dropGeo = new THREE.BufferGeometry();
-dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPos, 3));
-const dropMat = new THREE.PointsMaterial({
-  color: 0xa8c8dc, size: 6, sizeAttenuation: false,
-  transparent: true, opacity: 0.95, depthWrite: false
+/* ============================================================
+   Magenta holo panels (left) with scanning lines
+   ============================================================ */
+const holoPanels = [];
+[[0.10, 0.30], [0.10, 0.44]].forEach(([u, v], idx) => {
+  const halo = plane('holo_glow', u, v, -8.4, 0.13, 0.21, addMat(C.mag, 0.14));
+  const pm = plane('holo', u, v, -8.2, 0.08, 0.14, matMag);
+  const scan = plane('holo_scan', u, v, -8.1, 0.074, 0.024,
+    new THREE.MeshBasicMaterial({ color: 0xd9fbff, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }));
+  holoPanels.push({ u, v, scan, phase: idx * 0.5 });
 });
-const dropPoints = new THREE.Points(dropGeo, dropMat);
-dropPoints.position.z = -3.9;
-dropPoints.name = 'drops';
-scene.add(dropPoints);
-objectNames.push('drops');
 
-/* ================= rain streaks behind the glass ================= */
-const rainState = drops.map(function (d) { return { x: d.x, y: d.y }; });
-const rainMeshes = [];
-for (let i = 0; i < DROP_N; i++) {
-  const geo = new THREE.PlaneGeometry(0.05, 0.45);
-  const mat = new THREE.MeshBasicMaterial({
-    color: 0xa8c8dc, transparent: true, opacity: 0.30, depthWrite: false
-  });
-  const m = new THREE.Mesh(geo, mat);
-  m.position.set(rainState[i].x, rainState[i].y, -11.9);
-  m.name = 'rain_' + i;
-  scene.add(m);
-  rainMeshes.push(m);
-  objectNames.push('rain_' + i);
+/* ============================================================
+   Warm lamps above the counter + string lights
+   ============================================================ */
+const lampMat = new THREE.MeshBasicMaterial({ color: C.warm });
+for (const u of [0.18, 0.26, 0.34]){
+  const [w, h] = sz(0.075, 0.075, -6.8);
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(w * 0.5, 16, 12), lampMat);
+  lamp.position.copy(proj(u, 0.125, -6.8));
+  lamp.scale.y = 0.82;
+  add('lamps', lamp);
+  plane('lamp_glow', u, 0.125, -6.7, 0.16, 0.16, addMat(C.warm, 0.16));
+  const [cw, ch] = sz(0.004, 0.11, -6.8);
+  const cord = new THREE.Mesh(new THREE.PlaneGeometry(cw, ch), matDark);
+  cord.position.copy(proj(u, 0.062, -6.8)); add('cord', cord);
+}
+// warm string of small bulbs along the top
+for (let i = 0; i < 11; i++){
+  const u = 0.06 + i * 0.088;
+  const [w] = sz(0.012, 0.012, -9.0);
+  const b = new THREE.Mesh(new THREE.SphereGeometry(w * 0.5, 10, 8), lampMat);
+  b.position.copy(proj(u, 0.055 + 0.012 * Math.sin(i * 1.1), -9.0));
+  add('bulb', b);
 }
 
-/* ================= animation state ================= */
+/* ============================================================
+   Steam columns
+   ============================================================ */
+const steams = [];
+for (const u of [0.20, 0.24, 0.28]){
+  const [w, h] = sz(0.13, 0.28, -6.2);
+  const s = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.58, w * 0.16, h, 14, 1, true),
+    new THREE.MeshBasicMaterial({ color: C.warm, transparent: true, opacity: 0.30, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+  s.position.copy(proj(u, 0.30, -6.2));
+  add('steam', s);
+  steams.push(s);
+}
+
+/* ============================================================
+   Cold wet asphalt: puddles, rings, neon reflections
+   ============================================================ */
+const puddleMat = new THREE.MeshBasicMaterial({ color: C.drop, transparent: true, opacity: 0.97, depthWrite: false });
+const rings = [];
+for (const u of [0.20, 0.40, 0.60, 0.78]){
+  plane('puddles', u, 0.87, -5.8, 0.15, 0.05, puddleMat.clone());
+  const [hw, hh] = sz(0.15, 0.05, -5.74);
+  const rg = new THREE.Mesh(new THREE.RingGeometry(0.80, 1.0, 28),
+    new THREE.MeshBasicMaterial({ color: 0xe6f3fb, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+  rg.position.copy(proj(u, 0.87, -5.74));
+  add('ring', rg);
+  rings.push({ ring: rg, u, bx: hw / 2, by: hh / 2, phase: rnd() });
+}
+// broad cold sheen of wet asphalt across the lower frame
+plane('wet_sheen', 0.5, 0.955, -6.5, 1.05, 0.07, addMat(C.drop, 0.06));
+plane('wet_sheen2', 0.5, 0.73, -6.8, 1.05, 0.045, addMat(C.drop, 0.09));
+
+function reflection(u, v, z, w, h, color, op){
+  return plane('reflection', u, v, z, w, h,
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false }));
+}
+reflection(0.84, 0.735, -6.0, 0.09, 0.20, C.cyan, 0.24);
+reflection(0.37, 0.735, -6.0, 0.16, 0.12, C.cyan, 0.16);
+reflection(0.12, 0.735, -6.0, 0.07, 0.10, C.mag, 0.18);
+reflection(0.24, 0.735, -6.0, 0.14, 0.10, C.warm, 0.16);
+// cool streaked reflections of the neon on the wet asphalt (lower half)
+reflection(0.84, 0.900, -6.0, 0.07, 0.14, C.cyan, 0.18);
+reflection(0.42, 0.940, -6.0, 0.24, 0.08, C.cyan, 0.13);
+reflection(0.20, 0.955, -6.0, 0.20, 0.06, C.drop, 0.12);
+reflection(0.66, 0.975, -6.0, 0.18, 0.05, C.drop, 0.10);
+reflection(0.32, 0.915, -6.0, 0.20, 0.07, C.drop, 0.22);
+reflection(0.58, 0.930, -6.0, 0.18, 0.06, C.cyan, 0.18);
+reflection(0.30, 0.790, -6.0, 0.22, 0.07, C.cyan, 0.22);
+reflection(0.70, 0.805, -6.0, 0.22, 0.07, C.drop, 0.22);
+
+/* ============================================================
+   Wet glass in front of the camera
+   ============================================================ */
+plane('glass', 0.5, 0.5, -4, 0.80, 0.80,
+  new THREE.MeshBasicMaterial({ color: C.drop, transparent: true, opacity: 0.06, depthWrite: false, side: THREE.DoubleSide }));
+plane('glass_smear', 0.5, 0.26, -3.98, 0.80, 0.5, addMat(0xbcd4e6, 0.05));
+
+// thin running streaks of water crawling down the glass
+const streaks = [];
+for (let i = 0; i < 26; i++){
+  const u = rr(0.05, 0.95);
+  const len = rr(0.06, 0.26);
+  const [sw, sh] = sz(rr(0.0012, 0.0032), len, -3.95);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(sw, sh),
+    new THREE.MeshBasicMaterial({ color: C.drop, transparent: true, opacity: rr(0.10, 0.22), depthWrite: false, blending: THREE.AdditiveBlending }));
+  m.userData = { u, y: rnd(), sp: rr(0.12, 0.5) };
+  add('streak', m);
+  streaks.push(m);
+}
+function placeStreaks(){ for (const m of streaks) m.position.copy(proj(m.userData.u, m.userData.y, -3.95)); }
+placeStreaks();
+
+// soft vignette (procedural, deterministic)
+{
+  const cv = document.createElement('canvas'); cv.width = cv.height = 256;
+  const cx = cv.getContext('2d');
+  const grd = cx.createRadialGradient(128, 128, 96, 128, 128, 205);
+  grd.addColorStop(0, 'rgba(10,7,28,0)');
+  grd.addColorStop(1, 'rgba(10,7,28,0.62)');
+  cx.fillStyle = grd; cx.fillRect(0, 0, 256, 256);
+  const vtex = new THREE.CanvasTexture(cv);
+  const [vw, vh] = sz(1.0, 1.0, -3.7);
+  const vmesh = new THREE.Mesh(new THREE.PlaneGeometry(vw, vh),
+    new THREE.MeshBasicMaterial({ map: vtex, transparent: true, depthWrite: false }));
+  vmesh.position.copy(proj(0.5, 0.5, -3.7));
+  add('vignette', vmesh);
+}
+
+/* ============================================================
+   Drops on the glass (z=-3.9) and rain streams behind (z=-12)
+   ============================================================ */
+const DROP_COUNT = 64;
+const dropT = [], dropY = [], rainY = [];
+for (let i = 0; i < DROP_COUNT; i++){
+  dropT.push(rnd());
+  const y = rnd();
+  dropY.push(y); rainY.push(y);
+}
+
+const dropGeo = new THREE.PlaneGeometry(6 * pxW(-3.9), 12 * pxW(-3.9));
+const dropMat = new THREE.MeshBasicMaterial({ color: C.drop, transparent: true, opacity: 0.92, depthWrite: false, side: THREE.DoubleSide });
+const drops = [];
+for (let i = 0; i < DROP_COUNT; i++){
+  const m = new THREE.Mesh(dropGeo, dropMat); add('drops', m); drops.push(m);
+}
+const rainGeo = new THREE.PlaneGeometry(3.0 * pxW(-12), 44 * pxW(-12));
+const rainMat = new THREE.MeshBasicMaterial({ color: C.drop, transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide });
+const rains = [];
+for (let i = 0; i < DROP_COUNT; i++){
+  const m = new THREE.Mesh(rainGeo, rainMat); add('rain', m); rains.push(m);
+}
+const DROP_Z = -3.9, RAIN_Z = -12;
+function placeDrops(){
+  for (let i = 0; i < DROP_COUNT; i++){
+    drops[i].position.copy(proj(dropT[i], dropY[i], DROP_Z));
+    rains[i].position.copy(proj(dropT[i], rainY[i], RAIN_Z));
+  }
+}
+placeDrops();
+
+/* ============================================================
+   State + animation
+   ============================================================ */
 let t = 0;
-let steamOpacity = 0.35;
+let steamOpacity = 0.30;
 
-function updateSteam() {
-  steamOpacity = 0.35 + 0.25 * Math.sin(2 * Math.PI * 0.77 * t);
-  const o = Math.max(0.02, steamOpacity);
-  for (let i = 0; i < steamCols.length; i++) {
-    steamCols[i].material.opacity = o;
-  }
-}
-
-function updateSign() {
-  const s = Math.sin(2 * Math.PI * 0.8 * t);
-  sign.material.opacity = (s >= 0) ? 1.0 : 0.45;
-}
-
-function updateHolo() {
-  for (let i = 0; i < holoScans.length; i++) {
-    const s = holoScans[i];
-    const ph = (t * 0.40 + s.phase) % 1;
-    s.mesh.position.y = s.y0 + (s.y1 - s.y0) * ph;
-    s.mesh.material.opacity = Math.max(0.05, 0.75 * (1 - Math.abs(ph - 0.5) * 1.2));
-  }
-}
-
-function updatePuddles() {
-  for (let i = 0; i < puddleRings.length; i++) {
-    const r = puddleRings[i];
-    const ph = (t * 0.5 + r.phase) % 1;
-    const u = r.u0 - 0.08 + 0.16 * ph;
-    r.mesh.position.x = uvToWorld(u, 0.82, -7.55).x;
-    r.mesh.material.opacity = 0.6 * Math.sin(Math.PI * ph);
-  }
-}
-
-/* ================= probe ================= */
-window.__probe = function () {
-  return {
-    t: +t.toFixed(4),
-    objects: objectNames.slice(),
-    drops: [+drops[0].x.toFixed(4), +drops[0].y.toFixed(4)],
-    steam: +steamOpacity.toFixed(4)
-  };
-};
-
-/* ================= step ================= */
-window.__step = function (dt) {
-  t += dt;
-
-  for (let i = 0; i < DROP_N; i++) {
-    const d = drops[i];
-    d.y -= 2.10 * dt;
-    if (d.y < -3.3) d.y += 6.6;
-    dropPos[i * 3 + 1] = d.y;
-
-    const r = rainState[i];
-    r.y -= 1.40 * dt;
-    if (r.y < -3.3) r.y += 6.6;
-    rainMeshes[i].position.y = r.y;
-  }
-  dropGeo.attributes.position.needsUpdate = true;
-
-  updateSteam();
-  updateSign();
-  updateHolo();
-  updatePuddles();
-
+function frame(){
   camera.position.x = 0.057 * Math.sin(2 * Math.PI * 0.25 * t);
+}
+function updateDrops(dt){
+  for (let i = 0; i < DROP_COUNT; i++){
+    dropY[i] += (2.10 * dt) / visH(DROP_Z);
+    if (dropY[i] > 1.02) dropY[i] -= 1.06;
+    rainY[i] += (0.70 * dt) / visH(RAIN_Z);
+    if (rainY[i] > 1.06) rainY[i] -= 1.10;
+  }
+  placeDrops();
+}
+function updateStreaks(dt){
+  for (const m of streaks){
+    m.userData.y += (m.userData.sp * dt) / visH(-3.95);
+    if (m.userData.y > 1.05) m.userData.y -= 1.10;
+  }
+  placeStreaks();
+}
+function updateSteam(){
+  let acc = 0;
+  for (let i = 0; i < steams.length; i++){
+    const o = 0.22 + 0.16 * (0.5 + 0.5 * Math.sin(2 * Math.PI * 0.77 * t + i * 1.2));
+    steams[i].material.opacity = o; acc += o;
+    steams[i].rotation.y = 0.4 * Math.sin(2 * Math.PI * 0.77 * t + i);
+    const sc = 1 + 0.06 * Math.sin(2 * Math.PI * 0.77 * t + i * 1.7);
+    steams[i].scale.set(sc, 1 + 0.10 * Math.sin(2 * Math.PI * 0.77 * t + i), sc);
+  }
+  steamOpacity = acc / steams.length;
+}
+function updateHolo(){
+  for (const h of holoPanels){
+    const y = h.v + 0.052 * Math.sin(2 * Math.PI * (0.55) * t + h.phase * 6.283);
+    h.scan.position.copy(proj(h.u, y, -8.1));
+  }
+}
+function updateRings(){
+  for (const r of rings){
+    const ph = (t * 0.6 + r.phase) % 1;
+    const s = 0.35 + 1.05 * ph;
+    r.ring.scale.set(r.bx * s, r.by * s, 1);
+    r.ring.material.opacity = 0.6 * (1 - ph);
+    r.ring.position.copy(proj(r.u, 0.87, -5.74));
+  }
+}
+function flicker(){
+  const f = 0.90 + 0.10 * (0.5 + 0.5 * Math.sin(2 * Math.PI * 1.7 * t)) * (Math.sin(2 * Math.PI * 0.23 * t) > -0.85 ? 1 : 0.45);
+  signMat.color.setHex(C.cyan).multiplyScalar(f);
+}
 
+updateSteam(); updateHolo(); updateRings(); flicker(); frame();
+renderer.render(scene, camera);
+
+window.__probe = () => ({
+  t: +t.toFixed(4),
+  objects: objects.slice(),
+  drops: [ +dropT[0].toFixed(4), +dropY[0].toFixed(4) ],
+  steam: +steamOpacity.toFixed(4),
+});
+window.__step = (dt) => {
+  t += dt;
+  updateDrops(dt); updateStreaks(dt); updateSteam(); updateHolo(); updateRings(); flicker(); frame();
   renderer.render(scene, camera);
   return window.__probe();
 };
-
-/* ================= first frame ================= */
-updateSteam();
-updateSign();
-updateHolo();
-updatePuddles();
-renderer.render(scene, camera);
 window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>deepseek-v4.1-flash-uncensored · L-18 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html>
 <head>
 <meta charset="utf-8">
-<title>Трамвай сквозь дождливый город</title>
+<title>Tram through the rainy city</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
-  canvas { display: block; width: 800px; height: 600px; }
+  html, body { margin: 0; padding: 0; background: #05030c; overflow: hidden; }
+  canvas { display: block; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
@@ -13,283 +13,401 @@
 <script type="module">
 const THREE = window.THREE;
 
-const W = 1;
-const H = 0.75;
-
+/* ---------------- determinism ---------------- */
 let lcg = 488641;
 function rnd() {
-  lcg = (Math.imul(lcg, 1103515245) + 12345) >>> 0;
+  lcg = (lcg * 1103515245 + 12345) % 2147483648;
   return lcg / 2147483648;
 }
 
-const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: false, alpha: false });
+/* ---------------- renderer / camera ---------------- */
+const W = 1920, H = 1080;
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
 renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
-renderer.domElement.style.width = '800px';
-renderer.domElement.style.height = '600px';
+renderer.setSize(W, H, false);
 document.body.appendChild(renderer.domElement);
 
-if (THREE.ColorManagement !== undefined) THREE.ColorManagement.enabled = true;
-if (THREE.SRGBColorSpace !== undefined) renderer.outputColorSpace = THREE.SRGBColorSpace;
-else if (THREE.sRGBEncoding !== undefined) renderer.outputEncoding = THREE.sRGBEncoding;
-
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1a1230);
-
-const camera = new THREE.OrthographicCamera(-0.5, 0.5, 0.375, -0.375, 0.1, 100);
+const FOV = 50;
+const camera = new THREE.PerspectiveCamera(FOV, W / H, 0.1, 200);
 camera.position.set(0, 0, 4);
 camera.lookAt(0, 0, -1);
 
-function setCenter(obj, u, v, z) {
-  obj.position.set((u - 0.5) * W, (0.5 - v) * H, z);
+const TAN = Math.tan(THREE.MathUtils.degToRad(FOV / 2));
+/* visible frame size on a world-z plane (camera at z=4) */
+function fs(z) {
+  const d = 4 - z;
+  const h = 2 * d * TAN;
+  return { h, w: h * W / H, px: h / 1080 };
 }
 
-const darkMat = new THREE.MeshBasicMaterial({ color: 0x1a1230 });
+const COL = {
+  night: 0x1a1230,
+  neon:  0x12c7d4,
+  warm:  0xffa63c,
+  drop:  0xa8c8dc
+};
 
-const night = new THREE.Mesh(new THREE.PlaneGeometry(3, 2.25), darkMat.clone());
-night.name = 'night';
-night.position.set(0, 0, -45);
-scene.add(night);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(COL.night);
 
-const cabin_top = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.075), darkMat.clone());
-cabin_top.name = 'cabin_top';
-setCenter(cabin_top, 0.5, 0.05, -3.8);
-scene.add(cabin_top);
+function plane(w, h, z, mat, name) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+  m.position.z = z;
+  if (name) m.name = name;
+  scene.add(m);
+  return m;
+}
 
-const cabin_low = new THREE.Group();
-cabin_low.name = 'cabin_low';
-const cabinBottom = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.21), darkMat.clone());
-setCenter(cabinBottom, 0.5, 0.86, -3.8);
-const cabinLeft = new THREE.Mesh(new THREE.PlaneGeometry(0.09, 0.75), darkMat.clone());
-setCenter(cabinLeft, 0.045, 0.5, -3.8);
-const cabinRight = new THREE.Mesh(new THREE.PlaneGeometry(0.09, 0.75), darkMat.clone());
-setCenter(cabinRight, 0.955, 0.5, -3.8);
-cabin_low.add(cabinBottom, cabinLeft, cabinRight);
-scene.add(cabin_low);
+/* ---------------- textures (deterministic canvases) ---------------- */
+function canvasTex(w, h, draw) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
 
-const mullion = new THREE.Group();
-mullion.name = 'mullion';
-const mullionMat = darkMat.clone();
-const mullion1 = new THREE.Mesh(new THREE.PlaneGeometry(0.012, 0.465), mullionMat);
-setCenter(mullion1, 0.31, 0.41, -3.95);
-const mullion2 = new THREE.Mesh(new THREE.PlaneGeometry(0.012, 0.465), mullionMat);
-setCenter(mullion2, 0.65, 0.41, -3.95);
-mullion.add(mullion1, mullion2);
-scene.add(mullion);
+/* neon blob: bright disc core, steep glow falloff */
+const blobTex = canvasTex(128, 128, (g) => {
+  const gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gr.addColorStop(0.00, 'rgba(255,255,255,1)');
+  gr.addColorStop(0.50, 'rgba(255,255,255,0.97)');
+  gr.addColorStop(0.75, 'rgba(255,255,255,0.38)');
+  gr.addColorStop(1.00, 'rgba(255,255,255,0)');
+  g.fillStyle = gr;
+  g.fillRect(0, 0, 128, 128);
+});
 
+/* soft bar: hot core, fading edges (city rail reflection) */
+const barTex = canvasTex(256, 64, (g) => {
+  g.clearRect(0, 0, 256, 64);
+  const vg = g.createLinearGradient(0, 0, 0, 64);
+  vg.addColorStop(0.00, 'rgba(255,255,255,0)');
+  vg.addColorStop(0.14, 'rgba(255,255,255,0.45)');
+  vg.addColorStop(0.22, 'rgba(255,255,255,1)');
+  vg.addColorStop(0.78, 'rgba(255,255,255,1)');
+  vg.addColorStop(0.86, 'rgba(255,255,255,0.45)');
+  vg.addColorStop(1.00, 'rgba(255,255,255,0)');
+  g.fillStyle = vg;
+  g.fillRect(0, 0, 256, 64);
+  g.globalCompositeOperation = 'destination-in';
+  const hg = g.createLinearGradient(0, 0, 256, 0);
+  hg.addColorStop(0.00, 'rgba(255,255,255,0)');
+  hg.addColorStop(0.10, 'rgba(255,255,255,1)');
+  hg.addColorStop(0.90, 'rgba(255,255,255,1)');
+  hg.addColorStop(1.00, 'rgba(255,255,255,0)');
+  g.fillStyle = hg;
+  g.fillRect(0, 0, 256, 64);
+});
+
+/* solid pill with soft edges (lamp glows) */
+const pillTex = canvasTex(256, 64, (g) => {
+  g.clearRect(0, 0, 256, 64);
+  const vg = g.createLinearGradient(0, 0, 0, 64);
+  vg.addColorStop(0.00, 'rgba(255,255,255,0)');
+  vg.addColorStop(0.22, 'rgba(255,255,255,1)');
+  vg.addColorStop(0.78, 'rgba(255,255,255,1)');
+  vg.addColorStop(1.00, 'rgba(255,255,255,0)');
+  g.fillStyle = vg;
+  g.fillRect(0, 0, 256, 64);
+  g.globalCompositeOperation = 'destination-in';
+  const hg = g.createLinearGradient(0, 0, 256, 0);
+  hg.addColorStop(0.00, 'rgba(255,255,255,0)');
+  hg.addColorStop(0.07, 'rgba(255,255,255,1)');
+  hg.addColorStop(0.93, 'rgba(255,255,255,1)');
+  hg.addColorStop(1.00, 'rgba(255,255,255,0)');
+  g.fillStyle = hg;
+  g.fillRect(0, 0, 256, 64);
+});
+
+/* thin streak for dried rain trails */
+const streakTex = canvasTex(32, 128, (g, w, h) => {
+  g.clearRect(0, 0, w, h);
+  const sg = g.createLinearGradient(0, 0, 0, h);
+  sg.addColorStop(0.00, 'rgba(255,255,255,0.95)');
+  sg.addColorStop(0.15, 'rgba(255,255,255,0.9)');
+  sg.addColorStop(0.60, 'rgba(255,255,255,0.5)');
+  sg.addColorStop(1.00, 'rgba(255,255,255,0)');
+  g.fillStyle = sg;
+  g.fillRect(0, 0, 28, h);
+  const hg = g.createLinearGradient(0, 0, 32, 0);
+  hg.addColorStop(0.00, 'rgba(255,255,255,0)');
+  hg.addColorStop(0.30, 'rgba(255,255,255,1)');
+  hg.addColorStop(0.75, 'rgba(255,255,255,1)');
+  hg.addColorStop(1.00, 'rgba(255,255,255,0)');
+  g.globalCompositeOperation = 'destination-in';
+  g.fillStyle = hg;
+  g.fillRect(0, 0, 32, h);
+});
+
+/* rain drop: round head + fading streak below */
+const dropTex = canvasTex(96, 256, (g, w, h) => {
+  g.clearRect(0, 0, w, h);
+  const sg = g.createLinearGradient(0, 40, 0, h);
+  sg.addColorStop(0.00, 'rgba(255,255,255,0.98)');
+  sg.addColorStop(0.34, 'rgba(255,255,255,0.82)');
+  sg.addColorStop(0.66, 'rgba(255,255,255,0.42)');
+  sg.addColorStop(1.00, 'rgba(255,255,255,0.03)');
+  g.fillStyle = sg;
+  g.fillRect(w / 2 - 3.4, 46, 6.8, h - 46);
+  const hg = g.createRadialGradient(w / 2, 52, 0, w / 2, 52, 30);
+  hg.addColorStop(0.00, 'rgba(255,255,255,1)');
+  hg.addColorStop(0.50, 'rgba(255,255,255,0.96)');
+  hg.addColorStop(1.00, 'rgba(255,255,255,0)');
+  g.fillStyle = hg;
+  g.beginPath();
+  g.ellipse(w / 2, 53, 23, 29, 0, 0, Math.PI * 2);
+  g.fill();
+  const hl = g.createRadialGradient(38, 41, 0, 38, 41, 8);
+  hl.addColorStop(0, 'rgba(255,255,255,1)');
+  hl.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = hl;
+  g.beginPath();
+  g.ellipse(38, 41, 8, 10, 0, 0, Math.PI * 2);
+  g.fill();
+});
+
+/* faint condensation speckle on the glass */
+const condTex = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#ffffff';
+  g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 220; i++) {
+    const x = rnd() * w, y = rnd() * h;
+    const r = 0.6 + rnd() * 1.6;
+    const a = 0.4 + rnd() * 0.6;
+    const gr = g.createRadialGradient(x, y, 0, x, y, r * 3);
+    gr.addColorStop(0, 'rgba(255,255,255,' + a.toFixed(3) + ')');
+    gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr;
+    g.beginPath();
+    g.arc(x, y, r * 3, 0, Math.PI * 2);
+    g.fill();
+  }
+});
+
+/* ---------------- static geometry ---------------- */
+/* night — deep night behind everything */
+plane(140, 90, -45, new THREE.MeshBasicMaterial({ color: COL.night }), 'night');
+
+/* far city windows beyond the night */
+const farF = fs(-25);
+for (let i = 0; i < 16; i++) {
+  const warm = i % 3 === 0;
+  const u = 0.13 + 0.74 * rnd();
+  const v = 0.16 + 0.52 * rnd();
+  const px = 2 + rnd() * 4;
+  const mat = new THREE.MeshBasicMaterial({
+    color: warm ? COL.warm : COL.neon,
+    transparent: true,
+    opacity: 0.55 + 0.35 * rnd(),
+    depthWrite: false
+  });
+  const m = plane(px * farF.px, px * 0.72 * farF.px, -25, mat, 'farlight');
+  m.position.x = (u - 0.5) * farF.w;
+  m.position.y = (0.5 - v) * farF.h;
+}
+
+/* glass — 78% x 62% window pane at z=-4 */
+const gF = fs(-4);
 const glassMat = new THREE.MeshBasicMaterial({
-  color: 0x1a1230,
+  color: COL.drop,
+  map: condTex,
   transparent: true,
   opacity: 0.30,
   depthWrite: false
 });
-const glass = new THREE.Mesh(new THREE.PlaneGeometry(0.78, 0.465), glassMat);
-glass.name = 'glass';
-setCenter(glass, 0.5, 0.41, -4);
-glass.renderOrder = 1;
-scene.add(glass);
+plane(0.78 * gF.w, 0.62 * gF.h, -4, glassMat, 'glass').position.y = (0.5 - 0.41) * gF.h;
 
-const blobs = new THREE.Group();
-blobs.name = 'blobs';
-const blobMat = new THREE.MeshBasicMaterial({
-  color: 0x12c7d4,
-  transparent: true,
-  opacity: 1,
-  blending: THREE.AdditiveBlending,
-  depthWrite: false
-});
-const blobData = [];
-
+/* neon blobs of the city passing behind the glass (additive) */
+const bF = fs(-14);
+const BLOB_XMAX = 11.0;
+const blobs = [];
 for (let i = 0; i < 22; i++) {
-  const col = i % 11;
-  const row = Math.floor(i / 11);
-  const cellW = 0.76 / 11;
-  const cellH = 0.44 / 2;
-
-  const u = 0.12 + (col + 0.5 + (rnd() - 0.5) * 0.6) * cellW;
-  const v = 0.24 + (row + 0.5 + (rnd() - 0.5) * 0.6) * cellH;
-  const radius = (7 + 6 * rnd()) / 800;
-  const speed = 2 + 2 * rnd();
-
-  const x0 = (u - 0.5) * W;
-  const y0 = (0.5 - v) * H;
-
-  const mesh = new THREE.Mesh(new THREE.CircleGeometry(radius, 16), blobMat);
-  mesh.position.set(x0, y0, -14);
-  mesh.renderOrder = 2;
-  blobs.add(mesh);
-
-  blobData.push({ mesh, x0, y0, speed });
+  const s = 7 + 6 * rnd();             // 7..13 px core
+  const D = 4.4 * s;                   // sprite incl. glow
+  const mat = new THREE.MeshBasicMaterial({
+    color: COL.neon,
+    map: blobTex,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    opacity: 0.92 + 0.08 * rnd()
+  });
+  const m = plane(D * bF.px, D * bF.px, -14, mat, 'blob');
+  m.position.x = -BLOB_XMAX + (2 * BLOB_XMAX) * rnd();
+  m.position.y = (0.5 - (0.16 + 0.50 * rnd())) * bF.h;
+  m.userData.vx = 2 + 2 * rnd();       // 2..4 units / s
+  blobs.push(m);
 }
-scene.add(blobs);
 
-const railMat = new THREE.MeshBasicMaterial({
-  color: 0x12c7d4,
-  transparent: true,
-  opacity: 0.4,
-  depthWrite: false
-});
-const rail = new THREE.Mesh(new THREE.PlaneGeometry(0.78, 0.015), railMat);
-rail.name = 'rail';
-setCenter(rail, 0.5, 0.58, -3.96);
-rail.renderOrder = 3;
-scene.add(rail);
+/* city reflection rail + warm lamp glows on the glass */
+const rF = fs(-3.8);
+function bar(wF, hF, vTop, color, opacity, name, map) {
+  const m = plane(wF * rF.w, hF * rF.h, -3.8, new THREE.MeshBasicMaterial({
+    color, map: map || barTex, transparent: true, opacity, depthWrite: false
+  }), name);
+  m.position.y = (0.5 - vTop) * rF.h;
+  return m;
+}
+const rail = bar(0.78, 0.02, 0.58, COL.neon, 0.95, 'rail');
+const railEcho = bar(0.70, 0.008, 0.618, COL.neon, 0.85, 'rail_echo');
+const glowTop = bar(0.70, 0.05, 0.17, COL.warm, 1.0, 'glow_top', pillTex);
+const glowLow = bar(0.62, 0.04, 0.66, COL.warm, 0.95, 'glow_low', pillTex);
 
-const glowTopMat = new THREE.MeshBasicMaterial({
-  color: 0xffa63c,
-  transparent: true,
-  opacity: 0.95,
-  depthWrite: false
-});
-const glow_top = new THREE.Mesh(new THREE.PlaneGeometry(0.70, 0.0375), glowTopMat);
-glow_top.name = 'glow_top';
-setCenter(glow_top, 0.5, 0.17, -3.96);
-glow_top.renderOrder = 4;
-scene.add(glow_top);
+/* warm rim light along the top window edge */
+const rimF = fs(-3.4);
+const rim = plane(0.78 * rimF.w, 0.012 * rimF.h, -3.4,
+  new THREE.MeshBasicMaterial({ color: COL.warm, transparent: true, opacity: 0.6,
+    map: barTex, depthWrite: false }), 'rim');
+rim.position.y = (0.5 - 0.104) * rimF.h;
 
-const glowLowMat = new THREE.MeshBasicMaterial({
-  color: 0xffa63c,
-  transparent: true,
-  opacity: 0.18,
-  depthWrite: false
-});
-const glow_low = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.03), glowLowMat);
-glow_low.name = 'glow_low';
-setCenter(glow_low, 0.5, 0.66, -3.96);
-glow_low.renderOrder = 4;
-scene.add(glow_low);
+/* mullions in front of the glass */
+const mF = fs(-3.5);
+function mullion(u) {
+  const m = plane(0.012 * mF.w, 0.62 * mF.h, -3.5,
+    new THREE.MeshBasicMaterial({ color: COL.night }), 'mullion');
+  m.position.x = (u - 0.5) * mF.w;
+  m.position.y = (0.5 - 0.41) * mF.h;
+  return m;
+}
+mullion(0.31);
+mullion(0.65);
 
-const drops = new THREE.Group();
-drops.name = 'drops';
-const dropMat = new THREE.MeshBasicMaterial({ color: 0xa8c8dc });
-const dropData = [];
+/* cabin frame: roof, floor wall, piers */
+const cF = fs(-1);
+const cabinMat = new THREE.MeshBasicMaterial({ color: COL.night });
+const cabinTop = plane(40, 0.13 * cF.h, -1, cabinMat, 'cabin_top');
+cabinTop.position.y = (0.5 - 0.05) * cF.h;
+const cabinLow = plane(40, 0.40 * cF.h, -1, cabinMat, 'cabin_low');
+cabinLow.position.y = (0.5 - 0.83) * cF.h;
+const pierL = plane(0.115 * cF.w, 30, -1, cabinMat, 'pier_l');
+pierL.position.x = (0.055 - 0.5) * cF.w;
+const pierR = plane(0.115 * cF.w, 30, -1, cabinMat, 'pier_r');
+pierR.position.x = (0.945 - 0.5) * cF.w;
 
-const dropRadius = 6 / 800;
-const vMin = 0.21;
-const vMax = 0.71;
-const yMax = (0.5 - vMin) * H;
-const yMin = (0.5 - vMax) * H;
-const yRange = yMax - yMin;
-
+/* rain: 60 drops sliding down the glass */
+const dF = fs(-3.9);
+const DROP_WIN = 0.62 * dF.h;
+const dropLo = (0.5 - 0.73) * dF.h;
+const drops = [];
 for (let i = 0; i < 60; i++) {
-  const col = i % 10;
-  const row = Math.floor(i / 10);
-  const cellW = 0.76 / 10;
-  const cellH = 0.48 / 6;
-
-  const u = 0.12 + (col + 0.5 + (rnd() - 0.5) * 0.6) * cellW;
-  const v = 0.22 + (row + 0.5 + (rnd() - 0.5) * 0.6) * cellH;
-
-  const x = (u - 0.5) * W;
-  let y = (0.5 - v) * H;
-  if (y > yMax) y = yMax;
-  if (y < yMin) y = yMin;
-
-  const mesh = new THREE.Mesh(new THREE.CircleGeometry(dropRadius, 16), dropMat);
-  mesh.position.set(x, y, -3.9);
-  drops.add(mesh);
-
-  dropData.push({ mesh, x, y0: y });
+  const sc = 0.8 + 0.5 * rnd();
+  const mat = new THREE.MeshBasicMaterial({
+    color: COL.drop,
+    map: dropTex,
+    transparent: true,
+    opacity: 0.98 + 0.02 * rnd(),
+    depthWrite: false
+  });
+  const m = plane(0.033 * dF.w * sc, 0.17 * dF.h * sc, -3.9, mat, 'drop');
+  m.position.x = (0.115 + 0.77 * rnd() - 0.5) * dF.w;
+  m.position.y = (0.5 - 0.71) * dF.h + DROP_WIN * rnd();
+  m.userData.vy = 1.56 * (0.75 + 0.5 * rnd());
+  drops.push(m);
 }
-scene.add(drops);
 
+/* and 34 dropped trails left behind */
+const streaks = [];
+for (let i = 0; i < 34; i++) {
+  const mat = new THREE.MeshBasicMaterial({
+    color: COL.drop, map: streakTex, transparent: true,
+    opacity: 0.82 + 0.15 * rnd(), depthWrite: false
+  });
+  const m = plane(0.0035 * dF.w, (0.06 + 0.07 * rnd()) * dF.h, -3.86, mat, 'streak');
+  m.position.x = (0.115 + 0.77 * rnd() - 0.5) * dF.w;
+  m.position.y = (0.5 - 0.71) * dF.h + DROP_WIN * rnd();
+  m.userData.vy = 1.56 * (0.75 + 0.5 * rnd());
+  streaks.push(m);
+}
+
+/* patches of condensation fog on the glass */
+const mists = [];
+for (let i = 0; i < 12; i++) {
+  const mat = new THREE.MeshBasicMaterial({
+    color: COL.drop, map: blobTex, transparent: true,
+    opacity: 0.16 + 0.12 * rnd(), depthWrite: false
+  });
+  const m = plane((0.05 + 0.06 * rnd()) * dF.w, (0.06 + 0.06 * rnd()) * dF.h, -3.92, mat, 'mist');
+  m.position.x = (0.14 + 0.72 * rnd() - 0.5) * dF.w;
+  m.position.y = (0.5 - (0.16 + 0.50 * rnd())) * dF.h;
+  mists.push(m);
+}
+
+/* and a few wet-glass reflection streaks of the passing neon */
+const neonStreaks = [];
+for (let i = 0; i < 6; i++) {
+  const mat = new THREE.MeshBasicMaterial({
+    color: COL.neon, map: streakTex, transparent: true,
+    opacity: 0.7 + 0.2 * rnd(),
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const m = plane(0.004 * dF.w, (0.10 + 0.08 * rnd()) * dF.h, -3.88, mat, 'neonstreak');
+  m.position.x = (0.13 + 0.74 * rnd() - 0.5) * dF.w;
+  m.userData.vx = 2 + 2 * rnd();
+  neonStreaks.push(m);
+}
+
+/* ---------------- animation ---------------- */
 let t = 0;
-const camFreq = 0.613;
-const blobRange = 0.78;
-const blobHalf = 0.39;
 
-function wrapBlobX(x) {
-  let val = (x + blobHalf) % blobRange;
-  if (val < 0) val += blobRange;
-  return val - blobHalf;
-}
-
-function update() {
-  camera.position.x = 0.045 * Math.sin(t * camFreq);
-
-  for (const b of blobData) {
-    b.mesh.position.x = wrapBlobX(b.x0 + b.speed * t);
-    b.mesh.position.y = b.y0;
-  }
-
-  for (const d of dropData) {
-    let offset = (d.y0 - yMin + 1.56 * t) % yRange;
-    if (offset < 0) offset += yRange;
-    d.mesh.position.x = d.x;
-    d.mesh.position.y = yMax - offset;
-  }
-
-  renderer.render(scene, camera);
-}
-
-function probe() {
-  const b = blobData[0];
-  const u = (b.mesh.position.x - camera.position.x) / W + 0.5;
-  const v = 0.5 - b.mesh.position.y / H;
-
+function frameProbe() {
   return {
-    t: Number(t.toFixed(4)),
-    objects: scene.children.map(o => o.name),
-    blob: [Number(u.toFixed(4)), Number(v.toFixed(4))]
+    t: Math.round(t * 10000) / 10000,
+    objects: ['night', 'cabin_top', 'cabin_low', 'pier_l', 'pier_r',
+      'mullion_0.31', 'mullion_0.65', 'glass', 'blobs(22)', 'farlights(16)',
+      'rail', 'rail_echo', 'glow_top', 'glow_low', 'rim', 'drops(60)', 'streaks(34)',
+      'mists(12)', 'neonstreaks(6)'],
+    blob: [
+      Math.round(blobs[0].position.x * 10000) / 10000,
+      Math.round(blobs[0].position.y * 10000) / 10000
+    ]
   };
 }
 
-window.__probe = probe;
+window.__probe = frameProbe;
+
+function renderFrame() {
+  camera.position.x = 0.045 * Math.sin(t * (Math.PI * 2 / 6.4));
+  camera.lookAt(camera.position.x, 0, -1);
+  renderer.render(scene, camera);
+}
+
 window.__step = function (dt) {
   t += dt;
-  update();
-  return probe();
+  for (const d of drops) {
+    d.position.y -= d.userData.vy * dt;
+    if (d.position.y < dropLo) d.position.y += DROP_WIN;
+  }
+  for (const s of streaks) {
+    s.position.y -= s.userData.vy * dt;
+    if (s.position.y < dropLo) s.position.y += DROP_WIN;
+  }
+  for (const b of blobs) {
+    b.position.x += b.userData.vx * dt;
+    if (b.position.x > BLOB_XMAX) b.position.x -= 2 * BLOB_XMAX;
+  }
+  for (const s of neonStreaks) {
+    s.position.x += s.userData.vx * dt;
+    if (s.position.x > BLOB_XMAX) s.position.x -= 2 * BLOB_XMAX;
+  }
+  /* gentle drift of the reflections with the passing city */
+  rail.position.x = 0.25 * Math.sin(t * 0.7);
+  railEcho.position.x = 0.3 * Math.sin(t * 0.7 + 0.8);
+  glowTop.position.x = -0.12 * Math.sin(t * 0.5);
+  glowLow.position.x = 0.08 * Math.sin(t * 0.6 + 2.0);
+  renderFrame();
+  return frameProbe();
 };
 
-update();
+/* first frame = start of the scene */
+renderFrame();
 window.__ready = true;
+
+/* optional self-check hook: #t=<dt> advances the scene once */
+if (location.hash.indexOf('#t=') === 0) {
+  window.__step(parseFloat(location.hash.slice(3)));
+}
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-19 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

@@ -1,282 +1,480 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8">
-  <style>body { margin: 0; overflow: hidden; background: #000; }</style>
+<meta charset="utf-8">
+<title>Автобусная остановка в неоне</title>
+<style>body{margin:0;overflow:hidden;background:#000}canvas{display:block;image-rendering:auto}</style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
 <script type="module">
 const THREE = window.THREE;
 
-// LCG Determinism
-let lcg = 140149;
-function rnd() {
-  lcg = (lcg * 1103515245 + 12345) % 2147483648;
-  return lcg / 2147483648;
+/* ======================================================================
+   Seeded LCG PRNG  –  seed = 140149
+   ====================================================================== */
+let _lcg = 140149;
+function _rng() {
+  _lcg = (_lcg * 1103515245 + 12345) % 2147483648;
+  return _lcg / 2147483648;
 }
 
-// Scene & Camera
+/* ======================================================================
+   Scene & Camera
+   ====================================================================== */
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 100);
+scene.background = new THREE.Color(0x1c1236);
+
+// Camera per spec: (0,0,4) looking at (0,0,−1), FOV 50°
+const camera = new THREE.PerspectiveCamera(50, 1920 / 1080, 0.1, 200);
 camera.position.set(0, 0, 4);
 camera.lookAt(0, 0, -1);
 
 // Renderer
 const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
 renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
+renderer.setSize(1920, 1080, false);
 document.body.appendChild(renderer.domElement);
 
-// Helpers
-function frameToWorld(u, v, z) {
-  const ndcX = 2 * u - 1;
-  const ndcY = 1 - 2 * v;
-  const vec = new THREE.Vector3(ndcX, ndcY, 0.5);
-  vec.unproject(camera);
-  const dir = vec.sub(camera.position).normalize();
-  const dist = (camera.position.z - z) / dir.z;
-  return camera.position.clone().add(dir.multiplyScalar(dist));
+/* ======================================================================
+   Geometry helpers  (camera(0,0,4), lookAt(0,0,−1), fov=50°)
+   halfFOV_y = 25° ⇒ tan(25°) = 0.4663
+   fullH(z) = 2·d·tan25° = d·0.9326
+   fullW(z) = fullH(z)·aspect
+   ====================================================================== */
+function _frustum(z) {
+  const d = 4 - z;
+  const h = d * 0.9326;              // full vertical span at depth z
+  const w = h * (1920 / 1080);       // full horizontal span
+  return { w, h };
+}
+function _world(z, u, v) {           // screen fraction (u,v) → world pos
+  const f = _frustum(z);
+  return { x: (u - 0.5) * f.w, y: (0.5 - v) * f.h, z };
 }
 
-function getWorldSizeAt(z, w, h) {
-  const p1 = frameToWorld(0, 0, z);
-  const p2 = frameToWorld(w, 0, z);
-  const p3 = frameToWorld(0, h, z);
-  return { x: Math.abs(p2.x - p1.x), y: Math.abs(p3.y - p1.y) };
-}
+/* ===== colours ===== */
+const C = {
+  night : 0x1c1236,
+  teal  : 0x22d3c5,
+  warm  : 0xffa83c,
+  neon  : 0xff4d9d,
+  drop  : 0xa8c8dc
+};
 
-// Colors
-const C_NIGHT = 0x1c1236;
-const C_BOARD = 0x22d3c5;
-const C_LAMP = 0xffa83c;
-const C_NEON = 0xff4d9d;
-const C_DROPS = 0xa8c8dc;
-
-// Object tracking
-const objects = [];
-const objectNames = [];
-
-function addMesh(name, geo, mat, pos, scale) {
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.copy(pos);
-  if (scale) mesh.scale.set(scale.x, scale.y, 1);
-  scene.add(mesh);
-  objects.push(mesh);
-  objectNames.push(name);
-  return mesh;
-}
-
-// 1. night
-const nightSize = getWorldSizeAt(-45, 1, 1);
-addMesh('night', new THREE.PlaneGeometry(nightSize.x * 1.5, nightSize.y * 1.5), new THREE.MeshBasicMaterial({ color: C_NIGHT }), frameToWorld(0.5, 0.5, -45));
-
-// 2. floor
-const floorSize = getWorldSizeAt(-8, 1, 0.38);
-addMesh('floor', new THREE.PlaneGeometry(floorSize.x, floorSize.y), new THREE.MeshBasicMaterial({ color: C_NIGHT }), frameToWorld(0.5, 0.81, -8));
-
-// 3. canopy
-const canopySize = getWorldSizeAt(-5, 1, 0.16);
-addMesh('canopy', new THREE.PlaneGeometry(canopySize.x, canopySize.y), new THREE.MeshBasicMaterial({ color: C_NIGHT }), frameToWorld(0.5, 0.08, -5));
-
-// 4. glass
-const glassSize = getWorldSizeAt(-5, 0.62, 0.44);
-const glassMat = new THREE.MeshBasicMaterial({ color: 0x0a0a1a, transparent: true, opacity: 0.32 });
-addMesh('glass', new THREE.PlaneGeometry(glassSize.x, glassSize.y), glassMat, frameToWorld(0.5, 0.38, -5));
-
-// 5. posts
-const postSize = getWorldSizeAt(-5, 0.02, 0.44);
-const postMat = new THREE.MeshBasicMaterial({ color: C_NIGHT });
-addMesh('post_l', new THREE.BoxGeometry(postSize.x, postSize.y, 0.1), postMat, frameToWorld(0.19, 0.38, -5));
-addMesh('post_r', new THREE.BoxGeometry(postSize.x, postSize.y, 0.1), postMat, frameToWorld(0.81, 0.38, -5));
-
-// 6. board
-const boardSize = getWorldSizeAt(-4.8, 0.22, 0.14);
-const boardCanvas = document.createElement('canvas');
-boardCanvas.width = 256; boardCanvas.height = 128;
-const boardCtx = boardCanvas.getContext('2d');
-const boardTex = new THREE.CanvasTexture(boardCanvas);
-boardTex.minFilter = THREE.LinearFilter;
-const boardMat = new THREE.MeshBasicMaterial({ map: boardTex, transparent: true });
-addMesh('board', new THREE.PlaneGeometry(boardSize.x, boardSize.y), boardMat, frameToWorld(0.32, 0.30, -4.8));
-
-// 7. lamp
-const lampSize = getWorldSizeAt(-4.8, 0.13, 0.06);
-const lampMat = new THREE.MeshBasicMaterial({ color: C_LAMP, transparent: true, opacity: 0.9 });
-addMesh('lamp', new THREE.PlaneGeometry(lampSize.x, lampSize.y), lampMat, frameToWorld(0.62, 0.14, -4.8));
-const haloSize = getWorldSizeAt(-4.8, 0.20, 0.10);
-const haloMat = new THREE.MeshBasicMaterial({ color: C_LAMP, transparent: true, opacity: 0.3, blending: THREE.AdditiveBlending });
-addMesh('lamp_halo', new THREE.PlaneGeometry(haloSize.x, haloSize.y), haloMat, frameToWorld(0.62, 0.14, -4.8));
-
-// 8. neon
-const neonSize = getWorldSizeAt(-5.2, 0.30, 0.06);
-const neonMat = new THREE.MeshBasicMaterial({ color: C_NEON });
-addMesh('neon', new THREE.PlaneGeometry(neonSize.x, neonSize.y), neonMat, frameToWorld(0.58, 0.24, -5.2));
-
-// 9. bench
-const benchSize = getWorldSizeAt(-7.9, 0.30, 0.05);
-addMesh('bench', new THREE.BoxGeometry(benchSize.x, benchSize.y, 0.1), new THREE.MeshBasicMaterial({ color: C_NIGHT }), frameToWorld(0.5, 0.66, -7.9));
-
-// 10. puddles
-const puddleSize = getWorldSizeAt(-7.9, 0.18, 0.04);
-const puddleMat = new THREE.MeshBasicMaterial({ color: C_NEON, transparent: true, opacity: 0.35 });
-[0.25, 0.5, 0.75].forEach(u => {
-  addMesh('puddle', new THREE.PlaneGeometry(puddleSize.x, puddleSize.y), puddleMat, frameToWorld(u, 0.90, -7.9));
+/* ======================================================================
+   Night / sky backdrop  (z = −45)  with distant city neon
+   ====================================================================== */
+scene.add(new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 80),
+  new THREE.MeshBasicMaterial({ color: C.night })
+).translateY(0).translateZ(-45));
+// Distant background neon dots (visible through glass)
+const _bgNeon = [
+  { u: 0.15, v: 0.38, s: 0.04 },
+  { u: 0.82, v: 0.30, s: 0.03 },
+  { u: 0.70, v: 0.45, s: 0.05 },
+  { u: 0.30, v: 0.42, s: 0.03 },
+  { u: 0.55, v: 0.35, s: 0.04 }
+];
+_bgNeon.forEach(n => {
+  const pos = _world(-40, n.u, n.v);
+  const size = n.s * f5.w * 4;   // amplified for distance
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(size * 1.5, size * 1.5),
+    new THREE.MeshBasicMaterial({
+      color: n.u > 0.5 ? C.neon : C.warm,
+      transparent: true, opacity: 0.6,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    })
+  );
+  m.position.set(pos.x, pos.y, -40);
+  scene.add(m);
 });
 
-// 11. drops
-const dropCount = 56;
-const dropGeo = new THREE.BufferGeometry();
-const dropPosArr = new Float32Array(dropCount * 3);
-dropGeo.setAttribute('position', new THREE.BufferAttribute(dropPosArr, 3));
-const dropPoints = new THREE.Points(dropGeo, new THREE.PointsMaterial({ color: C_DROPS, size: 0.06, sizeAttenuation: false }));
-scene.add(dropPoints);
-objects.push(dropPoints);
-objectNames.push('drops');
+/* ======================================================================
+   Glass panel  (62 % × 44 % screen, z = −5, opacity 0.32)
+   ====================================================================== */
+const f5 = _frustum(-5);            // w≈14.92, h≈8.39
+const gU = [0.19, 0.81];            // glass horizontal bounds
+const gV = [0.16, 0.60];            // glass vertical bounds
+const gW = (gU[1] - gU[0]) * f5.w;  // 9.25
+const gH = (gV[1] - gV[0]) * f5.h;  // 3.69
+const gCY = 0.5 * ((0.5 - gV[0]) * f5.h + (0.5 - gV[1]) * f5.h);
+// gCY ≈ 1.007
 
-const dropWorldPos = [];
-for (let i = 0; i < dropCount; i++) {
-  const u = 0.19 + rnd() * 0.62;
-  const v = 0.16 + rnd() * 0.44;
-  dropWorldPos.push(frameToWorld(u, v, -4.9));
-}
+const glassMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff, transparent: true, opacity: 0.32,
+  roughness: 0.03, metalness: 0, transmission: 0.5, thickness: 0.02,
+  side: THREE.DoubleSide
+});
+const glass = new THREE.Mesh(
+  new THREE.BoxGeometry(gW, gH, 0.04),
+  glassMat
+).translateX(0).translateY(gCY).translateZ(-5);
+scene.add(glass);
 
-// 12. rain
-const rainGeo = new THREE.BufferGeometry();
-const rainPosArr = new Float32Array(dropCount * 3);
-rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPosArr, 3));
-const rainPoints = new THREE.Points(rainGeo, new THREE.PointsMaterial({ color: C_DROPS, size: 0.06, sizeAttenuation: false }));
-scene.add(rainPoints);
-objects.push(rainPoints);
-objectNames.push('rain');
+/* ======================================================================
+   Canopy  – upper 16 % screen height, z = −5
+   ====================================================================== */
+const cW = f5.w / 2 + gW;            // extends a bit wider than glass
+const cH = 0.16 * f5.h;              // ≈ 1.34
+const cD = 1.6;
+const canopyCenterY = (0.5 - gV[0]) * f5.h;   // top of glass
+const canopyMesh = new THREE.Mesh(
+  new THREE.BoxGeometry(cW, cH, cD),
+  new THREE.MeshStandardMaterial({ color: C.night, roughness: 0.7, metalness: 0.1 })
+);
+canopyMesh.position.set(0, canopyCenterY + cH / 2, -5.4);
+scene.add(canopyMesh);
 
-const rainWorldPos = [];
-for (let i = 0; i < dropCount; i++) {
-  const u = 0.19 + rnd() * 0.62;
-  const v = 0.16 + rnd() * 0.44;
-  rainWorldPos.push(frameToWorld(u, v, -12));
-}
+/* Warm underside of canopy */
+scene.add(Object.assign(new THREE.Mesh(
+  new THREE.PlaneGeometry(cW - 0.3, cD - 0.3),
+  new THREE.MeshBasicMaterial({ color: 0x3a2015, transparent: true, opacity: 0.7, side: THREE.DoubleSide })
+), { position: new THREE.Vector3(0, canopyCenterY - cH / 2 + 0.01, -5.35), rotation: new THREE.Euler(Math.PI, 0, 0) }));
 
-// State
-let t = 0;
-let board_phase = 0;
-window.__ready = false;
+/* ======================================================================
+   Support posts  (0.02 frame width each, at glass edges)
+   ====================================================================== */
+const postW = 0.02 * f5.w;
+const postH = gH + cH;
+const postGeo = new THREE.BoxGeometry(postW, postH, 0.35);
+const postMat = new THREE.MeshStandardMaterial({ color: C.night, roughness: 0.5, metalness: 0.3 });
+[-1, 1].forEach(side => {
+  scene.add(Object.assign(new THREE.Mesh(postGeo, postMat), {
+    position: new THREE.Vector3(side * (gW / 2 + postW / 2),
+      canopyCenterY - (postH > gH ? (postH - gH) / 2 : 0) + cH * 0.45,
+      -5.25)
+  }));
+});
 
-// Update functions
-function updateBoard() {
-  boardCtx.fillStyle = '#22d3c5';
-  boardCtx.fillRect(0, 0, 256, 128);
-  const headerBlink = Math.sin(t * 3) > 0;
-  boardCtx.fillStyle = headerBlink ? '#ffffff' : '#1c1236';
-  boardCtx.fillRect(0, 0, 256, 20);
-  boardCtx.fillStyle = headerBlink ? '#1c1236' : '#ffffff';
-  boardCtx.font = 'bold 14px monospace';
-  boardCtx.fillText('РАСПИСАНИЕ', 10, 15);
+/* Street/light pole on the far side (visible through glass)
+   Adds urban atmosphere */
+const poleGeo = new THREE.CylinderGeometry(0.06, 0.08, 6, 8);
+const poleMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.6, metalness: 0.4 });
+const poleLightMat = new THREE.MeshBasicMaterial({ color: C.warm, transparent: true, opacity: 0.85 });
+// Left pole, far side
+scene.add(Object.assign(new THREE.Mesh(poleGeo, poleMat), {
+  position: new THREE.Vector3(-7, gndY + 3, -12)
+}));
+scene.add(Object.assign(new THREE.Mesh(
+  new THREE.SphereGeometry(0.15, 8, 8), poleLightMat
+), { position: new THREE.Vector3(-7, gndY + 6, -12) }));
+const polePtLight = new THREE.PointLight(C.warm, 1.5, 10, 2);
+polePtLight.position.set(-7, gndY + 6, -12);
+scene.add(polePtLight);
+
+/* ======================================================================
+   Board  – teal display with scrolling text, u=0.32 v=0.30 (0.22×0.14)
+   ====================================================================== */
+const bdW = 0.22 * f5.w;   // 3.28
+const bdH = 0.14 * f5.h;   // 1.17
+const bdC = _world(-5, 0.32, 0.30); // centre
+
+const bc = document.createElement('canvas');
+bc.width = 512; bc.height = 256;
+const bctx = bc.getContext('2d');
+const boardTex = new THREE.CanvasTexture(bc);
+
+const boardMesh = new THREE.Mesh(
+  new THREE.BoxGeometry(bdW, bdH, 0.06),
+  new THREE.MeshBasicMaterial({ map: boardTex })
+).translateX(bdC.x).translateY(bdC.y).translateZ(-5);
+scene.add(boardMesh);
+
+// Additive halo behind board
+let _boardHaloMat;
+scene.add(Object.assign(new THREE.Mesh(
+  new THREE.PlaneGeometry(bdW * 1.2, bdH * 1.2),
+  new THREE.MeshBasicMaterial({ color: C.teal, transparent: true, opacity: 0.07,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide })
+), { position: new THREE.Vector3(bdC.x, bdC.y, -5.04) }));
+_boardHaloMat = scene.children[scene.children.length - 1].material;
+
+/* Scroll lines */
+const _lines = [
+  '107   Центр — 1   6 мин →',
+  '42    Аэропорт    12 мин →',
+  '3     Морской порт  3 мин →',
+  '55    Центральный рынок  8 мин →',
+  '88    Стадион   15 мин →'
+];
+const _bphases = [0, 0.24, 0.54, 0.78, 0.12];
+
+function _drawBoard(time) {
+  const W = 512, H = 256;
+  bctx.fillStyle = '#001513'; bctx.fillRect(0, 0, W, H);
+  bctx.strokeStyle = '#22d3c555'; bctx.lineWidth = 4;
+  bctx.strokeRect(4, 4, W - 8, H - 8);
+
+  // Title
+  const ta = 0.25 + 0.75 * Math.max(0, Math.sin(time * 2.8));
+  bctx.fillStyle = `rgba(34,211,197,${ta})`;
+  bctx.font = 'bold 50px monospace'; bctx.textAlign = 'center'; bctx.textBaseline = 'top';
+  bctx.fillText('РАСПИСАНИЕ', W / 2, 16);
+  bctx.strokeStyle = `rgba(34,211,197,${ta * 0.5})`;
+  bctx.lineWidth = 2;
+  bctx.beginPath(); bctx.moveTo(18, 78); bctx.lineTo(W - 18, 78);
+  bctx.stroke();
+
+  // Scroll lines
+  bctx.font = '23px monospace'; bctx.textAlign = 'left';
+  const lh = (H - 96) / 5;
   for (let i = 0; i < 5; i++) {
-    const y = 30 + i * 20;
-    const offset = (board_phase * 256 + i * 50) % 256;
-    boardCtx.fillStyle = '#1c1236';
-    boardCtx.fillRect(offset, y, 100, 12);
-    boardCtx.fillRect(offset - 100, y, 100, 12);
+    const ph = (_bphases[i] + time * 0.22) % 1;
+    const tw = bctx.measureText(_lines[i] + '     ' + _lines[i]).width;
+    const tx = -ph * tw + 60 + Math.sin(time * 0.6 + i * 2.1) * 2;
+    bctx.fillStyle = `rgba(10,160,140,0.92)`; bctx.fillText(_lines[i].repeat(2).substring(0, _lines[i].length * 2), tx, 90 + i * lh + 6);
   }
   boardTex.needsUpdate = true;
 }
 
-function updateDrops(dt) {
-  const posAttr = dropGeo.attributes.position;
-  for (let i = 0; i < dropCount; i++) {
-    dropWorldPos[i].y -= 1.90 * dt;
-    if (dropWorldPos[i].y < frameToWorld(0.5, 0.16, -4.9).y) {
-      dropWorldPos[i].y = frameToWorld(0.5, 0.60, -4.9).y;
-    }
-    posAttr.array[i * 3] = dropWorldPos[i].x;
-    posAttr.array[i * 3 + 1] = dropWorldPos[i].y;
-    posAttr.array[i * 3 + 2] = dropWorldPos[i].z;
-  }
-  posAttr.needsUpdate = true;
+/* ======================================================================
+   Warm lamp  under canopy, u=0.62 v=0.14 (0.13×0.06), opacity 0.9
+   ====================================================================== */
+const lpC = _world(-5, 0.62, 0.14);
+const lpW = 0.13 * f5.w;   // 1.94
+const lpH = 0.06 * f5.h;   // 0.50
+lampMesh = new THREE.Mesh(
+  new THREE.BoxGeometry(lpW, 0.03, lpH),
+  new THREE.MeshBasicMaterial({ color: C.warm, transparent: true, opacity: 0.9 })
+).translateX(lpC.x).translateY(lpC.y).translateZ(-5.25);
+scene.add(lampMesh);
 
-  const rainAttr = rainGeo.attributes.position;
-  for (let i = 0; i < dropCount; i++) {
-    rainWorldPos[i].y -= (1.90 / 3) * dt;
-    if (rainWorldPos[i].y < frameToWorld(0.5, 0.16, -12).y) {
-      rainWorldPos[i].y = frameToWorld(0.5, 0.60, -12).y;
-    }
-    rainAttr.array[i * 3] = rainWorldPos[i].x;
-    rainAttr.array[i * 3 + 1] = rainWorldPos[i].y;
-    rainAttr.array[i * 3 + 2] = rainWorldPos[i].z;
-  }
-  rainAttr.needsUpdate = true;
+// housing
+scene.add(Object.assign(new THREE.Mesh(
+  new THREE.BoxGeometry(lpW * 1.1, 0.06, lpH * 1.2),
+  new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.8 })
+), { position: new THREE.Vector3(lpC.x, lpC.y + 0.04, -5.25) }));
+
+// warm point light
+const warmPt = new THREE.PointLight(C.warm, 5, 9, 1.4);
+warmPt.position.set(lpC.x, lpC.y - 0.2, -4.8);
+scene.add(warmPt);
+
+// warm halo
+const warmHalo = Object.assign(new THREE.Mesh(
+  new THREE.PlaneGeometry(0.20 * f5.w, 0.10 * f5.h),
+  new THREE.MeshBasicMaterial({ color: C.warm, transparent: true, opacity: 0.08,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide })
+), { position: new THREE.Vector3(lpC.x, lpC.y - 0.1, -5.3) });
+scene.add(warmHalo);
+
+/* ======================================================================
+   Neon sign (raspberry) behind glass, u=0.58 v=0.24 (0.30×0.06)
+   ====================================================================== */
+const nnC = _world(-5, 0.58, 0.24);
+const nnW = 0.30 * f5.w;   // 4.48
+const nnH = 0.06 * f5.h;   // 0.50
+
+// Main neon strip
+scene.add(Object.assign(new THREE.Mesh(
+  new THREE.BoxGeometry(nnW, nnH, 0.04),
+  new THREE.MeshBasicMaterial({ color: C.neon })
+), { position: new THREE.Vector3(nnC.x, nnC.y, -5.02) }));
+
+// Neon glow (additive)
+scene.add(Object.assign(new THREE.Mesh(
+  new THREE.PlaneGeometry(nnW * 3, nnH * 5),
+  new THREE.MeshBasicMaterial({ color: C.neon, transparent: true, opacity: 0.09,
+    blending: THREE.AdditiveBlending, depthWrite: false })
+), { position: new THREE.Vector3(nnC.x, nnC.y, -5.05) }));
+
+// Second softer halo
+scene.add(Object.assign(new THREE.Mesh(
+  new THREE.PlaneGeometry(nnW * 5, nnH * 7),
+  new THREE.MeshBasicMaterial({ color: C.neon, transparent: true, opacity: 0.03,
+    blending: THREE.AdditiveBlending, depthWrite: false })
+), { position: new THREE.Vector3(nnC.x, nnC.y, -5.07) }));
+
+// Neon point light inside shelter
+const neonPt = new THREE.PointLight(C.neon, 2.5, 12, 2);
+neonPt.position.set(nnC.x, nnC.y, -7);
+scene.add(neonPt);
+
+/* ======================================================================
+   Bench  – under glass, u=0.5 v=0.66 (0.30×0.05)
+   ====================================================================== */
+const bnC = _world(-5, 0.5, 0.66);   // x=0, y≈-1.34
+const bnW = 0.30 * f5.w;             // 4.48
+// Bench seat sits near ground level
+const bm = new THREE.MeshStandardMaterial({ color: C.night, roughness: 0.85 });
+// Seat: width=4.5, height=0.12, depth=0.7
+scene.add(Object.assign(new THREE.Mesh(
+  new THREE.BoxGeometry(4.4, 0.12, 0.7),
+  bm
+), { position: new THREE.Vector3(0, gndY - 0.05, -5.08) }));
+// Bench legs
+const legMat = new THREE.MeshStandardMaterial({ color: C.night, roughness: 0.6, metalness: 0.3 });
+const legGeo = new THREE.BoxGeometry(0.08, 0.08, 0.08);
+[[-1.8, -5.12], [1.8, -5.12], [-1.8, -5.02], [1.8, -5.02]].forEach(([lx, lz]) => {
+  scene.add(Object.assign(new THREE.Mesh(legGeo, legMat), { position: new THREE.Vector3(lx, gndY + 0.02, lz) }));
+});
+
+/* ======================================================================
+   Ground  – asphalt from 62 % height down, z = −8
+   ====================================================================== */
+const gndY = -1.0;                       // at z=-5 → v≈0.62  (floor start)
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 100),
+  new THREE.MeshStandardMaterial({ color: C.night, roughness: 0.95 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.set(0, gndY, -40);
+scene.add(ground);
+
+/* Back wall of shelter */
+scene.add(Object.assign(new THREE.Mesh(
+  new THREE.PlaneGeometry(bnW, gCY - gndY + 3),
+  new THREE.MeshStandardMaterial({ color: new THREE.Color(C.night).multiplyScalar(0.6), roughness: 0.9 })
+), { position: new THREE.Vector3(0, (gCY + gndY) / 2 + 0.3, -8.5) }));
+
+/* ======================================================================
+   Puddles  – three, 0.18×0.04, v=0.90, neon colour, opacity 0.35
+   ====================================================================== */
+// Position puddles on ground near bottom of screen
+const puddlePositions = [
+  { x: -2.5, z: -7.0 },
+  { x: 0.0,  z: -6.0 },
+  { x: 2.8,  z: -8.5 }
+];
+const puddleGeometries = [];
+puddlePositions.forEach(p => {
+  const pm = new THREE.Mesh(
+    new THREE.CircleGeometry(0.8, 32),
+    new THREE.MeshBasicMaterial({
+      color: C.neon, transparent: true, opacity: 0.35,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    })
+  );
+  pm.rotation.x = -Math.PI / 2;
+  pm.position.set(p.x, gndY - 0.01, p.z);
+  scene.add(pm);
+  puddleGeometries.push(pm);
+});
+
+/* ======================================================================
+   Drops  – 56 pieces, 6 px, z = −4.9, speed 1.90 units/s
+   ====================================================================== */
+const dropZ = -4.9;
+const dFr = _frustum(dropZ);
+const dDropSize = (6 / 1080) * dFr.h;   // world size for 6 px at z=-4.9
+
+const dropData = [];          // {x, y0, phase}
+for (let i = 0; i < 56; i++) {
+  const x = -gW * 0.48 + _rng() * gW * 0.96;
+  const y0 = gCY - gH * 0.48 + _rng() * gH * 0.96;
+  dropData.push({ x, y0, phase: _rng() });
 }
 
-// API
+const dropSpriteMat = new THREE.SpriteMaterial({
+  color: C.drop, transparent: true, opacity: 0.7
+});
+const drops = [];
+for (let i = 0; i < 56; i++) {
+  const s = new THREE.Sprite(dropSpriteMat);
+  s.position.set(dropData[i].x, dropData[i].y0, dropZ);
+  s.scale.set(dDropSize, dDropSize, 1);
+  scene.add(s);
+  drops.push(s);
+}
+
+/* Rain – same 56 positions, z = −12, 1/3 speed, streaks */
+const rainZ = -12;
+const rFr = _frustum(rainZ);
+const rDropSize = (4 / 1080) * rFr.h;
+const rainMat = new THREE.SpriteMaterial({
+  color: C.drop, transparent: true, opacity: 0.25
+});
+const rains = [];
+for (let i = 0; i < 56; i++) {
+  const s = new THREE.Sprite(rainMat);
+  s.position.set(dropData[i].x, gCY - gH * 0.42, rainZ);
+  s.scale.set(rDropSize, rDropSize * 3, 1);
+  scene.add(s);
+  rains.push(s);
+}
+
+/* ======================================================================
+   Additional lighting
+   ====================================================================== */
+const ambient = new THREE.AmbientLight(0x111122, 0.35);
+scene.add(ambient);
+scene.add(Object.assign(new THREE.PointLight(0x222244, 0.4, 20), { position: new THREE.Vector3(-3, 1.5, -6) }));
+
+/* ======================================================================
+   Animation
+   ====================================================================== */
+let time = 0;
+
+const gYmin = gCY - gH * 0.48;
+const gYmax = gCY + gH * 0.48;
+
 window.__step = function(dt) {
-  t += dt;
-  board_phase = (board_phase + dt * 0.5) % 1.0;
-  updateBoard();
-  updateDrops(dt);
-  camera.position.x = Math.sin(t * 1.0) * 0.034;
-  renderer.render(scene, camera);
-  return window.__probe();
-};
+  time += dt;
 
-window.__probe = function() {
-  return {
-    t: t.toFixed(4),
-    objects: objectNames,
-    board_phase: board_phase.toFixed(4)
-  };
-};
+  // camera wobble (small rotation around X)
+  camera.rotation.x = Math.sin(time * 0.7) * 0.034;
 
-// Initial render
-window.__step(0);
-window.__ready = true;
-</script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
+  // ── drops ──
+  for (let i = 0; i < 56; i++) {
+    const dp = dropData[i];
+    const dist = (time * 1.90 + dp.phase * gH) % (gH + 2) - 1;
+    const ny = gYmax - dist;
+    drops[i].position.y = Math.max(gYmin, ny);
+    drops[i].position.x = dp.x + Math.sin(time * 3 + i * 1.7) * 0.003;
   }
 
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
+  // ── rain (1/3 speed) ──
+  for (let i = 0; i < 56; i++) {
+    const dp = dropData[i];
+    const dist = (time * 1.90 / 3 + dp.phase * 80) % (gH + 4) - 2;
+    rains[i].position.y = Math.max(gYmin - 0.3, gYmax + 0.8 - dist);
+    rains[i].position.x = dp.x + Math.sin(time * 1.5 + i) * 0.005;
+  }
 
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
+  // ── board ──
+  _drawBoard(time);
+
+  // ── board halo brightness ──
+  _boardHaloMat.opacity = 0.05 + Math.abs(Math.sin(time * 2.8)) * 0.05;
+
+  // ── neon flicker ──
+  const nf = 0.82 + 0.18 * Math.max(0, Math.sin(time * 2.6 + 0.3))
+    + 0.06 * Math.max(0, Math.sin(time * 13.5 + 1));
+  neonPt.intensity = 2.2 * nf;
+
+  // ── warm lamp flicker ──
+  warmPt.intensity = 4.5 + Math.sin(time * 1.2) * 0.3;
+
+  // ── puddle pulse ──
+  puddleGeometries.forEach((p, i) => {
+    p.material.opacity = 0.28 + Math.sin(time * 0.8 + i * 2.1) * 0.09;
+    p.scale.set(1 + Math.sin(time * 0.5 + i) * 0.05, 1 + Math.sin(time * 0.5 + i) * 0.05, 1);
   });
-})();
+};
+
+/* ======================================================================
+   Probe
+   ====================================================================== */
+window.__probe = function() {
+  const board_phase = _bphases.map(p => ((p + time * 0.22) % 1).toFixed(4));
+  const objects = scene.children.map(o => ({
+    type: o.type,
+    position: [o.position.x, o.position.y, o.position.z],
+    color: o.material && o.material.color ? o.material.color.getHexString() : null
+  }));
+  return { t: time.toFixed(4), objects, board_phase };
+};
+
+/* ======================================================================
+   Initial frame  →  __ready = true
+   ====================================================================== */
+_drawBoard(0);
+renderer.render(scene, camera);
+window.__ready = true;
+
 </script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-24 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

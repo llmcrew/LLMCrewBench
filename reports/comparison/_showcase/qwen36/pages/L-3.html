@@ -1,180 +1,236 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8">
-  <style>
-    body { margin: 0; overflow: hidden; background: #0a0a24; }
-    canvas { display: block; }
-  </style>
+<meta charset="utf-8">
+<title>Mandala</title>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
 <body>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.js"
+  }
+}
+</script>
 <script type="module">
 const THREE = window.THREE;
 
-// Константы сцены
-const H = 6.627;
-const R_core = 0.06 * H;
-const R_out = 0.34 * H;
-const R_in = 0.1 * H;
-const R_mid = 0.2 * H;
-const W1 = 0.03 * H;
-const W2 = 0.042 * H;
-const R_tip = 0.022 * H;
-const R_ring1 = 0.16 * H;
-const R_ring2 = 0.34 * H;
-const T_ring1 = 0.012 * H;
-const T_ring2 = 0.006 * H;
+// ── constants ──────────────────────────────────────────────
+const HR  = 6.627;           // frame height at mandala plane (z=0)
+const W   = 1920;
+const H   = 1080;
+const PI2 = Math.PI * 2;
 
-const L1 = R_out - R_in;
-const L2 = R_mid - R_in;
-const Y1 = R_in + L1 / 2;
-const Y2 = R_in + L2 / 2;
-const Y_tip = R_out;
+// palette
+const C_BG    = new THREE.Color('#0a0a24');
+const C_GOLD  = new THREE.Color('#ffd257');
+const C_PINK  = new THREE.Color('#ff3aa8');
+const C_CYAN  = new THREE.Color('#2ee6ff');
 
-// Сцена и камера
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a0a24);
+// scale factors from spec
+const coreR       = 0.06 * HR;       // 0.39762 — core disc radius
+const coreThick   = 0.004 * HR;      // 0.0265  — torus tube on core
+const coreHubH    = 0.08 * HR;       // 0.5302  — central cylinder height
 
-const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 100);
+const rayMinR     = 0.10 * HR;       // 0.6627
+const rayMaxR     = 0.34 * HR;       // 2.25318
+const rayW        = 0.03 * HR;       // 0.19881
+const rayLen      = rayMaxR - rayMinR; // 1.59048
+
+const tipR        = 0.022 * HR;      // 0.145794
+const tipThick    = 0.018 * HR;      // 0.1193  — cylinder thickness for tips
+
+const s2MinR      = 0.10 * HR;       // 0.6627
+const s2MaxR      = 0.20 * HR;       // 1.3254
+const s2W         = 0.042 * HR;      // 0.278334
+const s2Len       = s2MaxR - s2MinR;  // 0.6627
+
+const ring1R      = 0.16 * HR;       // 1.06032
+const ring1TubeR  = 0.012 * HR;      // 0.079524
+const ring2R      = 0.34 * HR;       // 2.25318
+const ring2TubeR  = 0.006 * HR;      // 0.039762
+
+// ── scene / camera / renderer ──────────────────────────────
+const scene   = new THREE.Scene();
+scene.background = C_BG;
+
+const camera  = new THREE.PerspectiveCamera(45, W / H, 0.1, 100);
 camera.position.set(0, 0, 8);
 camera.lookAt(0, 0, 0);
 
-// Рендерер
 const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
 renderer.setPixelRatio(1);
-renderer.setSize(800, 600, false);
+renderer.setSize(W, H, false);
 document.body.appendChild(renderer.domElement);
 
-// Группа мандалы
+// ── materials (basic, double-sided — no lights needed) ────
+const matGold  = new THREE.MeshBasicMaterial({ color: C_GOLD, side: THREE.DoubleSide });
+const matPink  = new THREE.MeshBasicMaterial({ color: C_PINK, side: THREE.DoubleSide });
+const matCyan  = new THREE.MeshBasicMaterial({ color: C_CYAN, side: THREE.DoubleSide });
+
+// ── core: disk + torus ring + small central cylinder ───────
+const coreMesh = new THREE.Mesh(
+    new THREE.CircleGeometry(coreR, 48),
+    matGold
+);
+coreMesh.name = 'core';
+
+const coreRingMesh = new THREE.Mesh(
+    new THREE.TorusGeometry(coreR * 0.92, coreThick, 8, 64),
+    matGold
+);
+coreRingMesh.name = 'coreRing';
+
+const coreCylinder = new THREE.Mesh(
+    new THREE.CylinderGeometry(coreR * 0.3, coreR * 0.3, coreHubH, 32),
+    matGold
+);
+coreCylinder.rotation.x = Math.PI / 2;      // axis toward camera
+coreCylinder.name = 'coreCylinder';
+
+// ── wheel (the rotating group) ─────────────────────────────
 const wheel = new THREE.Group();
 wheel.name = 'wheel';
 
-// Материалы (без света используем Basic)
-const matGold = new THREE.MeshBasicMaterial({ color: 0xffd257, side: THREE.DoubleSide });
-const matPink = new THREE.MeshBasicMaterial({ color: 0xff3aa8, side: THREE.DoubleSide });
-const matCyan = new THREE.MeshBasicMaterial({ color: 0x2ee6ff, side: THREE.DoubleSide });
-
-// Ядро
-const coreMesh = new THREE.Mesh(new THREE.CircleGeometry(R_core, 32), matGold.clone());
-coreMesh.name = 'core';
-wheel.add(coreMesh);
-
-const coreTorus = new THREE.Mesh(new THREE.TorusGeometry(R_core, 0.03, 16, 32), matGold.clone());
-wheel.add(coreTorus);
-
-// Группа лучей
+// — main petals (12 flat planes, alternating pink/cyan) ───
 const petals = new THREE.Group();
 petals.name = 'petals';
 
-const geo1 = new THREE.PlaneGeometry(W1, L1);
-const geo2 = new THREE.PlaneGeometry(W2, L2);
-const geoTip = new THREE.CircleGeometry(R_tip, 16);
-
 for (let i = 0; i < 12; i++) {
-  const angle1 = (i * 30) * Math.PI / 180;
-  const mat1 = (i % 2 === 0) ? matPink.clone() : matCyan.clone();
+    const angle = (i * 30) * Math.PI / 180;
+    const petalColor = (i % 2 === 0) ? matPink : matCyan;
 
-  const p1 = new THREE.Mesh(geo1, mat1);
-  p1.position.y = Y1;
-  p1.rotation.z = angle1;
-  petals.add(p1);
+    // flat blade — PlaneGeometry
+    const blade = new THREE.Mesh(
+        new THREE.PlaneGeometry(rayW, rayLen),
+        petalColor
+    );
+    blade.position.set(
+        (rayMinR + rayLen / 2) * Math.cos(angle),
+        (rayMinR + rayLen / 2) * Math.sin(angle),
+        0
+    );
+    blade.rotation.z = angle;
+    blade.name = 'ray_' + i;
+    petals.add(blade);
 
-  const tip1 = new THREE.Mesh(geoTip, mat1);
-  tip1.position.y = Y_tip;
-  tip1.rotation.z = angle1;
-  petals.add(tip1);
-
-  const angle2 = (i * 30 + 15) * Math.PI / 180;
-  const p2 = new THREE.Mesh(geo2, matGold.clone());
-  p2.position.y = Y2;
-  p2.rotation.z = angle2;
-  petals.add(p2);
+    // tip — thin CylinderGeometry (circular disc viewed from front)
+    const tip = new THREE.Mesh(
+        new THREE.CylinderGeometry(tipR, tipR, tipThick, 24),
+        petalColor
+    );
+    tip.position.set(
+        rayMaxR * Math.cos(angle),
+        rayMaxR * Math.sin(angle),
+        0
+    );
+    tip.rotation.x = Math.PI / 2;
+    tip.name = 'tip_' + i;
+    petals.add(tip);
 }
-wheel.add(petals);
 
-// Кольца
-const ring1 = new THREE.Mesh(new THREE.TorusGeometry(R_ring1, T_ring1, 16, 64), matGold.clone());
-wheel.add(ring1);
-const ring2 = new THREE.Mesh(new THREE.TorusGeometry(R_ring2, T_ring2, 16, 64), matCyan.clone());
-wheel.add(ring2);
+// — secondary petals (12, shifted 15°, gold, fills gaps) ──
+for (let i = 0; i < 12; i++) {
+    const angle = ((i * 30) + 15) * Math.PI / 180;
 
+    const blade = new THREE.Mesh(
+        new THREE.PlaneGeometry(s2W, s2Len),
+        matGold
+    );
+    blade.position.set(
+        (s2MinR + s2Len / 2) * Math.cos(angle),
+        (s2MinR + s2Len / 2) * Math.sin(angle),
+        0
+    );
+    blade.rotation.z = angle;
+    blade.name = 'ray2_' + i;
+    petals.add(blade);
+}
+
+// — outer decorative tori on petals (at each outer tip) ──
+for (let i = 0; i < 12; i++) {
+    const angle = (i * 30) * Math.PI / 180;
+    const ringMat = (i % 2 === 0) ? matGold : matGold;  // decorative gold ring
+
+    const torus = new THREE.Mesh(
+        new THREE.TorusGeometry(tipR * 0.5, 0.004 * HR, 8, 16),
+        ringMat
+    );
+    torus.position.set(
+        rayMaxR * Math.cos(angle),
+        rayMaxR * Math.sin(angle),
+        0
+    );
+    torus.name = 'petalTorus_' + i;
+    petals.add(torus);
+}
+
+// — decorative small cylinders between some main rays ──
+const cylCount = 12;
+for (let i = 0; i < cylCount; i++) {
+    if (i % 3 !== 0) continue;  // every 3rd ray gets a small cylinder
+    const angle = (i * 30) * Math.PI / 180;
+    const cylR = 0.012 * HR;
+    const cylH = rayLen * 0.3;
+
+    const cyl = new THREE.Mesh(
+        new THREE.CylinderGeometry(cylR, cylR, cylH, 12),
+        matGold
+    );
+    cyl.position.set(
+        (rayMinR + rayLen * 0.7) * Math.cos(angle),
+        (rayMinR + rayLen * 0.7) * Math.sin(angle),
+        0
+    );
+    cyl.rotation.x = Math.PI / 2;
+    cyl.name = 'decoCyl_' + i;
+    petals.add(cyl);
+}
+
+// — rings ────────────────────────────────────────────────
+const ringInner = new THREE.Mesh(
+    new THREE.TorusGeometry(ring1R, ring1TubeR, 16, 64),
+    matGold
+);
+ringInner.name = 'ringInner';
+
+const ringOuter = new THREE.Mesh(
+    new THREE.TorusGeometry(ring2R, ring2TubeR, 12, 64),
+    matCyan
+);
+ringOuter.name = 'ringOuter';
+
+// ── assemble into wheel ──────────────────────────────────
+wheel.add(coreMesh, coreRingMesh, coreCylinder, petals, ringInner, ringOuter);
 scene.add(wheel);
 
-// Анимация и состояние
+// ── initial render (t = 0, no rotation) ──────────────────
+renderer.render(scene, camera);
+
+// ── animation: wheel rotates on Z ────────────────────────
 let t = 0;
 
-window.__step = function(dt) {
-  t += dt;
-  wheel.rotation.z = 0.2014 * t;
-  return window.__probe();
-};
-
-window.__probe = function() {
-  const angle = ((wheel.rotation.z * 180 / Math.PI) % 360 + 360) % 360;
-  const objects = [];
-  scene.traverse(obj => { if (obj.name) objects.push(obj.name); });
-  return {
-    t: parseFloat(t.toFixed(4)),
-    objects: objects,
-    angle: parseFloat(angle.toFixed(4))
-  };
-};
-
-function render() {
-  renderer.render(scene, camera);
-  window.__ready = true;
+function probe() {
+    const angleDeg = wheel.rotation.z * 180 / Math.PI;
+    const objects = [];
+    wheel.traverse(function(obj) { if (obj.name) objects.push(obj.name); });
+    return {
+        t: parseFloat(t.toFixed(4)),
+        objects: objects,
+        angle: parseFloat(angleDeg.toFixed(4))
+    };
 }
 
-// Первый кадр (t = 0)
-render();
+window.__step = function(dt) {
+    t += dt;
+    wheel.rotation.z = 0.2014 * t;
+    renderer.render(scene, camera);
+    return probe();
+};
+
+window.__probe = probe;
+window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>Qwen3.6-35B-A3B · L-3 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>

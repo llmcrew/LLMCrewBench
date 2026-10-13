@@ -1,10 +1,11 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
 <meta charset="utf-8">
+<title>Звёздное небо над горами</title>
 <style>
-body{margin:0;overflow:hidden;background:#000}
-canvas{display:block}
+  html, body { margin: 0; padding: 0; background: #05040f; }
+  canvas { display: block; }
 </style>
 <script src='../../../_vendor/three.global.js'></script>
 </head>
@@ -12,199 +13,206 @@ canvas{display:block}
 <script type="module">
 const THREE = window.THREE;
 
-const W=800,H=600,FOV=45,ASPECT=W/H,CAM_D=10.0;
-const HALF_H=Math.tan(FOV*0.5*Math.PI/180)*CAM_D;
-const HALF_W=HALF_H*ASPECT;
-const PX=2*HALF_H/H;
+// ---------- Камера и кадр ----------
+// PerspectiveCamera(45, 800/600, 0.1, 200), точка (0,0,10), смотрит в начало.
+// Полувысота кадра на дистанции 10: 10 * tan(22.5°) ≈ 4.14214
+const FOV = 45, ASPECT = 800 / 600, NEAR = 0.1, FAR = 200;
+const CAM_Z = 10.0;
+const HALF_H = CAM_Z * Math.tan(THREE.MathUtils.degToRad(FOV / 2)); // ≈ 4.142
+const FR_W = 2 * HALF_H * ASPECT;   // 11.0457 — ширина «кадра» по спеке
+const FR_H = 2 * HALF_H;            // 8.2843
+const PX = FR_H / 1080;             // сценная величина 1 px кадра 1920x1080
 
-function fxW(fx){return(fx-0.5)*2*HALF_H*ASPECT}
-function fyW(fy){return(0.5-fy)*2*HALF_H}
+function fx2x(fx) { return (fx - 0.5) * 2 * HALF_H * ASPECT; }
+function fy2y(fy) { return (0.5 - fy) * 2 * HALF_H; }
 
-let s=219090;
-function rng(){s=(1664525*s+1013904223)%4294967296;return s/4294967296}
+// ---------- Детерминированный генератор ----------
+// s — целое, S0 = 219090, s = (1664525*s + 1013904223) % 4294967296, u = s / 4294967296
+let rs = 219090;
+function rnd() {
+  rs = (1664525 * rs + 1013904223) % 4294967296;
+  return rs / 4294967296;
+}
 
-const renderer=new THREE.WebGLRenderer({preserveDrawingBuffer:true});
+// ---------- Рендерер ----------
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: false });
 renderer.setPixelRatio(1);
-renderer.setSize(W,H,false);
+renderer.setSize(1920, 1080, false);
 document.body.appendChild(renderer.domElement);
 
-const camera=new THREE.PerspectiveCamera(FOV,ASPECT,0.1,200);
-camera.position.set(0,0,CAM_D);
-camera.lookAt(0,0,0);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, NEAR, FAR);
+camera.position.set(0, 0, CAM_Z);
+camera.lookAt(0, 0, 0);
 
-const scene=new THREE.Scene();
-
-// Sky
-const sc=document.createElement('canvas');sc.width=2;sc.height=512;
-const sx=sc.getContext('2d');
-const sg=sx.createLinearGradient(0,0,0,512);
-sg.addColorStop(0,'#090722');sg.addColorStop(1,'#150b38');
-sx.fillStyle=sg;sx.fillRect(0,0,2,512);
-const skyTex=new THREE.CanvasTexture(sc);
-const sky=new THREE.Mesh(
-  new THREE.PlaneGeometry(2*HALF_W,2*HALF_H),
-  new THREE.MeshBasicMaterial({map:skyTex})
+// ---------- Небо: вертикальный градиент #090722 (верх) → #150b38 (горизонт) ----------
+const skyTexData = new Uint8Array(1 * 256 * 4);
+const topC = { r: 0x09, g: 0x07, b: 0x22 };
+const botC = { r: 0x15, g: 0x0b, b: 0x38 };
+for (let v = 0; v < 256; v++) {
+  const f = v / 255; // 0 — низ (горизонт), 1 — верх
+  skyTexData[v * 4 + 0] = Math.round(botC.r + (topC.r - botC.r) * f);
+  skyTexData[v * 4 + 1] = Math.round(botC.g + (topC.g - botC.g) * f);
+  skyTexData[v * 4 + 2] = Math.round(botC.b + (topC.b - botC.b) * f);
+  skyTexData[v * 4 + 3] = 255;
+}
+const skyTex = new THREE.DataTexture(skyTexData, 1, 256, THREE.RGBAFormat);
+skyTex.colorSpace = THREE.SRGBColorSpace;
+skyTex.minFilter = THREE.LinearFilter;
+skyTex.magFilter = THREE.LinearFilter;
+skyTex.needsUpdate = true;
+const sky = new THREE.Mesh(
+  new THREE.PlaneGeometry(FR_W * 3, FR_H * 3, 1, 1),
+  new THREE.MeshBasicMaterial({ map: skyTex, fog: false })
 );
-sky.name='sky';sky.position.z=-0.01;sky.renderOrder=0;
+sky.name = 'sky';
+sky.position.z = -4;
 scene.add(sky);
 
-// Mountains
-const hts=[0.395,0.367,0.438,0.144,0.242,0.229,0.420,0.260,0.363];
-const shape=new THREE.Shape();
-shape.moveTo(-HALF_W,-HALF_H);
-for(let i=0;i<9;i++){
-  shape.lineTo(fxW(i/8),fyW(1-hts[i]));
+// ---------- Горы: ломаная по 9 точкам, заливка #00b1d9, имя ridge ----------
+// высоты над нижним краем кадра в долях высоты кадра
+const ridgeFrac = [0.395, 0.367, 0.438, 0.144, 0.242, 0.229, 0.420, 0.260, 0.363];
+const shape = new THREE.Shape();
+shape.moveTo(-FR_W / 2, -HALF_H - 0.05);
+for (let i = 0; i < ridgeFrac.length; i++) {
+  const fx = i / (ridgeFrac.length - 1);
+  const y = -HALF_H + ridgeFrac[i] * FR_H;
+  shape.lineTo(fx2x(fx), y);
 }
-shape.lineTo(HALF_W,-HALF_H);
+shape.lineTo(FR_W / 2, -HALF_H - 0.05);
 shape.closePath();
-const ridge=new THREE.Mesh(
-  new THREE.ShapeGeometry(shape),
-  new THREE.MeshBasicMaterial({color:0x00b1d9})
+const ridge = new THREE.Mesh(
+  new THREE.ShapeGeometry(shape, 8),
+  new THREE.MeshBasicMaterial({ color: 0x00b1d9 })
 );
-ridge.name='ridge';ridge.position.z=0;ridge.renderOrder=1;
+ridge.name = 'ridge';
+ridge.position.z = 0;
 scene.add(ridge);
 
-// Stars
-const N=620;
-const starGeo=new THREE.PlaneGeometry(1,1);
-const starMat=new THREE.MeshBasicMaterial({
-  color:0xf2f6ff,blending:THREE.AdditiveBlending,depthTest:false,transparent:true
+// ---------- Звёзды: InstancedMesh, 620 четырёхугольника, имя stars ----------
+const N_STARS = 620;
+const starGeo = new THREE.PlaneGeometry(1, 1);
+const starMat = new THREE.MeshBasicMaterial({
+  color: 0xf2f6ff,
+  blending: THREE.AdditiveBlending,
+  transparent: true,
+  depthTest: false,
+  depthWrite: false
 });
-const stars=new THREE.InstancedMesh(starGeo,starMat,N);
-stars.name='stars';stars.renderOrder=3;
+const stars = new THREE.InstancedMesh(starGeo, starMat, N_STARS);
+stars.name = 'stars';
+stars.frustumCulled = false;
+stars.position.z = -1.0; // за горами в пространстве, но depthTest: false
 
-const sd=[];
-const dm=new THREE.Object3D();
-for(let i=0;i<N;i++){
-  const u=rng(),u2=rng(),u3=rng(),u4=rng();
-  const sz=(2.0+2.6*u)*PX;
-  const x=fxW(u2),y=fyW(u3*0.72),ph=6.283*u4;
-  sd.push({x,y,sz,ph});
-  dm.position.set(x,y,0.03);
-  dm.scale.set(sz,sz,1);
-  dm.updateMatrix();
-  stars.setMatrixAt(i,dm.matrix);
+const starBase = new Float32Array(N_STARS); // базовый размер в px кадра
+const starX = new Float32Array(N_STARS);
+const starY = new Float32Array(N_STARS);
+const starPh = new Float32Array(N_STARS);
+
+const _m = new THREE.Matrix4();
+const _q = new THREE.Quaternion();
+const _v = new THREE.Vector3();
+const _s = new THREE.Vector3();
+
+for (let i = 0; i < N_STARS; i++) {
+  const u1 = rnd(); // размер
+  const u2 = rnd(); // fx
+  const u3 = rnd(); // fy
+  const u4 = rnd(); // фаза
+  starBase[i] = 2.0 + 2.6 * u1;                 // пиксели кадра
+  starX[i] = fx2x(u2);
+  starY[i] = fy2y(u3 * 0.72);                   // верхние две трети кадра
+  starPh[i] = 6.283 * u4;
 }
-stars.instanceMatrix.needsUpdate=true;
 scene.add(stars);
 
-// Moon
-const mR=0.075*2*HALF_H;
-const moon=new THREE.Mesh(
-  new THREE.CircleGeometry(mR,32),
-  new THREE.MeshBasicMaterial({color:0xffd699})
+// ---------- Луна: диск r = 0.075 высоты кадра, #ffd699, имя moon + аддитивное пятно ----------
+const MOON_FX0 = 0.664, MOON_FY = 0.340;
+const moonR = 0.075 * FR_H; // 0.6213
+const moon = new THREE.Mesh(
+  new THREE.CircleGeometry(moonR, 48),
+  new THREE.MeshBasicMaterial({ color: 0xffd699 })
 );
-moon.name='moon';moon.renderOrder=2;
+moon.name = 'moon';
 
-// Moon glow
-const gc=document.createElement('canvas');gc.width=128;gc.height=128;
-const gx=gc.getContext('2d');
-const gg=gx.createRadialGradient(64,64,0,64,64,64);
-gg.addColorStop(0,'rgba(255,214,153,0.5)');
-gg.addColorStop(0.35,'rgba(255,214,153,0.18)');
-gg.addColorStop(1,'rgba(255,214,153,0)');
-gx.fillStyle=gg;gx.fillRect(0,0,128,128);
-const glowTex=new THREE.CanvasTexture(gc);
-const glowSz=mR*5;
-const glow=new THREE.Mesh(
-  new THREE.PlaneGeometry(glowSz*2,glowSz*2),
-  new THREE.MeshBasicMaterial({map:glowTex,blending:THREE.AdditiveBlending,transparent:true,depthTest:false})
+// мягкое аддитивное свечение вокруг луны
+const glowCanvas = document.createElement('canvas');
+glowCanvas.width = glowCanvas.height = 128;
+const gctx = glowCanvas.getContext('2d');
+const grad = gctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+grad.addColorStop(0.0, 'rgba(255,255,255,1)');
+grad.addColorStop(0.25, 'rgba(255,255,255,0.55)');
+grad.addColorStop(0.55, 'rgba(255,255,255,0.16)');
+grad.addColorStop(1.0, 'rgba(255,255,255,0)');
+gctx.fillStyle = grad;
+gctx.fillRect(0, 0, 128, 128);
+const glowTex = new THREE.CanvasTexture(glowCanvas);
+const glow = new THREE.Mesh(
+  new THREE.PlaneGeometry(moonR * 6.5, moonR * 6.5),
+  new THREE.MeshBasicMaterial({
+    map: glowTex,
+    color: 0xffd699,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    opacity: 0.55,
+    depthWrite: false
+  })
 );
-glow.name='moonGlow';glow.renderOrder=2;
+glow.name = 'moonGlow';
+glow.position.z = -0.05;
 
-let moonFx=0.664,moonFy=0.340,t=0;
+const moonGroup = new THREE.Group();
+moonGroup.add(glow);
+moonGroup.add(moon);
+scene.add(moonGroup);
 
-function updMoon(){
-  const mx=fxW(moonFx),my=fyW(moonFy);
-  moon.position.set(mx,my,0.02);
-  glow.position.set(mx,my,0.015);
-}
-updMoon();
-scene.add(moon);
-scene.add(glow);
+// ---------- Анимация ----------
+let t = 0;
 
-function updStars(){
-  for(let i=0;i<N;i++){
-    const d=sd[i];
-    const sc2=0.5+0.5*Math.sin(d.ph+1.7*t);
-    const sz=d.sz*sc2;
-    dm.position.set(d.x,d.y,0.03);
-    dm.scale.set(sz,sz,1);
-    dm.updateMatrix();
-    stars.setMatrixAt(i,dm.matrix);
+function layoutStars() {
+  for (let i = 0; i < N_STARS; i++) {
+    const tw = 0.5 + 0.5 * Math.sin(starPh[i] + 1.7 * t); // 0.5..1.0 базового размера
+    const sz = starBase[i] * PX * tw;
+    _v.set(starX[i], starY[i], 0);
+    _s.set(sz, sz, 1);
+    _m.compose(_v, _q, _s);
+    stars.setMatrixAt(i, _m);
   }
-  stars.instanceMatrix.needsUpdate=true;
+  stars.instanceMatrix.needsUpdate = true;
 }
 
-updStars();
-renderer.render(scene,camera);
-window.__ready=true;
+function layoutMoon() {
+  const fx = MOON_FX0 + 0.02 * t; // ход луны: 0.02 ширины кадра в секунду
+  moonGroup.position.set(fx2x(fx), fy2y(MOON_FY), 0.1);
+}
 
-window.__step=function(dt){
-  t+=dt;
-  moonFx+=0.02*dt;
-  updStars();
-  updMoon();
-  renderer.render(scene,camera);
+function probe() {
+  const fxMoon = MOON_FX0 + 0.02 * t;
+  return {
+    t: Number(t.toFixed(4)),
+    objects: ['sky', 'ridge', 'stars', 'moon'],
+    moon: Number(fxMoon.toFixed(4))
+  };
+}
+
+window.__step = function (dt) {
+  t += dt;
+  layoutStars();
+  layoutMoon();
+  renderer.render(scene, camera);
   return window.__probe();
 };
 
-window.__probe=function(){
-  const objects=[];
-  scene.traverse(o=>{if(o.name)objects.push(o.name)});
-  return{
-    t:Math.round(t*10000)/10000,
-    objects:objects,
-    moon:Math.round(moonFx*10000)/10000
-  };
+window.__probe = function () {
+  return probe();
 };
+
+// ---------- Первый кадр ----------
+layoutStars();
+layoutMoon();
+window.__ready = false;
+renderer.render(scene, camera);
+window.__ready = true;
 </script>
-
-<script>
-// Сцена играет сама: фиксированный шаг 1/60, чтобы кадры шли ровно и запись
-// видео не зависела от загрузки машины. Отчёт может вмешаться сообщением
-// 'step' (один шаг), 'pause' и 'play' — так работает режим съёмки.
-(() => {
-  const DT = 1 / 60;
-  const step = () => (typeof window.__step === 'function' ? window.__step(DT) : null);
-  let acc = 0;
-  let last = 0;
-  window.__auto = true;
-
-  window.addEventListener('load', () => {
-    // Нулевой шаг даёт первый кадр: некоторые сцены рисуют только по шагу.
-    if (typeof window.__step === 'function') { try { window.__step(0); } catch (e) {} }
-    last = performance.now();
-    requestAnimationFrame(loop);
-  });
-
-  function loop(now) {
-    const elapsed = Math.min(0.2, (now - last) / 1000);
-    last = now;
-    if (window.__auto) {
-      acc += elapsed;
-      while (acc >= DT) { acc -= DT; step(); }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  window.addEventListener('message', (event) => {
-    const cmd = event.data;
-    if (cmd === 'step') { window.__auto = false; acc = 0; step(); }
-    else if (cmd === 'pause') { window.__auto = false; }
-    else if (cmd === 'play') { window.__auto = true; acc = 0; last = performance.now(); }
-    else if (cmd === 'reset') { window.location.reload(); }
-    else return;
-    window.dispatchEvent(new Event('dailybench-step'));
-  });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.target && /INPUT|TEXTAREA/.test(event.target.tagName || '')) return;
-    if (event.key === ' ') { event.preventDefault(); window.__auto = !window.__auto; acc = 0; last = performance.now(); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); window.__auto = false; acc = 0; step(); }
-    if (event.key === 'r' || event.key === 'R' || event.key === 'к' || event.key === 'К') window.location.reload();
-  });
-})();
-</script>
-<div style='position:fixed;z-index:9;left:8px;top:8px;background:#000000b3;color:#c9d1d9;font:12px/1.4 ui-monospace,monospace;padding:4px 8px;border-radius:6px;pointer-events:none'>qwen3.8 · L-9 · пробел — пауза, → — шаг, R — сброс</div></body>
+</body>
 </html>
