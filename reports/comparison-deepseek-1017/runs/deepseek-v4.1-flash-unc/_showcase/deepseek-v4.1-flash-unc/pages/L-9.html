@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Звёздное небо над горами</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ------------------------------------------------------------------ *
+ *  Константы кадра / камеры
+ * ------------------------------------------------------------------ */
+const ASPECT   = 800 / 600;
+const FOV      = 45;
+const DIST     = 10.0;
+const HALF_H   = DIST * Math.tan((FOV * Math.PI / 180) / 2); // 4.1421...
+const FRAME_H  = 2 * HALF_H;
+const FRAME_W  = FRAME_H * ASPECT;
+const PX_WORLD = FRAME_H / 1080;               // мировой размер одного пикселя кадра
+
+const fxF = (fx) => (fx - 0.5) * FRAME_W;
+const fyF = (fy) => (0.5 - fy) * FRAME_H;
+
+/* ------------------------------------------------------------------ *
+ *  Рендерер и сцена
+ * ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 200);
+camera.position.set(0, 0, DIST);
+camera.lookAt(0, 0, 0);
+
+/* ------------------------------------------------------------------ *
+ *  Генератор псевдослучайных чисел (ровно как задано)
+ * ------------------------------------------------------------------ */
+let s = 219090;
+const MOD = 4294967296;
+function rnd() {
+  s = (1664525 * s + 1013904223) % MOD;
+  return s / MOD;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Небо — вертикальный градиент #090722 -> #150b38
+ * ------------------------------------------------------------------ */
+(function buildSky() {
+  const c = document.createElement('canvas');
+  c.width = 4;
+  c.height = 1080;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, 1080);
+  g.addColorStop(0.00, '#090722');
+  g.addColorStop(0.35, '#150b38');
+  g.addColorStop(1.00, '#150b38');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 4, 1080);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+
+  const mat = new THREE.MeshBasicMaterial({ map: tex, depthTest: false, depthWrite: false });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(FRAME_W, FRAME_H), mat);
+  mesh.name = 'sky';
+  mesh.renderOrder = 0;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+})();
+
+/* ------------------------------------------------------------------ *
+ *  Звёзды — InstancedMesh из 620 четырёхугольников
+ *  Порядок обращений к генератору: size, fx, fy, ph  — ровно 4 на звезду
+ * ------------------------------------------------------------------ */
+const STAR_COUNT = 620;
+const stars = new THREE.InstancedMesh(
+  new THREE.PlaneGeometry(1, 1),
+  new THREE.MeshBasicMaterial({
+    color: '#f2f6ff',
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false
+  }),
+  STAR_COUNT
+);
+stars.name = 'stars';
+stars.renderOrder = 1;
+stars.frustumCulled = false;
+scene.add(stars);
+
+const starBase = [];   // мировой базовый размер, позиция, фаза
+const dummy = new THREE.Object3D();
+for (let i = 0; i < STAR_COUNT; i++) {
+  const u1 = rnd();                       // размер
+  const fx = rnd();                       // доля x
+  const fy = rnd() * 0.72;                // верхние две трети кадра
+  const ph = 6.283 * rnd();               // фаза
+  const sizeWorld = (2.0 + 2.6 * u1) * PX_WORLD;
+  starBase.push({ x: fxF(fx), y: fyF(fy), size: sizeWorld, ph });
+}
+
+function updateStars(t) {
+  for (let i = 0; i < STAR_COUNT; i++) {
+    const st = starBase[i];
+    const k = 0.5 + 0.5 * Math.sin(st.ph + 1.7 * t);   // 0.5 .. 1.0
+    const sc = st.size * k;
+    dummy.position.set(st.x, st.y, 0);
+    dummy.scale.set(sc, sc, 1);
+    dummy.updateMatrix();
+    stars.setMatrixAt(i, dummy.matrix);
+  }
+  stars.instanceMatrix.needsUpdate = true;
+}
+updateStars(0);
+
+/* ------------------------------------------------------------------ *
+ *  Горы — силуэт по ломаной из 9 точек, заливка #00b1d9
+ * ------------------------------------------------------------------ */
+const RIDGE_H = [0.395, 0.367, 0.438, 0.144, 0.242, 0.229, 0.420, 0.260, 0.363];
+
+function makeRidge(heights, color, name, renderOrder, gain) {
+  const shape = new THREE.Shape();
+  shape.moveTo(-FRAME_W / 2, -HALF_H);
+  const n = heights.length;
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1) - 0.5) * FRAME_W;
+    const y = -HALF_H + heights[i] * gain * FRAME_H;
+    shape.lineTo(x, y);
+  }
+  shape.lineTo(FRAME_W / 2, -HALF_H);
+  shape.closePath();
+
+  const mat = new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false });
+  const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), mat);
+  mesh.name = name;
+  mesh.renderOrder = renderOrder;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  return mesh;
+}
+
+// дальние слои для объёма — темнее, силуэт выше
+makeRidge(RIDGE_H, '#0a5f80', 'ridgeFar', 2, 1.32);
+makeRidge(RIDGE_H, '#0b7fa3', 'ridgeMid', 3, 1.14);
+// основной силуэт — ровно по заданию
+const ridge = makeRidge(RIDGE_H, '#00b1d9', 'ridge', 4, 1.0);
+
+/* ------------------------------------------------------------------ *
+ *  Луна — диск #ffd699 + тёплое аддитивное пятно
+ * ------------------------------------------------------------------ */
+const MOON_FX0 = 0.664;
+const MOON_FY0 = 0.340;
+const MOON_R   = 0.075 * FRAME_H;
+
+const moon = new THREE.Mesh(
+  new THREE.CircleGeometry(MOON_R, 64),
+  new THREE.MeshBasicMaterial({ color: '#ffd699', depthTest: false, depthWrite: false })
+);
+moon.name = 'moon';
+moon.renderOrder = 6;
+moon.frustumCulled = false;
+scene.add(moon);
+
+(function buildGlow() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+  g.addColorStop(0.00, 'rgba(255,214,153,0.75)');
+  g.addColorStop(0.35, 'rgba(255,190,120,0.28)');
+  g.addColorStop(1.00, 'rgba(255,170,90,0.0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 256, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(MOON_R * 7, MOON_R * 7),
+    new THREE.MeshBasicMaterial({
+      map: tex,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false
+    })
+  );
+  mesh.name = 'moonGlow';
+  mesh.renderOrder = 5;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  window.__moonGlow = mesh;
+})();
+
+function moonX(t) { return MOON_FX0 + 0.02 * t; }
+
+function updateMoon(t) {
+  const x = fxF(moonX(t));
+  const y = fyF(MOON_FY0);
+  moon.position.set(x, y, 0);
+  window.__moonGlow.position.set(x, y, 0);
+}
+updateMoon(0);
+
+/* ------------------------------------------------------------------ *
+ *  Сборка кадра и API
+ * ------------------------------------------------------------------ */
+const objectNames = scene.children.map(o => o.name);
+
+let t = 0;
+
+function render() {
+  renderer.render(scene, camera);
+}
+
+window.__probe = function () {
+  return {
+    t: Number(t.toFixed(4)),
+    objects: objectNames.slice(),
+    moon: Number(moonX(t).toFixed(4))
+  };
+};
+
+window.__step = function (dt) {
+  t += dt;
+  updateStars(t);
+  updateMoon(t);
+  render();
+  return window.__probe();
+};
+
+render();
+window.__ready = true;
+</script>
+</body>
+</html>

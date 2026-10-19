@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><title>night city</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style><script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const W = 1920, H = 1080, FOV = 45;
+const EYE = 8.0, DIST = 26.0;
+const BG = 0x2a1b5c, SIL = 0x0b0b14, MINT = 0x22e0d0, WARM = 0xffb066, EDGE = 0x2f6f8f;
+const PHASE = 0.129, BLINK = 0.500, HAZE_Y = 7.35;
+const HOUSES = [[-6.8, 2.4, 14.8], [-3.7, 2.1, 10.1], [-1.2, 1.6, 10.7], [1.5, 2.3, 14.9], [4.8, 2.6, 13.5], [8.0, 1.6, 10.9]];
+
+const renderer = new THREE.WebGLRenderer({antialias: false, preserveDrawingBuffer: true});
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+renderer.setClearColor(BG);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+// Небо — градиентная плоскость: фон обязан светлеть к горизонту, а не быть
+// однотонной заливкой (иначе кадр вырождается в четыре цвета).
+const frameH = 2 * Math.tan(FOV * Math.PI / 360) * DIST;
+const sky = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 60),
+  new THREE.ShaderMaterial({
+    uniforms: { uTop: {value: new THREE.Color(0x4a2f7a)}, uBottom: {value: new THREE.Color(BG)} },
+    vertexShader: `varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform vec3 uTop; uniform vec3 uBottom; varying vec2 vUv;
+      void main() {
+        gl_FragColor = vec4(mix(uBottom, uTop, smoothstep(0.05, 0.70, vUv.y)), 1.0);
+        #include <colorspace_fragment>
+      }`,
+  })
+);
+sky.name = 'sky';
+sky.position.set(0, 16, -45);
+scene.add(sky);
+
+const camera = new THREE.PerspectiveCamera(FOV, W / H, 0.1, 200);
+camera.position.set(0, EYE, DIST);
+camera.lookAt(0, EYE, 0);
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 120),
+  new THREE.ShaderMaterial({
+    uniforms: { uNear: {value: new THREE.Color(SIL)}, uFar: {value: new THREE.Color(0x141428)} },
+    vertexShader: `varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform vec3 uNear; uniform vec3 uFar; varying vec2 vUv;
+      void main() {
+        gl_FragColor = vec4(mix(uFar, uNear, smoothstep(0.0, 0.65, vUv.y)), 1.0);
+        #include <colorspace_fragment>
+      }`,
+  })
+);
+ground.name = 'street';
+ground.rotation.x = -Math.PI / 2;
+ground.position.set(0, 0, 0);
+scene.add(ground);
+
+const edgeMat = new THREE.LineBasicMaterial({ color: EDGE });
+const cells = [];
+for (let b = 0; b < HOUSES.length; b++) {
+  const [x, w, h] = HOUSES[b];
+  // фасад чуть светлее к низу: тонкая разница оттенков держит кадр живым
+  const shade = new THREE.Color(SIL).offsetHSL(0.0, 0.0, 0.012 * b);
+  const geo = new THREE.BoxGeometry(w, h, 3);
+  const house = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: shade }));
+  house.name = 'house';
+  house.position.set(x, h / 2, 0);
+  scene.add(house);
+  // контур крыши и рёбер: даёт силуэту читаемую линию и добавляет деталей
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat);
+  edges.position.copy(house.position);
+  scene.add(edges);
+  const cols = Math.max(2, Math.floor(w / 0.95));
+  const rows = Math.max(3, Math.floor(h / 1.45));
+  for (let c = 0; c < cols; c++) {
+    for (let r = 0; r < rows; r++) {
+      const wx = x + (c - (cols - 1) / 2) * 0.95;
+      const wy = 1.0 + r * 1.45;
+      cells.push([wx, wy, (b % 2) ? 1 : 0]);
+    }
+  }
+}
+
+const winGeo = new THREE.PlaneGeometry(0.5, 0.7);
+const winMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const windows = new THREE.InstancedMesh(winGeo, winMat, cells.length);
+windows.name = 'windows';
+const lit = [], dim = [];
+const m4 = new THREE.Matrix4();
+for (let i = 0; i < cells.length; i++) {
+  const [x, y, warm] = cells[i];
+  m4.makeTranslation(x, y, 1.56);
+  windows.setMatrixAt(i, m4);
+  const base = new THREE.Color(warm ? WARM : MINT);
+  lit.push(base);
+  dim.push(base.clone().multiplyScalar(0.15));
+  windows.setColorAt(i, base);
+}
+scene.add(windows);
+
+const haze = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 16),
+  new THREE.ShaderMaterial({
+    uniforms: { uColor: {value: new THREE.Color(0x4a5a8a)} },
+    transparent: true, depthWrite: false,
+    vertexShader: `varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform vec3 uColor; varying vec2 vUv;
+      void main() { gl_FragColor = vec4(uColor, 0.22 * (1.0 - abs(vUv.y - 0.35))); }`,
+  })
+);
+haze.name = 'haze';
+haze.position.set(0, HAZE_Y, 14);
+scene.add(haze);
+
+let t = 0;
+const round = (v) => Math.round(v * 1e4) / 1e4;
+const litCount = () => {
+  let n = 0;
+  for (let i = 0; i < cells.length; i++) if (((i * PHASE + t * BLINK) % 1) < 0.78) n++;
+  return n;
+};
+
+window.__step = (dt) => {
+  t += dt;
+  let n = 0;
+  for (let i = 0; i < cells.length; i++) {
+    const on = ((i * PHASE + t * BLINK) % 1) < 0.78;
+    windows.setColorAt(i, on ? lit[i] : dim[i]);
+    if (on) n++;
+  }
+  windows.instanceColor.needsUpdate = true;
+  haze.position.y = HAZE_Y + 0.9 * Math.sin(t * 0.25);
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+window.__probe = () => ({
+  t: round(t),
+  objects: scene.children.map((o) => o.name).filter(Boolean),
+  lit: litCount(),
+  haze_y: round(haze.position.y),
+});
+
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+</body></html>

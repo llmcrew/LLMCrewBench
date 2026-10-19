@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Infinite Tunnel</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0a0612; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// ---------------------------------------------------------------- palette
+const FOG_COLOR   = 0x0a0612;
+const TEAL        = [0.2,    0.8196, 0.7765]; // #33d1c6
+const ORANGE      = [0.8784, 0.4510, 0.2353]; // #e0733c
+const LIGHT_SPOT  = [0.9176, 0.9490, 1.0];    // #eaf2ff
+
+// ---------------------------------------------------------------- constants (verbatim)
+const RING_COUNT  = 34;
+const RING_STEP   = 2.3;
+const RING_START  = -72.0;
+const TUNNEL_LEN  = RING_COUNT * RING_STEP;   // 78.2
+const SPEED       = 7.000;
+
+// ---------------------------------------------------------------- renderer
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------- scene / camera
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(FOG_COLOR);
+scene.fog = new THREE.Fog(FOG_COLOR, 8, 90);
+
+const camera = new THREE.PerspectiveCamera(55, 800 / 600, 0.1, 200);
+camera.position.set(0, 0, 8.0);
+camera.lookAt(0, 0, -1);
+
+// ---------------------------------------------------------------- light at the end of the tunnel
+const spotGeo = new THREE.CircleGeometry(1.2, 48);
+const spotMat = new THREE.MeshBasicMaterial({ color: 0xeaf2ff, fog: false });
+const spot = new THREE.Mesh(spotGeo, spotMat);
+spot.position.set(0, 0, -42.0);
+spot.scale.set(5.0, 5.0, 1.0);
+scene.add(spot);
+
+// ---------------------------------------------------------------- ring shader
+const vert = /* glsl */`
+  varying vec2 vUv;
+  varying float vDepth;
+  void main() {
+    vUv = uv;
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vDepth = -mv.z;
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const frag = /* glsl */`
+  precision highp float;
+  uniform float uPhase;
+  varying vec2 vUv;
+  varying float vDepth;
+
+  void main() {
+    // 4 colour bands around the ring (2 full periods of sin over u)
+    float s = sin(vUv.x * 3.14159 * 4.0 + uPhase);
+    vec3 colour = (s > 0.0)
+      ? vec3(0.2,    0.8196, 0.7765)   // #33d1c6
+      : vec3(0.8784, 0.4510, 0.2353);  // #e0733c
+
+    // light spilling from the tunnel end lights the far rings (moderately)
+    float far = smoothstep(40.0, 68.0, vDepth);
+    colour = mix(colour, vec3(0.9176, 0.9490, 1.0), far * 0.30);
+
+    // near rings emerge out of the dark
+    float near = smoothstep(0.4, 4.0, vDepth);
+    colour *= near;
+
+    // depth fog
+    float fog = 1.0 - exp(-0.046 * vDepth);
+    colour = mix(colour, vec3(0.0392, 0.0235, 0.0706), fog);
+
+    gl_FragColor = vec4(colour, 1.0);
+  }
+`;
+
+// ---------------------------------------------------------------- rings
+const ringGeo = new THREE.TorusGeometry(2.0, 0.34, 10, 48);
+const rings = [];
+const names = [];
+
+for (let i = 0; i < RING_COUNT; i++) {
+  const mult = 1 + 0.16 * Math.sin(i * 0.7);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uPhase: { value: 0.0 } },
+    vertexShader: vert,
+    fragmentShader: frag,
+    fog: false,
+    side: THREE.DoubleSide
+  });
+  const mesh = new THREE.Mesh(ringGeo, mat);
+  mesh.name = 'ring' + i;
+  mesh.userData.i = i;
+  mesh.userData.mult = mult;
+  rings.push(mesh);
+  names.push(mesh.name);
+  scene.add(mesh);
+}
+
+// ---------------------------------------------------------------- animation state
+let t = 0;
+
+function update() {
+  for (let i = 0; i < RING_COUNT; i++) {
+    const mesh = rings[i];
+    let z = RING_START + (((i * RING_STEP + t * SPEED) % TUNNEL_LEN) + TUNNEL_LEN) % TUNNEL_LEN;
+    mesh.position.z = z;
+    const s = Math.max(1, (4 - z) / 12);
+    const r = s * mesh.userData.mult;
+    mesh.scale.set(r, r, s);
+    mesh.material.uniforms.uPhase.value = 0.4 * t + 0.4 * i;
+  }
+}
+
+function draw() {
+  renderer.render(scene, camera);
+}
+
+// ---------------------------------------------------------------- probe
+function ringZ(i) {
+  const z = RING_START + (((i * RING_STEP + t * SPEED) % TUNNEL_LEN) + TUNNEL_LEN) % TUNNEL_LEN;
+  return z;
+}
+
+window.__probe = function () {
+  return {
+    t: t.toFixed(4),
+    objects: names.slice(),
+    speed: SPEED,
+    z: [ringZ(0).toFixed(4), ringZ(1).toFixed(4), ringZ(2).toFixed(4)]
+  };
+};
+
+window.__step = function (dt) {
+  t += dt;
+  update();
+  draw();
+  return window.__probe();
+};
+
+// ---------------------------------------------------------------- init
+update();
+draw();
+window.__ready = true;
+</script>
+</body>
+</html>

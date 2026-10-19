@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Aurora</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #1d1638; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+try {
+
+/* ---------- deterministic LCG ---------- */
+const S0 = 53827;
+let s = S0 >>> 0;
+function nextU() {
+  s = (1664525 * s + 1013904223) % 4294967296;
+  return s / 4294967296;
+}
+
+/* ---------- renderer / scene / camera ---------- */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1d1638);
+
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
+camera.position.set(0, 0, 10.0);
+camera.lookAt(0, 0, 0);
+
+/* half-height of the frame on the z=0 plane at distance 10 */
+const halfH = Math.tan((Math.PI / 180) * (45 / 2)) * 10.0; // ~4.142
+const frameH = halfH * 2.0;
+const frameW = frameH * (800 / 600);
+
+/* ---------- shared curtain texture (64x256) ---------- */
+const cvs = document.createElement('canvas');
+cvs.width = 64;
+cvs.height = 256;
+const ctx = cvs.getContext('2d');
+
+// vertical colour ramp: top magenta -> middle blue -> bottom green
+const vg = ctx.createLinearGradient(0, 0, 0, 256);
+vg.addColorStop(0.00, '#ff20e8');
+vg.addColorStop(0.15, '#ff20e8');
+vg.addColorStop(0.36, '#2197db');
+vg.addColorStop(0.62, '#2197db');
+vg.addColorStop(0.74, '#0dff2e');
+vg.addColorStop(1.00, '#0dff2e');
+ctx.fillStyle = vg;
+ctx.fillRect(0, 0, 64, 256);
+
+// soft side falloff so a strip reads as a curtain, not a rectangle
+const ag = ctx.createLinearGradient(0, 0, 64, 0);
+ag.addColorStop(0.00, 'rgba(0,0,0,0)');
+ag.addColorStop(0.10, 'rgba(0,0,0,0.9)');
+ag.addColorStop(0.50, 'rgba(0,0,0,1)');
+ag.addColorStop(0.90, 'rgba(0,0,0,0.9)');
+ag.addColorStop(1.00, 'rgba(0,0,0,0)');
+ctx.globalCompositeOperation = 'destination-in';
+ctx.fillStyle = ag;
+ctx.fillRect(0, 0, 64, 256);
+ctx.globalCompositeOperation = 'source-over';
+
+const tex = new THREE.CanvasTexture(cvs);
+window.__cvs = cvs;
+window.__scene = scene;
+tex.wrapS = THREE.ClampToEdgeWrapping;
+tex.wrapT = THREE.ClampToEdgeWrapping;
+tex.minFilter = THREE.LinearFilter;
+tex.magFilter = THREE.LinearFilter;
+tex.generateMipmaps = false;
+
+/* ---------- 28 ribbons ---------- */
+const SPEED = 0.35;
+const AMP = 0.05;
+const geo = new THREE.PlaneGeometry(1, 1);
+const ribbons = [];
+
+for (let i = 0; i < 28; i++) {
+  const u = nextU();
+  const v = nextU();
+  const u2 = nextU();
+  const u3 = nextU();
+  const u4 = nextU();
+  const u5 = nextU();
+
+  const w = 0.030 + 0.055 * u;              // fraction of frame width
+  const h = 0.30 + 0.38 * v;                // fraction of frame height
+  const xf = (i + 0.5 + 0.6 * (u2 - 0.5)) / 28 - 0.5; // fraction of frame width
+  const yf = 0.02 + 0.26 * u3;              // fraction of frame height, upward
+  const op = 0.16 + 0.24 * u4;
+  const ph = 0.4 * u5;
+
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthTest: false,
+    opacity: op
+  });
+  mat.color.setRGB(2.5, 2.5, 2.5);
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = 'ribbon_' + (i + 1);
+  mesh.renderOrder = i;
+  const baseX = xf * frameW;
+  const baseY = yf * frameH;
+  const wWorld = w * frameW;
+  const hWorld = h * frameH;
+  mesh.position.set(baseX, baseY, 0);
+  mesh.scale.set(wWorld, hWorld, 1);
+  scene.add(mesh);
+  ribbons.push({ mesh, xf, ph, baseX, baseY, hWorld, wWorld, op });
+}
+
+/* ---------- faint deterministic star field (detail in the sky) ---------- */
+const starCount = 240;
+const starPos = new Float32Array(starCount * 3);
+for (let i = 0; i < starCount; i++) {
+  const a = nextU();
+  const b = nextU();
+  starPos[i * 3 + 0] = (a - 0.5) * frameW * 1.6;
+  starPos[i * 3 + 1] = (b - 0.5) * frameH * 1.6;
+  starPos[i * 3 + 2] = -2.0 - nextU() * 3.0;
+}
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+const starMat = new THREE.PointsMaterial({
+  color: 0xbfd4ff,
+  size: 0.035,
+  sizeAttenuation: true,
+  transparent: true,
+  opacity: 0.7,
+  blending: THREE.AdditiveBlending,
+  depthTest: false,
+  depthWrite: false
+});
+const stars = new THREE.Points(starGeo, starMat);
+stars.renderOrder = -1;
+scene.add(stars);
+
+/* ---------- animation state ---------- */
+let t = 0;
+
+function update(time) {
+  for (const r of ribbons) {
+    const dx = AMP * frameW * Math.sin(2 * Math.PI * SPEED * time - 3.0 * r.xf + r.ph);
+    const hs = r.hWorld * (1 + 0.15 * Math.sin(2 * Math.PI * SPEED * 0.7 * time + r.ph));
+    r.mesh.position.x = r.baseX + dx;
+    r.mesh.scale.y = hs;
+  }
+}
+
+function probe() {
+  return {
+    t: Number(t.toFixed(4)),
+    objects: ribbons.map(r => ({
+      name: r.mesh.name,
+      x: Number(r.mesh.position.x.toFixed(4)),
+      y: Number(r.mesh.position.y.toFixed(4)),
+      w: Number(r.wWorld.toFixed(4)),
+      h: Number(r.mesh.scale.y.toFixed(4)),
+      opacity: Number(r.op.toFixed(4))
+    })),
+    wave: Number((2 * Math.PI * SPEED * t).toFixed(4))
+  };
+}
+
+window.__step = function (dt) {
+  t += dt;
+  update(t);
+  renderer.render(scene, camera);
+  return probe();
+};
+
+window.__probe = probe;
+
+update(0);
+renderer.render(scene, camera);
+window.__ready = true;
+} catch (e) {
+  window.__err = String(e) + ' | ' + (e && e.stack);
+  console.log('AURORA_ERR', window.__err);
+}
+</script>
+</body>
+</html>

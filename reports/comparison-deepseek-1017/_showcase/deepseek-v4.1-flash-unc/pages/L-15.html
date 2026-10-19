@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Vortex streaks</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0b1424; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const N = 1500;
+const HALF_W = 4 / 3;
+const HALF_H = 1;
+
+// ---------- deterministic LCG ----------
+let seed = 765555113 >>> 0;
+function lcg() {
+  seed = (Math.imul(1664525, seed) + 1013904223) >>> 0;
+  return seed / 4294967296;
+}
+function spawnX() { return (lcg() * 2 - 1) * HALF_W; }
+function spawnY() { return lcg() * 2 - 1; }
+
+// ---------- analytic stream function field ----------
+// psi = sum a_i sin(k_i x + m_i y - w_i t + p_i)
+// v = (dpsi/dy, -dpsi/dx) = sum a_i cos(...) (m_i, -k_i)
+const WAVES = [
+  { a: 0.50, k: 1.40, m: 0.90, w: 0.70, p: 0.987 + 0 * 2.1 },
+  { a: 0.35, k: 0.80, m: -1.70, w: 1.10, p: 0.987 + 1 * 2.1 },
+];
+function velocity(x, y, t, out) {
+  let vx = 0, vy = 0;
+  for (let i = 0; i < WAVES.length; i++) {
+    const w = WAVES[i];
+    const c = Math.cos(w.k * x + w.m * y - w.w * t + w.p);
+    vx += w.a * c * w.m;
+    vy += w.a * c * (-w.k);
+  }
+  out[0] = vx; out[1] = vy;
+}
+
+// ---------- renderer / scene / camera ----------
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+renderer.setClearColor(0x0b1424, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b1424);
+
+const camera = new THREE.OrthographicCamera(-4 / 3, 4 / 3, 1, -1, 0.1, 10);
+camera.position.set(0, 0, 2);
+camera.lookAt(0, 0, 0);
+
+// ---------- instanced streaks ----------
+const geo = new THREE.PlaneGeometry(1, 1);
+const mat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+const mesh = new THREE.InstancedMesh(geo, mat, N);
+mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+mesh.frustumCulled = false;
+scene.add(mesh);
+
+const dummy = new THREE.Object3D();
+const col = new THREE.Color();
+
+// sector colors
+const C_CYAN = new THREE.Color(0x28d7e8);
+const C_PINK = new THREE.Color(0xe8399b);
+const C_YELLOW = new THREE.Color(0xf2c53d);
+function sectorColor(angDeg, out) {
+  let a = angDeg;
+  if (a <= -180) a += 360;
+  if (a > 180) a -= 360;
+  if (a < -60) return out.copy(C_CYAN);
+  if (a < 60) return out.copy(C_PINK);
+  return out.copy(C_YELLOW);
+}
+
+const px = new Float32Array(N);
+const py = new Float32Array(N);
+const age = new Float32Array(N);
+for (let i = 0; i < N; i++) {
+  px[i] = spawnX();
+  py[i] = spawnY();
+  age[i] = lcg();
+}
+
+const v = [0, 0];
+let t = 0;
+
+function respawn(i) {
+  px[i] = spawnX();
+  py[i] = spawnY();
+  age[i] = 0;
+}
+
+function updateInstances() {
+  for (let i = 0; i < N; i++) {
+    velocity(px[i], py[i], t, v);
+    const ang = Math.atan2(v[1], v[0]);
+    const a = age[i];
+    const len = 0.090 + (0.040 - 0.090) * a;
+    const bright = 1.0 + (0.25 - 1.0) * a;
+    dummy.position.set(px[i], py[i], 0);
+    dummy.rotation.set(0, 0, ang);
+    dummy.scale.set(0.010, len, 1);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+    sectorColor(ang * 180 / Math.PI, col).multiplyScalar(bright);
+    mesh.setColorAt(i, col);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+}
+
+updateInstances();
+
+// ---------- probe ----------
+function frameFrac(x, y) {
+  return [(x + HALF_W) / (2 * HALF_W), (y + HALF_H) / (2 * HALF_H)];
+}
+function round4(n) { return Math.round(n * 1e4) / 1e4; }
+function __probe() {
+  const parts = [];
+  for (let i = 0; i < 8; i++) {
+    const f = frameFrac(px[i], py[i]);
+    parts.push([round4(f[0]), round4(f[1])]);
+  }
+  velocity(px[0], py[0], t, v);
+  const speed = Math.sqrt(v[0] * v[0] + v[1] * v[1]);
+  return {
+    t: round4(t),
+    objects: ['InstancedMesh:streaks(' + N + ')', 'OrthographicCamera', 'Scene'],
+    particles: parts,
+    speed: round4(speed),
+  };
+}
+
+// ---------- step ----------
+window.__probe = __probe;
+window.__step = function (dt) {
+  t += dt;
+  const step = 0.18 * dt;
+  for (let i = 0; i < N; i++) {
+    velocity(px[i], py[i], t, v);
+    px[i] += v[0] * step;
+    py[i] += v[1] * step;
+    age[i] += dt / 2.6;
+    if (age[i] >= 1 || px[i] < -HALF_W || px[i] > HALF_W || py[i] < -HALF_H || py[i] > HALF_H) {
+      respawn(i);
+    }
+  }
+  updateInstances();
+  renderer.render(scene, camera);
+  return __probe();
+};
+
+renderer.render(scene, camera);
+window.__three = { renderer, scene, camera, mesh, THREE };
+window.__ready = true;
+</script>
+</body>
+</html>

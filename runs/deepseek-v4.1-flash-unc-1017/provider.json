@@ -1,0 +1,6 @@
+{
+  "provider": "openai-compatible",
+  "base_url": "https://giga-osa-deepseek-v41-flsh-unc1017.apps.evodagpup.sberdevices.ru/v1",
+  "model": "deepseek-v4.1-flash-uncensored-1017",
+  "tokenize_endpoint": null
+}

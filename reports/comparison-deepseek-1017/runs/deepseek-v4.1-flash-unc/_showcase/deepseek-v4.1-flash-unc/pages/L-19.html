@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><title>трамвай сквозь дождливый город</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style><script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// --- Детерминированный LCG. Никакого Math.random(). ------------------------
+const SEED = 488641;
+let lcg = SEED;
+const rnd = () => { lcg = (lcg * 1103515245 + 12345) % 2147483648; return lcg / 2147483648; };
+
+// --- Кадр и перевод доли кадра в единицы сцены -----------------------------
+const H = (d) => Math.tan(45 * Math.PI / 360) * d;   // полувысота кадра на дистанции d
+const FW = (u, d) => u * 2 * H(d) * (800 / 600);     // доля ширины кадра -> единицы
+const FH = (u, d) => u * 2 * H(d);                   // доля высоты кадра -> единицы
+const CAM_Z = 4;
+
+const renderer = new THREE.WebGLRenderer({antialias: false, preserveDrawingBuffer: true});
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x241638, 14, 42);
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
+camera.position.set(0, 0, CAM_Z);
+camera.lookAt(0, 0, -1);
+
+// --- Материалы --------------------------------------------------------------
+const solid = (c) => new THREE.MeshBasicMaterial({color: c});
+const hx = (c) => c.slice(0, 2) === '0x' ? '#' + c.slice(2) : c;
+const vgrad = (top, bottom) => new THREE.ShaderMaterial({
+  uniforms: {uTop: {value: new THREE.Color(hx(top))}, uBottom: {value: new THREE.Color(hx(bottom))}},
+  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `uniform vec3 uTop; uniform vec3 uBottom; varying vec2 vUv;
+    void main() {
+      gl_FragColor = vec4(mix(uBottom, uTop, smoothstep(0.0, 1.0, vUv.y)), 1.0);
+      #include <colorspace_fragment>
+    }`,
+});
+const haze = (c, o) => new THREE.MeshBasicMaterial({color: c, transparent: true, opacity: o, depthWrite: false});
+const lit = (c, o) => new THREE.MeshStandardMaterial({color: c, roughness: 0.6, metalness: 0.05, opacity: o ?? 1, transparent: (o ?? 1) < 1});
+// Свет: тёплая лампа салона и холодный отсвет города за стеклом. Тела получают
+// блик и затенение по граням — кадр читается объёмом, а не заливкой.
+const lamp = new THREE.PointLight(0xffd9a8, 6.5, 30, 2);
+lamp.position.set(-0.9, 1.2, 1.6);
+scene.add(lamp);
+const lamp2 = new THREE.PointLight(0xffc890, 3.0, 24, 2);
+lamp2.position.set(1.1, 1.1, 1.4);
+scene.add(lamp2);
+scene.add(new THREE.AmbientLight(0x4a5674, 1.1));
+const rim = new THREE.PointLight(0x9fc4d8, 3.4, 40, 2);
+rim.position.set(0.8, 0.2, -4.0);
+scene.add(rim);
+
+// --- Помощники размещения ---------------------------------------------------
+const place = (mesh, u, v, z) => {
+  mesh.position.set((u - 0.5) * FW(1, CAM_Z - z), (0.5 - v) * FH(1, CAM_Z - z), z);
+  scene.add(mesh);
+  return mesh;
+};
+const quad = (u, v, material, name, z) => {
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(FW(u, CAM_Z - z), FH(v, CAM_Z - z)), material);
+  mesh.name = name;
+  return place(mesh, 0.5, 0.5, z);
+};
+const beam = (u, v, w, material, name, z, pu, pv) => {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(FW(u, CAM_Z - z), FH(v, CAM_Z - z), w), material);
+  mesh.name = name;
+  return place(mesh, pu, pv, z);
+};
+const body = (u, v, w, material, name, z) => beam(u, v, w, material, name, z, 0.5, 0.5);
+const spray = (n, size, colour) => {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(n * 3), 3));
+  const cloud = new THREE.Points(geometry, new THREE.PointsMaterial({
+    size: size, sizeAttenuation: false, color: colour, transparent: true, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthTest: false,
+  }));
+  scene.add(cloud);
+  return cloud;
+};
+const round = (v) => Math.round(v * 1e4) / 1e4;
+const names = () => scene.children.map((o) => o.name).filter(Boolean);
+
+const SWAY = 0.045;
+const SPEED = 1.56;
+const GLASS_V = 0.10, GLASS_H = 0.62, GLASS_W = 0.78;
+const GLASS_MID = GLASS_V + GLASS_H / 2;      // 0.41
+const GLASS_BOT = GLASS_V + GLASS_H;          // 0.72
+const MUL_A = 0.31, MUL_B = 0.65;
+const WARM = 0xffa63c, NEON = 0x12c7d4, RAIN = 0xa8c8dc, NIGHT = 0x1a1230;
+
+// --- Дальний слой: ночь во весь кадр и коробки города ----------------------
+place(quad(1.8, 1.8, vgrad('0x241f38', '0x120f1c'), 'night', -60), 0.5, 0.5, -60);
+
+// Город за окном: тёмные корпуса с затенением по граням дают перспективу,
+// на фасадах — аддитивные неоновые окна.
+const cityMat = lit(0x181128);
+const cityWin = haze(NEON, 0.30);
+for (let i = 0; i < 16; i++) {
+  const w = 0.10 + rnd() * 0.16;
+  const h = 0.20 + rnd() * 0.60;
+  const cu = 0.5 + (rnd() - 0.5) * 1.5;
+  const cv = 0.52 + (rnd() - 0.5) * 0.5;
+  const z = -20 - rnd() * 26;
+  const depth = 1.2 + rnd() * 3.0;
+  body(w, h, depth, cityMat, 'city' + i, z).position.x = (cu - 0.5) * FW(1, CAM_Z - z);
+  // светящееся окно на фасаде
+  const win = new THREE.Mesh(new THREE.PlaneGeometry(FW(w * 0.62, CAM_Z - (z + depth / 2 + 0.05)), FH(h * 0.60, CAM_Z - (z + depth / 2 + 0.05))), cityWin);
+  place(win, cu, cv, z + depth / 2 + 0.05);
+}
+
+// --- Салон трамвая: потолок, стены, пол — телами с толщиной ----------------
+place(quad(1.0, GLASS_V, vgrad('0x1c1436', '0x0e091c'), 'cabin_top', -6), 0.5, GLASS_V / 2, -6);
+place(quad(1.0, 1 - GLASS_BOT, solid(NIGHT), 'cabin_low', -6), 0.5, GLASS_BOT + (1 - GLASS_BOT) / 2, -6);
+place(quad(0.09, 1.0, solid(NIGHT), 'wall_left', -6), 0.045, 0.5, -6);
+place(quad(0.09, 1.0, solid(NIGHT), 'wall_right', -6), 0.955, 0.5, -6);
+
+// Потолочный светильник: корпус + светящаяся колба (даёт тёплый блик сверху).
+body(0.20, 0.05, 0.18, lit(0x241a3e), 'lamp_housing', -3.0).position.y += FH(0.02, CAM_Z + 3.0);
+const bulb = new THREE.Mesh(new THREE.BoxGeometry(FW(0.17, CAM_Z + 2.9), FH(0.022, CAM_Z + 2.9), 0.10),
+  new THREE.MeshStandardMaterial({color: 0xffd9a8, emissive: WARM, emissiveIntensity: 1.4, roughness: 0.4}));
+bulb.name = 'lamp_bulb';
+place(bulb, 0.5, 0.035, -2.9);
+
+// Рама окна: четыре тела по периметру проёма — откос читается в перспективе.
+const frameMat = lit(0x2b2050);
+const FT = 0.024;
+beam(0.80, FT, 0.14, frameMat, 'frame_top', -3.75, 0.5, GLASS_V);
+beam(0.80, FT, 0.14, frameMat, 'frame_bottom', -3.75, 0.5, GLASS_BOT);
+beam(FT, GLASS_H + FT, 0.14, frameMat, 'frame_left', -3.75, 0.11, GLASS_MID);
+beam(FT, GLASS_H + FT, 0.14, frameMat, 'frame_right', -3.75, 0.89, GLASS_MID);
+// Подоконник.
+beam(0.86, 0.03, 0.26, lit(0x33275c), 'sill', -3.55, 0.5, GLASS_BOT + 0.018);
+// Импосты окна.
+beam(0.012, GLASS_H, 0.10, lit(0x140d26), 'mullion_a', -3.70, MUL_A, GLASS_MID);
+beam(0.012, GLASS_H, 0.10, lit(0x140d26), 'mullion_b', -3.70, MUL_B, GLASS_MID);
+
+// Стекло.
+place(quad(GLASS_W, GLASS_H, haze(0x9fc4d8, 0.18), 'glass', -4), 0.5, GLASS_MID, -4);
+
+// Сиденья и поручень — передний план салона.
+for (let i = 0; i < 3; i++) {
+  body(0.30, 0.14, 0.30, lit(0x241a42), 'seat' + i, -3.2)
+    .position.set((0.20 + i * 0.30 - 0.5) * FW(1, CAM_Z + 3.2), (0.5 - 0.86) * FH(1, CAM_Z + 3.2), -3.2);
+}
+const poleGeo = new THREE.CylinderGeometry(FW(0.006, 7.4), FW(0.006, 7.4), FH(0.64, 7.4), 12);
+const pole = new THREE.Mesh(poleGeo, lit(0x3a2f5e));
+pole.name = 'pole';
+place(pole, 0.845, GLASS_MID, -3.4);
+
+// --- Пятна города за стеклом (аддитивные, едут вбок) -----------------------
+const blobs = spray(22, 9, NEON);
+const blobSpeed = [];
+const blobReach = FW(1.4, 18);
+{
+  const p = blobs.geometry.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    p.setXYZ(i, (rnd() - 0.5) * blobReach, (0.05 + rnd() * 0.42) * FH(1, 18), -14);
+    blobSpeed.push(2 + rnd() * 2);
+  }
+  p.needsUpdate = true;
+}
+
+// --- Отражения города на стекле --------------------------------------------
+place(quad(0.70, 0.02, haze(NEON, 0.4), 'rail', -4.6), 0.5, 0.58, -4.6);
+place(quad(0.70, 0.05, haze(WARM, 0.75), 'glow_top', -4.5), 0.5, 0.17, -4.5);
+place(quad(0.62, 0.04, haze(WARM, 0.55), 'glow_low', -4.5), 0.5, 0.66, -4.5);
+for (let i = 0; i < 3; i++)
+  place(quad(0.08, 0.035, haze(WARM, 0.85), 'ceiling_light' + i, -3.66), 0.25 + i * 0.25, 0.045, -3.66);
+
+// --- Капли по стеклу (едут вниз) -------------------------------------------
+const drops = spray(60, 6, RAIN);
+const dropSpan = FH(0.60, 7.9);
+const dropHalf = FW(0.36, 7.9);
+{
+  const p = drops.geometry.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setXYZ(i, (rnd() - 0.5) * 2 * dropHalf, (rnd() - 0.5) * dropSpan, -3.9);
+  p.needsUpdate = true;
+}
+
+let t = 0;
+const fizz = [];
+for (let i = 0; i < 64; i++) fizz.push(0.6 + rnd() * 0.8);
+
+window.__step = (dt) => {
+  t += dt;
+  const pd = drops.geometry.attributes.position;
+  for (let i = 0; i < pd.count; i++) {
+    let y = pd.getY(i) - SPEED * fizz[i % 64] * dt;
+    if (y < -dropSpan / 2) y += dropSpan;
+    pd.setY(i, y);
+  }
+  pd.needsUpdate = true;
+  const pb = blobs.geometry.attributes.position;
+  for (let i = 0; i < pb.count; i++) {
+    let x = pb.getX(i) + blobSpeed[i] * dt;
+    if (x > blobReach / 2 * 1.4) x -= blobReach * 1.4;
+    pb.setX(i, x);
+  }
+  pb.needsUpdate = true;
+  camera.position.x = Math.sin(t * 0.6) * SWAY;
+  camera.lookAt(camera.position.x, 0, -1);
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+window.__probe = () => ({
+  t: round(t),
+  objects: names(),
+  blob: [round(blobs.geometry.attributes.position.getX(0)), round(blobs.geometry.attributes.position.getY(0))],
+});
+
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+</body></html>

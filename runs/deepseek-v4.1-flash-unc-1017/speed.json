@@ -1,0 +1,36 @@
+[
+  {
+    "label": "short",
+    "runs": 2,
+    "ttft_s": 0.09749541652854532,
+    "prompt_tokens": 646.0,
+    "completion_tokens": 22.0,
+    "prompt_tok_s": 6671.8910891733285,
+    "generation_tok_s": 560.1481753006154,
+    "total_s": 0.1367741249850951,
+    "vram_peak_mib": null,
+    "spread": {
+      "ttft_min_s": 0.08940541697666049,
+      "ttft_max_s": 0.10558541608043015,
+      "generation_tok_s_min": 554.9471177561851,
+      "generation_tok_s_max": 565.3492328450458
+    }
+  },
+  {
+    "label": "long_4096",
+    "runs": 2,
+    "ttft_s": 0.12128174997633323,
+    "prompt_tokens": 2512.0,
+    "completion_tokens": 22.0,
+    "prompt_tok_s": 20718.37978326443,
+    "generation_tok_s": 575.6670690275874,
+    "total_s": 0.15972525003599003,
+    "vram_peak_mib": null,
+    "spread": {
+      "ttft_min_s": 0.11917062499560416,
+      "ttft_max_s": 0.1233928749570623,
+      "generation_tok_s_min": 531.4346615202808,
+      "generation_tok_s_max": 619.8994765348941
+    }
+  }
+]

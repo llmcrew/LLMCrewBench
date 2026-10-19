@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Chain Reaction — planet break-up</title>
+<style>
+  html,body{margin:0;padding:0;background:#05060c;overflow:hidden}
+  canvas{display:block;position:absolute;left:0;top:0}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ------------------------------------------------------------------ *
+ *  Deterministic LCG — the only source of randomness
+ * ------------------------------------------------------------------ */
+let lcg = 701695;
+function rnd(){ lcg = (lcg * 1103515245 + 12345) % 2147483648; return lcg / 2147483648; }
+const rr = (a,b)=> a + (b-a)*rnd();
+
+/* ------------------------------------------------------------------ *
+ *  Renderer / scene / camera
+ * ------------------------------------------------------------------ */
+const W = 1920, H = 1080;
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05060c);
+scene.fog = new THREE.FogExp2(0x0a0c1c, 0.0042);
+
+const camera = new THREE.PerspectiveCamera(50, W/H, 0.1, 600);
+const CAM_FROM = new THREE.Vector3(0.6, 0.4, 4);
+const CAM_TO   = new THREE.Vector3(-0.19, 1.16, 12);
+const LOOK_AT  = new THREE.Vector3(2.2, -1.6, -13.0);
+camera.position.copy(CAM_FROM);
+camera.lookAt(LOOK_AT);
+
+/* ------------------------------------------------------------------ *
+ *  Fixed world anchors (names are part of the spec)
+ * ------------------------------------------------------------------ */
+const EARTH_POS   = new THREE.Vector3(3.0, -2.2, -14.0);
+const CORE_POS    = new THREE.Vector3(-3.2, 1.4, -12.0);
+const STATION_POS = new THREE.Vector3(-3.7, 0.9, -4.2);
+const EARTH_AXIS  = new THREE.Vector3(0.30, 0.94, 0.14).normalize();
+const LIGHT_DIR   = CORE_POS.clone().sub(EARTH_POS).normalize(); // core -> earth (hot light)
+
+const objects = [];
+function reg(o, name){ o.name = name; objects.push(name); return o; }
+
+/* ------------------------------------------------------------------ *
+ *  Lights (for the lit props: station, satellites, core shell)
+ * ------------------------------------------------------------------ */
+scene.add(new THREE.AmbientLight(0x2a3350, 1.1));
+const coreLight = new THREE.PointLight(0xff8a45, 900, 90, 2);
+coreLight.position.copy(CORE_POS);
+scene.add(coreLight);
+const sunLight = new THREE.DirectionalLight(0xbfd4ff, 0.9);
+sunLight.position.set(9, 7, 5);
+scene.add(sunLight);
+const stationLight = new THREE.PointLight(0x8fd0ff, 120, 22, 2);
+stationLight.position.copy(STATION_POS);
+scene.add(stationLight);
+
+/* ------------------------------------------------------------------ *
+ *  nebula — big translucent cloud plane far behind (z = -60)
+ * ------------------------------------------------------------------ */
+const nebulaUniforms = {
+  uTime:   { value: 0 },
+  uColA:   { value: new THREE.Color(0x5a4a8f) },
+  uColB:   { value: new THREE.Color(0x8a72c8) },
+  uColC:   { value: new THREE.Color(0x3a2f63) }
+};
+const nebulaMat = new THREE.ShaderMaterial({
+  uniforms: nebulaUniforms,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.NormalBlending,
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+  `,
+  fragmentShader: /* glsl */`
+    precision highp float;
+    uniform float uTime; uniform vec3 uColA, uColB, uColC;
+    varying vec2 vUv;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+    float noise(vec2 p){
+      vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+      float a=hash(i), b=hash(i+vec2(1.,0.)), c=hash(i+vec2(0.,1.)), d=hash(i+vec2(1.,1.));
+      return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+    }
+    float fbm(vec2 p){
+      float s=0.0, a=0.5;
+      for(int i=0;i<5;i++){ s += a*noise(p); p*=2.03; a*=0.5; }
+      return s;
+    }
+    void main(){
+      vec2 p = vUv*vec2(3.2,2.2);
+      float n  = fbm(p + vec2(uTime*0.006, uTime*0.003));
+      float n2 = fbm(p*2.3 - vec2(uTime*0.004, 0.0));
+      float clouds = smoothstep(0.15, 0.95, n*0.7 + n2*0.45);
+      vec3 col = mix(uColC, uColA, smoothstep(0.0,0.55,clouds));
+      col = mix(col, uColB, smoothstep(0.55,1.0,clouds)*0.85);
+      // subtle dark dust lanes
+      col *= 0.72 + 0.55*clouds;
+      float a = 0.90 + 0.10*clouds;
+      gl_FragColor = vec4(col, a);
+    }
+  `
+});
+const nebula = reg(new THREE.Mesh(new THREE.PlaneGeometry(520, 320), nebulaMat), 'nebula');
+nebula.position.set(0, 6, -60);
+nebula.renderOrder = -10;
+scene.add(nebula);
+
+/* second, closer dim layer for depth */
+const nebula2Mat = nebulaMat.clone();
+nebula2Mat.uniforms = THREE.UniformsUtils.clone(nebulaUniforms);
+nebula2Mat.uniforms.uColA.value = new THREE.Color(0x4a3d78);
+nebula2Mat.uniforms.uColB.value = new THREE.Color(0x6f5aa8);
+nebula2Mat.uniforms.uColC.value = new THREE.Color(0x2a2248);
+nebula2Mat.opacity = 0.55;
+const nebula2 = new THREE.Mesh(new THREE.PlaneGeometry(320, 200), nebula2Mat);
+nebula2.position.set(-40, -10, -48);
+nebula2.rotation.z = 0.5;
+nebula2.renderOrder = -9;
+scene.add(nebula2);
+
+/* ------------------------------------------------------------------ *
+ *  stars — 2400 deterministic points
+ * ------------------------------------------------------------------ */
+const STAR_N = 2400;
+{
+  const pos = new Float32Array(STAR_N*3);
+  const col = new Float32Array(STAR_N*3);
+  const siz = new Float32Array(STAR_N);
+  const c = new THREE.Color();
+  for(let i=0;i<STAR_N;i++){
+    // shell distribution, biased to the -z half so the frame fills
+    const u = rnd()*2-1, th = rnd()*Math.PI*2;
+    const r = 95 + rnd()*40;
+    const s = Math.sqrt(1-u*u);
+    let x = s*Math.cos(th)*r, y = u*r*0.9, z = s*Math.sin(th)*r;
+    if(z > 10) z = -z;               // keep most stars behind the camera-facing plane
+    pos[i*3]=x; pos[i*3+1]=y; pos[i*3+2]=z;
+    const t = rnd();
+    c.setHSL(0.55 + t*0.12, 0.35*rnd(), 0.75 + 0.22*rnd());
+    col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b;
+    siz[i] = 0.7 + rnd()*rnd()*2.4;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  g.setAttribute('color',    new THREE.BufferAttribute(col,3));
+  g.setAttribute('aSize',    new THREE.BufferAttribute(siz,1));
+  const m = new THREE.ShaderMaterial({
+    uniforms:{ uTime:{value:0} },
+    transparent:true, depthWrite:false, blending:THREE.AdditiveBlending,
+    vertexShader:/* glsl */`
+      attribute float aSize; varying vec3 vC; uniform float uTime;
+      void main(){
+        vC = color;
+        vec4 mv = modelViewMatrix * vec4(position,1.0);
+        float tw = 0.75 + 0.25*sin(uTime*1.7 + position.x*0.31 + position.y*0.17);
+        gl_PointSize = aSize * tw * (260.0 / max(-mv.z, 1.0));
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader:/* glsl */`
+      varying vec3 vC;
+      void main(){
+        vec2 d = gl_PointCoord - 0.5;
+        float a = smoothstep(0.5, 0.05, length(d));
+        gl_FragColor = vec4(vC * 1.15, a);
+      }`,
+    vertexColors:true
+  });
+  const stars = reg(new THREE.Points(g,m), 'stars');
+  stars.renderOrder = -5;
+  scene.add(stars);
+  var starsMat = m;
+}
+
+/* ------------------------------------------------------------------ *
+ *  earth surface shader (procedural continents, hot rim light)
+ * ------------------------------------------------------------------ */
+const earthUniforms = {
+  uLightDir: { value: LIGHT_DIR.clone() },
+  uTime:     { value: 0 }
+};
+const earthMat = new THREE.ShaderMaterial({
+  uniforms: earthUniforms,
+  vertexShader:/* glsl */`
+    varying vec3 vN; varying vec3 vW; varying vec2 vUv;
+    void main(){
+      vUv = uv;
+      vN = normalize(mat3(modelMatrix) * normal);
+      vec4 w = modelMatrix * vec4(position,1.0);
+      vW = w.xyz;
+      gl_Position = projectionMatrix * viewMatrix * w;
+    }`,
+  fragmentShader:/* glsl */`
+    precision highp float;
+    uniform vec3 uLightDir; uniform float uTime;
+    varying vec3 vN; varying vec3 vW; varying vec2 vUv;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+    float noise(vec2 p){
+      vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+      return mix(mix(hash(i),hash(i+vec2(1.,0.)),f.x),
+                 mix(hash(i+vec2(0.,1.)),hash(i+vec2(1.,1.)),f.x), f.y);
+    }
+    float fbm(vec2 p){ float s=0.,a=0.5; for(int i=0;i<6;i++){ s+=a*noise(p); p*=2.05; a*=0.5;} return s; }
+    void main(){
+      vec2 uv = vUv;
+      float cont = fbm(uv*vec2(6.0,3.0) + 3.7);
+      float detail = fbm(uv*vec2(22.0,11.0));
+      float land = smoothstep(0.50, 0.56, cont + detail*0.12);
+      vec3 ocean = mix(vec3(0.03,0.13,0.32), vec3(0.06,0.24,0.44), detail);
+      vec3 veget = mix(vec3(0.14,0.30,0.13), vec3(0.42,0.36,0.18), detail*0.9);
+      vec3 col = mix(ocean, veget, land);
+      // polar ice
+      float polar = smoothstep(0.62, 0.92, abs(vN.y));
+      col = mix(col, vec3(0.82,0.90,0.96), polar*0.85);
+      // hot-side / night-side lighting from the broken planet
+      vec3 n = normalize(vN);
+      float lam = clamp(dot(n, normalize(uLightDir)), 0.0, 1.0);
+      vec3 hot  = vec3(1.0,0.72,0.48);
+      vec3 cool = vec3(0.34,0.52,0.92);
+      vec3 lightCol = mix(cool, hot, pow(lam,2.2)*0.85);
+      col *= (0.14 + 1.15*pow(lam,0.75)) * lightCol;
+      // specular sheen on oceans
+      vec3 v = normalize(cameraPosition - vW);
+      vec3 h = normalize(normalize(uLightDir) + v);
+      float spec = pow(max(dot(n,h),0.0), 60.0) * (1.0-land) * 0.5;
+      col += spec;
+      gl_FragColor = vec4(col, 1.0);
+    }`
+});
+const earth = reg(new THREE.Mesh(new THREE.SphereGeometry(3.0, 96, 72), earthMat), 'earth');
+earth.position.copy(EARTH_POS);
+earth.rotation.z = 0.22;
+scene.add(earth);
+
+/* ------------------------------------------------------------------ *
+ *  atmosphere halo
+ * ------------------------------------------------------------------ */
+const atmoUniforms = { uColor:{ value:new THREE.Color(0x6fb6ff) }, uTime:{value:0} };
+const atmoMat = new THREE.ShaderMaterial({
+  uniforms: atmoUniforms,
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending, side:THREE.BackSide,
+  vertexShader:/* glsl */`
+    varying vec3 vN; varying vec3 vW;
+    void main(){
+      vN = normalize(mat3(modelMatrix)*normal);
+      vec4 w = modelMatrix*vec4(position,1.0); vW = w.xyz;
+      gl_Position = projectionMatrix * viewMatrix * w;
+    }`,
+  fragmentShader:/* glsl */`
+    uniform vec3 uColor; varying vec3 vN; varying vec3 vW;
+    void main(){
+      vec3 n = normalize(vN);
+      vec3 v = normalize(cameraPosition - vW);
+      float f = pow(clamp(1.0 - abs(dot(n, v)), 0.0, 1.0), 2.0);
+      gl_FragColor = vec4(uColor, f*1.35);
+    }`
+});
+const atmosphere = reg(new THREE.Mesh(new THREE.SphereGeometry(4.15, 72, 54), atmoMat), 'atmosphere');
+atmosphere.position.copy(EARTH_POS);
+scene.add(atmosphere);
+
+/* ------------------------------------------------------------------ *
+ *  aurora — two flattened translucent bands over the poles
+ * ------------------------------------------------------------------ */
+const auroraGroup = new THREE.Group();
+function makeAurora(sign){
+  const g = new THREE.TorusGeometry(2.95, 1.55, 10, 96);
+  const m = new THREE.ShaderMaterial({
+    uniforms:{ uTime:{value:0}, uCol:{value:new THREE.Color(0x7bf0c8)}, uPh:{value: sign>0?0.0:2.1} },
+    transparent:true, depthWrite:false, blending:THREE.AdditiveBlending, side:THREE.DoubleSide,
+    vertexShader:/* glsl */`
+      varying vec2 vUv; varying vec3 vP;
+      void main(){ vUv=uv; vP=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);} `,
+    fragmentShader:/* glsl */`
+      precision highp float;
+      uniform float uTime,uPh; uniform vec3 uCol; varying vec2 vUv; varying vec3 vP;
+      void main(){
+        float band = sin(vUv.y*3.14159);
+        float flick = 0.62 + 0.38*sin(uTime*3.0 + vUv.x*22.0 + uPh);
+        float streak = 0.55 + 0.45*sin(vUv.x*40.0 + uTime*1.5);
+        float edge = smoothstep(0.0,0.35,band);
+        float a = edge*0.85*flick*streak;
+        gl_FragColor = vec4(uCol*(2.3*flick*streak+0.5), a);
+      }`
+  });
+  const torus = new THREE.Mesh(g, m);
+  torus.scale.set(1.0, 1.0, 0.34);              // flattened
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), EARTH_AXIS.clone().multiplyScalar(sign));
+  torus.quaternion.copy(q);
+  torus.position.copy(EARTH_POS).addScaledVector(EARTH_AXIS, sign*2.55);
+  return { mesh:torus, mat:m };
+}
+const auroraN = makeAurora(1);
+const auroraS = makeAurora(-1);
+auroraGroup.add(auroraN.mesh, auroraS.mesh);
+scene.add(auroraGroup);
+reg(auroraGroup, 'aurora');
+
+/* ------------------------------------------------------------------ *
+ *  core — glowing remnant of the shattered planet
+ * ------------------------------------------------------------------ */
+const coreUniforms = { uTime:{value:0} };
+const coreMat = new THREE.ShaderMaterial({
+  uniforms: coreUniforms,
+  vertexShader:/* glsl */`
+    varying vec3 vN; varying vec3 vW;
+    void main(){
+      vN = normalize(mat3(modelMatrix)*normal);
+      vec4 w = modelMatrix*vec4(position,1.0); vW=w.xyz;
+      gl_Position = projectionMatrix*viewMatrix*w;
+    }`,
+  fragmentShader:/* glsl */`
+    precision highp float;
+    uniform float uTime; varying vec3 vN; varying vec3 vW;
+    float hash(vec3 p){ return fract(sin(dot(p,vec3(12.9898,78.233,37.719)))*43758.5453); }
+    void main(){
+      vec3 n = normalize(vN);
+      vec3 v = normalize(cameraPosition - vW);
+      float fres = pow(1.0 - max(dot(n,v),0.0), 2.2);
+      float crust = hash(floor(n*7.0));
+      float pulse = 0.82 + 0.18*sin(uTime*4.5 + n.x*6.0 + n.y*4.0);
+      vec3 base = mix(vec3(0.55,0.14,0.03), vec3(1.0,0.55,0.22), crust);
+      vec3 col = base*pulse + fres*vec3(1.0,0.72,0.42)*1.4;
+      gl_FragColor = vec4(col, 1.0);
+    }`
+});
+const core = reg(new THREE.Mesh(new THREE.SphereGeometry(1.1, 64, 48), coreMat), 'core');
+core.position.copy(CORE_POS);
+scene.add(core);
+
+/* hot corona shell around the core */
+const coronaMat = new THREE.ShaderMaterial({
+  uniforms:{ uCol:{value:new THREE.Color(0xff9a5a)}, uTime:{value:0} },
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending, side:THREE.BackSide,
+  vertexShader:/* glsl */`
+    varying vec3 vN; varying vec3 vW;
+    void main(){ vN=normalize(mat3(modelMatrix)*normal); vec4 w=modelMatrix*vec4(position,1.0); vW=w.xyz;
+      gl_Position=projectionMatrix*viewMatrix*w; }`,
+  fragmentShader:/* glsl */`
+    uniform vec3 uCol; uniform float uTime; varying vec3 vN; varying vec3 vW;
+    void main(){
+      vec3 n=normalize(vN); vec3 v=normalize(cameraPosition-vW);
+      float f=pow(clamp(1.0-abs(dot(n,v)),0.0,1.0),2.0);
+      float p=0.85+0.15*sin(uTime*5.0);
+      gl_FragColor=vec4(uCol, f*1.15*p);
+    }`
+});
+const corona = new THREE.Mesh(new THREE.SphereGeometry(2.95, 48, 36), coronaMat);
+corona.position.copy(CORE_POS);
+scene.add(corona);
+
+/* ------------------------------------------------------------------ *
+ *  cloud_debris — 200 additive hot fragments
+ * ------------------------------------------------------------------ */
+const DEB_N = 200;
+const debPos = new Float32Array(DEB_N*3);
+const debSize = new Float32Array(DEB_N);
+const debSeedA = new Float32Array(DEB_N);   // phase
+const debKind  = new Float32Array(DEB_N);   // 0 = toward earth, 1 = toward station
+const debDat = [];                          // {start, dir, speed, len}
+{
+  const toEarth = EARTH_POS.clone().sub(CORE_POS).normalize();
+  const toStation = STATION_POS.clone().sub(CORE_POS).normalize();
+  for(let i=0;i<DEB_N;i++){
+    const kind = rnd() < 0.6 ? 0 : 1;
+    debKind[i] = kind;
+    const base = kind===0 ? toEarth : toStation;
+    const jit = kind===0 ? 0.22 : 0.16;
+    const dir = new THREE.Vector3(
+      base.x + rr(-jit,jit),
+      base.y + rr(-jit,jit),
+      base.z + rr(-jit,jit)
+    ).normalize();
+    const start = CORE_POS.clone().add(new THREE.Vector3(rr(-1.0,1.0), rr(-1.0,1.0), rr(-1.0,1.0)));
+    const speed = rr(0.35, 1.9);
+    const target = (kind===0 ? EARTH_POS : STATION_POS);
+    const len = start.distanceTo(target) + rr(1.5, 7.0);
+    debDat.push({ start, dir, speed, len });
+    debSeedA[i] = rnd()*len;
+    debSize[i]  = 0.5 + rnd()*rnd()*2.8;
+    debPos[i*3]=start.x; debPos[i*3+1]=start.y; debPos[i*3+2]=start.z;
+  }
+}
+const debGeo = new THREE.BufferGeometry();
+debGeo.setAttribute('position', new THREE.BufferAttribute(debPos,3));
+debGeo.setAttribute('aSize',    new THREE.BufferAttribute(debSize,1));
+debGeo.setAttribute('aAlpha',   new THREE.BufferAttribute(new Float32Array(DEB_N),1));
+const debMat = new THREE.ShaderMaterial({
+  uniforms:{ uCol:{value:new THREE.Color(0xffb070)}, uTime:{value:0} },
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending,
+  vertexShader:/* glsl */`
+    attribute float aSize; attribute float aAlpha;
+    uniform float uTime; varying float vA;
+    void main(){
+      vA = aAlpha;
+      vec4 mv = modelViewMatrix * vec4(position,1.0);
+      gl_PointSize = aSize * (1000.0 / max(-mv.z, 0.8));
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader:/* glsl */`
+    uniform vec3 uCol; varying float vA;
+    void main(){
+      vec2 d = gl_PointCoord - 0.5;
+      float r = length(d);
+      float a = smoothstep(0.5, 0.0, r);
+      vec3 c = mix(uCol, vec3(1.0,0.88,0.66), pow(a,3.0)*0.2);
+      gl_FragColor = vec4(c*1.35, a*vA);
+    }`
+});
+const cloud_debris = reg(new THREE.Points(debGeo, debMat), 'cloud_debris');
+scene.add(cloud_debris);
+
+/* ------------------------------------------------------------------ *
+ *  orbits — 4 thin glowing trajectory rings around earth
+ * ------------------------------------------------------------------ */
+const orbitRings = [];
+const orbitsGroup = reg(new THREE.Group(), 'orbits');
+scene.add(orbitsGroup);
+{
+  const tilts = [
+    [0.0, 0.35, 0.20],
+    [0.9, -0.4, 0.55],
+    [-0.7, 0.8, -0.3],
+    [0.45, 1.5, 0.85]
+  ];
+  const radii = [4.05, 4.55, 3.75, 5.05];
+  for(let i=0;i<4;i++){
+    const g = new THREE.TorusGeometry(radii[i], 0.032, 6, 200);
+    const m = new THREE.MeshBasicMaterial({
+      color: 0x9bf8d8, transparent:true, opacity:0.42,
+      blending:THREE.AdditiveBlending, depthWrite:false
+    });
+    const ring = new THREE.Mesh(g,m);
+    ring.rotation.set(tilts[i][0], tilts[i][1], tilts[i][2]);
+    ring.position.copy(EARTH_POS);
+    ring.renderOrder = 2;
+    orbitsGroup.add(ring);
+    orbitRings.push({ ring, radius:radii[i], euler:ring.rotation.clone() });
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ *  satellites — 5 tiny points riding the rings
+ * ------------------------------------------------------------------ */
+const SAT_N = 5;
+const satPos = new Float32Array(SAT_N*3);
+const satGeo = new THREE.BufferGeometry();
+satGeo.setAttribute('position', new THREE.BufferAttribute(satPos,3));
+const satMat = new THREE.ShaderMaterial({
+  uniforms:{ uCol:{value:new THREE.Color(0xbdf3ff)} },
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending,
+  vertexShader:/* glsl */`
+    varying float vD; uniform vec3 uCol;
+    void main(){
+      vec4 mv = modelViewMatrix*vec4(position,1.0);
+      gl_PointSize = 2.4 * (300.0/max(-mv.z,1.0));
+      vD = -mv.z;
+      gl_Position = projectionMatrix*mv;
+    }`,
+  fragmentShader:/* glsl */`
+    varying float vD;
+    void main(){
+      vec2 d=gl_PointCoord-0.5; float r=length(d);
+      float a=smoothstep(0.5,0.0,r);
+      gl_FragColor=vec4(vec3(0.85,1.0,1.0), a);
+    }`
+});
+const satellites = reg(new THREE.Points(satGeo, satMat), 'satellites');
+scene.add(satellites);
+const satDat = [];
+for(let i=0;i<SAT_N;i++){
+  satDat.push({ ring: i % 4, ang: rnd()*Math.PI*2, spd: rr(0.25,0.65)*(rnd()<0.5?-1:1), rad: orbitRings[i%4].radius + rr(-0.15,0.15) });
+}
+
+/* ------------------------------------------------------------------ *
+ *  station — group at the left edge, debris streaks past it
+ * ------------------------------------------------------------------ */
+const station = reg(new THREE.Group(), 'station');
+station.position.copy(STATION_POS);
+{
+  const hullMat = new THREE.MeshStandardMaterial({ color:0x9aa7bd, roughness:0.55, metalness:0.7 });
+  const darkMat = new THREE.MeshStandardMaterial({ color:0x3a4252, roughness:0.7, metalness:0.5 });
+  const glowMat = new THREE.MeshBasicMaterial({ color:0x8fd0ff });
+  const panelMat = new THREE.MeshStandardMaterial({ color:0x2f5b96, roughness:0.35, metalness:0.6, emissive:0x14324f, emissiveIntensity:0.7 });
+
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.26,0.26,2.1,16), hullMat);
+  body.rotation.z = Math.PI/2; station.add(body);
+
+  const hub = new THREE.Mesh(new THREE.SphereGeometry(0.42,20,16), darkMat);
+  station.add(hub);
+
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.75,0.06,8,32), hullMat);
+  station.add(ring);
+
+  for(const s of [-1,1]){
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,1.5,8), darkMat);
+    arm.position.set(0, s*0.75, 0); station.add(arm);
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(1.7,0.06,0.9), panelMat);
+    panel.position.set(0, s*1.55, 0); station.add(panel);
+  }
+  // truss + antennas
+  const truss = new THREE.Mesh(new THREE.BoxGeometry(2.6,0.07,0.07), darkMat);
+  station.add(truss);
+  const dish = new THREE.Mesh(new THREE.SphereGeometry(0.34,20,12,0,Math.PI*2,0,Math.PI/2), hullMat);
+  dish.position.set(1.5,0.2,0); dish.rotation.x = -Math.PI/2.2; station.add(dish);
+
+  for(let i=0;i<7;i++){
+    const led = new THREE.Mesh(new THREE.SphereGeometry(0.045,8,6), glowMat);
+    led.position.set(Math.sin(i)*1.2, Math.cos(i*1.7)*0.9, Math.cos(i*0.9)*0.5);
+    station.add(led);
+  }
+  station.rotation.set(-0.25, 0.5, 0.15);
+}
+
+/* faint trajectory streaks: core -> earth and core -> station */
+function trajLine(a, b, col, op){
+  const mid = a.clone().lerp(b,0.5).add(new THREE.Vector3(0,0.9,-1.2));
+  const curve = new THREE.QuadraticBezierCurve3(a, mid, b);
+  const pts = curve.getPoints(60);
+  const g = new THREE.BufferGeometry().setFromPoints(pts);
+  const m = new THREE.LineBasicMaterial({ color:col, transparent:true, opacity:op, blending:THREE.AdditiveBlending, depthWrite:false });
+  return new THREE.Line(g,m);
+}
+scene.add(trajLine(CORE_POS, EARTH_POS, 0x7bf0c8, 0.20));
+scene.add(trajLine(CORE_POS, STATION_POS, 0x7bf0c8, 0.16));
+
+/* ------------------------------------------------------------------ *
+ *  animation state
+ * ------------------------------------------------------------------ */
+let t = 0;
+const _v = new THREE.Vector3();
+
+function update(dt){
+  t += dt;
+
+  // camera: station -> wide panorama, smoothstep over 6 s
+  const k = Math.min(Math.max(t/6, 0), 1);
+  const e = k*k*(3-2*k);
+  camera.position.lerpVectors(CAM_FROM, CAM_TO, e);
+  camera.lookAt(LOOK_AT);
+
+  nebulaUniforms.uTime.value = t;
+  nebula2Mat.uniforms.uTime.value = t;
+  starsMat.uniforms.uTime.value = t;
+  earthMat.uniforms.uTime.value = t;
+  coreMat.uniforms.uTime.value = t;
+  coronaMat.uniforms.uTime.value = t;
+  debMat.uniforms.uTime.value = t;
+
+  coreLight.intensity = 820 + 90*Math.sin(t*4.7) + 40*Math.sin(t*11.3);
+
+  // earth slow spin
+  earth.rotation.y += dt*0.06;
+
+  // aurora flicker
+  auroraN.mat.uniforms.uTime.value = t;
+  auroraS.mat.uniforms.uTime.value = t;
+
+  // debris flight
+  const pa = debGeo.attributes.position.array;
+  const aa = debGeo.attributes.aAlpha.array;
+  for(let i=0;i<DEB_N;i++){
+    const d = debDat[i];
+    const dist = (debSeedA[i] + d.speed*t) % d.len;
+    _v.copy(d.start).addScaledVector(d.dir, dist);
+    pa[i*3]=_v.x; pa[i*3+1]=_v.y; pa[i*3+2]=_v.z;
+    // burn up in earth's atmosphere: fade when very close to earth
+    const de = _v.distanceTo(EARTH_POS);
+    let a = 1.0;
+    if(de < 3.60) a = Math.min(a, Math.max(0, (de-3.05)/0.55));
+    // fade in near the core, out at far end of the run
+    a *= Math.min(1, dist/1.0) * Math.min(1, (d.len-dist)/3.2);
+    aa[i] = a;
+  }
+  debGeo.attributes.position.needsUpdate = true;
+  debGeo.attributes.aAlpha.needsUpdate = true;
+
+  // satellites orbit
+  const sa = satGeo.attributes.position.array;
+  for(let i=0;i<SAT_N;i++){
+    const s = satDat[i];
+    s.ang += dt*s.spd*0.55;
+    const ring = orbitRings[s.ring];
+    _v.set(Math.cos(s.ang)*s.rad, Math.sin(s.ang)*s.rad, 0);
+    _v.applyEuler(ring.euler).add(EARTH_POS);
+    sa[i*3]=_v.x; sa[i*3+1]=_v.y; sa[i*3+2]=_v.z;
+  }
+  satGeo.attributes.position.needsUpdate = true;
+
+  // station gentle drift + slow rotation
+  station.rotation.y += dt*0.05;
+  station.position.y = STATION_POS.y + Math.sin(t*0.6)*0.12;
+}
+
+function render(){ renderer.render(scene, camera); }
+
+/* ------------------------------------------------------------------ *
+ *  public API
+ * ------------------------------------------------------------------ */
+window.__probe = function(){
+  let ahead = 0;
+  const pa = debGeo.attributes.position.array;
+  for(let i=0;i<DEB_N;i++){
+    const dx = pa[i*3]-STATION_POS.x, dy = pa[i*3+1]-STATION_POS.y, dz = pa[i*3+2]-STATION_POS.z;
+    if(dx*dx+dy*dy+dz*dz < 2.76*2.76) ahead++;
+  }
+  return { t: Math.round(t*10000)/10000, objects: objects.slice(), ahead: ahead };
+};
+
+window.__step = function(dt){
+  update(dt);
+  render();
+  return window.__probe();
+};
+
+render();
+window.__ready = true;
+</script>
+</body>
+</html>

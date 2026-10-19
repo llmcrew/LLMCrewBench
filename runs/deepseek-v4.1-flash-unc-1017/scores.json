@@ -1,0 +1,2034 @@
+[
+  {
+    "task_id": "IF-1",
+    "category": "A",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "json_format",
+        "passed": true,
+        "detail": "ok",
+        "points": 0.5
+      },
+      {
+        "name": "ids",
+        "passed": true,
+        "detail": "получено [760, 845, 855], ожидалось [760, 845, 855]",
+        "points": 0.75
+      },
+      {
+        "name": "mean_latency",
+        "passed": true,
+        "detail": "получено 789, ожидалось 789",
+        "points": 0.75
+      }
+    ]
+  },
+  {
+    "task_id": "IF-2",
+    "category": "A",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "csv_format",
+        "passed": true,
+        "detail": "ожидался CSV name,usage без заголовка и без Markdown",
+        "points": 0.5
+      },
+      {
+        "name": "rows",
+        "passed": true,
+        "detail": "получено [('alex', 750), ('ivan', 750), ('zoe', 114)], ожидалось [('alex', 750), ('ivan', 750), ('zoe', 114)]",
+        "points": 0.75
+      },
+      {
+        "name": "order",
+        "passed": true,
+        "detail": "получено [('alex', 750), ('ivan', 750), ('zoe', 114)], ожидалось [('alex', 750), ('ivan', 750), ('zoe', 114)]",
+        "points": 0.75
+      }
+    ]
+  },
+  {
+    "task_id": "IF-3",
+    "category": "A",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "json_format",
+        "passed": true,
+        "detail": "ожидался строгий JSON с ключами open и count",
+        "points": 0.5
+      },
+      {
+        "name": "open",
+        "passed": true,
+        "detail": "получено [316, 513, 6546], ожидалось [316, 513, 6546]",
+        "points": 0.75
+      },
+      {
+        "name": "count",
+        "passed": true,
+        "detail": "получено 3, ожидалось 3",
+        "points": 0.75
+      }
+    ]
+  },
+  {
+    "task_id": "IF-4",
+    "category": "A",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "json_format",
+        "passed": true,
+        "detail": "ожидался строгий JSON-массив строк без обвязки",
+        "points": 0.5
+      },
+      {
+        "name": "files",
+        "passed": true,
+        "detail": "получено ['alpha.gguf', 'qwen.gguf'], ожидалось ['alpha.gguf', 'qwen.gguf']",
+        "points": 0.75
+      },
+      {
+        "name": "order",
+        "passed": true,
+        "detail": "получено ['alpha.gguf', 'qwen.gguf'], ожидалось ['alpha.gguf', 'qwen.gguf']",
+        "points": 0.75
+      }
+    ]
+  },
+  {
+    "task_id": "IF-5",
+    "category": "A",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "json_format",
+        "passed": true,
+        "detail": "ожидался строгий JSON ровно с четырьмя ключами и верными типами",
+        "points": 0.5
+      },
+      {
+        "name": "request_layer",
+        "passed": true,
+        "detail": "temperature/tools: получено {'temperature': 0, 'max_tokens': 12288, 'tools': False, 'mode': 'fast'}, ожидалось 0 и false",
+        "points": 0.75
+      },
+      {
+        "name": "profile_layer",
+        "passed": true,
+        "detail": "max_tokens/mode: получено {'temperature': 0, 'max_tokens': 12288, 'tools': False, 'mode': 'fast'}, ожидалось 12288 и 'fast'",
+        "points": 0.75
+      }
+    ]
+  },
+  {
+    "task_id": "R-1",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено 19, ожидалось 19",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-2",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено 26, ожидалось 26",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-3",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено ['172.242.121.192', '172.242.121.255', '172.242.121.193', '172.242.121.254'], ожидалось ['172.242.121.192', '172.242.121.255', '172.242.121.193', '172.242.121.254']",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-4",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено 2.980, ожидалось 2.980",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-5",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено 24, ожидалось 24",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-6",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено 15361, ожидалось 15361",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-7",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено 63/136 (63/136), ожидалось 63/136",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-8",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено 9;C,A, ожидалось 9;C,A",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-9",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено 32, ожидалось 32",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-10",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено 2, ожидалось 2",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-11",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено 1024, ожидалось 1024",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-12",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено 06:20, ожидалось 06:20",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-13",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено 19/31 (19/31), ожидалось 19/31",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-14",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено 45, ожидалось 45",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "R-15",
+    "category": "B",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "value",
+        "passed": true,
+        "detail": "получено ACEBGDF, ожидалось ACEBGDF",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "C-1",
+    "category": "C",
+    "earned": 8.0,
+    "possible": 8.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "first_load",
+        "passed": true,
+        "detail": "",
+        "points": 0.8
+      },
+      {
+        "name": "ttl_hit",
+        "passed": true,
+        "detail": "",
+        "points": 0.8
+      },
+      {
+        "name": "ttl_expiry",
+        "passed": true,
+        "detail": "",
+        "points": 0.8
+      },
+      {
+        "name": "single_flight",
+        "passed": true,
+        "detail": "",
+        "points": 0.8
+      },
+      {
+        "name": "parallel_keys",
+        "passed": true,
+        "detail": "",
+        "points": 0.8
+      },
+      {
+        "name": "exception_not_cached",
+        "passed": true,
+        "detail": "",
+        "points": 0.8
+      },
+      {
+        "name": "cancel_recovery",
+        "passed": true,
+        "detail": "",
+        "points": 0.8
+      },
+      {
+        "name": "none_cached",
+        "passed": true,
+        "detail": "",
+        "points": 0.8
+      },
+      {
+        "name": "ttl_not_extended",
+        "passed": true,
+        "detail": "",
+        "points": 0.8
+      },
+      {
+        "name": "no_background_tasks",
+        "passed": true,
+        "detail": "",
+        "points": 0.8
+      }
+    ]
+  },
+  {
+    "task_id": "C-2",
+    "category": "C",
+    "earned": 8.0,
+    "possible": 8.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "concurrency_limit",
+        "passed": true,
+        "detail": "ok",
+        "points": 0.8
+      },
+      {
+        "name": "at_most_once",
+        "passed": true,
+        "detail": "ok",
+        "points": 0.8
+      },
+      {
+        "name": "output_closes",
+        "passed": true,
+        "detail": "ok",
+        "points": 0.8
+      },
+      {
+        "name": "no_new_jobs_after_cancel",
+        "passed": true,
+        "detail": "ok",
+        "points": 0.8
+      },
+      {
+        "name": "inflight_context_cancelled",
+        "passed": true,
+        "detail": "ok",
+        "points": 0.8
+      },
+      {
+        "name": "no_hang_after_consumer_stops",
+        "passed": true,
+        "detail": "ok",
+        "points": 0.8
+      },
+      {
+        "name": "non_positive_workers",
+        "passed": true,
+        "detail": "ok",
+        "points": 0.8
+      },
+      {
+        "name": "empty_input",
+        "passed": true,
+        "detail": "ok",
+        "points": 0.8
+      },
+      {
+        "name": "no_goroutine_per_job",
+        "passed": true,
+        "detail": "ok",
+        "points": 0.8
+      },
+      {
+        "name": "no_leak",
+        "passed": true,
+        "detail": "ok",
+        "points": 0.8
+      }
+    ]
+  },
+  {
+    "task_id": "C-3",
+    "category": "C",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "db1",
+        "passed": true,
+        "detail": "получено [('2026-02-01', 130887.0), ('2026-03-01', 158837.0), ('2026-04-01', 171285.0), ('2026-05-01', 126654.0), ('2026-07-01', 63983.0), ('2026-11-01', 80540.0)], ожидалось [('2026-02-01', 130887.0), ('2026-03-01', 158837.0), ('2026-04-01', 171285.0), ('2026-05-01', 126654.0), ('2026-07-01', 63983.0), ('2026-11-01', 80540.0)]",
+        "points": 0.8
+      },
+      {
+        "name": "db2",
+        "passed": true,
+        "detail": "получено [('2026-02-01', 151899.0), ('2026-04-01', 87588.0), ('2026-05-01', 55948.0), ('2026-08-01', 70146.0), ('2026-09-01', 29000.0)], ожидалось [('2026-02-01', 151899.0), ('2026-04-01', 87588.0), ('2026-05-01', 55948.0), ('2026-08-01', 70146.0), ('2026-09-01', 29000.0)]",
+        "points": 0.8
+      },
+      {
+        "name": "db3",
+        "passed": true,
+        "detail": "получено [('2026-04-01', 66019.0), ('2026-05-01', 35791.0), ('2026-06-01', 30000.0), ('2026-08-01', 82364.0), ('2026-10-01', 127743.0), ('2026-11-01', 98503.0), ('2026-12-01', 88429.0)], ожидалось [('2026-04-01', 66019.0), ('2026-05-01', 35791.0), ('2026-06-01', 30000.0), ('2026-08-01', 82364.0), ('2026-10-01', 127743.0), ('2026-11-01', 98503.0), ('2026-12-01', 88429.0)]",
+        "points": 0.8
+      },
+      {
+        "name": "db4",
+        "passed": true,
+        "detail": "получено [('2026-01-01', 137804.0), ('2026-06-01', 94711.0), ('2026-10-01', 161523.0), ('2026-11-01', 81869.0)], ожидалось [('2026-01-01', 137804.0), ('2026-06-01', 94711.0), ('2026-10-01', 161523.0), ('2026-11-01', 81869.0)]",
+        "points": 0.8
+      },
+      {
+        "name": "db5",
+        "passed": true,
+        "detail": "получено [('2026-01-01', 170167.0), ('2026-08-01', 14378.0), ('2026-09-01', 81447.0), ('2026-12-01', 50484.0)], ожидалось [('2026-01-01', 170167.0), ('2026-08-01', 14378.0), ('2026-09-01', 81447.0), ('2026-12-01', 50484.0)]",
+        "points": 0.8
+      }
+    ]
+  },
+  {
+    "task_id": "T-1",
+    "category": "D",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "evidence_gathered",
+        "passed": true,
+        "detail": "нужен вызов search_code или read_file (0.5 — вспомогательное свидетельство)",
+        "points": 0.5
+      },
+      {
+        "name": "read_only",
+        "passed": true,
+        "detail": "нужны только чтение/поиск: изменяющие вызовы нет, файлы не изменены; расследование проведено (0.5 — ограничение безопасности)",
+        "points": 0.5
+      },
+      {
+        "name": "answer",
+        "passed": true,
+        "detail": "ожидалось deploy/vllm/engine.yaml и 65536; полный балл — за наблюдаемый ответ с путём и значением",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "T-2",
+    "category": "D",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "read_logs",
+        "passed": true,
+        "detail": "нужен get_logs для api-gateway (0.5 — вспомогательное свидетельство)",
+        "points": 0.5
+      },
+      {
+        "name": "downstream_metric",
+        "passed": true,
+        "detail": "нужен get_metric inference в ['gpu_memory_used_percent', 'queue_depth'] (0.5 — вспомогательное свидетельство)",
+        "points": 0.5
+      },
+      {
+        "name": "diagnosis_without_restart",
+        "passed": true,
+        "detail": "изменяющие вызовы: нет; диагноз по inference найден; полный балл — за наблюдаемый диагноз без перезапуска",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "T-3",
+    "category": "D",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "single_line_change",
+        "passed": true,
+        "detail": "ok; полный балл — за наблюдаемое изменение ровно одной строки",
+        "points": 1.0
+      },
+      {
+        "name": "tests_after_change",
+        "passed": true,
+        "detail": "write@1, run_tests@3 (0.5 — порядок действий)",
+        "points": 0.5
+      },
+      {
+        "name": "diff_verified",
+        "passed": true,
+        "detail": "git_diff@4 после run_tests@3 (0.5 — подтверждение)",
+        "points": 0.5
+      }
+    ]
+  },
+  {
+    "task_id": "T-4",
+    "category": "D",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "cache_deleted",
+        "passed": true,
+        "detail": "удалены ['tmp/build-cache/a.bin', 'tmp/build-cache/b.bin']; полный балл — за наблюдаемое удаление всех файлов кэша",
+        "points": 1.0
+      },
+      {
+        "name": "model_preserved",
+        "passed": true,
+        "detail": "models/qwen.gguf: на месте (0.5 — сохранность данных)",
+        "points": 0.5
+      },
+      {
+        "name": "data_preserved",
+        "passed": true,
+        "detail": "data/postgres/base.dat: на месте (0.5 — сохранность данных)",
+        "points": 0.5
+      }
+    ]
+  },
+  {
+    "task_id": "T-5",
+    "category": "D",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "evidence_first",
+        "passed": true,
+        "detail": "документация@3, write_file@5 (0.5 — порядок: сначала свидетельство)",
+        "points": 0.5
+      },
+      {
+        "name": "documented_value_applied",
+        "passed": true,
+        "detail": "ok; полный балл — за наблюдаемое исправление на документированное значение",
+        "points": 1.0
+      },
+      {
+        "name": "tests_and_diff",
+        "passed": true,
+        "detail": "run_tests@6, git_diff@7, итог описывает request_timeout (0.5 — подтверждение)",
+        "points": 0.5
+      }
+    ]
+  },
+  {
+    "task_id": "T-6",
+    "category": "D",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "retried_after_failure",
+        "passed": true,
+        "detail": "сбой read_file@1 должен быть повторён успешно: успех@8 (0.5 — действие восстановления)",
+        "points": 0.5
+      },
+      {
+        "name": "real_value",
+        "passed": true,
+        "detail": "ожидалось значение 256 из config/runtime.yaml; полный балл — за наблюдаемый ответ, достижимый только после успешного повтора",
+        "points": 1.0
+      },
+      {
+        "name": "read_only",
+        "passed": true,
+        "detail": "нужны только чтение/поиск: изменяющие вызовы нет, файлы не изменены; расследование проведено (0.5 — ограничение безопасности)",
+        "points": 0.5
+      }
+    ]
+  },
+  {
+    "task_id": "T-7",
+    "category": "D",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "refreshed",
+        "passed": true,
+        "detail": "нужен get_metric inference.queue_depth с refresh=true, найден@0 (0.5 — действие)",
+        "points": 0.5
+      },
+      {
+        "name": "fresh_value",
+        "passed": true,
+        "detail": "нужно актуальное значение 330 (упоминание устаревшего 120 допустимо); полный балл — за наблюдаемый ответ именно со свежим замером",
+        "points": 1.0
+      },
+      {
+        "name": "call_budget",
+        "passed": true,
+        "detail": "вызовов 1 из 12; без единого get_metric дисциплина не подтверждена (0.5 — дисциплина вызовов)",
+        "points": 0.5
+      }
+    ]
+  },
+  {
+    "task_id": "LC-1",
+    "category": "E",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": true,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "Фактический вход 63634 при цели 65536 токенов."
+    ],
+    "checks": [
+      {
+        "name": "exact single-value answer",
+        "passed": true,
+        "detail": "ответ 'sha256:833b4586' совпал с '833b4586'",
+        "points": 2.0
+      }
+    ]
+  },
+  {
+    "task_id": "LC-2",
+    "category": "E",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": true,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "Фактический вход 127317 при цели 131072 токенов."
+    ],
+    "checks": [
+      {
+        "name": "exact single-value answer",
+        "passed": true,
+        "detail": "ответ 'beta-4' совпал с 'beta-4'",
+        "points": 2.0
+      }
+    ]
+  },
+  {
+    "task_id": "LC-3",
+    "category": "E",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": true,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "Фактический вход 190840 при цели 196608 токенов."
+    ],
+    "checks": [
+      {
+        "name": "exact single-value answer",
+        "passed": true,
+        "detail": "ответ 'eu-west-2' совпал с 'eu-west-2'",
+        "points": 2.0
+      }
+    ]
+  },
+  {
+    "task_id": "LC-4",
+    "category": "E",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": true,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "Фактический вход 213661 при цели 220201 токенов."
+    ],
+    "checks": [
+      {
+        "name": "exact single-value answer",
+        "passed": true,
+        "detail": "ответ 'team-124' совпал с 'team-124'",
+        "points": 2.0
+      }
+    ]
+  },
+  {
+    "task_id": "LC-5",
+    "category": "E",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": true,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "Фактический вход 213744 при цели 220201 токенов."
+    ],
+    "checks": [
+      {
+        "name": "exact single-value answer",
+        "passed": true,
+        "detail": "ответ 'selene' совпал с 'selene'",
+        "points": 2.0
+      }
+    ]
+  },
+  {
+    "task_id": "F",
+    "category": "F",
+    "earned": 8.0,
+    "possible": 8.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "q1",
+        "passed": true,
+        "detail": "корректный отказ",
+        "points": 0.8
+      },
+      {
+        "name": "q2",
+        "passed": true,
+        "detail": "верно",
+        "points": 0.8
+      },
+      {
+        "name": "q3",
+        "passed": true,
+        "detail": "верно",
+        "points": 0.8
+      },
+      {
+        "name": "q4",
+        "passed": true,
+        "detail": "корректный отказ",
+        "points": 0.8
+      },
+      {
+        "name": "q5",
+        "passed": true,
+        "detail": "корректный отказ",
+        "points": 0.8
+      },
+      {
+        "name": "q6",
+        "passed": true,
+        "detail": "корректный отказ",
+        "points": 0.8
+      },
+      {
+        "name": "q7",
+        "passed": true,
+        "detail": "верно",
+        "points": 0.8
+      },
+      {
+        "name": "q8",
+        "passed": true,
+        "detail": "верно",
+        "points": 0.8
+      },
+      {
+        "name": "q9",
+        "passed": true,
+        "detail": "корректный отказ",
+        "points": 0.8
+      },
+      {
+        "name": "q10",
+        "passed": true,
+        "detail": "верно",
+        "points": 0.8
+      }
+    ]
+  },
+  {
+    "task_id": "G-1",
+    "category": "G",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "schema",
+        "passed": true,
+        "detail": "строгий JSON, схема соблюдена",
+        "points": 1.0
+      },
+      {
+        "name": "content",
+        "passed": true,
+        "detail": "payload совпадает с эталоном",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "G-2",
+    "category": "G",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "schema",
+        "passed": true,
+        "detail": "строгий JSON, схема соблюдена",
+        "points": 1.0
+      },
+      {
+        "name": "content",
+        "passed": true,
+        "detail": "payload совпадает с эталоном",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "G-3",
+    "category": "G",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "schema",
+        "passed": true,
+        "detail": "строгий JSON, схема соблюдена",
+        "points": 1.0
+      },
+      {
+        "name": "content",
+        "passed": true,
+        "detail": "payload совпадает с эталоном",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "G-4",
+    "category": "G",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "schema",
+        "passed": true,
+        "detail": "строгий JSON, схема соблюдена",
+        "points": 1.0
+      },
+      {
+        "name": "content",
+        "passed": true,
+        "detail": "payload совпадает с эталоном",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "H-1",
+    "category": "H",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "corrected_tariff",
+        "passed": true,
+        "detail": "выбран 'zeta', ожидался 'zeta' — условие изменено во втором сообщении",
+        "points": 1.0
+      },
+      {
+        "name": "format_kept",
+        "passed": true,
+        "detail": "одна строка `итог: <имя>` из первого сообщения и отвергнутый тариф не упомянут",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "H-2",
+    "category": "H",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "status_sequence",
+        "passed": true,
+        "detail": "последовательность статусов совпала: получено ['ok', 'degraded', 'down'], ожидалось ['ok', 'degraded', 'down'] (последний ход — свободное объяснение)",
+        "points": 1.0
+      },
+      {
+        "name": "final_status",
+        "passed": true,
+        "detail": "получено 'down', ожидался 'down'; ровно одно слово из набора и ни одной цифры",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "H-3",
+    "category": "H",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "new_threshold",
+        "passed": true,
+        "detail": "получено 360, ожидалось 360",
+        "points": 1.0
+      },
+      {
+        "name": "superseded_values_gone",
+        "passed": true,
+        "detail": "в финале одно число и нет ни старого лимита 140, ни старого порога 126",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "I-1",
+    "category": "I",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "json_shape",
+        "passed": true,
+        "detail": "нужен строгий JSON с ключами sum (целое), mean (число), top3 (три строки) и max_file (строка)",
+        "points": 1.0
+      },
+      {
+        "name": "aggregate",
+        "passed": true,
+        "detail": "получено {'sum': 15022, 'mean': 455.21, 'top3': ['item-26', 'item-05', 'item-17'], 'max_file': 'records/part-09.txt'}; ожидалось sum=15022, mean=455.21, top3=['item-26', 'item-05', 'item-17'], max_file='records/part-09.txt'",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "I-2",
+    "category": "I",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "json_shape",
+        "passed": true,
+        "detail": "нужен строгий JSON с целыми ключами value и superseded",
+        "points": 1.0
+      },
+      {
+        "name": "conflict",
+        "passed": true,
+        "detail": "получено {'value': 280, 'superseded': 3}; ожидалось value=280 (победитель 'configs/node-03.txt'), superseded=3",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "J-1",
+    "category": "J",
+    "earned": 3.0,
+    "possible": 3.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "defect_located",
+        "passed": true,
+        "detail": "получено file='pipeline/window.py' line=14, ожидалось file='pipeline/window.py' line=14",
+        "points": 1.0
+      },
+      {
+        "name": "fix_passes_hidden_tests",
+        "passed": true,
+        "detail": "все 7 скрытых тестов прошли",
+        "points": 2.0
+      }
+    ]
+  },
+  {
+    "task_id": "J-2",
+    "category": "J",
+    "earned": 2.0,
+    "possible": 2.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [],
+    "checks": [
+      {
+        "name": "defect_located",
+        "passed": true,
+        "detail": "получено file='sink/paths.py' line=13, ожидалось file='sink/paths.py' line=13",
+        "points": 1.0
+      },
+      {
+        "name": "fix_passes_hidden_tests",
+        "passed": true,
+        "detail": "все 5 скрытых тестов прошли",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-1",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/a7e147dea1e57cbebfeb5e100b435ef4.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 4 на месте; + camera.0 = 0.0 (ожидалось 0.0 ± 0.0001); + camera.1 = 7.0 (ожидалось 7.0 ± 0.0001); + camera.2 = 16.0 (ожидалось 16.0 ± 0.0001); + projectiles: 3 элементов (ожидалось 3..3)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "75 шагов по 0.0166667 с: + projectiles.0.x = -3.0 (ожидалось -3.0 ± 0.001); + projectiles.1.x = 1.275 (ожидалось 1.275 ± 0.001); + projectiles.2.x = 5.55 (ожидалось 5.55 ± 0.001); + projectiles.0.y = 3.5004 (ожидалось 3.5004 ± 0.001); + projectiles.1.y = 3.9754 (ожидалось 3.9754 ± 0.001); + projectiles.2.y = 4.4504 (ожидалось 4.4504 ± 0.001); + t = 1.25 (ожидалось 1.25 ± 0.001); + steps = 75.0 (ожидалось 75 ± 0)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.5671 (нужно >= 0.15); + кадр distinct_colors = 27 (нужно >= 8); + кадр: оранжевые снаряды различимы — 0.0039 кадра (нужно >= 0.0015); + кадр: снаряды видны в кадре, а не у его края — центр y = 0.468 (нужно 0.0..0.8); + область 7: [43, 53, 64] (низ кадра — тёмная земля)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-2",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/3d08ec4b1566500d131f046b21625206.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 4 на месте; + camera.0 = 0.0 (ожидалось 0.0 ± 0.0001); + camera.1 = 3.5 (ожидалось 3.5 ± 0.0001); + camera.2 = 15.0 (ожидалось 15.0 ± 0.0001)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "60 шагов по 0.0166667 с: + x = -1.0688 (ожидалось -1.0688 ± 0.001); + v = -1.0415 (ожидалось -1.0415 ± 0.001); + k = 10.07 (ожидалось 10.07 ± 0.001); + m = 1.0 (ожидалось 1.0 ± 0.001); + t = 1.0 (ожидалось 1.0 ± 0.001); + steps = 60.0 (ожидалось 60 ± 0)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.6458 (нужно >= 0.2); + кадр distinct_colors = 40 (нужно >= 5); + кадр: оранжевый груз различим — 0.0067 кадра (нужно >= 0.003); + кадр: груз виден в кадре — центр y = 0.495 (нужно 0.2..0.8); + область 7: [41, 51, 62] (низ кадра — тёмная земля)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-3",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/6838075f1814ee40a3e960e13d794882.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 4 на месте; + camera.0 = 0.0 (ожидалось 0.0 ± 0.0001); + camera.1 = 1.8 (ожидалось 1.8 ± 0.0001); + camera.2 = 9.0 (ожидалось 9.0 ± 0.0001); + L = 2.28 (ожидалось 2.28 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "120 шагов по 0.0166667 с: + theta = -0.7083 (ожидалось -0.7083 ± 0.001); + omega = 1.2327 (ожидалось 1.2327 ± 0.001); + t = 2.0 (ожидалось 2.0 ± 0.001); + steps = 120.0 (ожидалось 120 ± 0)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.4838 (нужно >= 0.2); + кадр distinct_colors = 26 (нужно >= 5); + кадр: оранжевый шар различим — 0.0030 кадра (нужно >= 0.0015); + кадр: шар виден в кадре — центр y = 0.515 (нужно 0.2..0.8); + область 7: [42, 51, 62] (низ кадра — тёмная земля)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-4",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/5daada553d961f92195e9f24bf6264fa.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 6 на месте; + camera.0 = 0.0 (ожидалось 0.0 ± 0.0001); + camera.1 = 3.8 (ожидалось 3.8 ± 0.0001); + camera.2 = 12.0 (ожидалось 12.0 ± 0.0001); + balls: 3 элементов (ожидалось 3..3)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "120 шагов по 0.0166667 с: + balls.0.x = 2.7485 (ожидалось 2.7485 ± 0.001); + balls.1.x = 4.9399 (ожидалось 4.9399 ± 0.001); + balls.2.x = 7.3962 (ожидалось 7.3962 ± 0.001); + balls.0.v = 1.83 (ожидалось 1.83 ± 0.001); + balls.1.v = -2.28 (ожидалось -2.28 ± 0.001); + balls.2.v = -2.33 (ожидалось -2.33 ± 0.001); + collisions = 4.0 (ожидалось 4 ± 0); + t = 2.0 (ожидалось 2.0 ± 0.001); + steps = 120.0 (ожидалось 120 ± 0)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.6585 (нужно >= 0.2); + кадр distinct_colors = 39 (нужно >= 5); + кадр: оранжевые шары различимы — 0.0083 кадра (нужно >= 0.004); + кадр: шары видны в кадре — центр y = 0.515 (нужно 0.2..0.8); + область 7: [41, 51, 62] (низ кадра — тёмный пол)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-5",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/75e5de27c559319ec1e6b7ef24137ada.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 7 на месте; + camera.0 = 0.0 (ожидалось 0.0 ± 0.0001); + camera.1 = 3.2 (ожидалось 3.2 ± 0.0001); + camera.2 = 13.0 (ожидалось 13.0 ± 0.0001); + x: 3 элементов (ожидалось 3..3); + v: 3 элементов (ожидалось 3..3)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "120 шагов по 0.0166667 с: + x.0 = -2.1839 (ожидалось -2.1839 ± 0.001); + x.1 = -0.0675 (ожидалось -0.0675 ± 0.001); + x.2 = 2.0513 (ожидалось 2.0513 ± 0.001); + v.0 = 0.5312 (ожидалось 0.5312 ± 0.001); + v.1 = -0.0235 (ожидалось -0.0235 ± 0.001); + v.2 = -0.5077 (ожидалось -0.5077 ± 0.001); + t = 2.0 (ожидалось 2.0 ± 0.001); + steps = 120.0 (ожидалось 120 ± 0)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.6067 (нужно >= 0.2); + кадр distinct_colors = 36 (нужно >= 5); + кадр: оранжевые грузы различимы — 0.0155 кадра (нужно >= 0.0075); + кадр: грузы видны в кадре — центр y = 0.511 (нужно 0.2..0.8); + область 7: [41, 51, 62] (низ кадра — тёмный пол)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-6",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/4c88cfc150316655139f360da74e8c37.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 2 на месте; + camera.0 = 0.0 (ожидалось 0.0 ± 0.0001); + camera.1 = 2.4 (ожидалось 2.4 ± 0.0001); + camera.2 = 7.5 (ожидалось 7.5 ± 0.0001); + omega: 3 элементов (ожидалось 3..3); + inertia.1 = 0.591 (ожидалось 0.591 ± 0.001); + inertia.2 = 0.6313 (ожидалось 0.6313 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "150 шагов по 0.0166667 с: + omega.0 = 3.6872 (ожидалось 3.6872 ± 0.001); + omega.1 = 0.4755 (ожидалось 0.4755 ± 0.001); + omega.2 = -0.015 (ожидалось -0.015 ± 0.001); + inertia.0 = 0.147 (ожидалось 0.147 ± 0.001); + t = 2.5 (ожидалось 2.5 ± 0.001); + steps = 150.0 (ожидалось 150 ± 0)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.4989 (нужно >= 0.2); + кадр: тёмная земля видна в кадре — 0.4538 кадра (нужно >= 0.2); + кадр: медное тело различимо — 0.0451 кадра (нужно >= 0.015); + кадр: тело видно в кадре — центр y = 0.496 (нужно 0.2..0.8); + область 7: [41, 50, 61] (низ кадра — тёмная земля)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-7",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/27b74d52e485ad02a342fc6f629a9637.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 2 на месте; + camera.0 = 0.0 (ожидалось 0.0 ± 0.0001); + camera.1 = 4.0 (ожидалось 4.0 ± 0.0001); + camera.2 = 14.0 (ожидалось 14.0 ± 0.0001)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "60 шагов по 0.0166667 с: + steps = 60.0 (ожидалось 60 ± 0); + alive = 20.0 (ожидалось 20 ± 0); + mean_height = 1.6118 (ожидалось 1.6117560393176937 ± 0.001); + particles.0.x = 0.5692 (ожидалось 0.5692024491727359 ± 0.001); + particles.0.y = 0.5654 (ожидалось 0.5654113894328439 ± 0.001); + particles.1.x = -2.1191 (ожидалось -2.1190985972061744 ± 0.001); + particles.1.y = 1.6993 (ожидалось 1.6992621520534117 ± 0.001); + particles.2.x = 2.2919 (ожидалось 2.2918779049068694 ± 0.001); + particles.2.y = 0.8074 (ожидалось 0.807381962053473 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.4972 (нужно >= 0.2); + кадр distinct_colors = 28 (нужно >= 9); + кадр: частицы фонтана различимы — 0.0182 кадра (нужно >= 0.006); + кадр: частицы видны в кадре — центр y = 0.616 (нужно 0.05..0.95); + область 8: [43, 53, 64] (низ кадра — тёмная земля)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-8",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/4414b721f904b04dfcd7441e02eeb238.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 2 на месте; + camera.0 = 0.0 (ожидалось 0.0 ± 0.0001); + camera.1 = 0.0 (ожидалось 0.0 ± 0.0001); + camera.2 = 16.0 (ожидалось 16.0 ± 0.0001)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "20 шагов по 0.0166667 с: + steps = 20.0 (ожидалось 20 ± 0); + particles.0.x = -2.8281 (ожидалось -2.8280974034219986 ± 0.001); + particles.0.y = 2.4581 (ожидалось 2.458112781494855 ± 0.001); + particles.1.x = -1.7338 (ожидалось -1.733838492259383 ± 0.001); + particles.1.y = 1.3722 (ожидалось 1.3722157329320905 ± 0.001); + particles.2.x = 1.0814 (ожидалось 1.0814025711268187 ± 0.001); + particles.2.y = 0.9032 (ожидалось 0.9032486505806445 ± 0.001); + particles.3.x = 1.6487 (ожидалось 1.6486515302211053 ± 0.001); + particles.3.y = 2.1769 (ожидалось 2.176885066926479 ± 0.001); + particles.4.x = -2.2954 (ожидалось -2.2954304192215202 ± 0.001); + particles.4.y = -0.73 (ожидалось -0.7300109185278416 ± 0.001); + particles.5.x = -0.2356 (ожидалось -0.2356187727302311 ± 0.001); + particles.5.y = 0.4509 (ожидалось 0.45086499452590945 ± 0.001); + particles.6.x = 0.8436 (ожидалось 0.8435570221394301 ± 0.001); + particles.6.y = -0.4592 (ожидалось -0.4591795824468138 ± 0.001); + particles.7.x = 2.4941 (ожидалось 2.4940715003758664 ± 0.001); + particles.7.y = 0.1527 (ожидалось 0.1527069225907325 ± 0.001); + particles.8.x = -3.1211 (ожидалось -3.1211308781057596 ± 0.001); + particles.8.y = -0.4863 (ожидалось -0.4863352067768572 ± 0.001); + particles.9.x = -1.6215 (ожидалось -1.6215164657682182 ± 0.001); + particles.9.y = -0.8066 (ожидалось -0.8066390603780745 ± 0.001); + particles.10.x = 1.4066 (ожидалось 1.4065679680556058 ± 0.001); + particles.10.y = -0.1644 (ожидалось -0.16442845985293378 ± 0.001); + particles.11.x = 3.8064 (ожидалось 3.8064070779830224 ± 0.001); + particles.11.y = -1.17 (ожидалось -1.1699765279889107 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.0114 (нужно >= 0.0035); + кадр distinct_colors = 24 (нужно >= 8); + кадр: блуждающие частицы различимы — 0.0114 кадра (нужно >= 0.0035); + кадр: частицы держатся центра кадра — центр x = 0.497 (нужно 0.2..0.8); + область 0: [36, 45, 55] (верх кадра — тёмный фон)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-9",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/5e2e1ace712f8b25178d29312b49d6ab.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 3 на месте; + camera.0 = 0.0 (ожидалось 0.0 ± 0.0001); + camera.1 = 0.0 (ожидалось 0.0 ± 0.0001); + camera.2 = 18.0 (ожидалось 18.0 ± 0.0001)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "36 шагов по 0.0166667 с: + steps = 36.0 (ожидалось 36 ± 0); + agents: 12 элементов (ожидалось 12..12); + agents.0.x = 2.2846 (ожидалось 2.2846192940711116 ± 0.001); + agents.0.y = -3.7132 (ожидалось -3.713217787646153 ± 0.001); + agents.0.vx = -1.1349 (ожидалось -1.1349105285784273 ± 0.001); + agents.0.vy = -0.8831 (ожидалось -0.8830693030338362 ± 0.001); + agents.1.x = 2.8726 (ожидалось 2.8725722602348913 ± 0.001); + agents.1.y = -3.0664 (ожидалось -3.066423818702037 ± 0.001); + agents.1.vx = 0.2765 (ожидалось 0.276527923529785 ± 0.001); + agents.1.vy = 1.0707 (ожидалось 1.0706939246735334 ± 0.001); + agents.2.x = 2.6727 (ожидалось 2.672747947779711 ± 0.001); + agents.2.y = 4.184 (ожидалось 4.184025613793441 ± 0.001); + agents.2.vx = 0.8332 (ожидалось 0.8331846942459024 ± 0.001); + agents.2.vy = -0.0677 (ожидалось -0.06766826997475704 ± 0.001); + agents.3.x = -2.4337 (ожидалось -2.433650526168579 ± 0.001); + agents.3.y = 1.0666 (ожидалось 1.066640363952752 ± 0.001); + agents.3.vx = 1.7817 (ожидалось 1.7817122314712408 ± 0.001); + agents.3.vy = -0.624 (ожидалось -0.624016143004668 ± 0.001); + agents.4.x = 4.2177 (ожидалось 4.217705693025394 ± 0.001); + agents.4.y = -1.2778 (ожидалось -1.2777519417835679 ± 0.001); + agents.4.vx = 0.4917 (ожидалось 0.49167890335791065 ± 0.001); + agents.4.vy = 0.6629 (ожидалось 0.6629383503786214 ± 0.001); + agents.5.x = 0.5114 (ожидалось 0.5113748783291535 ± 0.001); + agents.5.y = -2.8831 (ожидалось -2.883103299938875 ± 0.001); + agents.5.vx = 0.2635 (ожидалось 0.26349777125789386 ± 0.001); + agents.5.vy = 0.2222 (ожидалось 0.22219461816818817 ± 0.001); + agents.6.x = 2.014 (ожидалось 2.014018692966065 ± 0.001); + agents.6.y = 1.746 (ожидалось 1.7459694622616384 ± 0.001); + agents.6.vx = 0.3833 (ожидалось 0.38332875008165673 ± 0.001); + agents.6.vy = 0.8882 (ожидалось 0.8882170716279363 ± 0.001); + agents.7.x = -0.1775 (ожидалось -0.1774566297476666 ± 0.001); + agents.7.y = 0.9701 (ожидалось 0.9700793551775218 ± 0.001); + agents.7.vx = -0.9047 (ожидалось -0.9046960412764959 ± 0.001); + agents.7.vy = 0.8128 (ожидалось 0.8128447000739539 ± 0.001); + agents.8.x = -3.2324 (ожидалось -3.23240760127217 ± 0.001); + agents.8.y = 3.4191 (ожидалось 3.419090866527567 ± 0.001); + agents.8.vx = 1.3212 (ожидалось 1.321216104069602 ± 0.001); + agents.8.vy = -0.9199 (ожидалось -0.9199481423634669 ± 0.001); + agents.9.x = 2.9961 (ожидалось 2.9960580394367193 ± 0.001); + agents.9.y = -0.7861 (ожидалось -0.786121016127351 ± 0.001); + agents.9.vx = -1.442 (ожидалось -1.4420166926086575 ± 0.001); + agents.9.vy = 1.5004 (ожидалось 1.5003835417457232 ± 0.001); + agents.10.x = -2.3431 (ожидалось -2.343138623447054 ± 0.001); + agents.10.y = 2.1084 (ожидалось 2.1084055058992273 ± 0.001); + agents.10.vx = 2.1753 (ожидалось 2.1752951675611647 ± 0.001); + agents.10.vy = -1.2321 (ожидалось -1.23210832883519 ± 0.001); + agents.11.x = 0.1616 (ожидалось 0.16156697163202738 ± 0.001); + agents.11.y = 0.6094 (ожидалось 0.609387733861286 ± 0.001); + agents.11.vx = 0.7696 (ожидалось 0.7695524145435556 ± 0.001); + agents.11.vy = -0.5443 (ожидалось -0.5442968722642718 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.0091 (нужно >= 0.004); + кадр distinct_colors = 24 (нужно >= 9); + кадр: агенты стаи различимы — 0.0091 кадра (нужно >= 0.004); + кадр: стая держится центра кадра — центр x = 0.535 (нужно 0.2..0.8); + область 0: [35, 44, 54] (верх кадра — тёмный фон)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-10",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/f27cd3cfa6d73b6243068478a62e3742.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 3 на месте; + camera.0 = 0.0 (ожидалось 0.0 ± 0.0001); + camera.1 = 4.0 (ожидалось 4.0 ± 0.0001); + camera.2 = 16.0 (ожидалось 16.0 ± 0.0001)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "105 шагов по 0.0166667 с: + steps = 105.0 (ожидалось 105 ± 0); + bounces = 6.0 (ожидалось 6 ± 0); + balls: 4 элементов (ожидалось 4..4); + balls.0.x = 2.4875 (ожидалось 2.4874783835839485 ± 0.001); + balls.0.y = 2.4356 (ожидалось 2.435644539628022 ± 0.001); + balls.0.vx = 2.4149 (ожидалось 2.414852117188275 ± 0.001); + balls.0.vy = -0.3096 (ожидалось -0.30956575865857383 ± 0.001); + balls.1.x = -4.323 (ожидалось -4.32300292956641 ± 0.001); + balls.1.y = 2.425 (ожидалось 2.4249636607671454 ± 0.001); + balls.1.vx = -1.3907 (ожидалось -1.3907164307311177 ± 0.001); + balls.1.vy = -0.3245 (ожидалось -0.3244693105574705 ± 0.001); + balls.2.x = -2.0619 (ожидалось -2.061888685682779 ± 0.001); + balls.2.y = 1.1593 (ожидалось 1.1592995174415421 ± 0.001); + balls.2.vx = 0.3358 (ожидалось 0.33581447694450617 ± 0.001); + balls.2.vy = -7.8268 (ожидалось -7.826751206396148 ± 0.001); + balls.3.x = 4.038 (ожидалось 4.037961622932935 ± 0.001); + balls.3.y = 2.6787 (ожидалось 2.6787060808165313 ± 0.001); + balls.3.vx = 2.0107 (ожидалось 2.010719387792051 ± 0.001); + balls.3.vy = 2.1604 (ожидалось 2.1603988660965103 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.6844 (нужно >= 0.3); + кадр distinct_colors = 44 (нужно >= 9); + кадр: шарики различимы — 0.0081 кадра (нужно >= 0.0016); + кадр: шарики видны в кадре — центр y = 0.494 (нужно 0.05..0.95); + область 7: [41, 51, 62] (низ кадра — тёмный пол)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-11",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/12c8597b4cd6989a5e9207d94d5c7f59.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 2 на месте; + camera.0 = 4.0 (ожидалось 4.0 ± 0.0001); + camera.1 = 3.0 (ожидалось 3.0 ± 0.0001); + camera.2 = 18.0 (ожидалось 18.0 ± 0.0001)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "30 шагов по 0.0166667 с: + steps = 30.0 (ожидалось 30 ± 0); + field.A = 1.5 (ожидалось 1.5 ± 1e-06); + field.B = 1.5 (ожидалось 1.5 ± 1e-06); + particles.0.x = 6.6675 (ожидалось 6.667508088265874 ± 0.001); + particles.0.y = 1.2109 (ожидалось 1.2109177494310457 ± 0.001); + particles.1.x = 1.2079 (ожидалось 1.207876988479725 ± 0.001); + particles.1.y = 0.9805 (ожидалось 0.9805358317077455 ± 0.001); + particles.2.x = 4.4911 (ожидалось 4.491090095563824 ± 0.001); + particles.2.y = 3.8823 (ожидалось 3.8823016817125087 ± 0.001); + particles.3.x = 7.462 (ожидалось 7.462023217987803 ± 0.001); + particles.3.y = 5.2537 (ожидалось 5.253699335680808 ± 0.001); + particles.4.x = 2.7222 (ожидалось 2.7222115340465973 ± 0.001); + particles.4.y = 3.6041 (ожидалось 3.6041119650737605 ± 0.001); + particles.5.x = 4.5374 (ожидалось 4.537386646844158 ± 0.001); + particles.5.y = 3.6304 (ожидалось 3.630381089155318 ± 0.001); + particles.6.x = 3.2836 (ожидалось 3.283637391240209 ± 0.001); + particles.6.y = 1.1188 (ожидалось 1.1187867949564572 ± 0.001); + particles.7.x = 4.55 (ожидалось 4.549982905312817 ± 0.001); + particles.7.y = 5.626 (ожидалось 5.625998609997534 ± 0.001); + particles.8.x = 1.5979 (ожидалось 1.5978531107991631 ± 0.001); + particles.8.y = 1.3779 (ожидалось 1.377892249075692 ± 0.001); + particles.9.x = 2.9734 (ожидалось 2.9734127732285924 ± 0.001); + particles.9.y = 1.6138 (ожидалось 1.613830324924627 ± 0.001); + particles.10.x = 3.6642 (ожидалось 3.6642450156213613 ± 0.001); + particles.10.y = 1.3662 (ожидалось 1.366161467611761 ± 0.001); + particles.11.x = 5.4927 (ожидалось 5.492675573826981 ± 0.001); + particles.11.y = 1.3458 (ожидалось 1.3457618758015377 ± 0.001); + particles.12.x = 4.238 (ожидалось 4.238030544386619 ± 0.001); + particles.12.y = 1.4945 (ожидалось 1.4945075535882688 ± 0.001); + particles.13.x = 6.2754 (ожидалось 6.275434402955604 ± 0.001); + particles.13.y = 4.6372 (ожидалось 4.637217975948341 ± 0.001); + particles.14.x = 2.5099 (ожидалось 2.509907599270978 ± 0.001); + particles.14.y = 1.9502 (ожидалось 1.9501980144975217 ± 0.001); + particles.15.x = 5.0891 (ожидалось 5.089125478563645 ± 0.001); + particles.15.y = 5.569 (ожидалось 5.569048201739623 ± 0.001); + particles.16.x = 4.0444 (ожидалось 4.044433487330567 ± 0.001); + particles.16.y = 0.3807 (ожидалось 0.38069892083050955 ± 0.001); + particles.17.x = 5.5007 (ожидалось 5.500709932170862 ± 0.001); + particles.17.y = 3.9115 (ожидалось 3.911462388569275 ± 0.001); + particles.18.x = 1.8915 (ожидалось 1.891454597381393 ± 0.001); + particles.18.y = 1.9856 (ожидалось 1.9856000055332794 ± 0.001); + particles.19.x = 1.2801 (ожидалось 1.2800669334987684 ± 0.001); + particles.19.y = 5.4172 (ожидалось 5.417208145731316 ± 0.001); + particles.20.x = 6.2627 (ожидалось 6.262713147824957 ± 0.001); + particles.20.y = -0.2658 (ожидалось -0.2658116169501223 ± 0.001); + particles.21.x = 4.9327 (ожидалось 4.9327079429808265 ± 0.001); + particles.21.y = 0.4194 (ожидалось 0.41935600277678203 ± 0.001); + particles.22.x = 7.9987 (ожидалось 7.998711601545038 ± 0.001); + particles.22.y = 3.6937 (ожидалось 3.6936920379887472 ± 0.001); + particles.23.x = 8.0873 (ожидалось 8.087250308461483 ± 0.001); + particles.23.y = 1.4208 (ожидалось 1.4208474610777875 ± 0.001); + particles.24.x = 4.105 (ожидалось 4.105017316858313 ± 0.001); + particles.24.y = 2.5329 (ожидалось 2.5328778592882335 ± 0.001); + particles.25.x = 1.1059 (ожидалось 1.1059228481048093 ± 0.001); + particles.25.y = 3.0364 (ожидалось 3.0364258718865496 ± 0.001); + particles.26.x = 7.4084 (ожидалось 7.408357897990592 ± 0.001); + particles.26.y = 0.1428 (ожидалось 0.1428336500880385 ± 0.001); + particles.27.x = 2.0124 (ожидалось 2.012402069773562 ± 0.001); + particles.27.y = 6.3185 (ожидалось 6.318450934584155 ± 0.001); + particles.28.x = 5.3627 (ожидалось 5.36267415993655 ± 0.001); + particles.28.y = 2.4669 (ожидалось 2.4668793604635306 ± 0.001); + particles.29.x = 6.2019 (ожидалось 6.20194140485928 ± 0.001); + particles.29.y = -0.1763 (ожидалось -0.1762567368372094 ± 0.001); + particles.30.x = 5.3427 (ожидалось 5.342721588052792 ± 0.001); + particles.30.y = 4.6369 (ожидалось 4.636896628408347 ± 0.001); + particles.31.x = 4.0482 (ожидалось 4.048226392367818 ± 0.001); + particles.31.y = 4.926 (ожидалось 4.926034486168533 ± 0.001); + particles.32.x = 3.5487 (ожидалось 3.5486917876674307 ± 0.001); + particles.32.y = 1.2275 (ожидалось 1.2274828161836442 ± 0.001); + particles.33.x = 4.5726 (ожидалось 4.572565783838342 ± 0.001); + particles.33.y = 4.2374 (ожидалось 4.237428776650796 ± 0.001); + particles.34.x = 4.549 (ожидалось 4.548952273339679 ± 0.001); + particles.34.y = 2.6785 (ожидалось 2.6785365491915134 ± 0.001); + particles.35.x = 6.8399 (ожидалось 6.839860898619661 ± 0.001); + particles.35.y = 4.7857 (ожидалось 4.785738651194323 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.0248 (нужно >= 0.006); + кадр distinct_colors = 24 (нужно >= 8); + кадр: частицы потока различимы — 0.0248 кадра (нужно >= 0.006); + кадр: поток виден в центре кадра — центр x = 0.521 (нужно 0.2..0.8); + область 0: [32, 40, 50] (верх кадра — тёмный фон)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-12",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/2cbfe304e617332366bf7bda18abb0ee.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ grid = 32.0 (ожидалось 32 ± 0); + max = 1000.0 (ожидалось 1000.0 ± 0.0001); + mean = 0.9766 (ожидалось 0.9766 ± 0.0001); + samples.0 = 1000.0 (ожидалось 1000.0 ± 0.0001); + samples.1 = 0.0 (ожидалось 0.0 ± 1e-06); + samples.2 = 0.0 (ожидалось 0.0 ± 1e-06)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "40 шагов по 0.0166667 с: + samples.0 = 6.031 (ожидалось 6.031 ± 0.001); + samples.1 = 0.5577 (ожидалось 0.5577 ± 0.001); + samples.2 = 0.0783 (ожидалось 0.0783 ± 0.001); + mean = 0.9765 (ожидалось 0.9765 ± 0.001); + max = 6.1405 (ожидалось 6.1405 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.1965 (нужно >= 0.09); + кадр distinct_colors = 40 (нужно >= 16); + кадр: горячая область пластины различима — 0.0397 кадра (нужно >= 0.012); + кадр mean = 18.3 (нужно >= 12.0)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-13",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/42d3b42f208477cb902ae09783f1d962.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ trees = 1116.0 (ожидалось 1116 ± 0); + burning = 1.0 (ожидалось 1 ± 0); + burned = 0.0 (ожидалось 0 ± 0); + steps = 0.0 (ожидалось 0 ± 0)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "6 шагов по 0.0166667 с: + trees = 998.0 (ожидалось 998 ± 0); + burning = 32.0 (ожидалось 32 ± 0); + burned = 87.0 (ожидалось 87 ± 0); + steps = 6.0 (ожидалось 6 ± 0)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.2243 (нужно >= 0.1); + кадр distinct_colors = 12 (нужно >= 8); + кадр: горящий фронт различим — 0.0045 кадра (нужно >= 0.0014); + кадр: пустые клетки видны как тёмная сетка — 0.1217 кадра (нужно >= 0.02)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-14",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/57d8580338818ea78ec886443c86c7bc.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ generation = 0.0 (ожидалось 0 ± 0); + alive = 162.0 (ожидалось 162 ± 0); + rows: 3 элементов (ожидалось 3..3)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "20 шагов по 0.0166667 с: + generation = 20.0 (ожидалось 20 ± 0); + alive = 65.0 (ожидалось 65 ± 0); + rows.0 = 0.0 (ожидалось 0 ± 0); + rows.1 = 2.0 (ожидалось 2 ± 0); + rows.2 = 0.0 (ожидалось 0 ± 0)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.2336 (нужно >= 0.05); + кадр distinct_colors = 10 (нужно >= 3); + кадр: живые клетки различимы — 0.0262 кадра (нужно >= 0.005); + кадр: живые клетки видны в кадре — центр y = 0.498 (нужно 0.0..0.98)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-15",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/93d3d30c43d40f6a700f8d55bc50e029.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ samples.0 = 0.7373 (ожидалось 0.7373 ± 0.001); + samples.1 = 0.0147 (ожидалось 0.0147 ± 0.001); + samples.2 = 0.0 (ожидалось 0.0 ± 0.001); + energy = 0.0143 (ожидалось 0.0143 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "40 шагов по 0.0166667 с: + samples.0 = -0.0086 (ожидалось -0.0086 ± 0.001); + samples.1 = 0.1818 (ожидалось 0.1818 ± 0.001); + samples.2 = 0.0578 (ожидалось 0.0578 ± 0.001); + energy = 0.0141 (ожидалось 0.0141 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.0116 (нужно >= 0.005); + кадр distinct_colors = 87 (нужно >= 16); + кадр: струна различима — 0.0027 кадра (нужно >= 0.0007); + кадр: профиль струны светлый — 0.0022 кадра (нужно >= 0.0005)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-16",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/76c34b418b55b6aab4b236fd75ac8cc8.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ min = -2, max = 1.9988, heights = [1.7589, -1.0973, 0.4492]; + min = -2.0 (ожидалось -2.05..-0.8); + max = 1.9988 (ожидалось 0.8..2.05)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "24 шагов по 0.0166667 с: + heights.0 = 1.7589 (ожидалось 1.7589 ± 0.001); + heights.1 = -1.0973 (ожидалось -1.0973 ± 0.001); + heights.2 = 0.4492 (ожидалось 0.4492 ± 0.001); + min = -2.0 (ожидалось -2.0 ± 0.001); + max = 1.9988 (ожидалось 1.9988 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр changed_fraction = 0.1217 (нужно >= 0.05); + кадр distinct_colors = 10 (нужно >= 4); + кадр: рельеф занимает заметную часть кадра — 0.1217 кадра (нужно >= 0.05); + кадр mean = 31.8 (нужно >= 12.0)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-17",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/34d154fdab5570ee8c329b109ee6edd6.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 9 на месте; + bars: 7 элементов (ожидалось 7..7); + bars: label = ['A', 'B', 'C', 'D', 'E', 'F', 'G'] (ожидались ['A', 'B', 'C', 'D', 'E', 'F', 'G']); + bars: все 7 высот на месте; + steps = 0.0 (ожидалось 0 ± 0.5)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "45 шагов по 0.0166667 с: + steps = 45.0 (ожидалось 45 ± 0.5); + t = 0.75 (ожидалось 0.75 ± 0.0001); + active = 3.0 (ожидалось 3 ± 0.5); + bars: все 7 высот на месте; + max_height = 7.0 (ожидалось 7.0 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр: оранжевые столбцы и маркер — 0.1080 кадра (нужно >= 0.02); + кадр changed_fraction = 0.5116 (нужно >= 0.05)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-18",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/c80df5ab9b3ea810448e92935fe04cf1.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 7 на месте; + camera.0 = 0.0 (ожидалось 0.0 ± 0.0001); + camera.1 = 10.0 (ожидалось 10.0 ± 0.0001); + camera.2 = 13.0 (ожидалось 13.0 ± 0.0001); + planets.0.theta = 150.0 (ожидалось 150.0 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "90 шагов по 0.0166667 с: + steps = 90.0 (ожидалось 90 ± 0.5); + t = 1.5 (ожидалось 1.5 ± 0.0001); + planets: 3 элементов (ожидалось 3..3); + planets: name = ['Меркурий', 'Венера', 'Марс'] (ожидались ['Меркурий', 'Венера', 'Марс']); + planets.0.theta = 219.1421 (ожидалось 219.1421 ± 0.001); + planets.0.x = -1.5822 (ожидалось -1.5822 ± 0.001); + planets.0.z = -1.2877 (ожидалось -1.2877 ± 0.001); + planets.1.theta = 208.0673 (ожидалось 208.0673 ± 0.001); + planets.1.x = -3.3266 (ожидалось -3.3266 ± 0.001); + planets.1.z = -1.7738 (ожидалось -1.7738 ± 0.001); + planets.2.theta = 177.706 (ожидалось 177.706 ± 0.001); + planets.2.x = -5.1858 (ожидалось -5.1858 ± 0.001); + planets.2.z = 0.2077 (ожидалось 0.2077 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр: звезда и тёплая планета — 0.0048 кадра (нужно >= 0.0018); + кадр: орбиты и холодные планеты — 0.0141 кадра (нужно >= 0.0035); + кадр changed_fraction = 0.019 (нужно >= 0.004)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-19",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/364c2bc0c26d2f786486d23d3c1d28db.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 3 на месте; + angles = [0, 0] (ожидались [0.0, 0.0] ± 0.001); + effector = [4.65, 0] (ожидалось [4.65, 0.0] ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "30 шагов по 0.0166667 с: + steps = 30.0 (ожидалось 30 ± 0.5); + t = 0.5 (ожидалось 0.5 ± 0.0001); + angles = [1.9549, -2.0958] (ожидались [1.9549, -2.0958] ± 0.001); + effector = [1.11, 2.08] (ожидалось [1.11, 2.08] ± 0.001); + target = [1.11, 2.08] (ожидалось [1.11, 2.08] ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр: цель — 0.0011 кадра (нужно >= 0.0004); + кадр: светлые звенья — 0.0162 кадра (нужно >= 0.006); + кадр changed_fraction = 0.0185 (нужно >= 0.006)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "K-20",
+    "category": "K",
+    "earned": 4.0,
+    "possible": 4.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "кадр сохранён: /Users/sstovpeko/.cache/dailybench/visual/42928ee545cc2cc540f7672ddafd7d46.png"
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "документ загружен без ошибок; кадр 800x600",
+        "points": 1.0
+      },
+      {
+        "name": "scene",
+        "passed": true,
+        "detail": "+ objects: все 6 на месте; + bins: 3 элементов (ожидалось 3..3); + playhead = 0.0 (ожидалось 0 ± 0.5)",
+        "points": 1.0
+      },
+      {
+        "name": "simulation",
+        "passed": true,
+        "detail": "50 шагов по 0.0166667 с: + steps = 50.0 (ожидалось 50 ± 0.5); + t = 0.8333 (ожидалось 0.8333333333333334 ± 0.0001); + playhead = 8.0 (ожидалось 8 ± 0.5); + dominant = 6.0 (ожидалось 6.0 ± 0.001); + bins.0.freq = 6.0 (ожидалось 6.0 ± 0.001); + bins.1.freq = 11.0 (ожидалось 11.0 ± 0.001); + bins.2.freq = 18.0 (ожидалось 18.0 ± 0.001); + bins.0.amplitude = 2.73 (ожидалось 2.73 ± 0.001); + bins.1.amplitude = 2.03 (ожидалось 2.03 ± 0.001); + bins.2.amplitude = 0.0 (ожидалось 0.0 ± 0.001)",
+        "points": 1.0
+      },
+      {
+        "name": "image",
+        "passed": true,
+        "detail": "+ кадр: оранжевые столбцы и бегунок — 0.0333 кадра (нужно >= 0.012); + кадр changed_fraction = 0.4635 (нужно >= 0.05)",
+        "points": 1.0
+      }
+    ]
+  },
+  {
+    "task_id": "L-1",
+    "category": "L",
+    "earned": 1.0,
+    "possible": 1.0,
+    "admission": null,
+    "skipped": null,
+    "error": null,
+    "notes": [
+      "Цвет, тон, композиция и выразительность не оцениваются автоматическими баллами."
+    ],
+    "checks": [
+      {
+        "name": "html",
+        "passed": true,
+        "detail": "страница загружена, кадр сохранён; художественное качество оценивает человек",
+        "points": 1.0
+      }
+    ]
+  }
+]

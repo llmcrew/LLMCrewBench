@@ -1,0 +1,752 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Прилив — гравюра на воде</title>
+<style>
+  :root{
+    --paper:#e9dfc9;
+    --ink:#131f2a;
+    --vermilion:#cf4d2f;
+    --bone:#f0e6d0;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; }
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    overflow:hidden;
+    font-family:Georgia,"Times New Roman",serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  #scene{
+    position:fixed;
+    inset:0;
+    width:100%;
+    height:100%;
+    display:block;
+    cursor:crosshair;
+    touch-action:none;
+  }
+  .plate{
+    position:fixed;
+    inset:14px;
+    border:1px solid rgba(19,31,42,.42);
+    pointer-events:none;
+    z-index:1;
+  }
+  .plate::after{
+    content:"";
+    position:absolute;
+    inset:4px;
+    border:1px solid rgba(19,31,42,.16);
+  }
+  .scrim{
+    position:fixed;
+    left:0; right:0; bottom:0;
+    height:36%;
+    background:linear-gradient(to top, rgba(10,19,27,.46), rgba(10,19,27,.12) 45%, transparent);
+    pointer-events:none;
+    z-index:1;
+  }
+  .cap{
+    position:fixed;
+    left:clamp(30px,5.4vw,72px);
+    bottom:clamp(32px,6vh,66px);
+    z-index:2;
+    color:var(--bone);
+    pointer-events:none;
+    text-shadow:0 1px 16px rgba(9,17,24,.7), 0 0 3px rgba(9,17,24,.55);
+  }
+  .cap::before{
+    content:"";
+    position:absolute;
+    inset:-46px -100px -34px -46px;
+    background:radial-gradient(ellipse at 28% 58%, rgba(8,17,24,.62), rgba(8,17,24,.24) 52%, transparent 74%);
+    filter:blur(12px);
+    z-index:-1;
+  }
+  .rule{
+    width:46px;
+    height:2px;
+    background:var(--vermilion);
+    margin-bottom:16px;
+    box-shadow:0 0 12px rgba(207,77,47,.55);
+  }
+  .kicker{
+    font-size:clamp(8px,1vw,10px);
+    letter-spacing:.36em;
+    text-transform:uppercase;
+    opacity:.72;
+    margin-bottom:12px;
+  }
+  h1{
+    margin:0 0 12px;
+    font-weight:400;
+    font-size:clamp(26px,4.6vw,52px);
+    line-height:1;
+    letter-spacing:.3em;
+    text-transform:uppercase;
+  }
+  .meta{
+    font-size:clamp(9px,1.05vw,11px);
+    letter-spacing:.3em;
+    text-transform:uppercase;
+    opacity:.6;
+  }
+  .line{
+    margin:0 0 14px;
+    font-style:italic;
+    font-size:clamp(12px,1.35vw,15px);
+    letter-spacing:.06em;
+    opacity:.78;
+  }
+  .meta i{
+    font-style:normal;
+    color:#e2704f;
+  }
+  .seal{
+    display:inline-grid;
+    place-items:center;
+    width:26px;
+    height:26px;
+    margin-top:18px;
+    background:var(--vermilion);
+    color:var(--paper);
+    font-size:15px;
+    line-height:1;
+    letter-spacing:0;
+    transform:rotate(-2.5deg);
+    opacity:.92;
+    box-shadow:0 0 14px rgba(207,77,47,.28);
+    text-shadow:none;
+    font-style:normal;
+  }
+  .hint{
+    position:fixed;
+    right:clamp(30px,5.4vw,72px);
+    top:clamp(34px,6vh,68px);
+    z-index:2;
+    color:var(--bone);
+    opacity:.45;
+    font-size:9px;
+    letter-spacing:.3em;
+    text-transform:uppercase;
+    pointer-events:none;
+    transition:opacity .8s ease;
+    text-shadow:0 1px 10px rgba(9,17,24,.6);
+  }
+  .hint.gone{ opacity:0; }
+  @media (max-width:640px){
+    .plate{ inset:9px; }
+    .hint{ display:none; }
+  }
+  @media (prefers-reduced-motion:reduce){
+    .hint{ transition:none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="scene" role="img" aria-label="Гравюра: багровое солнце садится за волну, штрихованное море и одинокая лодка с фонарём"></canvas>
+<div class="plate" aria-hidden="true"></div>
+<div class="scrim" aria-hidden="true"></div>
+<header class="cap">
+  <div class="rule" aria-hidden="true"></div>
+  <div class="kicker">ксилография · ночное море</div>
+  <h1>Прилив</h1>
+  <p class="line">свет уходит в воду</p>
+  <div class="meta">лист&nbsp;I &nbsp;·&nbsp; <i>MMXXVI</i></div>
+  <div class="seal" aria-hidden="true">П</div>
+</header>
+<div class="hint" id="hint">проведите по воде</div>
+<script>
+(() => {
+  "use strict";
+
+  const canvas = document.getElementById("scene");
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const hint = document.getElementById("hint");
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const PAPER = "#e9dfc9";
+  const INK = [18, 30, 40];
+  const SUN = [199, 72, 44];
+  const SUN_HOT = [224, 104, 70];
+  const BONE = [240, 230, 208];
+
+  let W = 0, H = 0, DPR = 1, M = 20;
+  let horizon = 0, sunX = 0, sunY = 0, sunR = 0, boatX = 0;
+  let time = 0, last = 0, started = false;
+
+  const pointer = { x: -9999, y: -9999, active: false, moved: false };
+  const ripples = [];
+
+  function hash(n) {
+    const s = Math.sin(n * 12.9898 + 4.1414) * 43758.5453123;
+    return s - Math.floor(s);
+  }
+  function noise(x) {
+    const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f);
+    return hash(i) * (1 - u) + hash(i + 1) * u;
+  }
+  const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  // paper grain, generated once
+  const grain = document.createElement("canvas");
+  grain.width = grain.height = 180;
+  {
+    const g = grain.getContext("2d");
+    const img = g.createImageData(180, 180);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = hash(i * 0.73) * 255;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 30;
+    }
+    g.putImageData(img, 0, 0);
+  }
+
+  function layout() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.round(W * DPR));
+    canvas.height = Math.max(1, Math.round(H * DPR));
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    M = W < 640 ? 11 : 20;
+    horizon = H * (W < 640 ? 0.61 : 0.575);
+    sunX = W * (W < 640 ? 0.67 : 0.655);
+    sunR = Math.min(W * 0.185, H * 0.185);
+    sunY = horizon - sunR * 0.74;
+    boatX = W * 0.27;
+  }
+
+  function pointerOffset(x, y, amp) {
+    let dy = 0;
+    if (pointer.active) {
+      const dx = x - pointer.x;
+      const d = Math.hypot(dx, y - pointer.y);
+      if (d < 230) {
+        const k = 1 - d / 230;
+        dy += Math.sin(d * 0.065 - time * 3.6) * k * k * 10;
+      }
+    }
+    for (const r of ripples) {
+      const d = Math.hypot(x - r.x, y - r.y);
+      const age = r.age;
+      const reach = age * 360 + 10;
+      if (d < reach) {
+        const fade = (1 - age / 1.5) * (1 - d / reach);
+        dy += Math.sin(d * 0.09 - age * 9) * fade * 9;
+      }
+    }
+    return dy;
+  }
+
+  function skyRows(draw) {
+    const step = Math.max(5, H * 0.0085);
+    for (let y = M + 3, i = 0; y < horizon; y += step, i++) {
+      const t = (y - M) / Math.max(1, horizon - M);
+      draw(y, t, i);
+    }
+  }
+
+  function skyLine(y, t, carve) {
+    const alpha = carve ? 0.9 : 0.17 + t * t * 0.52;
+    const width = carve ? 1.05 + t * 1.0 : 0.75 + t * 0.9;
+    ctx.strokeStyle = carve ? rgba(BONE, alpha) : rgba(INK, alpha);
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    let on = false;
+    const drift = time * (carve ? 0.1 : 0.22);
+    for (let x = M - 6; x <= W - M + 6; x += 9) {
+      const n = noise(x * 0.013 + y * 0.06 + drift);
+      const yy = y + (n - 0.5) * (1.2 + t * 4.2);
+      if (hash(x * 0.11 + y * 2.7) < 0.09 + (1 - t) * 0.2) { on = false; continue; }
+      if (!on) { ctx.moveTo(x, yy); on = true; }
+      else ctx.lineTo(x, yy);
+    }
+    ctx.stroke();
+  }
+
+  function drawSun() {
+    // uneven hand-cut disc, a hair out of register
+    ctx.save();
+    ctx.translate(-1.6, 0.9);
+    ctx.beginPath();
+    const seg = 72;
+    for (let i = 0; i <= seg; i++) {
+      const a = (i / seg) * Math.PI * 2;
+      const wob = 1 + (noise(a * 4.2 + 9) - 0.5) * 0.028;
+      const r = sunR * wob;
+      const x = sunX + Math.cos(a) * r;
+      const y = sunY + Math.sin(a) * r;
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, sunY - sunR, 0, sunY + sunR);
+    grad.addColorStop(0, rgba(SUN_HOT, 1));
+    grad.addColorStop(0.65, rgba(SUN, 1));
+    grad.addColorStop(1, rgba([168, 52, 32], 1));
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.restore();
+
+    // radiating cut marks
+    ctx.strokeStyle = rgba(INK, 0.34);
+    ctx.lineWidth = 0.9;
+    for (let i = 0; i < 22; i++) {
+      const a = (i / 22) * Math.PI * 2 + 0.12;
+      const r0 = sunR * (1.045 + hash(i * 3.3) * 0.03);
+      const r1 = r0 + sunR * (0.05 + hash(i * 7.1) * 0.16);
+      ctx.beginPath();
+      ctx.moveTo(sunX + Math.cos(a) * r0, sunY + Math.sin(a) * r0);
+      ctx.lineTo(sunX + Math.cos(a) * r1, sunY + Math.sin(a) * r1);
+      ctx.stroke();
+    }
+  }
+
+  function drawSea() {
+    const seaBottom = H - M;
+    const span = Math.max(1, seaBottom - horizon);
+    let y = horizon + 1.5;
+    while (y < seaBottom) {
+      const t = (y - horizon) / span;
+      const amp = 1.1 + t * t * 38;
+      const phase = time * 0.5 + y * 0.05;
+      ctx.beginPath();
+      let on = false;
+      for (let x = M - 8; x <= W - M + 8; x += 7.5) {
+        const n = noise(x * 0.011 + y * 0.035 + time * 0.05);
+        let yy = y + Math.sin(x * 0.019 + phase) * amp + (n - 0.5) * amp * 0.9;
+        yy += pointerOffset(x, y, amp);
+        const gap = hash(x * 0.071 + y * 1.37) < 0.03 + (1 - t) * 0.1;
+        if (gap) { on = false; continue; }
+        if (!on) { ctx.moveTo(x, yy); on = true; }
+        else ctx.lineTo(x, yy);
+      }
+      const a = 0.26 + Math.pow(t, 0.8) * 0.65;
+      ctx.strokeStyle = rgba(INK, a);
+      ctx.lineWidth = 0.55 + t * 3.4;
+      ctx.stroke();
+
+      // foam carved out of the crests
+      if (t > 0.3) {
+        ctx.beginPath();
+        let foam = false;
+        for (let x = M - 8; x <= W - M + 8; x += 11) {
+          if (hash(x * 0.13 + y * 3.9) > t * 0.14) { foam = false; continue; }
+          const n = noise(x * 0.011 + y * 0.035 + time * 0.05);
+          let yy = y + Math.sin(x * 0.019 + phase) * amp + (n - 0.5) * amp * 0.9;
+          yy += pointerOffset(x, y, amp) - 0.8;
+          if (!foam) { ctx.moveTo(x, yy); foam = true; }
+          else ctx.lineTo(x, yy);
+        }
+        ctx.strokeStyle = rgba(BONE, 0.28 + t * 0.4);
+        ctx.lineWidth = 0.55 + t * 0.9;
+        ctx.stroke();
+      }
+
+      y += 2.4 + t * 5.2;
+    }
+  }
+
+  function drawReflection() {
+    const seaBottom = H - M;
+    const span = Math.max(1, seaBottom - horizon);
+    let y = horizon + 2;
+    while (y < seaBottom) {
+      const t = (y - horizon) / span;
+      const half = sunR * (0.24 + t * t * 1.5 + t * 0.35);
+      ctx.strokeStyle = rgba(SUN, (0.12 + t * 0.5));
+      ctx.lineWidth = 0.8 + t * 2.4;
+      ctx.beginPath();
+      let on = false;
+      for (let x = sunX - half; x <= sunX + half; x += 5.5) {
+        if (hash(x * 0.21 + y * 0.71) < 0.42) { on = false; continue; }
+        const rel = (x - sunX) / half;
+        const yy = y + Math.sin(x * 0.04 + time * 1.3 + y * 0.15) * (1 + t * 4)
+          + (noise(x * 0.02 + y * 0.05) - 0.5) * t * 6;
+        if (!on) { ctx.moveTo(x, yy); on = true; }
+        else ctx.lineTo(x, yy);
+      }
+      ctx.stroke();
+      y += 3.4 + t * 7.5;
+    }
+  }
+
+  function drawBoat() {
+    const bob = Math.sin(time * 1.15) * 1.3;
+    const s = Math.min(1.45, Math.max(0.78, W / 1000));
+    ctx.save();
+    ctx.translate(boatX, horizon + 2 + bob);
+    ctx.scale(s, s);
+    ctx.strokeStyle = rgba(INK, 0.92);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    // hull, filled and then carved
+    ctx.fillStyle = rgba(INK, 0.95);
+    ctx.beginPath();
+    ctx.moveTo(-31, -2);
+    ctx.quadraticCurveTo(-18, 9, 0, 9);
+    ctx.quadraticCurveTo(20, 9, 31, -3);
+    ctx.quadraticCurveTo(8, 3, -31, -2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = rgba(BONE, 0.62);
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.moveTo(-22, 0.5);
+    ctx.quadraticCurveTo(0, 6.4, 23, 0);
+    ctx.stroke();
+
+    ctx.strokeStyle = rgba(INK, 0.92);
+
+    // mast and oar
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(-2, 2);
+    ctx.lineTo(3, -26);
+    ctx.stroke();
+
+    // red pennant
+    const flutter = Math.sin(time * 2.6) * 1.5;
+    ctx.fillStyle = rgba(SUN, 0.88);
+    ctx.beginPath();
+    ctx.moveTo(3, -26);
+    ctx.quadraticCurveTo(9, -24 + flutter, 13, -21);
+    ctx.quadraticCurveTo(8, -19, 3, -18);
+    ctx.closePath();
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(2, 1);
+    ctx.lineTo(19, -12);
+    ctx.stroke();
+
+    // figure
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(1, 2);
+    ctx.lineTo(1.6, -8);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(2, -10.5, 2.4, 0, Math.PI * 2);
+    ctx.fillStyle = rgba(INK, 0.92);
+    ctx.fill();
+
+    // lantern at the bow
+    const lamp = ctx.createRadialGradient(26, -3, 0, 26, -3, 11);
+    lamp.addColorStop(0, rgba(SUN_HOT, 0.9));
+    lamp.addColorStop(0.35, rgba(SUN, 0.42));
+    lamp.addColorStop(1, rgba(SUN, 0));
+    ctx.fillStyle = lamp;
+    ctx.beginPath();
+    ctx.arc(26, -3, 11, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = rgba(SUN_HOT, 1);
+    ctx.beginPath();
+    ctx.arc(26, -3, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // broken shadow under the hull
+    ctx.fillStyle = rgba(INK, 0.5);
+    for (let i = 0; i < 5; i++) {
+      const w = (10 + hash(i + boatX) * 14) * s;
+      const yy = horizon + 13 * s + i * 2.6 * s + bob * 0.4;
+      ctx.fillRect(boatX - w / 2 + (hash(i * 2.7) - 0.5) * 14, yy, w, 1);
+    }
+
+    // lantern glints on the water
+    for (let i = 0; i < 4; i++) {
+      const yy = horizon + (17 + i * 4.2) * s + bob * 0.4;
+      ctx.fillStyle = rgba(SUN_HOT, 0.45 - i * 0.09);
+      ctx.fillRect(boatX + 26 * s - (3 + hash(i) * 8) / 2, yy, 3 + hash(i) * 8, 1);
+    }
+  }
+
+  function drawWave() {
+    const base = H - M;
+    const crestX = W * 0.795;
+    const crestY = H * 0.655;
+    ctx.save();
+    ctx.translate(0, base);
+    ctx.scale(1 + Math.sin(time * 0.6) * 0.0018, 1 + Math.sin(time * 0.55 + 1) * 0.0038);
+    ctx.translate(Math.sin(time * 0.7) * 1.4, -base);
+    const mass = new Path2D();
+    mass.moveTo(W - M, base);
+    mass.lineTo(W - M, H * 0.715);
+    mass.bezierCurveTo(W * 0.975, H * 0.655, W * 0.885, H * 0.612, crestX, crestY);
+    mass.bezierCurveTo(W * 0.755, H * 0.673, W * 0.718, H * 0.708, W * 0.678, H * 0.727);
+    mass.bezierCurveTo(W * 0.723, H * 0.742, W * 0.778, H * 0.73, W * 0.833, H * 0.697);
+    mass.bezierCurveTo(W * 0.795, H * 0.757, W * 0.728, H * 0.79, W * 0.63, H * 0.837);
+    mass.bezierCurveTo(W * 0.545, H * 0.878, W * 0.512, H * 0.946, W * 0.505, base);
+    mass.closePath();
+
+    // the hollow under the lip
+    mass.moveTo(W * 0.678, H * 0.727);
+    mass.bezierCurveTo(W * 0.723, H * 0.742, W * 0.778, H * 0.73, W * 0.833, H * 0.697);
+    mass.bezierCurveTo(W * 0.805, H * 0.757, W * 0.765, H * 0.792, W * 0.72, H * 0.818);
+    mass.bezierCurveTo(W * 0.71, H * 0.79, W * 0.69, H * 0.752, W * 0.678, H * 0.727);
+    mass.closePath();
+
+    ctx.fillStyle = "rgba(13,23,32,0.95)";
+    ctx.fill(mass, "evenodd");
+
+    ctx.save();
+    ctx.clip(mass, "evenodd");
+    // carved combs following the curl
+    ctx.strokeStyle = rgba(BONE, 0.26);
+    ctx.lineCap = "round";
+    ctx.setLineDash([15, 11, 5, 9]);
+    for (const k of [13, 29, 48]) {
+      ctx.lineWidth = 1.5 - k * 0.012;
+      ctx.beginPath();
+      ctx.moveTo(W - M, H * 0.712 + k * 0.9);
+      ctx.bezierCurveTo(W * 0.97, H * 0.66 + k, W * 0.88, H * 0.617 + k, crestX - k * 0.9, crestY + k * 0.75);
+      ctx.bezierCurveTo(W * 0.75, H * 0.678 + k, W * 0.715, H * 0.713 + k, W * 0.675, H * 0.732 + k);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = rgba(SUN, 0.3);
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([5, 8]);
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const px = W * (0.69 + hash(i * 3.7) * 0.17);
+      const py = H * (0.79 + hash(i * 8.2) * 0.06);
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + 4, py + 7);
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.save();
+    ctx.clip(mass, "evenodd");
+    const topY = crestY - 8;
+    for (let y = topY; y < base; y += 6.4) {
+      const t = (y - topY) / Math.max(1, base - topY);
+      ctx.beginPath();
+      let on = false;
+      for (let x = W * 0.46; x <= W - M; x += 8) {
+        const yy = y + Math.sin(x * 0.022 + time * 0.65 + y * 0.04) * (2 + t * 5)
+          + (noise(x * 0.02 + y * 0.05) - 0.5) * 5;
+        if (hash(x * 0.09 + y * 1.9) < 0.12 + (1 - t) * 0.18) { on = false; continue; }
+        if (!on) { ctx.moveTo(x, yy); on = true; }
+        else ctx.lineTo(x, yy);
+      }
+      ctx.strokeStyle = rgba(BONE, 0.1 + t * 0.2);
+      ctx.lineWidth = 0.7 + t * 1.2;
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // carved lip and flying spray
+    const lip = new Path2D();
+    lip.moveTo(W - M, H * 0.712);
+    lip.bezierCurveTo(W * 0.975, H * 0.655, W * 0.885, H * 0.612, crestX, crestY);
+    lip.bezierCurveTo(W * 0.755, H * 0.673, W * 0.718, H * 0.708, W * 0.678, H * 0.727);
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.strokeStyle = rgba(BONE, 0.9);
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([10, 5, 22, 8, 5, 11, 16, 6]);
+    ctx.save();
+    ctx.translate(0, 5);
+    ctx.stroke(lip);
+    ctx.globalAlpha = 0.4;
+    ctx.lineWidth = 3.2;
+    ctx.setLineDash([5, 13]);
+    ctx.translate(0, 5);
+    ctx.stroke(lip);
+    ctx.restore();
+    ctx.restore();
+
+    // inner curl line
+    ctx.strokeStyle = rgba(BONE, 0.5);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(W * 0.7, H * 0.723);
+    ctx.bezierCurveTo(W * 0.74, H * 0.736, W * 0.79, H * 0.727, W * 0.83, H * 0.7);
+    ctx.stroke();
+
+    // foam dripping from the undercut
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.strokeStyle = rgba(BONE, 0.62);
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([7, 9, 14, 6]);
+    ctx.translate(0, -2.5);
+    ctx.beginPath();
+    ctx.moveTo(W * 0.68, H * 0.727);
+    ctx.bezierCurveTo(W * 0.723, H * 0.742, W * 0.778, H * 0.73, W * 0.833, H * 0.697);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.save();
+    ctx.strokeStyle = rgba(INK, 0.55);
+    ctx.lineWidth = 1.1;
+    ctx.lineCap = "round";
+    for (let i = 0; i < 34; i++) {
+      const sx = W * (0.62 + hash(i * 7.3) * 0.34);
+      const sy = H * (0.6 + hash(i * 3.1) * 0.075);
+      if (sy > crestY + 2 && sx < W * 0.84) continue;
+      const len = 3 + hash(i * 9.4) * 9;
+      const a = -0.5 - hash(i * 2.2) * 0.8;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx + Math.cos(a) * len, sy + Math.sin(a) * len);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.restore();
+  }
+
+  function drawBirds() {
+    ctx.strokeStyle = rgba(INK, 0.55);
+    ctx.lineWidth = 1.05;
+    ctx.lineCap = "round";
+    for (let i = 0; i < 3; i++) {
+      const x = W * (0.2 + hash(i * 5.1 + 2) * 0.36) + Math.sin(time * 0.16 + i) * 9;
+      const y = horizon * (0.2 + hash(i * 9.7) * 0.4);
+      const sz = 5 + hash(i * 4.4) * 5;
+      ctx.beginPath();
+      ctx.moveTo(x - sz, y + 1.4);
+      ctx.quadraticCurveTo(x - sz * 0.45, y - sz * 0.55, x, y);
+      ctx.quadraticCurveTo(x + sz * 0.45, y - sz * 0.55, x + sz, y + 1.6);
+      ctx.stroke();
+    }
+  }
+
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.globalAlpha = 1;
+
+    // sky wash
+    const sky = ctx.createLinearGradient(0, 0, 0, horizon);
+    sky.addColorStop(0, "#d6cab1");
+    sky.addColorStop(0.55, "#e7dcc5");
+    sky.addColorStop(1, "#f1e7d2");
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(M, M, W - M * 2, H - M * 2);
+    ctx.clip();
+
+    // engraved sky
+    skyRows((y, t) => skyLine(y, t, false));
+
+    // sun, then carve its lines back out
+    drawSun();
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(sunX, sunY, sunR * 1.005, 0, Math.PI * 2);
+    ctx.clip();
+    skyRows((y, t) => skyLine(y, t, true));
+    // a few darker cuts across the disc
+    ctx.strokeStyle = rgba([150, 45, 27], 0.5);
+    skyRows((y) => {
+      if (hash(y * 0.37) > 0.55) {
+        ctx.beginPath();
+        let on = false;
+        for (let x = sunX - sunR; x < sunX + sunR; x += 8) {
+          if (hash(x * 0.2 + y) < 0.3) { on = false; continue; }
+          const yy = y + (hash(x + y) - 0.5) * 2;
+          if (!on) { ctx.moveTo(x, yy); on = true; }
+          else ctx.lineTo(x, yy);
+        }
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+      }
+    });
+    ctx.restore();
+
+    drawBirds();
+
+    // horizon
+    ctx.strokeStyle = rgba(INK, 0.6);
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    for (let x = M; x <= W - M; x += 8) {
+      const yy = horizon + (noise(x * 0.02 + 3) - 0.5) * 1.7;
+      x === M ? ctx.moveTo(x, yy) : ctx.lineTo(x, yy);
+    }
+    ctx.stroke();
+
+    // sun glow on the water
+    const glow = ctx.createRadialGradient(sunX, horizon, 0, sunX, horizon, sunR * 2.4);
+    glow.addColorStop(0, rgba(SUN, 0.26));
+    glow.addColorStop(0.55, rgba(SUN, 0.1));
+    glow.addColorStop(1, rgba(SUN, 0));
+    ctx.fillStyle = glow;
+    ctx.fillRect(sunX - sunR * 2.4, horizon, sunR * 4.8, H - horizon - M);
+
+    drawSea();
+    drawReflection();
+    drawBoat();
+    drawWave();
+
+    // vignette
+    const vig = ctx.createRadialGradient(W * 0.5, H * 0.48, Math.min(W, H) * 0.25, W * 0.5, H * 0.5, Math.max(W, H) * 0.78);
+    vig.addColorStop(0, "rgba(12,22,30,0)");
+    vig.addColorStop(0.72, "rgba(12,22,30,0.06)");
+    vig.addColorStop(1, "rgba(9,17,24,0.5)");
+    ctx.fillStyle = vig;
+    ctx.fillRect(0, 0, W, H);
+
+    // grain
+    const pat = ctx.createPattern(grain, "repeat");
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    ctx.translate(-Math.random() * 180, -Math.random() * 180);
+    ctx.fillStyle = pat;
+    ctx.fillRect(0, 0, W + 200, H + 200);
+    ctx.restore();
+
+    ctx.restore();
+  }
+
+  function frame(now) {
+    if (!started) { last = now; started = true; }
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    time += dt * (reduce ? 0.18 : 1);
+    for (const r of ripples) r.age += dt;
+    while (ripples.length && ripples[0].age > 1.5) ripples.shift();
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  function markMoved() {
+    if (pointer.moved) return;
+    pointer.moved = true;
+    hint.classList.add("gone");
+  }
+
+  window.addEventListener("resize", () => { layout(); });
+  window.addEventListener("pointermove", (e) => {
+    pointer.x = e.clientX;
+    pointer.y = e.clientY;
+    pointer.active = true;
+    markMoved();
+  }, { passive: true });
+  window.addEventListener("pointerleave", () => { pointer.active = false; });
+  window.addEventListener("pointerdown", (e) => {
+    ripples.push({ x: e.clientX, y: e.clientY, age: 0 });
+    if (ripples.length > 5) ripples.shift();
+    pointer.x = e.clientX;
+    pointer.y = e.clientY;
+    markMoved();
+  }, { passive: true });
+
+  layout();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><title>neon bus stop</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style><script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+const SEED = 140149;
+let lcg = SEED;
+const rnd = () => { lcg = (lcg * 1103515245 + 12345) % 2147483648; return lcg / 2147483648; };
+
+const H = (d) => Math.tan(45 * Math.PI / 360) * d;      // полувысота кадра на дистанции d
+const FW = (u, d) => u * 2 * H(d) * (800 / 600);    // доля ширины кадра -> единицы сцены
+const FH = (u, d) => u * 2 * H(d);                  // доля высоты кадра -> единицы сцены
+const CAM_Z = 4;
+
+const renderer = new THREE.WebGLRenderer({antialias: false, preserveDrawingBuffer: true});
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x241638, 14, 34);
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
+camera.position.set(0, 0, CAM_Z);
+camera.lookAt(0, 0, -1);
+
+const solid = (c) => new THREE.MeshBasicMaterial({color: c});
+// Градиент из двух близких оттенков: плоскость перестаёт быть заливкой. Цвета
+// принимаются и в '#rrggbb', и в '0xrrggbb'.
+const hx = (c) => c.slice(0, 2) === '0x' ? '#' + c.slice(2) : c;   // '0x..' и '#..'
+const vgrad = (top, bottom) => new THREE.ShaderMaterial({
+  uniforms: {uTop: {value: new THREE.Color(hx(top))}, uBottom: {value: new THREE.Color(hx(bottom))}},
+  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  // uniform-цвета приходят в линейном пространстве: mix по линейным и перевод
+  // обратно в sRGB — иначе градиент вдвое светлее того же цвета у MeshBasicMaterial.
+  fragmentShader: `uniform vec3 uTop; uniform vec3 uBottom; varying vec2 vUv;
+    void main() {
+      gl_FragColor = vec4(mix(uBottom, uTop, smoothstep(0.0, 1.0, vUv.y)), 1.0);
+      #include <colorspace_fragment>
+    }`,
+});
+const haze = (c, o) => new THREE.MeshBasicMaterial({color: c, transparent: true, opacity: o, depthWrite: false});
+// Объёмный вариант тех же деталей: свет и материал вместо эмиссивной заливки.
+// Поверхность получает блик и затенение, кадр перестаёт быть «плоским».
+const lit = (c, o) => new THREE.MeshStandardMaterial({color: c, roughness: 0.6, metalness: 0.05, opacity: o ?? 1, transparent: (o ?? 1) < 1});
+// Точечный свет с затуханием: на плоскости он даёт градиент, а не ровную
+// заливку, — именно этого не хватало плоским эмиссивным кадрам. Второй, слабый
+// и холодный, стоит со стороны окна и подсвечивает края.
+// Свет ставится по сцене: тёплый — у киоска (его подставляет L-18), холодный —
+// у окна. Значения намеренно слабые: тёмная база должна остаться тёмной, а
+// свет только выявляет объём.
+const lamp = new THREE.PointLight(0xffd9a8, 5.5, 26, 2);
+lamp.position.set(-1.2, 1.0, 1.4);
+scene.add(lamp);
+scene.add(new THREE.AmbientLight(0x4a5674, 1.1));
+const rim = new THREE.PointLight(0x9fc4d8, 3.2, 34, 2);
+rim.position.set(0.8, 0.2, -4.0);
+scene.add(rim);
+const place = (mesh, u, v, z) => {
+  mesh.position.set((u - 0.5) * FW(1, CAM_Z - z), (0.5 - v) * FH(1, CAM_Z - z), z);
+  scene.add(mesh);
+  return mesh;
+};
+const quad = (u, v, material, name, z) => {
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(FW(u, CAM_Z - z), FH(v, CAM_Z - z)), material);
+  mesh.name = name;
+  return place(mesh, 0.5, 0.5, z);
+};
+const box = (u, v, w, material, name, z) => {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(FW(u, CAM_Z - z), FH(v, CAM_Z - z), w), material);
+  mesh.name = name;
+  return place(mesh, 0.5, 0.5, z);
+};
+// Улица: здания телами в глубине — дают перспективу и затенение по граням.
+// Объёмное тело: те же габариты кадра, но с толщиной — при наезде камеры видны
+// боковые грани, и предмет читается как тело, а не как вырезанный
+// прямоугольник. position — доля кадра, как у place.
+const solid3 = (u, v, d, material, name, z) => {
+  const depth = d * FW(u, CAM_Z - z);
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(FW(u, CAM_Z - z), FH(v, CAM_Z - z), depth), material);
+  mesh.name = name;
+  return place(mesh, 0.5, 0.5, z);
+};
+const spray = (n, size, colour) => {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(n * 3), 3));
+  const cloud = new THREE.Points(geometry, new THREE.PointsMaterial({
+    size: size, sizeAttenuation: false, color: colour, transparent: true, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthTest: false,
+  }));
+  scene.add(cloud);
+  return cloud;
+};
+const round = (v) => Math.round(v * 1e4) / 1e4;
+const names = () => scene.children.map((o) => o.name).filter(Boolean);
+
+const SPEED = 1.90;
+const SWAY = 0.034;
+
+place(quad(1.8, 1.8, vgrad('0x241f38', '0x120f1c'), 'night', -60), 0.5, 0.5, -60);
+quad(1.0, 0.16, solid(0x150c2a), 'canopy', -5);
+place(quad(1.0, 0.4, vgrad('0x241749', '0x100a1e'), 'floor', -8), 0.5, 0.8, -8);
+place(quad(0.02, 0.5, solid(0x150c2a), 'post_a', -5), 0.17, 0.60, -5);
+place(quad(0.02, 0.5, solid(0x150c2a), 'post_b', -5), 0.83, 0.60, -5);
+place(quad(0.62, 0.44, haze(0x9fc4d8, 0.20), 'glass', -5), 0.5, 0.38, -5);
+
+const boardMat = new THREE.ShaderMaterial({
+  uniforms: {uPhase: {value: 0.0}},
+  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `uniform float uPhase; varying vec2 vUv;
+    void main() {
+      float head = step(0.78, vUv.y);
+      float rows = step(0.55, fract(vUv.y * 6.0 - uPhase));
+      float tail = step(fract(vUv.x * 1.5), 0.92);
+      vec3 base = mix(vec3(0.02, 0.22, 0.24), vec3(0.13, 0.83, 0.77), rows * (1.0 - head));
+      gl_FragColor = vec4(mix(base, vec3(0.75, 1.0, 0.95), head * 0.8) * (0.7 + 0.3 * tail), 1.0);
+    }`,
+});
+place(quad(0.22, 0.14, boardMat, 'board', -4.6), 0.32, 0.30, -4.6);
+place(quad(0.24, 0.16, solid(0x120a26), 'board_frame', -4.8), 0.32, 0.30, -4.8);
+place(quad(0.13, 0.06, haze(0xffa83c, 0.9), 'lamp', -4.5), 0.62, 0.14, -4.5);
+place(quad(0.20, 0.10, haze(0xffa83c, 0.35), 'lamp_halo', -4.4), 0.62, 0.14, -4.4);
+place(quad(0.30, 0.06, haze(0xff4d9d, 0.7), 'neon', -13), 0.58, 0.24, -13);
+place(quad(0.30, 0.05, solid(0x1a1030), 'bench', -4.2), 0.5, 0.66, -4.2);
+for (let i = 0; i < 3; i++) place(quad(0.18, 0.04, haze(0xff4d9d, 0.35), 'puddle' + i, -7), 0.24 + i * 0.26, 0.90, -7);
+
+const drops = spray(56, 6, 0xa8c8dc);
+const dropSpan = FH(0.70, 8.9), dropWide = FW(0.72, 8.9);
+{
+  const p = drops.geometry.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setXYZ(i, (rnd() - 0.5) * dropWide, 0.895 + (rnd() - 0.5) * dropSpan, -4.9);
+  p.needsUpdate = true;
+}
+const rain = spray(34, 4, 0xa8c8dc);
+const rainSpan = FH(0.50, 16), rainWide = FW(0.80, 16);
+{
+  const p = rain.geometry.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setXYZ(i, (rnd() - 0.5) * rainWide, 0.895 + (rnd() - 0.5) * rainSpan, -12);
+  p.needsUpdate = true;
+}
+
+let t = 0;
+const fizz = [];
+for (let i = 0; i < 64; i++) fizz.push(0.6 + rnd() * 0.8);
+const fall = (cloud, low, high, rate, dt) => {
+  const p = cloud.geometry.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    let y = p.getY(i) - rate * fizz[i % 64] * dt;
+    if (y < low) y += (high - low);
+    p.setY(i, y);
+  }
+  p.needsUpdate = true;
+};
+
+window.__step = (dt) => {
+  t += dt;
+  const fall2 = (cloud, low, high, rate) => {
+    const p = cloud.geometry.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      let y = p.getY(i) - rate * fizz[i % 64] * dt;
+      if (y < low) y += (high - low);
+      p.setY(i, y);
+    }
+    p.needsUpdate = true;
+  };
+  fall2(drops, -dropSpan / 2, dropSpan / 2, SPEED);
+  fall2(rain, -rainSpan / 2, rainSpan / 2, SPEED * 0.66);
+  boardMat.uniforms.uPhase.value = t * 0.5;
+  camera.position.x = Math.sin(t * 0.22) * SWAY;
+  camera.lookAt(camera.position.x, 0, -1);
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+window.__probe = () => ({
+  t: round(t),
+  objects: names(),
+  board_phase: round(boardMat.uniforms.uPhase.value),
+});
+
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+</body></html>

@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>liquid metal and glass</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0a0714; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x0a0714, 14, 45);
+
+const camera = new THREE.PerspectiveCamera(45, 1920 / 1080, 0.1, 200);
+camera.position.set(0, 0.42, 3.4);
+camera.lookAt(0, 0.28, 0.4);
+
+// ---- environment map: 8x64 vertical gradient, SRGB, equirect ----
+const W = 8, H = 64;
+const data = new Uint8Array(W * H * 4);
+const stops = [
+  { t: 0.00, c: [0x0a, 0x07, 0x14] },
+  { t: 0.35, c: [0x0d, 0x1b, 0x2e] },
+  { t: 0.72, c: [0x1b, 0x4a, 0x5e] },
+  { t: 1.00, c: [0x8f, 0xd3, 0xff] },
+];
+function sampleGrad(t) {
+  for (let i = 0; i < stops.length - 1; i++) {
+    const a = stops[i], b = stops[i + 1];
+    if (t <= b.t) {
+      const k = (t - a.t) / (b.t - a.t);
+      return [
+        a.c[0] + (b.c[0] - a.c[0]) * k,
+        a.c[1] + (b.c[1] - a.c[1]) * k,
+        a.c[2] + (b.c[2] - a.c[2]) * k,
+      ];
+    }
+  }
+  return stops[stops.length - 1].c;
+}
+// row 0 = top (equirect: v=1 top). Build bottom->top explicitly.
+for (let y = 0; y < H; y++) {
+  // y=0 top of texture. t = 0 bottom of world -> top row should be t=1
+  const t = 1 - y / (H - 1);
+  const c = sampleGrad(t);
+  for (let x = 0; x < W; x++) {
+    const i = (y * W + x) * 4;
+    data[i] = Math.round(c[0]);
+    data[i + 1] = Math.round(c[1]);
+    data[i + 2] = Math.round(c[2]);
+    data[i + 3] = 255;
+  }
+}
+const envTex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat);
+envTex.colorSpace = THREE.SRGBColorSpace;
+envTex.mapping = THREE.EquirectangularReflectionMapping;
+envTex.needsUpdate = true;
+scene.environment = envTex;
+
+// ---- background plane behind scene, same gradient ----
+const bgCanvas = document.createElement('canvas');
+bgCanvas.width = 8; bgCanvas.height = 512;
+{
+  const ctx = bgCanvas.getContext('2d');
+  for (let y = 0; y < 512; y++) {
+    const t = 1 - y / 511;
+    const c = sampleGrad(t);
+    ctx.fillStyle = `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})`;
+    ctx.fillRect(0, y, 8, 1);
+  }
+}
+const bgTex = new THREE.CanvasTexture(bgCanvas);
+bgTex.colorSpace = THREE.SRGBColorSpace;
+const bg = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshBasicMaterial({ map: bgTex, fog: false })
+);
+bg.position.set(0, 11, -6);
+scene.add(bg);
+
+// ---- floor ----
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshPhysicalMaterial({
+    color: 0x121a2e, metalness: 0.85, roughness: 0.30,
+    envMapIntensity: 1.0,
+  })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = -1.20;
+scene.add(floor);
+
+// ---- sphere ----
+const sphere = new THREE.Mesh(
+  new THREE.SphereGeometry(0.8, 48, 32),
+  new THREE.MeshPhysicalMaterial({
+    color: 0x33d1c6, metalness: 1.0, roughness: 0.18,
+    clearcoat: 0.6, envMapIntensity: 3.0,
+    emissive: 0x0d3b37, emissiveIntensity: 1.0,
+  })
+);
+sphere.name = 'sphere';
+sphere.position.set(0, 0.40, 0.60);
+scene.add(sphere);
+
+// ---- torus (glass) ----
+const torus = new THREE.Mesh(
+  new THREE.TorusGeometry(0.80, 0.28, 16, 64),
+  new THREE.MeshPhysicalMaterial({
+    color: 0xe0733c, metalness: 0.15, roughness: 0.06,
+    clearcoat: 1.0, envMapIntensity: 2.2,
+  })
+);
+torus.name = 'torus';
+torus.position.set(-1.45, -0.25, -0.6);
+scene.add(torus);
+
+// ---- lights ----
+const dir = new THREE.DirectionalLight(0xffffff, 4.0);
+dir.position.set(2.0, 4.0, 3.0);
+scene.add(dir);
+
+const spark = new THREE.PointLight(0xf2f6fb, 120, 25);
+spark.position.set(0.6, 2.6, 2.2);
+scene.add(spark);
+
+const amb = new THREE.AmbientLight(0x223044, 0.3);
+scene.add(amb);
+
+const orbitA = new THREE.PointLight(0x33d1c6, 45, 25);
+const orbitB = new THREE.PointLight(0xe0733c, 45, 25);
+scene.add(orbitA);
+scene.add(orbitB);
+
+let t = 0;
+const phase0 = 0.052, speed = 0.900, radius = 3.2;
+
+function placeOrbitLights() {
+  const a = speed * t + phase0;
+  orbitA.position.set(radius * Math.cos(a), 1.5, radius * Math.sin(a) + 2.0);
+  orbitB.position.set(radius * Math.cos(a + Math.PI), 1.5, radius * Math.sin(a + Math.PI) + 2.0);
+}
+
+function render() {
+  placeOrbitLights();
+  renderer.render(scene, camera);
+}
+
+window.__step = function (dt) {
+  t += dt;
+  sphere.rotation.y += 1.100 * dt;
+  sphere.rotation.x += 0.4 * dt;
+  torus.rotation.y += 0.7 * dt;
+  render();
+  return window.__probe();
+};
+
+window.__probe = function () {
+  const a = speed * t + phase0;
+  const round4 = (v) => Math.round(v * 10000) / 10000;
+  return {
+    t: Math.round(t * 10000) / 10000,
+    objects: ['sphere', 'torus', 'floor', 'bg'],
+    angle: round4(sphere.rotation.y),
+    light: [
+      round4(radius * Math.cos(a)),
+      round4(1.5),
+      round4(radius * Math.sin(a) + 2.0),
+    ],
+  };
+};
+
+render();
+window.__ready = true;
+</script>
+</body>
+</html>
