@@ -345,8 +345,8 @@ def test_tool_loop_refreshes_a_stale_metric():
     assert fresh in run.transcript.tool_log[1]["result"]
     assert run.score.earned == task.max_points == 2.0
 
-    # Echoing the stale dashboard value is a distractor, not an answer: without
-    # a refresh call the two content checks must stay at zero.
+    # A verbatim echo of the stale dashboard number is not an answer: without a
+    # refresh call the content check must stay at zero.
     stale_only = Runner(
         RunConfig(),
         ScriptedProvider(
@@ -355,6 +355,19 @@ def test_tool_loop_refreshes_a_stale_metric():
     ).run_task(task)
     assert stale_only.score.earned == 0.5
     assert not any(c.passed and c.name in ("refreshed", "fresh_value") for c in stale_only.score.checks)
+
+    # Mentioning the stale number next to the fresh one is the natural answer
+    # and must pass.
+    both = Runner(
+        RunConfig(),
+        ScriptedProvider(
+            [
+                _call(1, "get_metric", {**lookup, "refresh": True}),
+                core.ModelReply(text=f"Свежее значение {fresh}; на дашборде устаревшее {stale}."),
+            ]
+        ),
+    ).run_task(task)
+    assert both.score.earned == task.max_points
 
 
 def test_tool_loop_full_score_on_the_golden_cache_cleanup():
@@ -383,6 +396,34 @@ def test_tool_budget_is_enforced():
     run = Runner(cfg, ScriptedProvider(replies)).run_task(task)
     assert len(run.transcript.tool_log) == 3
     assert "бюджет вызовов инструментов исчерпан (3)" in run.transcript.extra.get("notes", [])
+
+
+def test_tool_budget_keeps_a_batch_that_overshoots_by_one():
+    """A batch of 4 within a 3-call budget must run 3 calls, not zero.
+
+    The model plans a read of every file in one reply. Dropping the whole batch
+    left I-1 with no data and no answer; only the overflow is cut.
+    """
+    task = _tool_task("T-1")
+    batch = core.ModelReply(
+        text="",
+        tool_calls=[
+            {"id": f"c{i}", "name": "read_file", "arguments": json.dumps({"path": "README.md"})}
+            for i in range(4)
+        ],
+    )
+    replies = [batch, core.ModelReply(text="готово")]
+    cfg = RunConfig()
+    cfg.max_tool_calls = 3
+    run = Runner(cfg, ScriptedProvider(replies)).run_task(task)
+    assert len(run.transcript.tool_log) == 3
+    notes = run.transcript.extra.get("notes", [])
+    assert any("батч урезан" in note for note in notes), notes
+    # The budget-capped task must still get a tool-less turn for the answer,
+    # not end on the last tool batch — and that turn states the budget in words
+    # (the stand pastes the request markup into content instead of answering).
+    assert run.transcript.turns[-1].reply.text == "готово"
+    assert "Бюджет вызовов инструментов исчерпан" in run.transcript.turns[-1].messages[-1]["content"]
 
 
 def test_the_answer_budget_counts_the_tool_schemas():
@@ -714,3 +755,30 @@ def test_render_and_compare_markdown(tmp_path: Path):
     assert "Сравнение конфигураций" in comparison
     assert comparison.count("qwen3.8-27b") == 2
     assert "IQ4_XS" in comparison and "Q4_K_M" in comparison
+
+
+def test_search_code_resolves_paths_under_a_realpath_root():
+    """A directory/file scoped search must find content on both ``/var`` and
+    ``/private/var`` roots (macOS realpath).
+
+    ``_resolve`` returns ``Path.resolve()`` while the file list used to come
+    from the unresolved ``work_dir``: the prefix filter compared mismatched
+    strings, so every scoped search returned ``no matches`` and T-6/T-2 lost
+    their evidence under a realpath temp dir.
+    """
+    task = _tool_task("T-6")
+    oracle = task.oracle
+    scoped = _call(0, "search_code", {"query": oracle["value"], "path": oracle["config_path"]})
+    replies = [scoped] + [
+        _call(index, call["name"], call["arguments"])
+        for index, call in enumerate(oracle["golden_calls"], start=1)
+    ]
+    replies.append(core.ModelReply(text=oracle["final_answer"]))
+    run = Runner(RunConfig(), ScriptedProvider(replies)).run_task(task)
+
+    first = run.transcript.tool_log[0]
+    assert first["name"] == "search_code" and not first["error"], first["result"]
+    assert oracle["value"] in first["result"]
+    # The extra scoped call shifts the injected read_file failure by one, so the
+    # retry check still sees its own error/success pair.
+    assert run.score.earned == task.max_points

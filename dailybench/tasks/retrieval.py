@@ -311,6 +311,10 @@ def _i1(rng: random.Random) -> core.TaskInstance:
             "golden_calls": [
                 {"name": "read_file", "arguments": {"path": path}} for path in sorted(files)
             ],
+            # Two listing calls of headroom: the natural order is "list, then
+            # read", and the shared cap otherwise always cut the last read
+            # (I-1 sat at 1/2 whenever the model listed first).
+            "call_headroom": 2,
             "files": sorted(files),
         },
         meta={"scenario": "I-1"},
@@ -480,6 +484,10 @@ def _i2(rng: random.Random) -> core.TaskInstance:
             "golden_calls": [
                 {"name": "read_file", "arguments": {"path": path}} for path in sorted(files)
             ],
+            # Two listing calls of headroom: the natural order is "list, then
+            # read", and the shared cap otherwise always cut the last read
+            # (I-1 sat at 1/2 whenever the model listed first).
+            "call_headroom": 2,
             "files": sorted(files),
         },
         meta={"scenario": "I-2"},

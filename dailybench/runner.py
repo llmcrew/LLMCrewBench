@@ -228,12 +228,21 @@ class Runner:
         sampler_before = self.sampler.peak_mib
         tool_calls = 0
         generated = 0
+        # A task may need headroom above the shared cap (I-1 reads a dozen
+        # files after listing the directory); the extra is explicit in the
+        # fixture, so lowering the cap for a smoke run still applies.
+        call_budget = self.cfg.max_tool_calls + int((task.oracle or {}).get("call_headroom") or 0)
+        budget_spent = False
         followups = list(task.dialogue or [])
         try:
             while True:
                 reply = self.provider.chat(
                     messages,
-                    task.tools,
+                    # Once the call budget is spent, send no tools: a tool-less
+                    # request releases the model's final answer instead of one
+                    # more callable batch. Without this every budget-capped task
+                    # ended on an empty tool_calls reply (I-1, T-2, T-4, T-6).
+                    None if budget_spent else task.tools,
                     max_new_tokens=self.cfg.budget_for(task.category, _request_tokens(self.provider, messages, task.tools)),
                     temperature=self.cfg.temperature,
                     top_p=self.cfg.top_p,
@@ -259,15 +268,41 @@ class Runner:
                     continue
                 if not reply.tool_calls:
                     break
-                if tool_calls + len(reply.tool_calls) > self.cfg.max_tool_calls:
+                room = call_budget - tool_calls
+                if room <= 0:
                     transcript.extra.setdefault("notes", []).append(
-                        f"бюджет вызовов инструментов исчерпан ({self.cfg.max_tool_calls})"
+                        f"бюджет вызовов инструментов исчерпан ({call_budget})"
                     )
-                    break
+                    budget_spent = True
+                    # Without tools the model may still *print* a call (the
+                    # stand returns the request markup as content). Say plainly
+                    # that the budget is gone, or the turn is spent re-asking.
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Бюджет вызовов инструментов исчерпан. "
+                                "Ответь на задание по уже собранным данным, без инструментов."
+                            ),
+                        }
+                    )
+                    continue
+                calls = list(reply.tool_calls)
+                if len(calls) > room:
+                    # A batch that overshoots by one used to be dropped whole:
+                    # the model had already planned those reads, and losing them
+                    # cost I-1 the answer (11 reads of 11 files discarded).
+                    # Execute what fits, then stop.
+                    calls = calls[:room]
+                    transcript.extra.setdefault("notes", []).append(
+                        f"батч урезан бюджетом вызовов: {len(reply.tool_calls)} → {room} "
+                        f"({call_budget} на задание)"
+                    )
+                reply.tool_calls = calls
 
                 messages.append(_assistant_tool_message(reply))
                 results: list[dict[str, Any]] = []
-                for call in reply.tool_calls:
+                for call in calls:
                     arguments, parse_error = _parse_arguments(call.get("arguments"))
                     if parse_error:
                         outcome = core.ToolOutcome(text=f"invalid tool arguments: {parse_error}", error=True)
@@ -294,6 +329,17 @@ class Runner:
                     )
                 transcript.turns[-1].tool_results = results
                 tool_calls += len(reply.tool_calls)
+                if tool_calls >= call_budget:
+                    budget_spent = True
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Бюджет вызовов инструментов исчерпан. "
+                                "Ответь на задание по уже собранным данным, без инструментов."
+                            ),
+                        }
+                    )
 
                 if generated > self.cfg.max_total_tokens:
                     transcript.extra.setdefault("notes", []).append(
