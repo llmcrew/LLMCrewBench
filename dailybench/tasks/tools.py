@@ -126,7 +126,11 @@ class Simulator:
 
     def __init__(self, task: core.TaskInstance, work_dir: Path) -> None:
         self.task = task
-        self.work_dir = Path(work_dir)
+        # Resolve once: ``_resolve`` returns a realpath, so an unresolved root
+        # (/var vs /private/var on macOS) made every prefix filter in
+        # ``search_code`` compare mismatched strings and return no matches for a
+        # file or a subdirectory.
+        self.work_dir = Path(work_dir).resolve()
         self.initial = _snapshot(self.work_dir)
         self.logs: dict[str, list[str]] = task.oracle.get("logs", {})
         self.metrics: dict[tuple[str, str], float] = {
@@ -280,7 +284,12 @@ class Simulator:
         key = (str(service), str(metric))
         value = self.metrics.get(key)
         if value is None:
-            return core.ToolOutcome(text=f"metric {metric} for {service} is not collected", error=True)
+            # Name the collected metrics: guessing "latency"/"cpu"/"rps" and
+            # getting a bare "not collected" five times was a dead end even
+            # though the needed metric was one directory away.
+            available = sorted(name for (svc, name) in self.metrics if svc == str(service))
+            hint = f"; collected for {service}: {', '.join(available)}" if available else ""
+            return core.ToolOutcome(text=f"metric {metric} for {service} is not collected{hint}", error=True)
         if not refresh:
             cached = self.stale_metrics.get(key, value)
             return core.ToolOutcome(
@@ -461,14 +470,22 @@ def _t2(rng: random.Random) -> core.TaskInstance:
     queue_depth = rng.randrange(90, 400)
     gateway_cpu = rng.randrange(8, 40)
     logs = {
+        # Lines carry their level: the tool filters by ``level``, and the
+        # fixture used to store bare text, so ``level=ERROR`` returned nothing
+        # for every service — the model could not see the upstream timeouts at
+        # all and guessed the diagnosis.
         "api-gateway": [
-            "upstream request timeout: inference:8080",
-            "upstream request timeout: inference:8080",
-            f"healthcheck ok (cpu={gateway_cpu}%)",
-            "connection pool size 64",
+            "ERROR upstream request timeout: inference:8080",
+            "ERROR upstream request timeout: inference:8080",
+            f"INFO healthcheck ok (cpu={gateway_cpu}%)",
+            "INFO connection pool size 64",
         ],
-        "inference": [f"batch queue depth {queue_depth}", "gpu memory pressure detected"],
-        "postgres": ["checkpoint complete", "autovacuum ok"],
+        "inference": [
+            f"WARN batch queue depth {queue_depth}",
+            "WARN gpu memory pressure detected",
+            "INFO batch worker restarted",
+        ],
+        "postgres": ["INFO checkpoint complete", "INFO autovacuum ok"],
     }
     metrics = {
         "inference|gpu_memory_used_percent": memory,
@@ -913,12 +930,21 @@ def _eval_t2(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
         low = text.casefold()
         if not _text_has_any(text, oracle["upstream_words"]):
             return False
-        window = re.split(r"[.;\n]", low)
-        return not any(
-            ("не в " + word) in segment or ("не " + word) in segment or (word + " не ") in segment
-            for segment in window
-            for word in ("inference", "инференс")
-        )
+        words = ("inference", "инференс")
+        for segment in re.split(r"[.;\n]", low):
+            if not _text_has_any(segment, oracle["upstream_words"]):
+                continue
+            # The bottleneck word must sit in the same sentence as the upstream
+            # one: "упал inference, но причина — сеть" is not a diagnosis.
+            if not _text_has_any(segment, oracle["bottleneck_words"]):
+                continue
+            # "не inference" / "не в inference" rejects the upstream itself.
+            # "inference не успевает" still affirms it, so a trailing "не" no
+            # longer disqualifies the sentence.
+            if any(("не в " + word) in segment or ("не " + word) in segment for word in words):
+                continue
+            return True
+        return False
 
     mutated = _mutated(tr)
     diagnosis = _affirms_upstream(tr.final_text) and _text_has_any(
@@ -1056,8 +1082,19 @@ def _eval_t5(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     )
 
     write_index = _call_index(tr, lambda c: c["name"] == "write_file")
-    tests_index = _call_index(
-        tr, lambda c: c["name"] == "run_tests" and not c.get("error")
+    # The first clean ``run_tests`` is not enough: models naturally reproduce
+    # the failure *before* editing, and that run proves nothing about the fix.
+    # Only a green run after the write counts.
+    tests_index = next(
+        (
+            index
+            for index, call in enumerate(tr.tool_log)
+            if call["name"] == "run_tests"
+            and not call.get("error")
+            and write_index is not None
+            and index > write_index
+        ),
+        None,
     )
     diff_index = _call_index(tr, lambda c: c["name"] == "git_diff")
     # The confirmation must follow the change: a FAIL run on the original
@@ -1142,12 +1179,15 @@ def _eval_t7(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     fresh = str(oracle["fresh_value"])
     stale = str(oracle["stale_value"])
     answer = tr.final_text
-    fresh_ok = _text_has_all(answer, [fresh]) and not _text_has_all(answer, [stale])
+    # Mentioning the stale dashboard value is not a miss: "свежее 330, а 120
+    # устарело" is the natural answer. What must hold is that the *fresh* value
+    # is present and that the pair is not merely echoed as the only number.
+    fresh_ok = _text_has_all(answer, [fresh]) and stale != fresh
     score.add(
         "fresh_value",
         fresh_ok,
         1.0,
-        f"нужно актуальное значение {fresh} и не должно быть устаревшего {stale}; "
+        f"нужно актуальное значение {fresh} (упоминание устаревшего {stale} допустимо); "
         "полный балл — за наблюдаемый ответ именно со свежим замером",
     )
 
