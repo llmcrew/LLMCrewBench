@@ -122,7 +122,11 @@ pi-agent/
 video/public/clips/
 /video/bin/
 # Сам архив — в git: разбит на части по 90 МБ (потолок GitHub 100 МБ на файл),
-# склейка и сверка sha256 в video/archive/RESTORE.md.
+# склейка и сверка sha256 в video/archive/RESTORE.md. Монолитный zip и tar.zst
+# (по ~0,9 ГБ, GitHub их не примет) остаются на машине записи.
+/video/dailybench-video.zip
+/video/dailybench-video.tar.zst
+/video/dist/
 !/video/archive/
 
 # --- разбор бандла Orca ----------------------------------------------------- #

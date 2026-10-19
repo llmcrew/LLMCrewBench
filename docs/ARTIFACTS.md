@@ -21,15 +21,14 @@
 | `runs/_chat`, `runs/_logs`, `runs/_showcase`, `runs/_vendor`, старые прогоны | Внутренние и воспроизводимые |
 | `reports/comparison-deepseek-1017/_vendor/` | 7 МБ копий three.js/plotly: есть в `vendor/` и `reports/comparison/_vendor/` |
 | `video/public/clips/`, `video/bin/` | 834 МБ клипов и macOS-бандл: распакованы из архива |
-| `video/dailybench-video.zip` | 828 МБ одним файлом: GitHub отклоняет >100 МБ |
+| `video/dailybench-video.zip`, `video/dailybench-video.tar.zst`, `video/dist/` | 828 МБ одним файлом (и его zstd-близнец): GitHub отклоняет >100 МБ; в git только части |
 
 ## Склейка архива
 
 ```bash
 cd /tmp && rm -rf restore && mkdir restore && cd restore
 cat <repo>/video/archive/dailybench-video.zip.part-* > dailybench-video.zip
-shasum -a 256 dailybench-video.zip
-# 9a673cc57f414ae5e61c93f010024a24579b1028a5f0a26da183f49e1836c5f0
+shasum -a 256 dailybench-video.zip   # сверить с video/archive/SHA256
 unzip -t dailybench-video.zip
 ```
 

@@ -86,6 +86,9 @@ def test_published_artefacts_are_tracked(relative: str):
         # Объёмные локальные артефакты ролика и отчёта: не пушатся, см. .gitignore.
         "video/public/clips/deepseek-v4.1-flash-unc__K-1.mp4",
         "video/bin/ffmpeg",
+        "video/dailybench-video.zip",
+        "video/dailybench-video.tar.zst",
+        "video/dist/dailybench-video.zip",
         "reports/comparison/_showcase/glm-5.3/pages/K-1.html",
         # Не публикуются: сырые транскрипты, машинные параметры, служебные каталоги.
         "runs/deepseek-v4.1-flash-unc-1017/tasks.json",

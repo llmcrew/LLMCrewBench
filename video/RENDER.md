@@ -2,7 +2,8 @@
 
 Архив самодостаточен: клипы уже сняты, пересъёмка не нужна. Вес — 828 МБ.
 В git он лежит частями по 90 МБ (`video/archive/`): GitHub отклоняет файлы
-больше 100 МБ. Склейка и sha256 — `video/archive/RESTORE.md`.
+больше 100 МБ. Склейка и sha256 — `video/archive/RESTORE.md`; хеш сверяется с
+`video/archive/SHA256`.
 
 Один клип снят не с прогонной страницы: `qwen38__L-26.mp4` — со страницы
 из ранней сборки Qwen 3.8 (в финальном прогоне задача закрылась без HTML);
@@ -103,8 +104,8 @@ npx remotion still scene-showcase out/check-showcase.png --frame=3200
 src/            144K  сцены, таймлайн (SCENES), данные — весь ролик отсюда
 public/clips/   834M  196 записей: 169 живых + 27 плашек «модель не справилась»
                       (18 сцен без страницы у GLM 5.3 — сервер упал в прогоне; 9 страниц Qwen 3.6 падают до кадра)
-docs/           8K    текст диктора (voiceover.md) и это руководство
-                      (общий разбор подхода, грабель и чек-лист — docs/recording/)
+docs/           56K   текст диктора (voiceover.md), это руководство и фреймворк
+                      записи (recording/: рекордер, драйвер, гайд, грабли)
 tools/          24K   утилиты (для рендера не обязательны)
   build_runs_data.py    переносит цифры из runs/ в src/data/runs.json (нужен `runs/`;
                         в архиве данные уже готовы)
@@ -115,16 +116,19 @@ package.json, package-lock.json, tsconfig.json
 ```
 
 Сборка архивов (из каталога `video/`; в архив кладётся корень
-`dailybench-video/` без `node_modules`, `out`, `dist` и рабочих кадров
-`public/clips/_frames`):
+`dailybench-video/` без `node_modules`, `out`, `dist`, рабочих кадров
+`public/clips/_frames` и самого `archive/` — иначе архив дублирует себя):
 
 ```bash
 rsync -a --delete \
   --exclude node_modules --exclude out --exclude dist --exclude '.DS_Store' \
-  --exclude public/clips/_frames \
+  --exclude public/clips/_frames --exclude archive \
+  --exclude dailybench-video.zip --exclude dailybench-video.tar.zst \
   ./ /tmp/dailybench-video/
+cp -R ../docs/recording /tmp/dailybench-video/docs/recording   # из корня репо
 cd /tmp && zip -r -q -X /tmp/dailybench-video.zip dailybench-video
-shasum -a 256 /tmp/dailybench-video.zip    # записать в archive/RESTORE.md
+shasum -a 256 /tmp/dailybench-video.zip | cut -d' ' -f1 > <repo>/video/archive/SHA256
+# ^ этот же хеш - в archive/RESTORE.md (строка «ожидается»)
 rm -f <repo>/video/archive/dailybench-video.zip.part-*
 split -b 90m /tmp/dailybench-video.zip <repo>/video/archive/dailybench-video.zip.part-
 ```
