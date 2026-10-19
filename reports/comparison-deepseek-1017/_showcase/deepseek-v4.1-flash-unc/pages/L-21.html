@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><title>analog rain cockpit</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style><script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+const SEED = 782736;
+let lcg = SEED;
+const rnd = () => { lcg = (lcg * 1103515245 + 12345) % 2147483648; return lcg / 2147483648; };
+
+const H = (d) => Math.tan(45 * Math.PI / 360) * d;      // полувысота кадра на дистанции d
+const FW = (u, d) => u * 2 * H(d) * (800 / 600);    // доля ширины кадра -> единицы сцены
+const FH = (u, d) => u * 2 * H(d);                  // доля высоты кадра -> единицы сцены
+const CAM_Z = 4;
+
+const renderer = new THREE.WebGLRenderer({antialias: false, preserveDrawingBuffer: true});
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x241638, 14, 34);
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 200);
+camera.position.set(0, 0, CAM_Z);
+camera.lookAt(0, 0, -1);
+
+const solid = (c) => new THREE.MeshBasicMaterial({color: c});
+// Градиент из двух близких оттенков: плоскость перестаёт быть заливкой. Цвета
+// принимаются и в '#rrggbb', и в '0xrrggbb'.
+const hx = (c) => c.slice(0, 2) === '0x' ? '#' + c.slice(2) : c;   // '0x..' и '#..'
+const vgrad = (top, bottom) => new THREE.ShaderMaterial({
+  uniforms: {uTop: {value: new THREE.Color(hx(top))}, uBottom: {value: new THREE.Color(hx(bottom))}},
+  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  // uniform-цвета приходят в линейном пространстве: mix по линейным и перевод
+  // обратно в sRGB — иначе градиент вдвое светлее того же цвета у MeshBasicMaterial.
+  fragmentShader: `uniform vec3 uTop; uniform vec3 uBottom; varying vec2 vUv;
+    void main() {
+      gl_FragColor = vec4(mix(uBottom, uTop, smoothstep(0.0, 1.0, vUv.y)), 1.0);
+      #include <colorspace_fragment>
+    }`,
+});
+const haze = (c, o) => new THREE.MeshBasicMaterial({color: c, transparent: true, opacity: o, depthWrite: false});
+// Объёмный вариант тех же деталей: свет и материал вместо эмиссивной заливки.
+// Поверхность получает блик и затенение, кадр перестаёт быть «плоским».
+const lit = (c, o) => new THREE.MeshStandardMaterial({color: c, roughness: 0.6, metalness: 0.05, opacity: o ?? 1, transparent: (o ?? 1) < 1});
+// Точечный свет с затуханием: на плоскости он даёт градиент, а не ровную
+// заливку, — именно этого не хватало плоским эмиссивным кадрам. Второй, слабый
+// и холодный, стоит со стороны окна и подсвечивает края.
+// Свет ставится по сцене: тёплый — у киоска (его подставляет L-18), холодный —
+// у окна. Значения намеренно слабые: тёмная база должна остаться тёмной, а
+// свет только выявляет объём.
+const lamp = new THREE.PointLight(0xffd9a8, 5.5, 26, 2);
+lamp.position.set(-1.2, 1.0, 1.4);
+scene.add(lamp);
+scene.add(new THREE.AmbientLight(0x4a5674, 1.1));
+const rim = new THREE.PointLight(0x9fc4d8, 3.2, 34, 2);
+rim.position.set(0.8, 0.2, -4.0);
+scene.add(rim);
+const place = (mesh, u, v, z) => {
+  mesh.position.set((u - 0.5) * FW(1, CAM_Z - z), (0.5 - v) * FH(1, CAM_Z - z), z);
+  scene.add(mesh);
+  return mesh;
+};
+const quad = (u, v, material, name, z) => {
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(FW(u, CAM_Z - z), FH(v, CAM_Z - z)), material);
+  mesh.name = name;
+  return place(mesh, 0.5, 0.5, z);
+};
+const box = (u, v, w, material, name, z) => {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(FW(u, CAM_Z - z), FH(v, CAM_Z - z), w), material);
+  mesh.name = name;
+  return place(mesh, 0.5, 0.5, z);
+};
+// Улица: здания телами в глубине — дают перспективу и затенение по граням.
+// Объёмное тело: те же габариты кадра, но с толщиной — при наезде камеры видны
+// боковые грани, и предмет читается как тело, а не как вырезанный
+// прямоугольник. position — доля кадра, как у place.
+const solid3 = (u, v, d, material, name, z) => {
+  const depth = d * FW(u, CAM_Z - z);
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(FW(u, CAM_Z - z), FH(v, CAM_Z - z), depth), material);
+  mesh.name = name;
+  return place(mesh, 0.5, 0.5, z);
+};
+const spray = (n, size, colour) => {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(n * 3), 3));
+  const cloud = new THREE.Points(geometry, new THREE.PointsMaterial({
+    size: size, sizeAttenuation: false, color: colour, transparent: true, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthTest: false,
+  }));
+  scene.add(cloud);
+  return cloud;
+};
+const round = (v) => Math.round(v * 1e4) / 1e4;
+const names = () => scene.children.map((o) => o.name).filter(Boolean);
+
+const SPEED = 1.80;
+const BLINK = 0.94;
+const DRIFT = 0.059;
+
+place(quad(1.8, 1.8, vgrad('0x241a44', '0x0f0a1e'), 'night', -60), 0.5, 0.5, -60);
+place(quad(1.0, 0.12, solid(0x241a44), 'canopy', -6), 0.5, 0.06, -6);
+place(quad(1.0, 0.42, solid(0x1f1538), 'hull_low', -6), 0.5, 0.79, -6);
+place(quad(1.0, 0.05, solid(0x0d0818), 'window_sill', -5.6), 0.5, 0.61, -5.6);
+place(quad(1.0, 0.46, haze(0x9fc4d8, 0.16), 'glass', -5), 0.5, 0.35, -5);
+for (let i = 0; i < 5; i++) place(quad(0.10, 0.10 + i * 0.02, solid(0x1a2140), 'skyline' + i, -14), 0.12 + i * 0.18, 0.30, -14);
+
+const rain = spray(48, 6, 0xa8c8dc);
+const rainSpan = FH(0.40, 16), rainWide = FW(0.80, 16);
+{
+  const p = rain.geometry.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setXYZ(i, (rnd() - 0.5) * rainWide, 1.118 + (rnd() - 0.5) * rainSpan, -12);
+  p.needsUpdate = true;
+}
+const drops = spray(58, 6, 0xa8c8dc);
+const dropSpan = FH(0.40, 8.9), dropWide = FW(0.72, 8.9);
+{
+  const p = drops.geometry.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setXYZ(i, (rnd() - 0.5) * dropWide, 1.118 + (rnd() - 0.5) * dropSpan, -4.9);
+  p.needsUpdate = true;
+}
+
+// Панель с экранами, индикаторами и тумблерами.
+const panel = place(quad(0.84, 0.14, solid(0x2a1c4a), 'panel', -3), 0.50, 0.30, -3);
+panel.rotation.x = -0.25;
+place(quad(0.84 * 1.04, 0.02, solid(0x1d1436), 'panel_lip', -2.9), 0.50, 0.30 + 0.10, -2.9);
+
+const screenMat = new THREE.ShaderMaterial({
+  uniforms: {uPhase: {value: 0.0}},
+  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `uniform float uPhase; varying vec2 vUv;
+    void main() {
+      float scan = 0.55 + 0.45 * step(0.66, fract(vUv.y * 7.0 - uPhase));
+      float bars = 0.7 + 0.3 * step(0.5, fract(vUv.x * 5.0 + uPhase * 0.5));
+      gl_FragColor = vec4(vec3(0.10, 0.55, 0.28) * scan * bars + vec3(0.02, 0.72, 0.05), 1.0);
+    }`,
+});
+for (let i = 0; i < 4; i++) {
+  place(quad(0.10, 0.09, screenMat, 'screen' + i, -2.85), 0.20 + i * 0.20, 0.30 - 0.02, -2.85);
+  place(quad(0.12, 0.11, solid(0x120c26), 'screen_frame' + i, -2.95), 0.20 + i * 0.20, 0.30 - 0.02, -2.95);
+}
+for (let i = 0; i < 5; i++) {
+  place(quad(0.032, 0.030, solid(0xffd166), 'dial' + i, -2.8), 0.46 + i * 0.02, 0.30 - 0.062, -2.8);
+}
+for (let i = 0; i < 5; i++) {
+  place(quad(0.018, 0.038, solid(0xffd166), 'toggle' + i, -2.8), 0.46 + i * 0.02, 0.30 + 0.028, -2.8);
+}
+const flash = place(quad(0.50, 0.40, haze(0xa8c8dc, 0.25), 'flash', -14), 0.34, 0.34, -14);
+place(quad(1.0, 0.26, vgrad('0x241a44', '0x100a20'), 'floor', -1), 0.5, 0.52, -1);
+place(quad(0.34, 0.16, solid(0x241a42), 'console', -1.6), 0.20, 0.47, -1.6);
+for (let i = 0; i < 4; i++) place(quad(0.05, 0.012, solid(0xffd166), 'led' + i, -1.5), 0.11 + i * 0.06, 0.47 + 0.02, -1.5);
+place(quad(0.30, 0.04, solid(0x120c26), 'seat_base', -1.2), 0.72, 0.54, -1.2);
+place(quad(0.26, 0.12, solid(0x241a42), 'seat_back', -1.1), 0.72, 0.54 - 0.07, -1.1);
+place(quad(0.30, 0.03, haze(0x57e08a, 0.25), 'panel_glow', -2.7), 0.50, 0.30 + 0.10, -2.7);
+
+let t = 0;
+const fizz = [];
+for (let i = 0; i < 64; i++) fizz.push(0.6 + rnd() * 0.8);
+
+window.__step = (dt) => {
+  t += dt;
+  const fall = (cloud, low, high, rate, dt) => {
+    const p = cloud.geometry.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      let y = p.getY(i) - rate * fizz[i % 64] * dt;
+      if (y < low) y += (high - low);
+      p.setY(i, y);
+    }
+    p.needsUpdate = true;
+  };
+  fall(drops, -dropSpan / 2, dropSpan / 2, SPEED, dt);
+  fall(rain, -rainSpan / 2, rainSpan / 2, SPEED * 1.4, dt);
+  screenMat.uniforms.uPhase.value = t * 0.6;
+  flash.material.opacity = 0.10 + 0.30 * (0.5 + 0.5 * Math.sin(t * BLINK * 6.2832));
+  camera.position.x = Math.sin(t * 0.3) * DRIFT;
+  camera.lookAt(camera.position.x, 0, -1);
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+window.__probe = () => ({
+  t: round(t),
+  objects: names(),
+  flash: round(flash.material.opacity),
+});
+
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+</body></html>

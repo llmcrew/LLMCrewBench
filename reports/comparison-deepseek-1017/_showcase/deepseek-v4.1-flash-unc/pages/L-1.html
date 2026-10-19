@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Sunset over the sea</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; padding: 0; background: #1b2a4a; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// ---------- deterministic frame geometry ----------
+const FOV      = 45;
+const ASPECT   = 800 / 600;
+const DIST     = 12;                       // planes are 12 units from the camera
+const CAM_Y    = 0.2;
+const HALF_H   = DIST * Math.tan((FOV * Math.PI / 180) / 2); // ≈ 4.9706
+const FRAME_H  = 2 * HALF_H;               // visible frame height at DIST
+const FRAME_W  = FRAME_H * ASPECT;         // visible frame width  at DIST
+const HORIZON  = 0;                        // horizon sits at 52% of frame height
+
+// palette (sRGB, written directly by the raw shaders)
+const NIGHT    = new THREE.Color('#1b2a4a');
+const WARM     = new THREE.Color('#ff7a3d');
+const DEEP     = new THREE.Color('#20283a');
+const SUNCOL   = new THREE.Color('#ffd08a');
+
+const SKY_H    = 0.52 * FRAME_H;           // 5.169 units above horizon
+const SEA_H    = 0.48 * FRAME_H;           // 4.772 units below horizon
+const SUN_R    = 0.075 * FRAME_H;          // ≈ 0.7456
+const SUN_SPEED= 0.040 * FRAME_H;          // units per second
+const SUN_X0   = (0.41 - 0.5) * FRAME_W;   // 0.41 of frame width  -> scene x
+const SUN_Y0   = (0.70 - 0.5) * FRAME_H + CAM_Y; // 0.70 of frame height -> scene y
+
+// ripple parameters come from the brief
+const RIPPLE_STEP  = 0.024 * FRAME_H;      // world-space stripe period
+const RIPPLE_PHASE = 0.386;
+
+// ---------- renderer / scene / camera ----------
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
+renderer.setClearColor(NIGHT, 1);
+
+const scene  = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(FOV, ASPECT, 0.1, 200);
+camera.position.set(0, CAM_Y, 0);
+camera.lookAt(0, CAM_Y, -1);               // strictly along the horizon
+
+// ---------- sky ----------
+const skyGeo = new THREE.PlaneGeometry(40, SKY_H);
+const skyMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTop:   { value: NIGHT.clone() },
+    uBot:   { value: WARM.clone() },
+    uSpan:  { value: SKY_H },
+    uBase:  { value: HORIZON }
+  },
+  vertexShader: /* glsl */`
+    varying float vY;
+    void main() {
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vY = wp.y;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }`,
+  fragmentShader: /* glsl */`
+    varying float vY;
+    uniform vec3  uTop;
+    uniform vec3  uBot;
+    uniform float uSpan;
+    uniform float uBase;
+    void main() {
+      float t = clamp((vY - uBase) / uSpan, 0.0, 1.0);
+      // wide warm plateau near the horizon, cool night band up high
+      float k = smoothstep(0.16, 0.72, t);
+      vec3 col = mix(uBot, uTop, k);
+      gl_FragColor = vec4(col, 1.0);
+      #include <colorspace_fragment>
+    }`
+});
+const sky = new THREE.Mesh(skyGeo, skyMat);
+sky.name = 'sky';
+sky.position.set(0, HORIZON + SKY_H / 2, -DIST);
+scene.add(sky);
+
+// ---------- sea ----------
+const seaGeo = new THREE.PlaneGeometry(40, SEA_H);
+const seaMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTop:   { value: WARM.clone() },
+    uBot:   { value: DEEP.clone() },
+    uSpan:  { value: SEA_H },
+    uBase:  { value: HORIZON },
+    uStep:  { value: RIPPLE_STEP },
+    uPhase: { value: RIPPLE_PHASE }
+  },
+  vertexShader: /* glsl */`
+    varying float vY;
+    void main() {
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vY = wp.y;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }`,
+  fragmentShader: /* glsl */`
+    varying float vY;
+    uniform vec3  uTop;
+    uniform vec3  uBot;
+    uniform float uSpan;
+    uniform float uBase;
+    uniform float uStep;
+    uniform float uPhase;
+    void main() {
+      float t = clamp((uBase - vY) / uSpan, 0.0, 1.0);
+      float k = smoothstep(0.22, 0.78, t);
+      vec3 col = mix(uTop, uBot, k);
+      // horizontal brightness stripes, fixed phase
+      float w = sin((vY / uStep + uPhase) * 6.28318530718);
+      col *= 1.0 + 0.06 * w;
+      // gentle glow of the sun road under the sun
+      float g = exp(-pow((vY / uSpan) * 6.0, 2.0));
+      col += vec3(0.05, 0.028, 0.008) * g;
+      gl_FragColor = vec4(col, 1.0);
+      #include <colorspace_fragment>
+    }`
+});
+const sea = new THREE.Mesh(seaGeo, seaMat);
+sea.name = 'sea';
+sea.position.set(0, HORIZON - SEA_H / 2, -DIST);
+scene.add(sea);
+
+// ---------- sun and its reflection ----------
+const circleGeo = new THREE.CircleGeometry(SUN_R, 96);
+
+const sun = new THREE.Mesh(circleGeo, new THREE.MeshBasicMaterial({ color: SUNCOL.clone() }));
+sun.name = 'sun';
+sun.scale.y = 0.55;
+sun.position.set(SUN_X0, SUN_Y0, -DIST + 0.5);
+scene.add(sun);
+
+const sunReflection = new THREE.Mesh(circleGeo, new THREE.MeshBasicMaterial({ color: SUNCOL.clone() }));
+sunReflection.name = 'sun_reflection';
+sunReflection.scale.y = 2.5;
+sunReflection.position.set(SUN_X0, HORIZON - (SUN_Y0 - HORIZON), -DIST + 0.4);
+scene.add(sunReflection);
+
+// ---------- state / animation ----------
+const state = {
+  t: 0,
+  sunX: SUN_X0,
+  sunY: SUN_Y0
+};
+
+function applyState() {
+  sun.position.x = state.sunX;
+  sun.position.y = state.sunY;
+  // mirror about the horizon, stretched vertically
+  sunReflection.position.x = state.sunX;
+  sunReflection.position.y = HORIZON - (state.sunY - HORIZON);
+}
+
+function render() {
+  renderer.render(scene, camera);
+}
+
+window.__step = function (dt) {
+  const d = Number(dt) || 0;
+  state.t += d;
+  state.sunY -= SUN_SPEED * d;
+  if (state.sunY < HORIZON) state.sunY = HORIZON; // stop at the horizon
+  applyState();
+  render();
+  return window.__probe();
+};
+
+window.__probe = function () {
+  return {
+    t: Number(state.t.toFixed(4)),
+    objects: ['sky', 'sea', 'sun', 'sun_reflection'],
+    sun: [Number(state.sunX.toFixed(4)), Number(state.sunY.toFixed(4))]
+  };
+};
+
+applyState();
+render();
+window.__ready = true;
+</script>
+</body>
+</html>

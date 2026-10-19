@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><title>planet collision</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style><script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ------------------------------------------------------------------ *
+ * Случайность — только явный LCG, никакого Math.random().
+ * ------------------------------------------------------------------ */
+const SEED = 160717;
+let lcg = SEED;
+const rnd = () => { lcg = (lcg * 1103515245 + 12345) % 2147483648; return lcg / 2147483648; };
+
+const renderer = new THREE.WebGLRenderer({antialias: true, preserveDrawingBuffer: true});
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1920 / 1080, 0.05, 5000);
+camera.position.set(0, 0.6, 8);
+camera.lookAt(0, 0, -6);
+
+// Свет: холодное солнце сбоку и тёплая подсветка катастрофы.
+const sun = new THREE.DirectionalLight(0xfff4e0, 3.4);
+sun.position.set(-1, 0.35, 0.5);
+scene.add(sun);
+scene.add(new THREE.AmbientLight(0x2a3350, 0.9));
+const rim = new THREE.DirectionalLight(0x6f8fd0, 0.7);
+rim.position.set(0.6, -0.4, -0.8);
+scene.add(rim);
+
+const round4 = (v) => Math.round(v * 1e4) / 1e4;
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+const names = () => scene.children.map((o) => o.name).filter(Boolean);
+
+/* ------------------------------------------------------------------ *
+ * Постобработка: зерно, виньетка, хроматика, мягкий bloom.
+ * ------------------------------------------------------------------ */
+const postScene = new THREE.Scene();
+const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const postMat = new THREE.ShaderMaterial({
+  uniforms: { uTex: {value: null}, uTime: {value: 0}, uGrain: {value: 0.05}, uAberr: {value: 0.0018}, uFlash: {value: 0} },
+  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D uTex; uniform float uTime, uGrain, uAberr, uFlash;
+    varying vec2 vUv;
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+    void main() {
+      vec2 d = (vUv - 0.5) * uAberr;
+      vec3 c;
+      c.r = texture2D(uTex, vUv + d).r;
+      c.g = texture2D(uTex, vUv).g;
+      c.b = texture2D(uTex, vUv - d).b;
+      vec3 b = texture2D(uTex, vUv + vec2(0.004, 0.0)).rgb
+             + texture2D(uTex, vUv - vec2(0.004, 0.0)).rgb
+             + texture2D(uTex, vUv + vec2(0.0, 0.006)).rgb
+             + texture2D(uTex, vUv - vec2(0.0, 0.006)).rgb;
+      c += max(vec3(0.0), b * 0.25 - 0.05) * 1.35;
+      c += vec3(1.0, 0.6, 0.3) * uFlash * 0.22;
+      float g = hash(vUv * vec2(1920.0, 1080.0) + uTime * 37.0) - 0.5;
+      c += g * uGrain;
+      float v = smoothstep(1.28, 0.34, length(vUv - 0.5));
+      c *= mix(0.68, 1.0, v);
+      gl_FragColor = vec4(c, 1.0);
+      #include <colorspace_fragment>
+    }`,
+});
+postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat));
+const postRT = new THREE.WebGLRenderTarget(1920, 1080, {minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter});
+
+/* ------------------------------------------------------------------ *
+ * Earth: континенты, города, штормы (искажение после удара).
+ * ------------------------------------------------------------------ */
+const earthMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: {value: 0},
+    uLight: {value: new THREE.Vector3(-1, 0.35, 0.5).normalize()},
+    uLand: {value: new THREE.Color(0x2f6b46)},
+    uSea: {value: new THREE.Color(0x13315e)},
+    uCity: {value: new THREE.Color(0xffd0d0)},
+    uStorm: {value: 0.0},
+    uHits: {value: [new THREE.Vector4(1, 0.2, 0.4, 1), new THREE.Vector4(-0.7, 0.8, 0.6, 1)]},
+  },
+  vertexShader: `varying vec3 vN; varying vec3 vP;
+    void main() { vN = normalize(normalMatrix * normal); vP = normalize(position);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform float uTime, uStorm; uniform vec3 uLight, uLand, uSea, uCity; uniform vec4 uHits[2];
+    varying vec3 vN; varying vec3 vP;
+    float hash(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453123); }
+    float noise(vec3 p) {
+      vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x), mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+                 mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x), mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+    }
+    float fbm(vec3 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { s += a * noise(p); p *= 2.03; a *= 0.5; } return s; }
+    void main() {
+      // штормы искажают координаты поверхности
+      vec3 sp = vP + vec3(sin(vP.y * 6.0 + uTime * 1.3), cos(vP.z * 5.0 - uTime), sin(vP.x * 5.0)) * 0.05 * uStorm;
+      float h = fbm(sp * 2.6);
+      float land = smoothstep(0.48, 0.55, h);
+      vec3 base = mix(uSea, uLand, land);
+      float polar = smoothstep(0.72, 0.94, abs(sp.y));
+      base = mix(base, vec3(0.86, 0.9, 0.95), polar * 0.8);
+      float lambert = max(0.0, dot(vN, normalize(uLight)));
+      float night = 1.0 - smoothstep(0.02, 0.35, lambert);
+      float cities = step(0.55, h) * step(0.42, fbm(sp * 11.0)) * night;
+      base += uCity * cities * 0.7;
+      // штормовые вихри на дневной стороне
+      float swirl = smoothstep(0.42, 0.75, fbm(sp * 3.4 + uTime * 0.08)) * uStorm;
+      base = mix(base, vec3(0.82, 0.88, 1.0), swirl * 0.55);
+      // ожоги от катастрофы
+      for (int i = 0; i < 2; i++) {
+        float dd = distance(normalize(vP), normalize(uHits[i].xyz));
+        base = mix(vec3(1.0, 0.55, 0.3), base, smoothstep(0.02, 0.2, dd));
+      }
+      base *= mix(0.22, 1.25, lambert);
+      gl_FragColor = vec4(base, 1.0);
+      #include <colorspace_fragment>
+    }`,
+});
+const EARTH = new THREE.Vector3(2.6, -1.4, -11);
+const earth = new THREE.Mesh(new THREE.SphereGeometry(3.2, 128, 80), earthMat);
+earth.name = 'earth'; earth.position.copy(EARTH); scene.add(earth);
+
+const atmoMat = new THREE.ShaderMaterial({
+  uniforms: { uColor: {value: new THREE.Color(0x6fb6ff)}, uLight: {value: new THREE.Vector3(-1, 0.35, 0.5).normalize()}, uStorm: {value: 0} },
+  vertexShader: `varying vec3 vN; void main() { vN = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform vec3 uColor, uLight; uniform float uStorm; varying vec3 vN;
+    void main() {
+      float edge = pow(1.0 - abs(dot(vN, vec3(0.0, 0.0, 1.0))), 2.2);
+      float lit = 0.35 + 0.65 * max(0.0, dot(vN, normalize(uLight)));
+      gl_FragColor = vec4(uColor * edge * (0.9 + uStorm * 0.6) * lit, 1.0);
+    }`,
+  transparent: true, blending: THREE.AdditiveBlending, side: THREE.BackSide, depthWrite: false,
+});
+const atmosphere = new THREE.Mesh(new THREE.SphereGeometry(3.55, 96, 64), atmoMat);
+atmosphere.name = 'atmosphere'; atmosphere.position.copy(EARTH); scene.add(atmosphere);
+
+const clouds = new THREE.Mesh(new THREE.SphereGeometry(3.28, 96, 64),
+  new THREE.MeshStandardMaterial({color: 0xe8f0f8, roughness: 1.0, transparent: true, opacity: 0.24, depthWrite: false}));
+clouds.name = 'clouds'; clouds.position.copy(EARTH); scene.add(clouds);
+
+/* ------------------------------------------------------------------ *
+ * Планеты: процедурная кора + эмиссивные трещины лавы, деформация.
+ * ------------------------------------------------------------------ */
+const NOISE = `
+  float hash(vec3 p) { return fract(sin(dot(p, vec3(41.7, 289.1, 137.3))) * 43758.5453123); }
+  float noise(vec3 p) { vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x), mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+               mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x), mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z); }
+  float fbm(vec3 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { s += a * noise(p); p *= 2.03; a *= 0.5; } return s; }
+`;
+const rockMat = (c, seed) => new THREE.ShaderMaterial({
+  uniforms: {
+    uBase: {value: new THREE.Color(c)},
+    uLava: {value: new THREE.Color(0xff7a3c)},
+    uHeat: {value: 0.0},
+    uDeform: {value: 0.0},
+    uFace: {value: new THREE.Vector3(1, 0, 0)},
+    uSeed: {value: seed},
+  },
+  vertexShader: NOISE + `
+    uniform float uDeform, uSeed; uniform vec3 uFace;
+    varying vec3 vP; varying vec3 vN; varying float vCrush;
+    void main() {
+      vec3 n = normalize(position);
+      float d = fbm(n * 2.4 + uSeed);
+      float crush = max(0.0, dot(n, normalize(uFace)));
+      // кора вминается в сторону соседней планеты и вспучивается вокруг
+      float disp = (d - 0.5) * 0.45 * uDeform - crush * 0.45 * uDeform + crush * crush * 0.18 * uDeform;
+      vec3 p = position + n * disp;
+      vCrush = crush;
+      vP = normalize(p);
+      vN = normalize(normalMatrix * normal);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    }`,
+  fragmentShader: NOISE + `
+    uniform vec3 uBase, uLava; uniform float uHeat, uSeed;
+    varying vec3 vP; varying vec3 vN; varying float vCrush;
+    void main() {
+      float n = fbm(vP * 5.0 + uSeed) * 0.6 + fbm(vP * 15.0 + uSeed) * 0.4;
+      // трещины — узкие гребни шума, раскаляются от uHeat
+      float r1 = 1.0 - abs(fbm(vP * 4.5 + uSeed) * 2.0 - 1.0);
+      float r2 = 1.0 - abs(fbm(vP * 9.0 - uSeed) * 2.0 - 1.0);
+      float crack = smoothstep(0.72, 0.98, max(r1, r2 * 0.85));
+      crack *= smoothstep(0.0, 0.6, n) * 0.6 + 0.4;
+      float glow = crack * (0.2 + uHeat * 2.6);
+      vec3 col = mix(uBase, uLava, clamp(glow, 0.0, 1.0));
+      // остывающая корка темнеет, швы светятся
+      col *= 0.55 + 0.9 * (1.0 - crack) * mix(0.5, 1.0, n);
+      float lambert = max(0.12, dot(vN, normalize(vec3(-1.0, 0.4, 0.6))));
+      // раскалённая зона контакта
+      col += uLava * vCrush * uHeat * 0.9;
+      gl_FragColor = vec4(col * (0.35 + 0.8 * lambert), 1.0);
+      #include <colorspace_fragment>
+    }`,
+});
+const PLANET_A0 = new THREE.Vector3(-4.17, 0.65, -7);
+const PLANET_B0 = new THREE.Vector3(-1.95, -0.60, -9);
+const MID = new THREE.Vector3((PLANET_A0.x + PLANET_B0.x) / 2, (PLANET_A0.y + PLANET_B0.y) / 2, -8);
+
+const planetA = new THREE.Mesh(new THREE.SphereGeometry(2.0, 128, 80), rockMat(0x8a6a52, 3.1));
+planetA.name = 'planet_a'; planetA.position.copy(PLANET_A0); scene.add(planetA);
+const planetB = new THREE.Mesh(new THREE.SphereGeometry(1.7, 128, 80), rockMat(0x6d5a72, 8.7));
+planetB.name = 'planet_b'; planetB.position.copy(PLANET_B0); scene.add(planetB);
+
+/* ------------------------------------------------------------------ *
+ * Обломки (160) и пыль (90) — из явного LCG.
+ * ------------------------------------------------------------------ */
+const SHARDS = 160;
+const shardGeo = new THREE.BufferGeometry();
+shardGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(SHARDS * 3), 3));
+const shardGeoSize = new THREE.BufferAttribute(new Float32Array(SHARDS), 1);
+shardGeo.setAttribute('psize', shardGeoSize);
+const shardMat = new THREE.ShaderMaterial({
+  uniforms: { uColor: {value: new THREE.Color(0xff7a3c)}, uAlpha: {value: 0}, uScale: {value: 300.0} },
+  vertexShader: `attribute float psize; uniform float uScale; varying float vA;
+    void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_PointSize = clamp(psize * uScale / (-mv.z), 1.0, 64.0);
+      gl_Position = projectionMatrix * mv; vA = 1.0 - smoothstep(30.0, 120.0, -mv.z); }`,
+  fragmentShader: `uniform vec3 uColor; uniform float uAlpha; varying float vA;
+    void main() { vec2 d = gl_PointCoord - 0.5; float r = length(d);
+      float a = smoothstep(0.5, 0.02, r); gl_FragColor = vec4(uColor * a * uAlpha * vA, a); }`,
+  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+});
+const shards = new THREE.Points(shardGeo, shardMat);
+shards.name = 'shards'; shards.frustumCulled = false; scene.add(shards);
+const shardV = [];
+const shardO = [];
+for (let i = 0; i < SHARDS; i++) {
+  const u = rnd() * 2 - 1, th = rnd() * 6.2832, s = Math.sqrt(1 - u * u);
+  const dir = new THREE.Vector3(Math.cos(th) * s, u, Math.sin(th) * s);
+  shardO.push(dir.clone().multiplyScalar(0.75 + rnd() * 0.4));
+  shardV.push(dir.clone().multiplyScalar(0.7 + rnd() * 2.6).add(new THREE.Vector3(0, 0.25, 0)));
+  shardGeoSize.array[i] = 0.10 + rnd() * 0.26;
+}
+shardGeoSize.needsUpdate = true;
+
+const DUST = 90;
+const dustGeo = new THREE.BufferGeometry();
+dustGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(DUST * 3), 3));
+const dustGeoSize = new THREE.BufferAttribute(new Float32Array(DUST), 1);
+dustGeo.setAttribute('psize', dustGeoSize);
+const dustMat = new THREE.ShaderMaterial({
+  uniforms: { uColor: {value: new THREE.Color(0xd8b18a)}, uAlpha: {value: 0}, uScale: {value: 300.0} },
+  vertexShader: shardMat.vertexShader,
+  fragmentShader: `uniform vec3 uColor; uniform float uAlpha; varying float vA;
+    void main() { vec2 d = gl_PointCoord - 0.5; float r = length(d);
+      float a = smoothstep(0.5, 0.0, r); gl_FragColor = vec4(uColor * a * uAlpha * 0.6 * vA, a); }`,
+  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+});
+const dust = new THREE.Points(dustGeo, dustMat);
+dust.name = 'dust'; dust.frustumCulled = false; scene.add(dust);
+const dustV = [];
+const dustO = [];
+for (let i = 0; i < DUST; i++) {
+  const u = rnd() * 2 - 1, th = rnd() * 6.2832, s = Math.sqrt(1 - u * u);
+  const dir = new THREE.Vector3(Math.cos(th) * s, u, Math.sin(th) * s);
+  dustO.push(dir.clone().multiplyScalar(0.4 + rnd() * 1.6));
+  dustV.push(dir.clone().multiplyScalar(0.12 + rnd() * 0.65));
+  dustGeoSize.array[i] = 0.5 + rnd() * 1.1;
+}
+dustGeoSize.needsUpdate = true;
+
+/* ------------------------------------------------------------------ *
+ * Светящиеся дуги (электрические разряды между планетами).
+ * ------------------------------------------------------------------ */
+const arcs = new THREE.Group(); arcs.name = 'arcs'; scene.add(arcs);
+const arcMeshes = [];
+for (let i = 0; i < 3; i++) {
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(1.0, 0.045 + i * 0.02, 10, 90),
+    new THREE.MeshBasicMaterial({color: 0xffa060, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false}));
+  ring.name = 'arc_' + i;
+  arcs.add(ring); arcMeshes.push(ring);
+}
+
+// Вспышка удара.
+const flash = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16),
+  new THREE.MeshBasicMaterial({color: 0xffcf9a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false}));
+flash.name = 'flash'; scene.add(flash);
+
+/* ------------------------------------------------------------------ *
+ * Звёзды (2200).
+ * ------------------------------------------------------------------ */
+const starGeo = new THREE.BufferGeometry();
+{
+  const n = 2200;
+  const pos = new Float32Array(n * 3), col = new Float32Array(n * 3), sz = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const u = rnd() * 2 - 1, th = rnd() * 6.2832, s = Math.sqrt(1 - u * u), R = 900 + rnd() * 320;
+    pos[i * 3] = Math.cos(th) * s * R; pos[i * 3 + 1] = u * R; pos[i * 3 + 2] = Math.sin(th) * s * R;
+    const t = 0.65 + rnd() * 0.35;
+    col[i * 3] = t; col[i * 3 + 1] = t; col[i * 3 + 2] = Math.min(1, t * 1.08);
+    sz[i] = 1.4 + rnd() * 3.2;
+  }
+  starGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  starGeo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  starGeo.setAttribute('psize', new THREE.Float32BufferAttribute(sz, 1));
+}
+const starMat = new THREE.ShaderMaterial({
+  uniforms: { uScale: {value: 300.0} },
+  vertexShader: `attribute float psize; uniform float uScale;
+    void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_PointSize = clamp(psize * uScale / (-mv.z), 1.0, 8.0);
+      gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `varying vec3 vC; void main() { gl_FragColor = vec4(1.0); }`,
+  vertexColors: true, transparent: true, depthWrite: false,
+});
+// одна точка = один цвет: берём цвет из атрибута через отдельный шейдер
+starMat.vertexShader = `attribute float psize; uniform float uScale; varying vec3 vC;
+    void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_PointSize = clamp(psize * uScale / (-mv.z), 1.0, 8.0);
+      gl_Position = projectionMatrix * mv; vC = color; }`;
+starMat.fragmentShader = `varying vec3 vC; void main() { vec2 d = gl_PointCoord - 0.5; float a = smoothstep(0.5, 0.1, length(d)); gl_FragColor = vec4(vC, a); }`;
+const stars = new THREE.Points(starGeo, starMat);
+stars.name = 'stars'; stars.frustumCulled = false; scene.add(stars);
+
+/* ------------------------------------------------------------------ *
+ * Станция — коробки и панели, разворот к катастрофе.
+ * ------------------------------------------------------------------ */
+const station = new THREE.Group();
+station.name = 'station';
+station.position.set(3.3, -2.35, 0.6);
+scene.add(station);
+const lit = (c, e) => new THREE.MeshStandardMaterial({color: c, roughness: 0.5, metalness: 0.4, emissive: e ?? 0x000000, emissiveIntensity: 0.6});
+const hull = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 1.4, 12), lit(0xc2cad4));
+hull.rotation.z = Math.PI / 2; station.add(hull);
+const core = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.32, 0.32), lit(0x9aa4b0)); station.add(core);
+for (const sx of [-1, 1]) {
+  const p = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.02, 0.24), lit(0x24407a, 0x18306a));
+  p.position.set(sx * 0.85, 0, 0); station.add(p);
+}
+const port = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.2), new THREE.MeshBasicMaterial({color: 0x6fb6ff, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false}));
+port.position.set(0, 0.1, 0.18); station.add(port);
+const dish = new THREE.Mesh(new THREE.SphereGeometry(0.16, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), lit(0xd8dde4));
+dish.position.set(0, 0.28, 0); dish.rotation.x = -0.7; station.add(dish);
+station.scale.setScalar(1.1);
+
+const HIT_AT = 2.87;
+
+/* ------------------------------------------------------------------ *
+ * Шаг времени. Всё детерминировано, время двигает только __step(dt).
+ * ------------------------------------------------------------------ */
+let t = 0;
+const tmp = new THREE.Vector3();
+const render = () => {
+  renderer.setRenderTarget(postRT);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  postMat.uniforms.uTex.value = postRT.texture;
+  renderer.render(postScene, postCam);
+};
+
+window.__step = (dt) => {
+  t += dt;
+  earthMat.uniforms.uTime.value = t;
+  atmoMat.uniforms.uStorm.value = clamp01((t - HIT_AT) / 2.5) * 0.8;
+  earthMat.uniforms.uStorm.value = clamp01((t - HIT_AT) / 2.0);
+  clouds.rotation.y = t * 0.02;
+  clouds.material.opacity = 0.24 + clamp01((t - HIT_AT) / 3) * 0.16;
+
+  const k = clamp01(t / HIT_AT);
+  const ease = k * k * (3 - 2 * k);
+  const after = clamp01((t - HIT_AT) / 3.0);
+  // планеты сходятся к средней точке и после удара расходятся и мнутся
+  planetA.position.lerpVectors(PLANET_A0, tmp.copy(MID).add(new THREE.Vector3(-0.55, 0, 0)), ease);
+  planetB.position.lerpVectors(PLANET_B0, tmp.copy(MID).add(new THREE.Vector3(0.55, 0, 0)), ease);
+  planetA.position.addScaledVector(new THREE.Vector3(-1, 0.15, 0), after * 0.5);
+  planetB.position.addScaledVector(new THREE.Vector3(1, -0.1, 0), after * 0.5);
+  // рост и сжатие по x (растушёванное вспучивание коры)
+  const grow = 1 + 0.10 * ease + 0.06 * after;
+  planetA.scale.set(grow * (1 - 0.20 * after), grow, grow);
+  planetB.scale.set(1 + 0.14 * after, 1 - 0.12 * after, 1 + 0.05 * after);
+  // корa трескается и мнётся уже при сжатии, вспышка — в момент удара
+  const stress = clamp01((k - 0.25) / 0.75);
+  planetA.material.uniforms.uHeat.value = stress * 0.55 + after;
+  planetA.material.uniforms.uDeform.value = stress * 0.32 + after;
+  planetB.material.uniforms.uHeat.value = stress * 0.45 + after * 0.9;
+  planetB.material.uniforms.uDeform.value = stress * 0.26 + after * 0.85;
+  planetA.material.uniforms.uFace.value.copy(planetB.position).sub(planetA.position).normalize();
+  planetB.material.uniforms.uFace.value.copy(planetA.position).sub(planetB.position).normalize();
+
+  const age = Math.max(0, t - HIT_AT);
+  const live = t >= HIT_AT ? 1 : 0;
+
+  // обломки: разлёт от точки контакта, с гравитационным торможением
+  const sp = shardGeo.attributes.position;
+  for (let i = 0; i < SHARDS; i++) {
+    const d = age * 1.5;
+    sp.setXYZ(i, MID.x + shardO[i].x + shardV[i].x * d,
+                 MID.y + shardO[i].y + shardV[i].y * d - 0.25 * d * d * 0.06,
+                 MID.z + shardO[i].z + shardV[i].z * d);
+  }
+  sp.needsUpdate = true;
+  shardMat.uniforms.uAlpha.value = live * clamp01(1 - age / 4.5);
+
+  // пыль: медленно расползающееся облако
+  const dp = dustGeo.attributes.position;
+  for (let i = 0; i < DUST; i++) {
+    const d = age * 0.55 + t * 0.05;
+    dp.setXYZ(i, MID.x + dustO[i].x + dustV[i].x * d,
+                 MID.y + dustO[i].y + dustV[i].y * d,
+                 MID.z + dustO[i].z + dustV[i].z * d);
+  }
+  dp.needsUpdate = true;
+  dustMat.uniforms.uAlpha.value = (0.25 + 0.75 * live) * clamp01(1 - age / 6.0 + 0.3);
+
+  // вспышка и дуги
+  const f = clamp01(age / 0.5);
+  flash.position.copy(MID);
+  flash.scale.setScalar(live * (0.1 + 0.5 * f) + 0.001);
+  flash.material.opacity = live * Math.max(0, 1 - age / 1.4);
+  const arcBase = live * clamp01(age / 0.6);
+  arcMeshes.forEach((ring, i) => {
+    ring.position.copy(MID);
+    ring.rotation.set(0.6 + i * 0.9, i * 1.3 + t * 0.6, i * 0.7);
+    ring.scale.setScalar(0.5 + 0.55 * i + 0.25 * Math.sin(t * 3 + i));
+    ring.material.opacity = arcBase * (0.5 - 0.1 * i) * (0.6 + 0.4 * Math.sin(t * 7 + i * 2));
+  });
+  arcs.visible = live > 0;
+
+  station.rotation.z = -clamp01(t / 4) * 0.53;
+  station.rotation.y = clamp01(t / 4) * 0.25;
+
+  camera.position.set(0, 0.6, 8 + 0.055 * t);
+  camera.lookAt(MID.x * 0.4, MID.y * 0.4, -8);
+  postMat.uniforms.uTime.value = t;
+  postMat.uniforms.uFlash.value = live * Math.max(0, 1 - age / 0.7) * 0.5;
+  render();
+  return window.__probe();
+};
+
+window.__probe = () => ({
+  t: round4(t),
+  objects: names(),
+  gap: round4(planetA.position.distanceTo(planetB.position)),
+});
+
+render();
+window.__ready = true;
+</script>
+</body></html>

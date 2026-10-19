@@ -48,8 +48,22 @@ def _ignored(relative: str) -> bool:
         # Пересборки и новые файлы — игнорируются (пины ниже); runs/ не в git.
         "reports/comparison/index.html",
         "reports/comparison/_vendor/three.global.js",
+        # Опубликованные артефакты публикаций: прогон на стенде 1017, сравнение
+        # стендов и архив ролика (частями по 90 МБ).
+        "runs/deepseek-v4.1-flash-unc-1017/report.md",
+        "runs/deepseek-v4.1-flash-unc-1017/scores.json",
+        "runs/deepseek-v4.1-flash-unc-1017/sizing.json",
+        "runs/deepseek-v4.1-flash-unc-1017/_showcase/deepseek-v4.1-flash-unc-1017/frames/K-1.png",
+        "reports/comparison-deepseek-1017/index.html",
+        "reports/comparison-deepseek-1017/_showcase/deepseek-v4.1-flash-unc-1017/pages/K-1.html",
+        "video/archive/dailybench-video.zip.part-aa",
+        "docs/ARTIFACTS.md",
+        "docs/recording/README.md",
+        "docs/recording/record_scene.py",
     ],
 )
+
+
 def test_published_artefacts_are_tracked(relative: str):
     assert not _ignored(relative), f"{relative} обязан попасть в git"
 
@@ -73,6 +87,12 @@ def test_published_artefacts_are_tracked(relative: str):
         "video/public/clips/deepseek-v4.1-flash-unc__K-1.mp4",
         "video/bin/ffmpeg",
         "reports/comparison/_showcase/glm-5.3/pages/K-1.html",
+        # Не публикуются: сырые транскрипты, машинные параметры, служебные каталоги.
+        "runs/deepseek-v4.1-flash-unc-1017/tasks.json",
+        "runs/deepseek-v4.1-flash-unc-1017/transcripts/L-1.json",
+        "runs/_logs/deepseek-v4.1-flash-unc-1017.log",
+        "runs/smoke-t1/config.json",
+        "reports/comparison-deepseek-1017/_vendor/plotly.min.js",
     ],
 )
 def test_generated_files_are_ignored(relative: str):

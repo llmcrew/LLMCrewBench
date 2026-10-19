@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><title>lava lamp</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style><script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// Плоскость в 2 единицах от камеры занимает кадр целиком: полувысота кадра
+// tan(22.5°)*2 = 0.8284, полуширина — в 4/3 раза больше.
+const COUNT = 9;
+const HALF_H = Math.tan(45 * Math.PI / 360) * 2, HALF_W = HALF_H * 4 / 3;
+const BLOBS = [
+  [0.333, 0.604, 0.089, 0.126, 0.497, 1.59],
+  [0.457, 0.657, 0.102, 0.106, 0.478, 3.21],
+  [0.120, 0.672, 0.081, 0.112, 0.679, 4.65],
+  [0.606, 0.543, 0.077, 0.136, 0.965, 3.37],
+  [0.420, 0.600, 0.081, 0.100, 1.148, 2.45],
+  [0.779, 0.713, 0.103, 0.175, 1.136, 0.39],
+  [0.472, 0.318, 0.079, 0.178, 0.656, 1.23],
+  [0.192, 0.509, 0.101, 0.161, 1.014, 3.99],
+  [0.892, 0.486, 0.102, 0.115, 0.862, 2.83],
+];
+
+const renderer = new THREE.WebGLRenderer({antialias: false, preserveDrawingBuffer: true});
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 800 / 600, 0.1, 20);
+camera.position.set(0, 0, 2);
+camera.lookAt(0, 0, 0);
+
+// Центры капель в координатах шейдера: x в долях высоты кадра, y от −0.5 до 0.5.
+const centres = BLOBS.map((b) => new THREE.Vector3((b[0] - 0.5) * 4 / 3, b[1] - 0.5, b[2]));
+
+const lamp = new THREE.Mesh(
+  new THREE.PlaneGeometry(HALF_W * 2, HALF_H * 2),
+  new THREE.ShaderMaterial({
+    uniforms: {
+      uBg: {value: new THREE.Color(0x16092b)},
+      uRim: {value: new THREE.Color(0xff2d6b)},
+      uBody: {value: new THREE.Color(0xff6b1a)},
+      uCore: {value: new THREE.Color(0xffdf3d)},
+      uBlobs: {value: centres},
+    },
+    vertexShader: `varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `#define BLOB_COUNT 9
+      #define RIM_LO 0.30
+      #define RIM_HI 0.62
+      #define EDGE_LO 0.85
+      #define EDGE_HI 1.30
+      #define CORE_LO 2.40
+      #define CORE_HI 3.20
+      uniform vec3 uBg; uniform vec3 uRim; uniform vec3 uBody; uniform vec3 uCore;
+      uniform vec3 uBlobs[BLOB_COUNT];
+      varying vec2 vUv;
+
+      // поле метаболлов: сумма r^2/d^2
+      float field(vec2 q) {
+        float f = 0.0;
+        for (int i = 0; i < BLOB_COUNT; i++) {
+          vec2 d = q - uBlobs[i].xy;
+          f += uBlobs[i].z * uBlobs[i].z / max(dot(d, d), 1e-4);
+        }
+        return f;
+      }
+
+      void main() {
+        vec2 p = (vUv - 0.5) * vec2(1.3333, 1.0);
+        float f = field(p);
+
+        // объём: наклон «поверхности» поля даёт нормаль и мягкий тёплый свет
+        float e = 0.006;
+        float fx = field(p + vec2(e, 0.0)) - field(p - vec2(e, 0.0));
+        float fy = field(p + vec2(0.0, e)) - field(p - vec2(0.0, e));
+        vec3 n = normalize(vec3(-fx * 1.6, -fy * 1.6, 1.0));
+        vec3 lightDir = normalize(vec3(-0.45, 0.55, 0.75));
+        float diff = clamp(dot(n, lightDir), 0.0, 1.0);
+        vec3 viewDir = vec3(0.0, 0.0, 1.0);
+        vec3 halfDir = normalize(lightDir + viewDir);
+        float spec = pow(max(dot(n, halfDir), 0.0), 28.0);
+
+        // цвет — по полосам поля, от фона к ядру
+        vec3 colour = mix(uBg, uRim, smoothstep(RIM_LO, RIM_HI, f));
+        colour = mix(colour, uBody, smoothstep(EDGE_LO, EDGE_HI, f));
+        colour = mix(colour, uCore, smoothstep(CORE_LO, CORE_HI, f));
+
+        // объёмное затенение и блик; на фоне (f≈0) — почти плоско
+        float present = smoothstep(0.10, 0.55, f);
+        float shade = mix(0.90, 0.55 + 0.45 * diff, present);
+        colour *= shade;
+        colour += vec3(1.0, 0.93, 0.78) * spec * 0.55 * present;
+
+        gl_FragColor = vec4(colour, 1.0);
+      }`,
+  })
+);
+lamp.name = 'lamp';
+scene.add(lamp);
+
+const round = (v) => Math.round(v * 1e4) / 1e4;
+let t = 0;
+function update() {
+  for (let i = 0; i < COUNT; i++) {
+    const b = BLOBS[i];
+    centres[i].set((b[0] - 0.5) * 4 / 3, b[1] - 0.5 + b[3] * Math.sin(b[4] * t + b[5]), b[2]);
+  }
+}
+
+window.__probe = () => ({
+  t: round(t),
+  objects: scene.children.map((o) => o.name).filter(Boolean),
+  blobs: centres.map((v) => [round(v.x / (4 / 3) + 0.5), round(v.y + 0.5)]),
+});
+window.__step = (dt) => { t += dt; update(); renderer.render(scene, camera); return window.__probe(); };
+
+update();
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+</body></html>

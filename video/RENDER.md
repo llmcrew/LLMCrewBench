@@ -1,7 +1,8 @@
 # Как отрендерить ролик на другом устройстве
 
-Архив самодостаточен: клипы уже сняты, пересъёмка не нужна. Вес — ~0,9 ГБ
-(`dailybench-video.zip` ~0,87 ГБ).
+Архив самодостаточен: клипы уже сняты, пересъёмка не нужна. Вес — 828 МБ.
+В git он лежит частями по 90 МБ (`video/archive/`): GitHub отклоняет файлы
+больше 100 МБ. Склейка и sha256 — `video/archive/RESTORE.md`.
 
 Один клип снят не с прогонной страницы: `qwen38__L-26.mp4` — со страницы
 из ранней сборки Qwen 3.8 (в финальном прогоне задача закрылась без HTML);
@@ -10,14 +11,17 @@
 ## Быстро
 
 ```bash
-unzip dailybench-video.zip        # или: tar --zstd -xf dailybench-video.tar.zst
+# склейка частей архива — см. video/archive/RESTORE.md
+cat <repo>/video/archive/dailybench-video.zip.part-* > dailybench-video.zip
+unzip dailybench-video.zip
 cd dailybench-video
 npm ci
 npx remotion render DailyBench out/dailybench.mp4 --concurrency=6 --timeout=120000
 # → out/dailybench.mp4, 1920x1080, 60 fps, 34:32, без звука
 ```
 
-`public/clips/` (196 файлов, ~0,9 ГБ) уже внутри — ничего записывать не нужно.
+`public/clips/` (196 записей: 169 живых и 27 плашек) уже внутри — ничего
+записывать не нужно.
 
 ## Требования
 
@@ -69,8 +73,9 @@ npm ci
 npx remotion render DailyBench out/dailybench.mp4 --concurrency=6 --timeout=120000
 ```
 
-Второй формат — тот же набор в `dailybench-video.tar.zst` (zstd есть в brew
-и в linux-репозиториях; если нет — `zstd -d < архив.zst | tar -x`).
+Второй формат — тот же набор в `dailybench-video.tar.zst`; в git он не входит,
+лежит рядом с zip в `video/` на машине записи (zstd есть в brew и в
+linux-репозиториях; если нет — `zstd -d < архив.zst | tar -x`).
 
 ## Проверка
 
@@ -96,9 +101,10 @@ npx remotion still scene-showcase out/check-showcase.png --frame=3200
 
 ```
 src/            144K  сцены, таймлайн (SCENES), данные — весь ролик отсюда
-public/clips/   0,9G  196 записей: 169 живых + 27 плашек «модель не справилась»
+public/clips/   834M  196 записей: 169 живых + 27 плашек «модель не справилась»
                       (18 сцен без страницы у GLM 5.3 — сервер упал в прогоне; 9 страниц Qwen 3.6 падают до кадра)
 docs/           8K    текст диктора (voiceover.md) и это руководство
+                      (общий разбор подхода, грабель и чек-лист — docs/recording/)
 tools/          24K   утилиты (для рендера не обязательны)
   build_runs_data.py    переносит цифры из runs/ в src/data/runs.json (нужен `runs/`;
                         в архиве данные уже готовы)
@@ -117,8 +123,10 @@ rsync -a --delete \
   --exclude node_modules --exclude out --exclude dist --exclude '.DS_Store' \
   --exclude public/clips/_frames \
   ./ /tmp/dailybench-video/
-zip -r -q -X dist/dailybench-video.zip dailybench-video   # запускать из /tmp
-tar --zstd -cf dist/dailybench-video.tar.zst -C /tmp dailybench-video
+cd /tmp && zip -r -q -X /tmp/dailybench-video.zip dailybench-video
+shasum -a 256 /tmp/dailybench-video.zip    # записать в archive/RESTORE.md
+rm -f <repo>/video/archive/dailybench-video.zip.part-*
+split -b 90m /tmp/dailybench-video.zip <repo>/video/archive/dailybench-video.zip.part-
 ```
 
 ## Про `bin/`

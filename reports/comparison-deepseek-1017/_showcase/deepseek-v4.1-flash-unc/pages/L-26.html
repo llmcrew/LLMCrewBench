@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Meteor over Earth — orbital station</title>
+<style>
+  html,body{margin:0;padding:0;background:#000;overflow:hidden;}
+  canvas{display:block;width:1920px;height:1080px;}
+</style>
+<script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+/* ------------------------------------------------------------------ */
+/*  Deterministic clock + LCG                                          */
+/* ------------------------------------------------------------------ */
+let lcg = 399148;
+function rnd(){
+  lcg = (Math.imul(lcg, 1103515245) + 12345) & 0x7fffffff;
+  return lcg / 2147483648;
+}
+
+/* deterministic value-noise (no Math.random) */
+function hash3(ix, iy, iz){
+  let h = (Math.imul(ix, 374761393) ^ Math.imul(iy, 668265263) ^ Math.imul(iz, 1274126177)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177) | 0;
+  h = (h ^ (h >>> 16)) >>> 0;
+  return h / 4294967296;
+}
+function vnoise(x, y, z){
+  const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+  const fx = x - ix, fy = y - iy, fz = z - iz;
+  const ux = fx*fx*(3-2*fx), uy = fy*fy*(3-2*fy), uz = fz*fz*(3-2*fz);
+  const c000 = hash3(ix,iy,iz),   c100 = hash3(ix+1,iy,iz);
+  const c010 = hash3(ix,iy+1,iz), c110 = hash3(ix+1,iy+1,iz);
+  const c001 = hash3(ix,iy,iz+1), c101 = hash3(ix+1,iy,iz+1);
+  const c011 = hash3(ix,iy+1,iz+1), c111 = hash3(ix+1,iy+1,iz+1);
+  const x00 = c000+(c100-c000)*ux, x10 = c010+(c110-c010)*ux;
+  const x01 = c001+(c101-c001)*ux, x11 = c011+(c111-c011)*ux;
+  const y0 = x00+(x10-x00)*uy, y1 = x01+(x11-x01)*uy;
+  return y0+(y1-y0)*uz;
+}
+function fbm(x, y, z, oct){
+  let a = 0.5, f = 1, s = 0, n = 0;
+  for (let i = 0; i < oct; i++){ s += a*vnoise(x*f, y*f, z*f); n += a; a *= 0.5; f *= 2; }
+  return s / n;
+}
+const smoothstep = (e0,e1,x)=>{ const t = Math.min(1,Math.max(0,(x-e0)/(e1-e0))); return t*t*(3-2*t); };
+
+/* ------------------------------------------------------------------ */
+/*  Renderer / scene / camera                                          */
+/* ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: true });
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x01030a);
+
+const FOV = 28;
+const camera = new THREE.PerspectiveCamera(FOV, 1920/1080, 0.1, 4000);
+camera.position.set(-0.02, 0.90, 5.5);
+camera.lookAt(1.9, 1.5, -6.0);
+
+const U_SCALE = 1080 / (2 * Math.tan(FOV * Math.PI / 360));
+
+/* ------------------------------------------------------------------ */
+/*  Geometry constants                                                 */
+/* ------------------------------------------------------------------ */
+const R = 4.0;
+const earthCenter = new THREE.Vector3(-0.6, -2.0, -13.0);
+const meteorStart = new THREE.Vector3(1.9, 1.5, -6.0);
+const u = new THREE.Vector3(-0.395, -0.516, -0.719).normalize();
+const IMPACT_T = 1.74;
+
+/* solve ray/sphere crossing to find impact point & speed so it hits at IMPACT_T */
+const P0 = meteorStart.clone().sub(earthCenter);
+const bq = u.dot(P0);
+const cq = P0.lengthSq() - R*R;
+const Lhit = -bq - Math.sqrt(bq*bq - cq);
+const meteorSpeed = Lhit / IMPACT_T;
+const impactPoint = meteorStart.clone().addScaledVector(u, Lhit);
+const impactNormal = impactPoint.clone().sub(earthCenter).normalize();
+
+const sunDir = new THREE.Vector3(-0.42, 0.22, -0.88).normalize();
+const uPerp1 = new THREE.Vector3(0,1,0).cross(u).normalize();
+const uPerp2 = new THREE.Vector3().crossVectors(u, uPerp1).normalize();
+
+/* ------------------------------------------------------------------ */
+/*  Lighting                                                           */
+/* ------------------------------------------------------------------ */
+scene.add(new THREE.AmbientLight(0x223044, 0.55));
+const sun = new THREE.DirectionalLight(0xfff2e0, 1.35);
+sun.position.copy(sunDir).multiplyScalar(60).add(earthCenter);
+sun.target.position.copy(earthCenter);
+scene.add(sun, sun.target);
+const stationLight = new THREE.PointLight(0xffd9a0, 3.2, 16, 2.0);
+stationLight.position.set(-1.4, 1.1, 1.6);
+scene.add(stationLight);
+const meteorLight = new THREE.PointLight(0xffb060, 3.0, 24, 2.0);
+scene.add(meteorLight);
+
+const objects = [];
+
+/* ------------------------------------------------------------------ */
+/*  Earth textures (procedural, deterministic)                         */
+/* ------------------------------------------------------------------ */
+function buildEarthTextures(){
+  const W = 1024, H = 512;
+  const base = new Uint8Array(W*H*4);
+  const light = new Uint8Array(W*H*4);
+  for (let y = 0; y < H; y++){
+    const v = (y + 0.5) / H;
+    const lat = (v - 0.5) * Math.PI;
+    const cl = Math.cos(lat), sl = Math.sin(lat);
+    for (let x = 0; x < W; x++){
+      const lon = ((x + 0.5) / W) * Math.PI * 2;
+      const px = cl*Math.cos(lon), py = sl, pz = cl*Math.sin(lon);
+      const h = fbm(px*2.0 + 4.1, py*2.0 + 1.7, pz*2.0 + 9.3, 6);
+      const detail = fbm(px*9.0 + 1.1, py*9.0 + 6.2, pz*9.0 + 3.4, 4);
+      const i = (y*W + x)*4;
+
+      let r, g, b;
+      if (h < 0.47){
+        /* ocean #13315e, deeper down */
+        const d = smoothstep(0.47, 0.30, h);
+        r = 0x13 + (0x0b - 0x13)*d;
+        g = 0x31 + (0x22 - 0x31)*d;
+        b = 0x5e + (0x44 - 0x5e)*d;
+        const w = fbm(px*14+5, py*14+2, pz*14+7, 3);
+        r += w*10; g += w*14; b += w*22;
+      } else {
+        /* land #2f6b46 rising to highlands */
+        const e = smoothstep(0.47, 0.78, h);
+        r = 0x2f + (0x6d - 0x2f)*e;
+        g = 0x6b + (0x86 - 0x6b)*e;
+        b = 0x46 + (0x55 - 0x46)*e;
+        r += detail*16 - 8; g += detail*18 - 9; b += detail*12 - 6;
+        /* polar snow */
+        const snow = smoothstep(0.72, 0.88, Math.abs(sl) + detail*0.15);
+        r = r + (0xe8 - r)*snow;
+        g = g + (0xee - g)*snow;
+        b = b + (0xf4 - b)*snow;
+      }
+      base[i]   = Math.max(0, Math.min(255, r));
+      base[i+1] = Math.max(0, Math.min(255, g));
+      base[i+2] = Math.max(0, Math.min(255, b));
+      base[i+3] = 255;
+
+      /* city lights #ffd0d0 over land, plus coastal clustering */
+      const city = fbm(px*7.0 + 11.3, py*7.0 + 3.9, pz*7.0 + 7.1, 4);
+      const dots = fbm(px*34.0 + 2.5, py*34.0 + 8.8, pz*34.0 + 4.4, 2);
+      let li = 0;
+      if (h >= 0.465){
+        li = 0.66 + smoothstep(0.34, 0.66, city) * 0.24;
+        li = li + smoothstep(0.58, 0.86, dots) * 0.35;
+        const coast = 1.0 - Math.min(1, Math.abs(h - 0.47) * 26.0);
+        li = li + coast * 0.22;
+        li = Math.min(0.88, li);
+      } else {
+        /* shipping-lane glimmer on the ocean */
+        li = 0.30 + smoothstep(0.55, 0.85, city) * 0.30;
+      }
+      light[i]   = 0xff * li;
+      light[i+1] = 0xd0 * li;
+      light[i+2] = 0xd0 * li;
+      light[i+3] = 255;
+    }
+  }
+  function tex(data){
+    const t = new THREE.DataTexture(data, W, H, THREE.RGBAFormat);
+    t.minFilter = THREE.LinearFilter; t.magFilter = THREE.LinearFilter;
+    t.wrapS = THREE.RepeatWrapping; t.wrapT = THREE.ClampToEdgeWrapping;
+    t.needsUpdate = true;
+    return t;
+  }
+  return { base: tex(base), light: tex(light) };
+}
+
+function buildCloudTexture(){
+  const W = 1024, H = 512;
+  const d = new Uint8Array(W*H*4);
+  for (let y = 0; y < H; y++){
+    const v = (y + 0.5) / H, lat = (v - 0.5)*Math.PI;
+    const cl = Math.cos(lat), sl = Math.sin(lat);
+    for (let x = 0; x < W; x++){
+      const lon = ((x + 0.5)/W)*Math.PI*2;
+      const px = cl*Math.cos(lon), py = sl, pz = cl*Math.sin(lon);
+      let c = fbm(px*3.1 + 20.0, py*3.1 + 5.0, pz*3.1 + 14.0, 6);
+      c = 0.55*fbm(px*5.0+1.0, py*5.0+1.0, pz*5.0+1.0, 5) + 0.45*c;
+      const i = (y*W + x)*4;
+      const g = Math.max(0, Math.min(255, c*255));
+      d[i] = 255; d[i+1] = g; d[i+2] = 255; d[i+3] = 255;
+    }
+  }
+  const t = new THREE.DataTexture(d, W, H, THREE.RGBAFormat);
+  t.minFilter = THREE.LinearFilter; t.magFilter = THREE.LinearFilter;
+  t.wrapS = THREE.RepeatWrapping; t.wrapT = THREE.ClampToEdgeWrapping;
+  t.needsUpdate = true;
+  return t;
+}
+
+const earthTex = buildEarthTextures();
+const cloudTex = buildCloudTexture();
+
+/* ------------------------------------------------------------------ */
+/*  Earth                                                              */
+/* ------------------------------------------------------------------ */
+const earthMat = new THREE.ShaderMaterial({
+  uniforms: {
+    baseTex: { value: earthTex.base },
+    lightTex: { value: earthTex.light },
+    sunDir: { value: sunDir },
+    camPos: { value: camera.position }
+  },
+  vertexShader: `
+    varying vec3 vN; varying vec3 vW; varying vec2 vUv;
+    void main(){
+      vUv = uv;
+      vN = normalize(mat3(modelMatrix) * normal);
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vW = wp.xyz;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }`,
+  fragmentShader: `
+    uniform sampler2D baseTex; uniform sampler2D lightTex;
+    uniform vec3 sunDir; uniform vec3 camPos;
+    varying vec3 vN; varying vec3 vW; varying vec2 vUv;
+    void main(){
+      vec3 N = normalize(vN);
+      vec3 L = normalize(sunDir);
+      vec3 V = normalize(camPos - vW);
+      float ndl = dot(N, L);
+      vec3 base = texture2D(baseTex, vUv).rgb;
+      vec3 lights = texture2D(lightTex, vUv).rgb;
+      float day = smoothstep(-0.18, 0.32, ndl);
+      vec3 dayCol = base * (0.14 + 1.05*max(ndl, 0.0));
+      vec3 H = normalize(L + V);
+      float ocean = smoothstep(0.0, 0.25, base.b - base.g);
+      float spec = pow(max(dot(N, H), 0.0), 48.0) * (0.25 + ocean*1.4);
+      vec3 nightCol = lights*0.58 + base*0.02 + vec3(0.012,0.014,0.024);
+      vec3 col = mix(nightCol, dayCol + vec3(1.0,0.95,0.85)*spec, day);
+      float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * max(ndl + 0.35, 0.0);
+      col += vec3(0.43, 0.71, 1.0) * rim * 0.75;
+      gl_FragColor = vec4(col, 1.0);
+    }`
+});
+const earth = new THREE.Mesh(new THREE.SphereGeometry(R, 96, 64), earthMat);
+earth.position.copy(earthCenter);
+earth.name = 'earth';
+scene.add(earth); objects.push('earth');
+
+/* ------------------------------------------------------------------ */
+/*  Atmosphere halo                                                    */
+/* ------------------------------------------------------------------ */
+const atmosphereMat = new THREE.ShaderMaterial({
+  uniforms: { glowColor: { value: new THREE.Color(0x6fb6ff) },
+              sunDir: { value: sunDir }, camPos: { value: camera.position } },
+  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.BackSide,
+  vertexShader: `
+    varying vec3 vN; varying vec3 vW;
+    void main(){
+      vN = normalize(mat3(modelMatrix) * normal);
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vW = wp.xyz;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }`,
+  fragmentShader: `
+    uniform vec3 glowColor; uniform vec3 sunDir; uniform vec3 camPos;
+    varying vec3 vN; varying vec3 vW;
+    void main(){
+      vec3 N = normalize(vN);
+      vec3 V = normalize(camPos - vW);
+      float rim = pow(1.0 - abs(dot(N, V)), 2.4);
+      float lit = 0.35 + 0.65 * smoothstep(-0.5, 0.5, dot(N, normalize(sunDir)));
+      gl_FragColor = vec4(glowColor * rim * lit * 1.25, rim);
+    }`
+});
+const atmosphere = new THREE.Mesh(new THREE.SphereGeometry(R*1.10, 64, 48), atmosphereMat);
+atmosphere.position.copy(earthCenter);
+atmosphere.name = 'atmosphere';
+scene.add(atmosphere); objects.push('atmosphere');
+
+/* ------------------------------------------------------------------ */
+/*  Clouds                                                             */
+/* ------------------------------------------------------------------ */
+const cloudMat = new THREE.ShaderMaterial({
+  uniforms: { tex: { value: cloudTex }, sunDir: { value: sunDir },
+              camPos: { value: camera.position }, opacity: { value: 0.28 } },
+  transparent: true, depthWrite: false,
+  vertexShader: `
+    varying vec3 vN; varying vec3 vW; varying vec2 vUv;
+    void main(){
+      vUv = uv;
+      vN = normalize(mat3(modelMatrix) * normal);
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vW = wp.xyz;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }`,
+  fragmentShader: `
+    uniform sampler2D tex; uniform vec3 sunDir; uniform vec3 camPos; uniform float opacity;
+    varying vec3 vN; varying vec3 vW; varying vec2 vUv;
+    void main(){
+      float c = texture2D(tex, vUv).g;
+      float cov = smoothstep(0.42, 0.68, c);
+      if (cov < 0.01) discard;
+      vec3 N = normalize(vN);
+      vec3 V = normalize(camPos - vW);
+      float ndl = dot(N, normalize(sunDir));
+      float day = smoothstep(-0.25, 0.3, ndl);
+      vec3 col = vec3(0.95,0.97,1.0) * (0.06 + 0.95*max(ndl, 0.0));
+      float rim = pow(1.0 - max(dot(N, V), 0.0), 2.5);
+      col += vec3(0.5,0.7,1.0) * rim * 0.5 * day;
+      col += vec3(1.0,0.82,0.6) * (1.0 - day) * 0.10;
+      gl_FragColor = vec4(col, cov * opacity);
+    }`
+});
+const clouds = new THREE.Mesh(new THREE.SphereGeometry(R*1.015, 80, 56), cloudMat);
+clouds.position.copy(earthCenter);
+clouds.name = 'clouds';
+scene.add(clouds); objects.push('clouds');
+
+/* ------------------------------------------------------------------ */
+/*  Stars                                                              */
+/* ------------------------------------------------------------------ */
+function buildStars(count){
+  const pos = new Float32Array(count*3);
+  const col = new Float32Array(count*3);
+  const c = new THREE.Color();
+  for (let i = 0; i < count; i++){
+    const th = rnd()*Math.PI*2;
+    const ph = Math.acos(2*rnd() - 1);
+    const rad = 500 + rnd()*300;
+    pos[i*3]   = rad*Math.sin(ph)*Math.cos(th);
+    pos[i*3+1] = rad*Math.cos(ph);
+    pos[i*3+2] = rad*Math.sin(ph)*Math.sin(th);
+    const t = rnd();
+    if (t < 0.6) c.setRGB(1,1,1);
+    else if (t < 0.8) c.setRGB(0.75,0.85,1.0);
+    else if (t < 0.93) c.setRGB(1.0,0.85,0.68);
+    else c.setRGB(0.9,0.95,1.0);
+    const br = 0.35 + rnd()*0.65;
+    col[i*3] = c.r*br; col[i*3+1] = c.g*br; col[i*3+2] = c.b*br;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  g.setAttribute('color', new THREE.BufferAttribute(col,3));
+  const m = new THREE.PointsMaterial({ size: 3.0, sizeAttenuation: false, vertexColors: true,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+  const p = new THREE.Points(g, m);
+  p.name = 'stars';
+  return p;
+}
+scene.add(buildStars(2000)); objects.push('stars');
+
+/* ------------------------------------------------------------------ */
+/*  Glow trail shader (shared by trail & debris)                       */
+/* ------------------------------------------------------------------ */
+function makeGlowPoints(count, color){
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(count*3);
+  const size = new Float32Array(count);
+  const alpha = new Float32Array(count);
+  geo.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('aSize', new THREE.BufferAttribute(size,1));
+  geo.setAttribute('aAlpha', new THREE.BufferAttribute(alpha,1));
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color(color) }, uScale: { value: U_SCALE } },
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexShader: `
+      attribute float aSize; attribute float aAlpha; varying float vA;
+      uniform float uScale;
+      void main(){
+        vA = aAlpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = aSize * uScale / max(-mv.z, 0.1);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform vec3 uColor; varying float vA;
+      void main(){
+        vec2 d = gl_PointCoord - 0.5;
+        float r = length(d);
+        float a = smoothstep(0.5, 0.14, r);
+        gl_FragColor = vec4(uColor, a * vA);
+      }`
+  });
+  const p = new THREE.Points(geo, mat);
+  return p;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Meteor + trail                                                     */
+/* ------------------------------------------------------------------ */
+const meteor = new THREE.Mesh(
+  new THREE.SphereGeometry(0.18, 24, 18),
+  new THREE.MeshBasicMaterial({ color: 0xffd0a0 })
+);
+meteor.name = 'meteor';
+scene.add(meteor); objects.push('meteor');
+/* hot core glow around the meteor */
+const meteorCore = makeGlowPoints(1, 0xfff0d0);
+meteorCore.geometry.attributes.aSize.array[0] = 1.6;
+scene.add(meteorCore);
+
+const TRAIL_N = 90, TRAIL_LAG = 0.019;
+const trail = makeGlowPoints(TRAIL_N, 0xffd0a0);
+trail.name = 'trail';
+scene.add(trail); objects.push('trail');
+const trailSizes = trail.geometry.attributes.aSize.array;
+const trailAlpha = trail.geometry.attributes.aAlpha.array;
+for (let i = 0; i < TRAIL_N; i++){
+  const k = i / (TRAIL_N - 1);
+  trailSizes[i] = 6.0 * (1.0 - 0.80*k) + 0.6;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Shock ring around the meteor                                       */
+/* ------------------------------------------------------------------ */
+const shockMat = new THREE.MeshBasicMaterial({ color: 0xcfe6ff, transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+const shock = new THREE.Mesh(new THREE.RingGeometry(0.82, 1.0, 40), shockMat);
+shock.name = 'shock';
+scene.add(shock); objects.push('shock');
+
+/* ------------------------------------------------------------------ */
+/*  Impact flash + dust ring                                           */
+/* ------------------------------------------------------------------ */
+function radialTex(){
+  const S = 128; const d = new Uint8Array(S*S*4);
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++){
+    const dx = (x+0.5)/S - 0.5, dy = (y+0.5)/S - 0.5;
+    const r = Math.sqrt(dx*dx+dy*dy)*2;
+    const a = Math.max(0, 1 - r);
+    const v = Math.pow(a, 2.2);
+    const i = (y*S+x)*4;
+    d[i]=255; d[i+1]=235; d[i+2]=200; d[i+3]=Math.min(255, v*255);
+  }
+  const t = new THREE.DataTexture(d, S, S, THREE.RGBAFormat);
+  t.minFilter = THREE.LinearFilter; t.magFilter = THREE.LinearFilter; t.needsUpdate = true;
+  return t;
+}
+const flashMat = new THREE.SpriteMaterial({ map: radialTex(), color: 0xfff0d0,
+  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false });
+const impact_flash = new THREE.Sprite(flashMat);
+impact_flash.name = 'impact_flash';
+scene.add(impact_flash); objects.push('impact_flash');
+
+const ringMat = new THREE.MeshBasicMaterial({ color: 0xffd0a0, transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+const impact_ring = new THREE.Mesh(new THREE.RingGeometry(0.72, 1.0, 64), ringMat);
+impact_ring.name = 'impact_ring';
+impact_ring.position.copy(impactPoint).addScaledVector(impactNormal, 0.05);
+impact_ring.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1), impactNormal);
+scene.add(impact_ring); objects.push('impact_ring');
+
+/* debris */
+const DEBRIS_N = 120;
+const debris = makeGlowPoints(DEBRIS_N, 0xffb060);
+debris.name = 'debris';
+scene.add(debris); objects.push('debris');
+const debVel = new Float32Array(DEBRIS_N*3);
+const debSize = new Float32Array(DEBRIS_N);
+for (let i = 0; i < DEBRIS_N; i++){
+  const th = rnd()*Math.PI*2;
+  const ph = Math.acos(2*rnd()-1);
+  let dx = Math.sin(ph)*Math.cos(th), dy = Math.cos(ph), dz = Math.sin(ph)*Math.sin(th);
+  /* bias outward from planet */
+  dx = dx*0.9 + impactNormal.x*0.9;
+  dy = dy*0.9 + impactNormal.y*0.9;
+  dz = dz*0.9 + impactNormal.z*0.9;
+  const sp = 0.6 + rnd()*2.6;
+  debVel[i*3] = dx*sp; debVel[i*3+1] = dy*sp; debVel[i*3+2] = dz*sp;
+  debSize[i] = 0.06 + rnd()*0.16;
+}
+debris.geometry.attributes.aSize.array.set(debSize);
+
+/* ------------------------------------------------------------------ */
+/*  Orbital station (foreground, left)                                 */
+/* ------------------------------------------------------------------ */
+const station = new THREE.Group();
+station.position.set(-1.28, 0.98, 1.2);
+station.rotation.set(0.06, -0.28, 0.05);
+station.scale.setScalar(1.12);
+scene.add(station); objects.push('station');
+
+const hullMat = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, metalness: 0.85, roughness: 0.42 });
+const darkMat = new THREE.MeshStandardMaterial({ color: 0x30363d, metalness: 0.7, roughness: 0.55 });
+
+const hull = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.86, 20), hullMat);
+hull.rotation.z = Math.PI/2;
+station.add(hull);
+const nose = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.14, 0.24, 20), hullMat);
+nose.rotation.z = Math.PI/2; nose.position.x = -0.54;
+station.add(nose);
+const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.11, 0.22, 20), darkMat);
+tail.rotation.z = Math.PI/2; tail.position.x = 0.54;
+station.add(tail);
+
+/* solar panels */
+const panelMat = new THREE.MeshStandardMaterial({ color: 0x2a4a8f, metalness: 0.6, roughness: 0.3,
+  emissive: 0x16295c, emissiveIntensity: 1.1 });
+for (const s of [-1, 1]){
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.34, 0.05), darkMat);
+  arm.position.set(0.0, s*0.2, 0.0);
+  station.add(arm);
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.62, 0.02), panelMat);
+  panel.position.set(0.0, s*0.62, 0.0);
+  station.add(panel);
+}
+
+/* window band facing camera */
+const winMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true,
+  opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+const win = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.16), winMat);
+win.position.set(0.0, 0.0, 0.145);
+station.add(win);
+const win2 = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.34), winMat.clone());
+win2.position.set(-0.28, 0.0, 0.145);
+station.add(win2);
+
+/* running lights */
+const lightMatR = new THREE.MeshBasicMaterial({ color: 0xff5a5a });
+const lightMatW = new THREE.MeshBasicMaterial({ color: 0xbfe0ff });
+for (let i = 0; i < 6; i++){
+  const l = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 6), i % 2 ? lightMatW : lightMatR);
+  l.position.set(-0.45 + i*0.18, (i % 2 ? 0.16 : -0.16), 0.10);
+  station.add(l);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Animation state                                                    */
+/* ------------------------------------------------------------------ */
+let t = 0;
+let trailFade = 1.0;
+const tmpV = new THREE.Vector3();
+const lookTarget = new THREE.Vector3();
+
+function pathPos(time, out){
+  const tt = Math.max(0, Math.min(time, IMPACT_T));
+  return out.copy(meteorStart).addScaledVector(u, meteorSpeed * tt);
+}
+function pathRaw(time, out){
+  return out.copy(meteorStart).addScaledVector(u, meteorSpeed * time);
+}
+
+function updateScene(){
+  /* meteor position */
+  const mp = pathPos(t, tmpV);
+  if (t <= IMPACT_T){
+    meteor.position.copy(mp);
+    meteor.visible = true;
+    meteor.scale.setScalar(1);
+  } else {
+    /* sinks slightly and fades */
+    const after = Math.min(t - IMPACT_T, 0.6);
+    meteor.position.copy(impactPoint).addScaledVector(u, meteorSpeed*after*0.25)
+      .addScaledVector(impactNormal, -0.6*after);
+    const f = Math.max(0, 1 - (t - IMPACT_T)/0.45);
+    meteor.visible = f > 0.01;
+    meteor.scale.setScalar(f);
+  }
+
+  /* meteor glow core */
+  meteorCore.position.copy(meteor.position);
+  meteorCore.geometry.attributes.aAlpha.array[0] = (t <= IMPACT_T ? 1.0 : Math.max(0, 1-(t-IMPACT_T)/0.5));
+  meteorCore.geometry.attributes.aAlpha.needsUpdate = true;
+
+  /* meteor light */
+  meteorLight.position.copy(meteor.position);
+  meteorLight.intensity = t <= IMPACT_T ? 3.0 : Math.max(0, 3.0*(1-(t-IMPACT_T)/0.6));
+
+  /* trail */
+  trailFade = t <= IMPACT_T ? Math.min(1, 0.55 + t*1.0) : Math.max(0, 1 - (t-IMPACT_T)/0.9);
+  const trailAmp = 0.0055;
+  const posAttr = trail.geometry.attributes.position;
+  for (let i = 0; i < TRAIL_N; i++){
+    const age = i * TRAIL_LAG;
+    pathRaw(t - age, tmpV);
+    const k = i / (TRAIL_N - 1);
+    /* lateral spread so the trail reads as a plume, not a wire */
+    const lat = 1.7 * k * k;
+    tmpV.addScaledVector(uPerp1, Math.sin(i*0.9)*lat + Math.sin(i*0.31)*lat*0.4);
+    tmpV.addScaledVector(uPerp2, Math.cos(i*0.7)*lat - Math.cos(i*0.23)*lat*0.4);
+    posAttr.array[i*3]   = tmpV.x;
+    posAttr.array[i*3+1] = tmpV.y;
+    posAttr.array[i*3+2] = tmpV.z;
+    const a = 1.0 - 0.35*k;
+    trailAlpha[i] = a * trailAmp * trailFade;
+  }
+  posAttr.needsUpdate = true;
+  trail.geometry.attributes.aAlpha.needsUpdate = true;
+
+  /* shock ring: grows 0.1 -> 0.6 in 0.4s, repeats */
+  if (t <= IMPACT_T){
+    const phase = (t % 0.4) / 0.4;
+    const rad = 0.1 + phase * 0.5;
+    shock.position.copy(meteor.position);
+    shock.scale.setScalar(rad);
+    shock.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1), u);
+    shockMat.opacity = Math.max(0, 1 - phase) * 0.9;
+    shock.visible = true;
+  } else {
+    shock.visible = false;
+  }
+
+  /* impact */
+  const age = t - IMPACT_T;
+  if (age > 0){
+    /* flash */
+    const fa = Math.max(0, 1 - age/0.7);
+    impact_flash.position.copy(impactPoint).addScaledVector(impactNormal, 0.15);
+    impact_flash.scale.setScalar(0.6 + age*7.0);
+    flashMat.opacity = fa * (0.6 + 0.4*Math.sin(age*40));
+    impact_flash.visible = true;
+
+    /* dust ring expands and fades */
+    const rr = 0.2 + age*3.6;
+    impact_ring.scale.setScalar(rr);
+    ringMat.opacity = Math.max(0, 1 - age/1.6) * 0.85;
+    impact_ring.visible = true;
+
+    /* debris */
+    const dp = debris.geometry.attributes.position;
+    const da = debris.geometry.attributes.aAlpha;
+    const life = 2.6;
+    for (let i = 0; i < DEBRIS_N; i++){
+      const a = Math.min(age, life);
+      let x = impactPoint.x + debVel[i*3]*a   - 0.5*1.6*a*a*impactNormal.x;
+      let y = impactPoint.y + debVel[i*3+1]*a - 0.5*1.6*a*a*impactNormal.y;
+      let z = impactPoint.z + debVel[i*3+2]*a - 0.5*1.6*a*a*impactNormal.z;
+      dp.array[i*3] = x; dp.array[i*3+1] = y; dp.array[i*3+2] = z;
+      da.array[i] = Math.max(0, 1 - age/life) * (0.7 + 0.3*Math.sin(i*1.7));
+    }
+    dp.needsUpdate = true; da.needsUpdate = true;
+    debris.visible = true;
+
+    /* window reflection of the flash */
+    const refl = fa;
+    winMat.opacity = 0.35 + 0.5*refl;
+    winMat.color.setRGB(1.0, 0.85 + 0.15*refl, 0.63 + 0.37*refl);
+    win.material.color.copy(winMat.color); win.material.opacity = winMat.opacity;
+    win2.material.color.copy(winMat.color); win2.material.opacity = winMat.opacity;
+    stationLight.intensity = 3.2 + 3.0*refl;
+  } else {
+    impact_flash.visible = false;
+    impact_ring.visible = false;
+    debris.visible = false;
+    winMat.opacity = 0.35;
+    winMat.color.setHex(0xffd9a0);
+    win.material.color.setHex(0xffd9a0); win.material.opacity = 0.35;
+    win2.material.color.setHex(0xffd9a0); win2.material.opacity = 0.35;
+    stationLight.intensity = 3.2;
+  }
+
+  /* cloud drift + station gentle drift */
+  clouds.rotation.y = t * 0.012;
+  station.rotation.y = -0.28 + Math.sin(t*0.35)*0.05;
+  station.position.y = 1.00 + Math.sin(t*0.6)*0.02;
+
+  /* camera slowly follows meteor -> impact point */
+  const k = smoothstep(0, IMPACT_T, t);
+  const liveMeteor = pathPos(t, tmpV);
+  lookTarget.copy(liveMeteor).lerp(impactPoint, k);
+  lookTarget.lerp(earthCenter, 0.5);
+  camera.lookAt(lookTarget);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Render / API                                                       */
+/* ------------------------------------------------------------------ */
+function draw(){
+  updateScene();
+  renderer.render(scene, camera);
+}
+
+window.__probe = function(){
+  const mp = pathPos(t, tmpV);
+  const age = Math.max(0, t - IMPACT_T);
+  return {
+    t: Number(t.toFixed(4)),
+    objects: objects.slice(),
+    meteor: [ +mp.x.toFixed(4), +mp.y.toFixed(4), +mp.z.toFixed(4) ],
+    impact_age: Number(age.toFixed(4))
+  };
+};
+
+window.__step = function(dt){
+  t += dt;
+  draw();
+  return window.__probe();
+};
+
+/* initial frame */
+draw();
+window.__ready = true;
+window.__dbg = { earth, atmosphere, clouds, trail, meteor, station, scene };
+</script>
+</body>
+</html>

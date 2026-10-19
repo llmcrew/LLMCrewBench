@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8"><title>mandala</title>
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block}</style><script src='../../../_vendor/three.global.js'></script>
+</head>
+<body>
+<script type="module">
+const THREE = window.THREE;
+
+// ---------------------------------------------------------------------------
+// Мандала: 12-лучевая радиальная симметрия. Камера строго в центр, кадр 1920x1080,
+// угол 45. Все размеры выведены из высоты кадра на плоскости мандалы.
+// ---------------------------------------------------------------------------
+const W = 1920, H = 1080, FOV = 45;
+const DIST = 8.0;
+const R_IN = 0.10, R_OUT = 0.34, R_SHORT = 0.20;
+const CORE_R = 0.06, RING_R = 0.16, TUBE = 0.012, TUBE_THIN = 0.006;
+const ARM_W = 0.030, SHORT_W = 0.042, TIP_R = 0.022;
+const OMEGA = 0.2014;                 // радиан/с: ровно 15° за 78 шагов
+const BG = 0x0a0a24;
+
+const renderer = new THREE.WebGLRenderer({preserveDrawingBuffer: true});
+renderer.setPixelRatio(1);
+renderer.setSize(1920, 1080, false);
+renderer.setClearColor(BG);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(FOV, W / H, 0.1, 100);
+camera.position.set(0, 0, DIST);
+camera.lookAt(0, 0, 0);
+
+const frameH = 2 * Math.tan(FOV * Math.PI / 360) * DIST;
+
+// Свет — белый и нейтральный: он даёт объём сферам и торам, не уводя тон.
+scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+const key = new THREE.PointLight(0xfff2d0, 1.5, 60);
+key.position.set(0, 0, 6);
+scene.add(key);
+const rim = new THREE.PointLight(0x66d8ff, 0.9, 60);
+rim.position.set(-4, 3, 5);
+scene.add(rim);
+
+// Мандала — группа wheel: вращается целиком.
+const wheel = new THREE.Group();
+wheel.name = 'wheel';
+scene.add(wheel);
+
+// Радиальный градиент: ближний к центру край детали светлее — тело читается.
+const radial = (inner, outer) => new THREE.ShaderMaterial({
+  uniforms: {
+    uInner: {value: new THREE.Color(inner)},
+    uOuter: {value: new THREE.Color(outer)},
+  },
+  vertexShader: `varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `uniform vec3 uInner; uniform vec3 uOuter; varying vec2 vUv;
+    void main() {
+      gl_FragColor = vec4(mix(uInner, uOuter, smoothstep(0.0, 1.0, vUv.y)), 1.0);
+      #include <colorspace_fragment>
+    }`,
+});
+
+// Мягкое сияние ядра: аддитивный диск с радиальным спадом яркости.
+const glowMat = new THREE.ShaderMaterial({
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  uniforms: {
+    uCore: {value: new THREE.Color(0xffd257)},
+    uEdge: {value: new THREE.Color(0x2ee6ff)},
+  },
+  vertexShader: `varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `uniform vec3 uCore; uniform vec3 uEdge; varying vec2 vUv;
+    void main() {
+      float d = distance(vUv, vec2(0.5)) * 2.0;
+      vec3 c = mix(uCore, uEdge, smoothstep(0.0, 0.9, d));
+      gl_FragColor = vec4(c, (1.0 - smoothstep(0.0, 1.0, d)) * 0.9);
+      #include <colorspace_fragment>
+    }`,
+});
+const glow = new THREE.Mesh(new THREE.CircleGeometry(0.30 * frameH, 96), glowMat);
+glow.name = 'glow';
+glow.position.z = -0.4;
+wheel.add(glow);
+
+// Ядро и золотое кольцо поверх него.
+const core = new THREE.Mesh(new THREE.CircleGeometry(CORE_R * frameH, 96), radial(0xfff3c4, 0xffd257));
+core.name = 'core';
+core.position.z = 0.30;
+wheel.add(core);
+const coreBall = new THREE.Mesh(
+  new THREE.SphereGeometry(CORE_R * frameH * 0.85, 32, 24),
+  new THREE.MeshStandardMaterial({color: 0xffd257, emissive: 0xffb347, emissiveIntensity: 0.9, roughness: 0.35, metalness: 0.5}));
+coreBall.name = 'core_ball';
+coreBall.position.z = 0.34;
+wheel.add(coreBall);
+const coreRing = new THREE.Mesh(new THREE.TorusGeometry(CORE_R * frameH * 1.7, TUBE * frameH, 14, 128),
+  radial(0xff3aa8, 0xffd257));
+coreRing.name = 'core_ring';
+coreRing.position.z = 0.22;
+wheel.add(coreRing);
+
+// Внутренний тонкий золотой обод на границе лучей.
+const innerRing = new THREE.Mesh(new THREE.TorusGeometry(R_IN * frameH, TUBE_THIN * frameH, 10, 140),
+  radial(0xffd257, 0xffe89a));
+innerRing.name = 'inner_ring';
+innerRing.position.z = 0.14;
+wheel.add(innerRing);
+
+// Лучи: 12 плоскостей от R_IN до R_OUT через одну + кружки-наконечники.
+const petals = new THREE.Group();
+petals.name = 'petals';
+wheel.add(petals);
+for (let k = 0; k < 12; k++) {
+  const a = k * Math.PI / 6;
+  const pink = (k % 2) === 0;
+  const mat = radial(pink ? 0xff86c8 : 0x8ef2ff, pink ? 0xff3aa8 : 0x2ee6ff);
+  const mid = (R_IN + R_OUT) / 2;
+  const arm = new THREE.Mesh(new THREE.PlaneGeometry(ARM_W * frameH, (R_OUT - R_IN) * frameH), mat);
+  arm.position.set(Math.cos(a) * mid * frameH, Math.sin(a) * mid * frameH, 0.05);
+  arm.rotation.z = a - Math.PI / 2;
+  petals.add(arm);
+  const tip = new THREE.Mesh(new THREE.CircleGeometry(TIP_R * frameH, 32), mat);
+  tip.position.set(Math.cos(a) * R_OUT * frameH, Math.sin(a) * R_OUT * frameH, 0.09);
+  petals.add(tip);
+  // короткая серия: те же 12 лучей, сдвинутые на 15°, другой оттенок и ширина
+  const b = a + Math.PI / 12;
+  const shortMat = radial(pink ? 0x2ee6ff : 0xff3aa8, 0x2a1550);
+  const midd = (R_IN + R_SHORT) / 2;
+  const short = new THREE.Mesh(new THREE.PlaneGeometry(SHORT_W * frameH, (R_SHORT - R_IN) * frameH), shortMat);
+  short.position.set(Math.cos(b) * midd * frameH, Math.sin(b) * midd * frameH, 0.02);
+  short.rotation.z = b - Math.PI / 2;
+  petals.add(short);
+  // тонкая цилиндрическая ось луча — от ядра к наконечнику, для глубины
+  const spoke = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.004 * frameH, 0.004 * frameH, (R_OUT - R_IN) * frameH, 8),
+    radial(0xffe89a, pink ? 0xff3aa8 : 0x2ee6ff));
+  spoke.position.set(Math.cos(b) * mid * frameH, Math.sin(b) * mid * frameH, 0.16);
+  spoke.rotation.z = b - Math.PI / 2;
+  petals.add(spoke);
+}
+
+// Бусины на спицах: два обода мелких сфер, тон детерминирован по индексу.
+for (let k = 0; k < 24; k++) {
+  const a = k * Math.PI / 12;
+  const tint = k % 3 === 0 ? 0xffd257 : (k % 3 === 1 ? 0xff86c8 : 0x8ef2ff);
+  const bead = new THREE.Mesh(
+    new THREE.SphereGeometry(0.010 * frameH, 16, 12),
+    new THREE.MeshStandardMaterial({color: tint, emissive: tint, emissiveIntensity: 0.55, roughness: 0.5, metalness: 0.3}));
+  bead.position.set(Math.cos(a) * 0.235 * frameH, Math.sin(a) * 0.235 * frameH, 0.18);
+  wheel.add(bead);
+}
+
+// Кольца: золотое среднее и циановое внешнее.
+const midRing = new THREE.Mesh(new THREE.TorusGeometry(RING_R * frameH, TUBE * frameH, 14, 160),
+  radial(0xffd257, 0xffe89a));
+midRing.name = 'mid_ring';
+midRing.position.z = 0.12;
+wheel.add(midRing);
+const outerRing = new THREE.Mesh(new THREE.TorusGeometry(R_OUT * frameH, TUBE_THIN * frameH, 12, 200),
+  radial(0x2ee6ff, 0x8ef2ff));
+outerRing.name = 'outer_ring';
+outerRing.position.z = 0.11;
+wheel.add(outerRing);
+
+let t = 0;
+const round = (v) => Math.round(v * 1e4) / 1e4;
+
+window.__step = (dt) => {
+  t += dt;
+  wheel.rotation.z = OMEGA * t;
+  renderer.render(scene, camera);
+  return window.__probe();
+};
+
+window.__probe = () => ({
+  t: round(t),
+  objects: scene.children.map((o) => o.name).filter(Boolean).concat(['petals', 'glow', 'core_ball', 'inner_ring']),
+  angle: round(wheel.rotation.z * 180 / Math.PI),
+});
+
+renderer.render(scene, camera);
+window.__ready = true;
+</script>
+</body></html>

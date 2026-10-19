@@ -1,0 +1,41 @@
+{
+  "calibrated": true,
+  "chars_per_token": 3.0365,
+  "note": "3.04 символов/токен (endpoint /tokenize); документов откалибровано 5/5, худшее попадание до правки 87% от цели → коэффициент на документ 2.95…3.38",
+  "measured_ratio": 3.0365,
+  "how": "endpoint /tokenize",
+  "task_ratios": {
+    "LC-1": 2.9462,
+    "LC-2": 3.2606,
+    "LC-3": 3.164,
+    "LC-4": 3.0395,
+    "LC-5": 3.3789
+  },
+  "documents": {
+    "LC-1": {
+      "target": 65536,
+      "actual": 65519,
+      "ratio": 2.9462
+    },
+    "LC-2": {
+      "target": 131072,
+      "actual": 118403,
+      "ratio": 3.2606
+    },
+    "LC-3": {
+      "target": 196608,
+      "actual": 183022,
+      "ratio": 3.164
+    },
+    "LC-4": {
+      "target": 220201,
+      "actual": 213385,
+      "ratio": 3.0395
+    },
+    "LC-5": {
+      "target": 220201,
+      "actual": 191952,
+      "ratio": 3.3789
+    }
+  }
+}

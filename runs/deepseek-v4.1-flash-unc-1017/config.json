@@ -1,0 +1,50 @@
+{
+  "base_url": "https://giga-osa-deepseek-v41-flsh-unc1017.apps.evodagpup.sberdevices.ru/v1",
+  "model": "deepseek-v4.1-flash-uncensored-1017",
+  "api_key": "not-needed",
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "max_new_tokens": 4096,
+  "max_new_tokens_by_category": {
+    "C": 8192,
+    "K": 8192,
+    "L": 8192
+  },
+  "unbounded_budget": true,
+  "agent": true,
+  "agent_categories": [
+    "C",
+    "K",
+    "L"
+  ],
+  "max_total_tokens": 16384,
+  "max_tool_calls": 12,
+  "context_window": 262144,
+  "request_timeout": 1800.0,
+  "request_wall_clock": 1800.0,
+  "seed": 20260915,
+  "only": [],
+  "sql_backend": "sqlite",
+  "system_prompt": "You are the model under evaluation. Follow the user's instructions exactly as written. Do not use outside knowledge unless the task explicitly allows it. Answer in the language of the task.",
+  "task_ratios": {
+    "LC-1": 2.9462,
+    "LC-2": 3.2606,
+    "LC-3": 3.164,
+    "LC-4": 3.0395,
+    "LC-5": 3.3789
+  },
+  "chars_per_token": 3.0365,
+  "quant": "bf16/fp8",
+  "runtime": "vLLM",
+  "weights_sha256": "",
+  "weights_path": "",
+  "n_ctx": 262144,
+  "kv_type": "по умолчанию",
+  "offload": "none",
+  "reference": "deepseek-v4.1-flash-unc-1017",
+  "launch": "vllm serve deepseek-v4.1-flash-uncensored-1017 --host 127.0.0.1 --port 8000 \\\n  --max-model-len 262144 --gpu-memory-utilization 0.95 \\\n  --kv-cache-dtype по умолчанию --enforce-eager",
+  "unsupported": [],
+  "out_dir": "runs/deepseek-v4.1-flash-unc-1017",
+  "context_reserve": 2048,
+  "context_reserve_share": 0.02
+}
