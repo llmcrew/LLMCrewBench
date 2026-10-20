@@ -19,9 +19,9 @@
 | `runs/deepseek-v4.1-flash-unc-1017/hardware.json` | Машинные параметры стенда (GPU неизвестен) |
 | `runs/_chat`, `runs/_logs`, `runs/_showcase`, `runs/_vendor`, старые прогоны | Внутренние и воспроизводимые |
 | `reports/comparison-deepseek-1017/_vendor/` | 7 МБ копий three.js/plotly: есть в `vendor/` и `reports/comparison/_vendor/` |
-| `video/public/clips/`, `video/bin/` | 834 МБ клипов и macOS-бандл: распакованы из архива |
-| `video/archive/*.part-*` | 828 МБ частями: до 20.10 лежали в git, теперь только `RESTORE.md` и `SHA256` |
-| `video/dailybench-video.zip`, `video/dailybench-video.tar.zst`, `video/dist/` | 828 МБ одним файлом (и его zstd-близнец): GitHub отклоняет >100 МБ |
+| `video/public/clips/`, `video/bin/` | ~1,5 ГБ клипов (120 fps) и macOS-бандл: распакованы из архива |
+| `video/archive/*.part-*` | Архив клипов частями: до 20.10 лежал в git, теперь только `RESTORE.md` и `SHA256` |
+| `video/dailybench-video.zip`, `video/dailybench-video.tar.zst`, `video/dist/` | Тот же архив одним файлом (и его zstd-близнец): GitHub отклоняет >100 МБ |
 
 ## Склейка архива
 
