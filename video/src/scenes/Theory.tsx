@@ -41,7 +41,7 @@ export const Intro: React.FC = () => {
           DailyBench-16
         </Title>
         <Title sub delay={26}>
-          Четыре модели · один сьют · сто баллов · визуальные блоки отдельно
+          Две конфигурации · один сьют · сто баллов · визуальные блоки отдельно
         </Title>
         <div style={{display: 'flex', gap: 12, marginTop: 14}}>
           {MODELS.map((m, i) => (
@@ -95,8 +95,8 @@ export const HarnessDef: React.FC = () => {
         ))}
       </div>
       <div style={{position: 'absolute', bottom: 84, left: 96, right: 96, font: `400 20px/1.5 ${FONT_SANS}`, color: C.muted, ...riseIn(frame, 130)}}>
-        Один и тот же harness для всех моделей: одинаковая политика, одинаковые инструменты, одинаковый сброс контекста
-        между задачами. Разница в баллах — это разница моделей, а не обвязки.
+        Harness один и тот же для обоих прогонов: одинаковая политика, инструменты и сброс контекста. Модель и сид тоже
+        одни — значит, разница в баллах это разница стендов.
       </div>
     </Shell>
   );
@@ -175,15 +175,15 @@ export const Models: React.FC = () => {
   return (
     <Shell>
       <div style={{position: 'absolute', top: 74, left: 96, ...riseIn(frame, 6)}}>
-        <Title size={54}>Четыре конфигурации</Title>
-        <Title sub delay={16}>Разные семейства и масштабы: интересен не итог сам по себе, а профиль по категориям</Title>
+        <Title size={54}>Две конфигурации, один сьют</Title>
+        <Title sub delay={16}>Одна модель на двух ingress-стендах: что меняется, когда чинят бэкенд, а не модель</Title>
       </div>
-      <div style={{position: 'absolute', top: 240, bottom: 200, left: 84, right: 84, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, alignContent: 'center'}}>
+      <div style={{position: 'absolute', top: 250, bottom: 210, left: 210, right: 210, display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 28, alignContent: 'center'}}>
         {MODELS.map((m, i) => (
           <div
             key={m.dir}
             style={{
-              padding: 22,
+              padding: 30,
               borderRadius: 14,
               border: `1px solid ${C.line}`,
               background: `linear-gradient(180deg, ${C.panelHi}, ${C.panel})`,
@@ -191,23 +191,24 @@ export const Models: React.FC = () => {
             }}
           >
             <div style={{height: 4, width: 46, borderRadius: 999, background: m.accent ?? C.accent, marginBottom: 18}} />
-            <div style={{font: `600 24px/1.25 ${FONT_SANS}`}}>{m.label}</div>
+            <div style={{font: `600 32px/1.25 ${FONT_SANS}`}}>{m.label}</div>
             <div style={{font: `500 15px/1.5 ${FONT_MONO}`, color: C.faint, marginTop: 10}}>
-              {m.quant} · окно {Math.round(m.context / 1024)}K
+              {m.quant} · окно {Math.round(m.context / 1024)}K · {m.tasks} заданий
             </div>
-            <div style={{marginTop: 20, font: `700 44px/1 ${FONT_SANS}`, color: m.accent ?? C.accent}}>
+            <div style={{marginTop: 22, font: `700 72px/1 ${FONT_SANS}`, color: m.accent ?? C.accent}}>
               {m.verdict || `${m.score.toFixed(0)}/100`}
             </div>
-            <div style={{display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 20}}>
-              <Chip>K {Math.round((m.K.e / Math.max(1, m.K.p)) * 100)}%</Chip>
-              <Chip>L {Math.round((m.L.e / Math.max(1, m.L.p)) * 100)}%</Chip>
+            <div style={{display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 24}}>
+              <Chip>D {m.totals.D?.earned ?? 0}/{m.totals.D?.possible ?? 0}</Chip>
+              <Chip>K {m.K.e}/{m.K.p}</Chip>
+              <Chip>L {m.L.e}/{m.L.p}</Chip>
               <Chip>{Math.round(m.spend.minutes)} мин</Chip>
             </div>
           </div>
         ))}
       </div>
       <div style={{position: 'absolute', bottom: 76, left: 96, right: 96, font: `400 20px/1.5 ${FONT_SANS}`, color: C.muted, ...riseIn(frame, 140)}}>
-        Слева направо по итогу: чем правее — тем ниже балл. Витрина в конце покажет, что именно каждая собрала в K и L.
+        Обе колонки — одна и та же модель и один сид: разница только в стенде. Дробь на плашках — заработано/возможно по блокам D, K и L. Витрина покажет, что собрал каждый стенд.
       </div>
     </Shell>
   );

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Записать все клипы сцен для всех моделей: 49 сцен × 4 модели.
+"""Записать все клипы сцен для обеих сторон сравнения: 49 сцен × 2 стенда.
 
 Параллельно по N воркеров, каждый — свой Chrome. Пропускает уже записанное,
 пишет манифест клипов (кто/что снят, где плашка «не справилась»).
 
-Клипы — 60 fps (частота из record_clip.py, пара к FPS в src/video/data.ts),
-23 с: запись идёт покадрово, поэтому перезапись длиннее и тяжелее прежних 30 fps.
+Клипы — 120 fps (частота из record_clip.py, пара к FPS в src/video/data.ts),
+23 с: запись идёт покадрово, поэтому запись долгая и клип тяжёлый.
 
   python3 record_all.py [workers] [secs] [warmup] [--force]   # --force: перезаписать всё
 """
@@ -15,11 +15,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-ART = ROOT / "reports" / "comparison" / "_showcase"
+ART = ROOT / "reports" / "comparison-deepseek-1017" / "_showcase"
 OUT = ROOT / "video" / "public" / "clips"
 TOOL = Path(__file__).with_name("record_clip.py")
 
-MODELS = ["deepseek-v4.1-flash-unc", "glm-5.3", "qwen36", "qwen38"]
+MODELS = ["deepseek-v4.1-flash-unc", "deepseek-v4.1-flash-unc-1017"]
 SCENES = [f"K-{i}" for i in range(1, 21)] + [f"L-{i}" for i in range(1, 30)]
 
 
@@ -49,21 +49,17 @@ def job(pair: tuple[str, str], secs: float, warmup: float, force: bool = False) 
 
 
 LABELS = {
-    "deepseek-v4.1-flash-unc": "DeepSeek 4.1 Flash",
-    "glm-5.3": "GLM 5.3",
-    "qwen36": "Qwen 3.6 35B A3B",
-    "qwen38": "Qwen 3.8",
+    "deepseek-v4.1-flash-unc": "DeepSeek 4.1 Flash · стенд A",
+    "deepseek-v4.1-flash-unc-1017": "DeepSeek 4.1 Flash · стенд 1017",
 }
 ACCENTS = {
     "deepseek-v4.1-flash-unc": "#4cc2ff",
-    "glm-5.3": "#f4a3ff",
-    "qwen36": "#3ddc97",
-    "qwen38": "#b48cff",
+    "deepseek-v4.1-flash-unc-1017": "#ffb45c",
 }
 
 
 def _write_showcase() -> None:
-    """Собрать src/data/showcase.json: 49 сцен x 4 модели, плашки для пропусков."""
+    """Собрать src/data/showcase.json: 49 сцен x 2 стенда, плашки для пропусков."""
     import random
     scenes = json.loads((ROOT / "video/src/data/scenes.json").read_text(encoding="utf-8"))
     # Плашка — там, где записи нет: либо страницы не было (маркер), либо запись

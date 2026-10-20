@@ -15,7 +15,10 @@
 (отдаётся локальным http-сервером, `_vendor` рядом). Нет страницы — пишем
 плашку (тёмный клип), текст «модель не справилась» рисует Remotion.
 
-Все клипы: 1920x1080, 60 fps, h264, 23 с (окно движения сцены целиком).
+Все клипы: 1920x1080, 120 fps, h264, 23 с (окно движения сцены целиком).
+Частота выше частоты показа (120 против 60): при раскрытии полосы клип
+переигрывается с первого кадра ускоренно (23 с клипа за 8 с показа), и запас
+кадров держит это движение плавным.
 Страницы K (canvas 800x600) вписываются в кадр целиком, а пустые поля по
 сторонам заливаются растянутыми краями сцены — кадр идёт без рамки и полос.
 """
@@ -36,13 +39,14 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
-ART = ROOT / "reports" / "comparison"
+#: Источник страниц — последнее сравнение (два ingress'а одной модели).
+ART = ROOT / "reports" / "comparison-deepseek-1017"
 BIN = ROOT / "video" / "bin"
 FF = BIN / "ffmpeg"
 #: Частота клипа. Пара с `FPS` в `src/video/data.ts`: клип снят покадрово, и
 #: расхождение играло бы его рывками (кадр клипа не ложился бы на кадр ролика).
 #: Шагов сцены на клип ровно `secs * FPS` — с ростом частоты шаг мельче.
-FPS = 60
+FPS = 120
 #: Шаг страницы без драйвера (`window.__step`): один кадр клипа — один шаг,
 #: как в её живом показе (там тот же шаг зовётся из rAF).
 DT = 1 / FPS
@@ -167,16 +171,31 @@ new Promise((res) => {
 
 
 def page_ready(call, timeout: float = 12.0) -> bool:
-    """Дошла ли страница до первого кадра: ``__ready`` ставит её последняя строка.
+    """Дошла ли страница до первого кадра.
+
+    Признаки: ``__ready`` (ставит последняя строка страницы), живой драйвер
+    ``__dbscene`` или собственный цикл отрисовки rAF с непустым canvas. Третье
+    нужно страницам, которые рисуют сами и хуков не выставляют (у стенда 1017
+    так L-1) — иначе живая страница получала плашку.
 
     Поллим коротышами, а не одним awaitPromise: драйвер страницы перезагружает
     вкладку (сносит контекст), и висящий промис обрывается ошибкой. Страница,
-    упавшая на исключении, не выставит ``__ready`` никогда.
+    упавшая на исключении, не покажет ни одного признака никогда.
     """
+    probe = """
+(() => {
+  if (window.__ready === true) return 'ready';
+  const s = window.__dbscene;
+  if (s && s.mode && s.mode !== 'measuring') return 'driver';
+  const c = document.querySelector('canvas');
+  // Пустой canvas (0x0 или чёрный по пикселю) — не кадр, а место под него.
+  if (c && c.width > 1 && c.height > 1) return 'canvas';
+  return '';
+})()"""
     limit = time.time() + timeout
     while time.time() < limit:
-        r = call("Runtime.evaluate", {"expression": "window.__ready === true", "returnByValue": True}, timeout=5)
-        if "error" not in r and ((r.get("result") or {}).get("result") or {}).get("value") is True:
+        r = call("Runtime.evaluate", {"expression": probe, "returnByValue": True}, timeout=5)
+        if "error" not in r and ((r.get("result") or {}).get("result") or {}).get("value"):
             return True
         time.sleep(0.05)
     return False

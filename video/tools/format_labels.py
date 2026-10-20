@@ -18,10 +18,8 @@ DATA = ROOT / "video" / "src" / "data"
 
 NAMES = {
     "deepseek-v4.1-flash-uncensored": "DeepSeek 4.1 Flash",
-    "deepseek-v4.1-flash-unc": "DeepSeek 4.1 Flash",
-    "glm-5.3": "GLM 5.3",
-    "Qwen3.6-35B-A3B": "Qwen 3.6 35B A3B",
-    "qwen3.8": "Qwen 3.8",
+    "deepseek-v4.1-flash-unc": "стенд A",
+    "deepseek-v4.1-flash-unc-1017": "стенд 1017",
 }
 
 

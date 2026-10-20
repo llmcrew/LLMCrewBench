@@ -1,8 +1,8 @@
 [
  {
   "dir": "deepseek-v4.1-flash-unc",
-  "label": "DeepSeek 4.1 Flash",
-  "title": "DeepSeek 4.1 Flash",
+  "label": "стенд A",
+  "title": "стенд A",
   "accent": "#4cc2ff",
   "quant": "bf16/fp8",
   "context": 262144,
@@ -68,91 +68,23 @@
   }
  },
  {
-  "dir": "glm-5.3",
-  "label": "GLM 5.3",
-  "title": "GLM 5.3",
-  "accent": "#f4a3ff",
-  "quant": "bf16/fp8",
-  "context": 1048576,
-  "score": 92.0,
-  "verdict": "92/100",
-  "errors": 2,
-  "tasks": 96,
-  "K": {
-   "e": 79.0,
-   "p": 80.0
-  },
-  "L": {
-   "e": 43.0,
-   "p": 145.0
-  },
-  "totals": {
-   "A": {
-    "earned": 10.0,
-    "possible": 10.0
-   },
-   "B": {
-    "earned": 12.0,
-    "possible": 15.0
-   },
-   "C": {
-    "earned": 20.0,
-    "possible": 20.0
-   },
-   "D": {
-    "earned": 9.0,
-    "possible": 14.0
-   },
-   "E": {
-    "earned": 10.0,
-    "possible": 10.0
-   },
-   "F": {
-    "earned": 8.0,
-    "possible": 8.0
-   },
-   "G": {
-    "earned": 8.0,
-    "possible": 8.0
-   },
-   "H": {
-    "earned": 6.0,
-    "possible": 6.0
-   },
-   "I": {
-    "earned": 4.0,
-    "possible": 4.0
-   },
-   "J": {
-    "earned": 5.0,
-    "possible": 5.0
-   }
-  },
-  "spend": {
-   "answer": 2013044,
-   "reasoning": 1562532,
-   "tools": 1196,
-   "minutes": 370.8
-  }
- },
- {
-  "dir": "qwen36",
-  "label": "Qwen 3.6 35B A3B",
-  "title": "Qwen 3.6 35B A3B",
-  "accent": "#3ddc97",
+  "dir": "deepseek-v4.1-flash-unc-1017",
+  "label": "стенд 1017",
+  "title": "стенд 1017",
+  "accent": "#ffb45c",
   "quant": "bf16/fp8",
   "context": 262144,
-  "score": 92.5,
-  "verdict": "92/100",
+  "score": 100.0,
+  "verdict": "100/100",
   "errors": 0,
-  "tasks": 96,
+  "tasks": 68,
   "K": {
-   "e": 69.0,
+   "e": 80.0,
    "p": 80.0
   },
   "L": {
-   "e": 46.0,
-   "p": 145.0
+   "e": 1.0,
+   "p": 1.0
   },
   "totals": {
    "A": {
@@ -160,7 +92,7 @@
     "possible": 10.0
    },
    "B": {
-    "earned": 14.0,
+    "earned": 15.0,
     "possible": 15.0
    },
    "C": {
@@ -168,75 +100,7 @@
     "possible": 20.0
    },
    "D": {
-    "earned": 10.5,
-    "possible": 14.0
-   },
-   "E": {
-    "earned": 10.0,
-    "possible": 10.0
-   },
-   "F": {
-    "earned": 8.0,
-    "possible": 8.0
-   },
-   "G": {
-    "earned": 8.0,
-    "possible": 8.0
-   },
-   "H": {
-    "earned": 6.0,
-    "possible": 6.0
-   },
-   "I": {
-    "earned": 2.0,
-    "possible": 4.0
-   },
-   "J": {
-    "earned": 4.0,
-    "possible": 5.0
-   }
-  },
-  "spend": {
-   "answer": 1796429,
-   "reasoning": 0,
-   "tools": 1281,
-   "minutes": 144.0
-  }
- },
- {
-  "dir": "qwen38",
-  "label": "Qwen 3.8",
-  "title": "Qwen 3.8",
-  "accent": "#b48cff",
-  "quant": "bf16/fp8",
-  "context": 262144,
-  "score": 85.0,
-  "verdict": "85/100",
-  "errors": 3,
-  "tasks": 96,
-  "K": {
-   "e": 76.0,
-   "p": 80.0
-  },
-  "L": {
-   "e": 126.0,
-   "p": 145.0
-  },
-  "totals": {
-   "A": {
-    "earned": 10.0,
-    "possible": 10.0
-   },
-   "B": {
     "earned": 14.0,
-    "possible": 15.0
-   },
-   "C": {
-    "earned": 12.0,
-    "possible": 20.0
-   },
-   "D": {
-    "earned": 8.0,
     "possible": 14.0
    },
    "E": {
@@ -265,10 +129,10 @@
    }
   },
   "spend": {
-   "answer": 1634754,
-   "reasoning": 0,
-   "tools": 1488,
-   "minutes": 329.6
+   "answer": 337436,
+   "reasoning": 162583,
+   "tools": 609,
+   "minutes": 32.2
   }
  }
 ]

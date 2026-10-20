@@ -1,4 +1,4 @@
-// Витрина: все 49 сцен подряд, каждая — четыре последовательных раскрытия.
+// Витрина: все 49 сцен подряд, каждая — по раскрытию на каждую сторону.
 
 import {AbsoluteFill, Sequence} from 'remotion';
 import {ShowcaseScene, type ShowcaseRun} from './Showcase';
@@ -14,7 +14,7 @@ const sceneIndex = showcase as unknown as {
   runs: ShowcaseRun[];
 }[];
 
-/** Порядок обхода полос: сдвигается со сценой, чтобы первыми побывали разные. */
+/** Порядок обхода полос: сдвигается со сценой, чтобы первой побывала не одна. */
 const orderFor = (i: number): number[] => [0, 1, 2, 3, 4].map((k) => (k + i) % 5);
 
 export const ShowcaseReel: React.FC = () => (

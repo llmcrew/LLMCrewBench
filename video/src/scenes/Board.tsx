@@ -1,4 +1,4 @@
-// Сводная таблица и графики результатов — из данных прогонов (без выдумки).
+// Сводная таблица результатов по двум стендам — из данных прогонов (без выдумки).
 
 import {AbsoluteFill, useCurrentFrame} from 'remotion';
 import {C, FONT_MONO, FONT_SANS} from '../video/theme';
@@ -34,7 +34,7 @@ const CATS: [string, string][] = [
 ];
 
 const Cell: React.FC<{value: number; tone?: string}> = ({value, tone = C.ink}) => (
-  <span style={{font: `600 19px/1 ${FONT_MONO}`, color: value >= 90 ? C.green : value >= 60 ? tone : C.amber}}>
+  <span style={{font: `600 24px/1 ${FONT_MONO}`, color: value >= 90 ? C.green : value >= 60 ? tone : C.amber}}>
     {value.toFixed(0)}
   </span>
 );
@@ -46,11 +46,11 @@ export const Board: React.FC = () => {
       <Backdrop />
       <div style={{position: 'absolute', top: 66, left: 96, ...riseIn(frame, 6)}}>
         <Title size={52}>Результаты по категориям, % от максимума</Title>
-        <Title sub delay={16}>Балл — из наблюдаемых результатов; визуальные K/L показаны отдельно и в итог не входят</Title>
+        <Title sub delay={16}>Одна модель, один сид: разница строк — это разница стендов, а не моделей</Title>
       </div>
 
-      <div style={{position: 'absolute', top: 246, left: 84, right: 84}}>
-        <div style={{display: 'grid', gridTemplateColumns: `220px repeat(${CATS.length}, 1fr) 90px`, gap: 6, alignItems: 'center'}}>
+      <div style={{position: 'absolute', top: 236, left: 84, right: 84}}>
+        <div style={{display: 'grid', gridTemplateColumns: `260px repeat(${CATS.length}, 1fr) 110px`, gap: 8, alignItems: 'center'}}>
           <span />
           {CATS.map(([key, name]) => (
             <div key={key} style={{textAlign: 'center'}}>
@@ -66,17 +66,19 @@ export const Board: React.FC = () => {
             key={m.dir}
             style={{
               display: 'grid',
-              gridTemplateColumns: `220px repeat(${CATS.length}, 1fr) 90px`,
-              gap: 6,
+              gridTemplateColumns: `260px repeat(${CATS.length}, 1fr) 110px`,
+              gap: 8,
               alignItems: 'center',
-              padding: '37px 0',
+              // Две строки на кадр: даём им высоту, чтобы таблица не висела
+              // полоской в пустом кадре.
+              padding: '76px 0',
               borderTop: `1px solid ${C.line}`,
               ...riseIn(frame, 30 + row * 18),
             }}
           >
             <div style={{display: 'flex', alignItems: 'center', gap: 10}}>
-              <span style={{width: 8, height: 26, borderRadius: 3, background: m.accent ?? C.accent}} />
-              <span style={{font: `500 20px/1.2 ${FONT_SANS}`}}>{m.label}</span>
+              <span style={{width: 8, height: 30, borderRadius: 3, background: m.accent ?? C.accent}} />
+              <span style={{font: `500 24px/1.2 ${FONT_SANS}`}}>{m.label}</span>
             </div>
             {CATS.map(([key]) => {
               const t = m.totals[key] ?? {earned: 0, possible: 1};
@@ -95,7 +97,7 @@ export const Board: React.FC = () => {
                 </div>
               );
             })}
-            <div style={{textAlign: 'right', font: `700 26px/1 ${FONT_SANS}`, color: m.accent ?? C.accent}}>
+            <div style={{textAlign: 'right', font: `700 34px/1 ${FONT_SANS}`, color: m.accent ?? C.accent}}>
               {m.verdict || m.score.toFixed(0)}
             </div>
           </div>

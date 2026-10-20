@@ -5,34 +5,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-1.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-1.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-1.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-1.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-1.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 1
  },
  {
   "scene": "K-2",
@@ -40,34 +26,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-2.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-2.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-2.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-2.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-2.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 1
  },
  {
   "scene": "K-3",
@@ -75,34 +47,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-3.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-3.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-3.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-3.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-3.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 3
+  "open": 1
  },
  {
   "scene": "K-4",
@@ -110,34 +68,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-4.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-4.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-4.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-4.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-4.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 1
+  "open": 0
  },
  {
   "scene": "K-5",
@@ -145,31 +89,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-5.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-5.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-5.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-5.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-5.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -180,31 +110,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-6.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-6.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-6.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-6.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-6.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -215,31 +131,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-7.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-7.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-7.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-7.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-7.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -250,31 +152,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-8.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-8.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-8.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-8.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-8.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -285,34 +173,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-9.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-9.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-9.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-9.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-9.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 1
  },
  {
   "scene": "K-10",
@@ -320,34 +194,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-10.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-10.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-10.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-10.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-10.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 1
  },
  {
   "scene": "K-11",
@@ -355,34 +215,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-11.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-11.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-11.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-11.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-11.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 3
+  "open": 1
  },
  {
   "scene": "K-12",
@@ -390,34 +236,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-12.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-12.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-12.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-12.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-12.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 3
+  "open": 1
  },
  {
   "scene": "K-13",
@@ -425,34 +257,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-13.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-13.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-13.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-13.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-13.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 3
+  "open": 1
  },
  {
   "scene": "K-14",
@@ -460,34 +278,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-14.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-14.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-14.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-14.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-14.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 1
+  "open": 0
  },
  {
   "scene": "K-15",
@@ -495,31 +299,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-15.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-15.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-15.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-15.mp4",
-    "missing": true,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-15.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -530,34 +320,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-16.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-16.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-16.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-16.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-16.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 1
+  "open": 0
  },
  {
   "scene": "K-17",
@@ -565,34 +341,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-17.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-17.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-17.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-17.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-17.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 1
  },
  {
   "scene": "K-18",
@@ -600,34 +362,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-18.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-18.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-18.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-18.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-18.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 3
+  "open": 1
  },
  {
   "scene": "K-19",
@@ -635,34 +383,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-19.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-19.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-19.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-19.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-19.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 1
  },
  {
   "scene": "K-20",
@@ -670,34 +404,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-20.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__K-20.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__K-20.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__K-20.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__K-20.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 1
  },
  {
   "scene": "L-1",
@@ -705,34 +425,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-1.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-1.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-1.mp4",
     "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-1.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-1.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 3
+  "open": 1
  },
  {
   "scene": "L-2",
@@ -740,34 +446,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-2.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-2.mp4",
-    "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-2.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-2.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-2.mp4",
+    "missing": true,
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 0
  },
  {
   "scene": "L-3",
@@ -775,34 +467,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-3.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-3.mp4",
-    "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-3.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-3.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-3.mp4",
+    "missing": true,
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 0
  },
  {
   "scene": "L-4",
@@ -810,34 +488,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-4.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-4.mp4",
-    "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-4.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-4.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-4.mp4",
+    "missing": true,
+    "accent": "#ffb45c"
    }
   ],
-  "open": 1
+  "open": 0
  },
  {
   "scene": "L-5",
@@ -845,31 +509,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-5.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-5.mp4",
-    "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-5.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-5.mp4",
     "missing": true,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-5.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -880,34 +530,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-6.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-6.mp4",
-    "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-6.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-6.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-6.mp4",
+    "missing": true,
+    "accent": "#ffb45c"
    }
   ],
-  "open": 1
+  "open": 0
  },
  {
   "scene": "L-7",
@@ -915,34 +551,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-7.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-7.mp4",
-    "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-7.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-7.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-7.mp4",
+    "missing": true,
+    "accent": "#ffb45c"
    }
   ],
-  "open": 1
+  "open": 0
  },
  {
   "scene": "L-8",
@@ -950,34 +572,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-8.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-8.mp4",
-    "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-8.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-8.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-8.mp4",
+    "missing": true,
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 0
  },
  {
   "scene": "L-9",
@@ -985,34 +593,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-9.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-9.mp4",
-    "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-9.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-9.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-9.mp4",
+    "missing": true,
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 0
  },
  {
   "scene": "L-10",
@@ -1020,34 +614,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-10.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-10.mp4",
-    "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-10.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-10.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-10.mp4",
+    "missing": true,
+    "accent": "#ffb45c"
    }
   ],
-  "open": 3
+  "open": 0
  },
  {
   "scene": "L-11",
@@ -1055,34 +635,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-11.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-11.mp4",
-    "missing": false,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-11.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-11.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-11.mp4",
+    "missing": true,
+    "accent": "#ffb45c"
    }
   ],
-  "open": 1
+  "open": 0
  },
  {
   "scene": "L-12",
@@ -1090,31 +656,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-12.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-12.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-12.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-12.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-12.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -1125,34 +677,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-13.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-13.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-13.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-13.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-13.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 3
+  "open": 0
  },
  {
   "scene": "L-14",
@@ -1160,31 +698,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-14.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-14.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-14.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-14.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-14.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -1195,34 +719,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-15.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-15.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-15.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-15.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-15.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 3
+  "open": 0
  },
  {
   "scene": "L-16",
@@ -1230,34 +740,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-16.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-16.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-16.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-16.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-16.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 0
  },
  {
   "scene": "L-17",
@@ -1265,34 +761,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-17.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-17.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-17.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-17.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-17.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 3
+  "open": 0
  },
  {
   "scene": "L-18",
@@ -1300,31 +782,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-18.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-18.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-18.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-18.mp4",
-    "missing": true,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-18.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -1335,34 +803,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-19.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-19.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-19.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-19.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-19.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 0
  },
  {
   "scene": "L-20",
@@ -1370,34 +824,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-20.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-20.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-20.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-20.mp4",
-    "missing": true,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-20.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 3
+  "open": 0
  },
  {
   "scene": "L-21",
@@ -1405,34 +845,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-21.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-21.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-21.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-21.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-21.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 0
  },
  {
   "scene": "L-22",
@@ -1440,31 +866,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-22.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-22.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-22.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-22.mp4",
-    "missing": true,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-22.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -1475,34 +887,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-23.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-23.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-23.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-23.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-23.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 0
  },
  {
   "scene": "L-24",
@@ -1510,31 +908,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-24.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-24.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-24.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-24.mp4",
-    "missing": true,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-24.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -1545,31 +929,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-25.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-25.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-25.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-25.mp4",
-    "missing": true,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-25.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -1580,31 +950,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-26.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-26.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-26.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-26.mp4",
-    "missing": true,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-26.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -1615,34 +971,20 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-27.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-27.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-27.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-27.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-27.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
-  "open": 2
+  "open": 0
  },
  {
   "scene": "L-28",
@@ -1650,31 +992,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-28.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-28.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-28.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-28.mp4",
-    "missing": true,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-28.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0
@@ -1685,31 +1013,17 @@
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc",
-    "label": "DeepSeek 4.1 Flash",
+    "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-29.mp4",
     "missing": false,
     "accent": "#4cc2ff"
    },
    {
-    "model": "glm-5.3",
-    "label": "GLM 5.3",
-    "clip": "clips/glm-5.3__L-29.mp4",
+    "model": "deepseek-v4.1-flash-unc-1017",
+    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "clip": "clips/deepseek-v4.1-flash-unc-1017__L-29.mp4",
     "missing": true,
-    "accent": "#f4a3ff"
-   },
-   {
-    "model": "qwen36",
-    "label": "Qwen 3.6 35B A3B",
-    "clip": "clips/qwen36__L-29.mp4",
-    "missing": false,
-    "accent": "#3ddc97"
-   },
-   {
-    "model": "qwen38",
-    "label": "Qwen 3.8",
-    "clip": "clips/qwen38__L-29.mp4",
-    "missing": false,
-    "accent": "#b48cff"
+    "accent": "#ffb45c"
    }
   ],
   "open": 0

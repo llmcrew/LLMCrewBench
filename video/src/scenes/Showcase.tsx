@@ -1,4 +1,4 @@
-// Сцена витрины: четыре вертикальные полосы с живыми решениями; по очереди каждая
+// Сцена витрины: по вертикальной полосе на сторону сравнения; по очереди каждая
 // раскрывается на весь экран на OPEN_SECONDS и возвращается, затем следующая.
 //
 // Клип полосы играет ускоренно так, чтобы показать свой отрезок за время сцены.
@@ -65,7 +65,7 @@ const Lane: React.FC<{
 
   // Пока полоса стоит во весь кадр, остальные лежат ровно под ней и картинку не
   // меняют: их можно не рендерить. Иначе на каждой сцене декодировались бы все
-  // четыре клипа сразу и рендер шёл бы ~кадр в секунду.
+  // все клипы сразу и рендер шёл бы ~кадр в секунду.
   const covered = !isOpen && frame >= expandTo && frame <= returnFrom;
   if (covered) return null;
 
@@ -75,9 +75,15 @@ const Lane: React.FC<{
   const h = interpolate(t, [0, 1], [LANE_H, 1080]);
   const z = isOpen && frame >= expandFrom && frame <= returnTo ? 30 : 1 + index;
 
-  // Темп клипа: свой отрезок за окно показа (сцена длинная, клип — CLIP_SECONDS).
+  // Полоса в сетке играет клип размеренно, на всю длину сцены.
   const windowFrames = Math.max(1, laneTo - laneFrom);
   const rate = CLIP_SECONDS / (windowFrames / fps);
+  // А на своём ходу — свой клип заново, с первого кадра, на всё окно показа с
+  // возвратом: раскрытая сцена начинается с начала, а не с середины общего
+  // хода, и уезжает вместе с полосой, без склейки на середине.
+  const openFrames = Math.round(OPEN_SECONDS * fps);
+  const heroFrames = openFrames + (returnTo - returnFrom);
+  const openRate = CLIP_SECONDS / (heroFrames / fps);
 
   return (
     <div
@@ -121,33 +127,105 @@ const Lane: React.FC<{
           не справилась
         </div>
       ) : (
-        <Sequence from={laneFrom} durationInFrames={windowFrames} name={`${run.label} клип`}>
-          <Freeze frame={Math.max(1, windowFrames - 2)} active={(f) => f >= windowFrames - 1}>
-            {/* Клип всегда 1920x1080 и уменьшается только transform'ом: элемент
-                <video> не меняет размер при раскрытии и не пересобирается. */}
-            <div
-              style={{
-                position: 'absolute',
-                // Клип повторяет поведение objectFit:cover: при сжатой полосе
-                // мимо кадра уходит не левый край, а пропорционально срезанные
-                // поля — в центре всегда виден один и тот же участок клипа.
-                left: (w - 1920 * Math.max(w / 1920, h / 1080)) / 2,
-                top: (h - 1080 * Math.max(w / 1920, h / 1080)) / 2,
-                width: 1920,
-                height: 1080,
-                transform: `scale(${Math.max(w / 1920, h / 1080)})`,
-                transformOrigin: 'top left',
-              }}
+        <>
+          {/* Полоса в сетке режется на два отрезка вокруг своего показа: пока
+              полоса раскрыта, её клип в полосе всё равно не виден, а декодировать
+              его в это время — половина рендера витрины впустую. */}
+          <Sequence
+            from={laneFrom}
+            durationInFrames={windowFrames}
+            name={`${run.label} клип`}
+            layout="none"
+          >
+            <Sequence from={0} durationInFrames={Math.max(1, Math.round(openStart) - laneFrom)}>
+              <Freeze
+                frame={Math.max(1, Math.round(openStart) - laneFrom - 2)}
+                active={(f) => f >= Math.round(openStart) - laneFrom - 1}
+              >
+                {/* Клип всегда 1920x1080 и уменьшается только transform'ом:
+                    элемент <video> не меняет размер при раскрытии и не
+                    пересобирается. */}
+                <div
+                  style={{
+                    position: 'absolute',
+                    // Клип повторяет поведение objectFit:cover: при сжатой
+                    // полосе мимо кадра уходит не левый край, а пропорционально
+                    // срезанные поля — в центре виден один и тот же участок.
+                    left: (w - 1920 * Math.max(w / 1920, h / 1080)) / 2,
+                    top: (h - 1080 * Math.max(w / 1920, h / 1080)) / 2,
+                    width: 1920,
+                    height: 1080,
+                    transform: `scale(${Math.max(w / 1920, h / 1080)})`,
+                    transformOrigin: 'top left',
+                  }}
+                >
+                  <OffthreadVideo
+                    src={staticFile(run.clip)}
+                    playbackRate={rate}
+                    muted
+                    style={{position: 'absolute', inset: 0, width: 1920, height: 1080, objectFit: 'cover', objectPosition: 'center'}}
+                  />
+                </div>
+              </Freeze>
+            </Sequence>
+
+            {/* Второй отрезок: хвост клипа после возврата полосы на место.
+                startFrom продолжает клип с того же места, где он встал. */}
+            <Sequence from={Math.round(returnTo) - laneFrom} durationInFrames={Math.max(1, laneTo - Math.round(returnTo))}>
+              <div
+                style={{
+                  position: 'absolute',
+                  left: (w - 1920 * Math.max(w / 1920, h / 1080)) / 2,
+                  top: (h - 1080 * Math.max(w / 1920, h / 1080)) / 2,
+                  width: 1920,
+                  height: 1080,
+                  transform: `scale(${Math.max(w / 1920, h / 1080)})`,
+                  transformOrigin: 'top left',
+                }}
+              >
+                <OffthreadVideo
+                  src={staticFile(run.clip)}
+                  startFrom={Math.round(((Math.round(returnTo) - laneFrom) / windowFrames) * CLIP_SECONDS * fps)}
+                  playbackRate={rate}
+                  muted
+                  style={{position: 'absolute', inset: 0, width: 1920, height: 1080, objectFit: 'cover', objectPosition: 'center'}}
+                />
+              </div>
+            </Sequence>
+          </Sequence>
+
+          {/* Свой ход: клип переигрывается с нуля поверх размеренного и живёт
+              до посадки полосы обратно в сетку. */}
+          {isOpen ? (
+            <Sequence
+              from={Math.round(openStart)}
+              durationInFrames={heroFrames}
+              name={`${run.label}: показ с начала`}
             >
-              <OffthreadVideo
-                src={staticFile(run.clip)}
-                playbackRate={rate}
-                muted
-                style={{position: 'absolute', inset: 0, width: 1920, height: 1080, objectFit: 'cover', objectPosition: 'center'}}
-              />
-            </div>
-          </Freeze>
-        </Sequence>
+              {/* То же кадрирование, что у полосы: на возврате карточка
+                  сжимается, и клип не должен уезжать в левый верхний угол. */}
+              <div
+                style={{
+                  position: 'absolute',
+                  left: (w - 1920 * Math.max(w / 1920, h / 1080)) / 2,
+                  top: (h - 1080 * Math.max(w / 1920, h / 1080)) / 2,
+                  width: 1920,
+                  height: 1080,
+                  transform: `scale(${Math.max(w / 1920, h / 1080)})`,
+                  transformOrigin: 'top left',
+                }}
+              >
+                <OffthreadVideo
+                  src={staticFile(run.clip)}
+                  startFrom={0}
+                  playbackRate={openRate}
+                  muted
+                  style={{position: 'absolute', inset: 0, width: 1920, height: 1080, objectFit: 'cover', objectPosition: 'center'}}
+                />
+              </div>
+            </Sequence>
+          ) : null}
+        </>
       )}
 
       <div
@@ -173,9 +251,9 @@ const Lane: React.FC<{
 };
 
 /**
- * Одна сцена витрины: все четыре решения по очереди раскрываются на весь экран.
- * Порядок обхода на каждой сцене свой (детерминированный), чтобы за ролик
- * каждая модель побывала первой и последней примерно поровну.
+ * Одна сцена витрины: обе стороны сравнения по очереди раскрываются на весь
+ * экран. Порядок обхода на каждой сцене свой (детерминированный), чтобы за
+ * ролик каждая сторона побывала первой и последней примерно поровну.
  */
 export const ShowcaseScene: React.FC<{
   sceneId: string;
@@ -190,7 +268,7 @@ export const ShowcaseScene: React.FC<{
 
   // Какая полоса сейчас раскрыта: по кадрам идём по order.
   const openedIndex = Math.min(SHOWCASE_MODELS - 1, Math.floor(frame / turn));
-  // order — порядок моделей всего реестра (длиной 5). Для сцены с другим числом
+  // order — порядок полос всего реестра (длиной 5). Для сцены с другим числом
   // полос приводим его к индексам runs без повторов: каждая полоса получает свой
   // ход ровно один раз, а не первая дважды.
   const slots = Array.from(new Set(order.map((v) => v % runs.length)));

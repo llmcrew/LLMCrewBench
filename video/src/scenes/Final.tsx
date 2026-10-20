@@ -15,6 +15,7 @@ type ModelRow = {
   spend: {minutes: number; tools: number};
   K: {e: number; p: number};
   L: {e: number; p: number};
+  totals?: Record<string, {earned: number; possible: number}>;
 };
 
 const MODELS = (models as unknown as ModelRow[]).slice().sort((a, b) => b.score - a.score);
@@ -58,32 +59,55 @@ export const Hero: React.FC<{clip: string; caption: string; model: string}> = ({
           opacity: riseIn(frame, 10).opacity,
         }}
       >
-        <span style={{font: `500 20px/1 ${FONT_MONO}`, color: C.faint, textShadow: '0 1px 8px rgba(5,8,15,.9), 0 0 2px rgba(5,8,15,.8)'}}>живая сцена, не кадр</span>
+        <span style={{font: `500 20px/1 ${FONT_MONO}`, color: C.faint, textShadow: '0 1px 8px rgba(5,8,15,.9), 0 0 2px rgba(5,8,15,.8)'}}>
+          живая сцена, не кадр · 120 fps, кадр клипа = кадр показа
+        </span>
       </div>
     </AbsoluteFill>
   );
 };
 
-/** Вывод: кто в чём силён (по числам, без оценочных суждений сверх данных). */
+/** Вывод: где именно разошлись стенды (по числам, без оценок сверх данных). */
 export const Verdict: React.FC = () => {
   const frame = useCurrentFrame();
   const best = MODELS[0];
-  const fastest = MODELS.slice().sort((a, b) => a.spend.minutes - b.spend.minutes)[0];
-  const topK = MODELS.slice().sort((a, b) => b.K.e / b.K.p - a.K.e / a.K.p)[0];
-  const topL = MODELS.slice().sort((a, b) => b.L.e / b.L.p - a.L.e / a.L.p)[0];
+  const worst = MODELS[MODELS.length - 1];
+  const gap = Math.round((best.score - worst.score) * 10) / 10;
+  // Категории, где стенды различаются: только они и составляют разницу итога.
+  const cats = new Set(MODELS.flatMap((m) => Object.keys(m.totals ?? {})));
+  const escored = [...cats]
+    .filter((c) => 'ABCDEFGHIJ'.includes(c))
+    .map((c) => {
+      const e = MODELS.map((m) => {
+        const t = m.totals?.[c] ?? {earned: 0, possible: 1};
+        return t.possible ? (t.earned / t.possible) * 100 : 0;
+      });
+      return {c, delta: Math.round((e[0] - e[e.length - 1]) * 10) / 10};
+    })
+    .filter((x) => Math.abs(x.delta) > 0.5);
   const facts = [
-    ['Лучший итог', `${best.label} — ${best.verdict || `${best.score.toFixed(0)}/100`}`, best.accent],
-    ['Больше всех инструментов', `${MODELS.slice().sort((a, b) => b.spend.tools - a.spend.tools)[0].label} — ${MODELS.slice().sort((a, b) => b.spend.tools - a.spend.tools)[0].spend.tools} вызовов`, C.accent],
-    ['Быстрее всех по генерации', `${fastest.label} — ${Math.round(fastest.spend.minutes)} мин`, fastest.accent],
-    ['Лучшие симуляции (K)', `${topK.label} — ${Math.round((topK.K.e / topK.K.p) * 100)}%`, topK.accent],
-    ['Лучшие арт-сцены (L)', `${topL.label} — ${Math.round((topL.L.e / topL.L.p) * 100)}%`, topL.accent],
+    ['Итог', MODELS.map((m) => `${m.label} — ${m.verdict || `${m.score.toFixed(0)}/100`}`).join(' · '), best.accent],
+    [
+      'Где именно разошлись (1017 минус A)',
+      escored.length
+        ? escored.map((x) => `${x.c} ${x.delta > 0 ? '+' : ''}${x.delta} п.п.`).join(', ')
+        : 'нет — общая часть A–J совпала',
+      C.accent,
+    ],
+    ['Разница итога', `${gap} ${gap % 10 === 1 && gap !== 11 ? 'балл' : 'баллов'} — ровно на них`, worst.accent],
+    [
+      'Симуляции (K)',
+      MODELS.map((m) => `${m.label}: ${Math.round((m.K.e / Math.max(1, m.K.p)) * 100)}%`).join(' · '),
+      C.purple,
+    ],
+    ['Арт-сцены (L)', MODELS.map((m) => `${m.label}: ${m.L.p} из 145 в блоке · ${Math.round((m.L.e / Math.max(1, m.L.p)) * 100)}%`).join(' · '), C.pink],
   ] as const;
   return (
     <AbsoluteFill style={{backgroundColor: C.bg, color: C.ink}}>
       <Backdrop />
       <div style={{position: 'absolute', top: 96, left: 96, ...riseIn(frame, 6)}}>
         <Title size={58}>Что показали числа</Title>
-        <Title sub delay={18}>Ниже витрина: те же модели, те же сцены — можно смотреть глазами</Title>
+        <Title sub delay={18}>Ниже витрина: те же стенды, те же сцены — можно смотреть глазами</Title>
       </div>
       <div style={{position: 'absolute', top: 320, bottom: 120, left: 96, right: 96, display: 'flex', flexDirection: 'column', gap: 14}}>
         {facts.map(([name, value, accent], i) => (
@@ -102,7 +126,7 @@ export const Verdict: React.FC = () => {
             }}
           >
             <span style={{width: 10, height: 30, borderRadius: 4, background: accent}} />
-            <span style={{font: `500 22px/1 ${FONT_SANS}`, color: C.muted, width: 460}}>{name}</span>
+            <span style={{font: `500 22px/1 ${FONT_SANS}`, color: C.muted, width: 430}}>{name}</span>
             <span style={{font: `600 26px/1 ${FONT_SANS}`}}>{value}</span>
           </div>
         ))}
@@ -121,7 +145,7 @@ export const Outro: React.FC = () => {
           Артефакт — в репозитории
         </Title>
         <Title sub delay={24}>
-          Живые сцены всех сорока девяти заданий, отчёт и сравнение конфигураций
+          Живые сцены всех сорока девяти заданий, отчёт и сравнение стендов
         </Title>
         <div
           style={{

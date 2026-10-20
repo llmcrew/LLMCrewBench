@@ -2,981 +2,491 @@
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-1",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-1",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-1",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-1",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-2",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-2",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-2",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-2",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-3",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-3",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-3",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-3",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-4",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-4",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-4",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-4",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-5",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-5",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-5",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-5",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-6",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-6",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-6",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-6",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-7",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-7",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-7",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-7",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-8",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-8",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-8",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-8",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-9",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-9",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-9",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-9",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-10",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-10",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-10",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-10",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-11",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-11",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-11",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-11",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-12",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-12",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-12",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-12",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-13",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-13",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-13",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-13",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-14",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-14",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-14",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-14",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-15",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-15",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-15",
-  "status": "missing"
- },
- {
-  "model": "qwen38",
-  "scene": "K-15",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-16",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-16",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-16",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-16",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-17",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-17",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-17",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-17",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-18",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-18",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-18",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-18",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-19",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-19",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-19",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-19",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "K-20",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "K-20",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "K-20",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "K-20",
-  "status": "cached"
+  "status": "ok"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-1",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-1",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "L-1",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-1",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-2",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-2",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "L-2",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-2",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-3",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-3",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "L-3",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-3",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-4",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-4",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "L-4",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-4",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-5",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
-  "scene": "L-5",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-5",
   "status": "missing"
  },
  {
-  "model": "qwen38",
-  "scene": "L-5",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-6",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-6",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "L-6",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-6",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-7",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-7",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "L-7",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-7",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-8",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-8",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "L-8",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-8",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-9",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-9",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "L-9",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-9",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-10",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-10",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "L-10",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-10",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-11",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-11",
-  "status": "cached"
- },
- {
-  "model": "qwen36",
-  "scene": "L-11",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-11",
-  "status": "cached"
+  "status": "missing"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-12",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-12",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-12",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-12",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-13",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-13",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-13",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-13",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-14",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-14",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-14",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-14",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-15",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-15",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-15",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-15",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-16",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-16",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-16",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-16",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-17",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-17",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-17",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-17",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-18",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-18",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-18",
-  "status": "missing"
- },
- {
-  "model": "qwen38",
-  "scene": "L-18",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-19",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-19",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-19",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-19",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-20",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-20",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-20",
-  "status": "missing"
- },
- {
-  "model": "qwen38",
-  "scene": "L-20",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-21",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-21",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-21",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-21",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-22",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-22",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-22",
-  "status": "missing"
- },
- {
-  "model": "qwen38",
-  "scene": "L-22",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-23",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-23",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-23",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-23",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-24",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-24",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-24",
-  "status": "missing"
- },
- {
-  "model": "qwen38",
-  "scene": "L-24",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-25",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-25",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-25",
-  "status": "missing"
- },
- {
-  "model": "qwen38",
-  "scene": "L-25",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-26",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-26",
   "status": "missing"
  },
  {
-  "model": "qwen36",
-  "scene": "L-26",
-  "status": "missing"
- },
- {
-  "model": "qwen38",
-  "scene": "L-26",
-  "status": "cached"
- },
- {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-27",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-27",
   "status": "missing"
- },
- {
-  "model": "qwen36",
-  "scene": "L-27",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-27",
-  "status": "cached"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-28",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-28",
   "status": "missing"
- },
- {
-  "model": "qwen36",
-  "scene": "L-28",
-  "status": "missing"
- },
- {
-  "model": "qwen38",
-  "scene": "L-28",
-  "status": "cached"
  },
  {
   "model": "deepseek-v4.1-flash-unc",
   "scene": "L-29",
-  "status": "cached"
+  "status": "ok"
  },
  {
-  "model": "glm-5.3",
+  "model": "deepseek-v4.1-flash-unc-1017",
   "scene": "L-29",
   "status": "missing"
- },
- {
-  "model": "qwen36",
-  "scene": "L-29",
-  "status": "cached"
- },
- {
-  "model": "qwen38",
-  "scene": "L-29",
-  "status": "cached"
  }
 ]
