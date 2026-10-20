@@ -118,7 +118,7 @@ points the run at a specific binary.
 | Key | Block | Tasks | What is actually checked |
 |---|---|---:|---|
 | K | Visual simulations (Three.js r186) | 20 | The agent writes `index.html`; the page runs in headless Chromium, reports its scene through `window.__probe()`, advances exactly by `window.__step(dt)`, and renders a reproducible 800×600 frame |
-| L | Free-form art | 1 | The agent writes `index.html`; the model picks the subject, style, palette and means (HTML/CSS, SVG, Canvas, WebGL; the vendored Three.js is available but optional). The only automatic check is technical delivery: the page loads without external requests or errors and a 1920×1080 frame is captured. Artistic quality is judged by people from the gallery frames |
+| L | Free-form art | 29 | The agent writes `index.html`; `L-1` is fully free, the other 28 name only a subject (neon grid, mandala, aurora, lava lamp, rain scenes, orbital disasters…), and the model picks composition, style, palette and means (HTML/CSS, SVG, Canvas, WebGL; the vendored Three.js is available but optional). The only automatic check is technical delivery: the page loads without external requests or errors and a 1920×1080 frame is captured. Artistic quality is judged by people from the gallery frames |
 
 Each scenario asks one question: does the model produce a *working* page —
 ballistics, pendulums, collision boxes, particle fountains, boids, heat
@@ -132,12 +132,13 @@ measurement machine must not move a quality score. The frames are copied into
 the run directory and collected into a `visual.html` gallery, so the leaderboard
 has a screen that shows what a model actually drew.
 
-The art block asks for something different from the simulation block: the model
-gets a free brief and chooses the idea, style and means itself. The prompt
-prescribes no palette, composition, frame reproducibility or mandatory hooks
-(`__probe`, `__step`, `__ready`); a static page is acceptable and animation is
-optional. The single automatic check is technical delivery (the page loads, the
-frame is captured); taste is never scored by heuristics. Authoring rules:
+The art block asks for something different from the simulation block: one work
+is fully free, the other 28 name only a subject, and the model chooses the
+idea, style, composition and means. The prompt prescribes no palette, no
+formulas, no frame reproducibility and no mandatory hooks (`__probe`,
+`__step`, `__ready`); a static page is acceptable and animation is optional.
+The single automatic check is technical delivery (the page loads, the frame is
+captured); taste is never scored by heuristics. Authoring rules:
 `docs/art-contract.md`.
 
 The library is pinned and vendored (`vendor/three/`, r186, checksums in
