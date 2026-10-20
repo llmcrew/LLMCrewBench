@@ -48,15 +48,16 @@ def _ignored(relative: str) -> bool:
         # Пересборки и новые файлы — игнорируются (пины ниже); runs/ не в git.
         "reports/comparison/index.html",
         "reports/comparison/_vendor/three.global.js",
-        # Опубликованные артефакты публикаций: прогон на стенде 1017, сравнение
-        # стендов и архив ролика (частями по 90 МБ).
+        # Опубликованные артефакты: прогон на стенде 1017 и сравнение стендов.
+        # Видео (клипы, архив) — вне git: только описание и хеш архива.
         "runs/deepseek-v4.1-flash-unc-1017/report.md",
         "runs/deepseek-v4.1-flash-unc-1017/scores.json",
         "runs/deepseek-v4.1-flash-unc-1017/sizing.json",
         "runs/deepseek-v4.1-flash-unc-1017/_showcase/deepseek-v4.1-flash-unc-1017/frames/K-1.png",
         "reports/comparison-deepseek-1017/index.html",
         "reports/comparison-deepseek-1017/_showcase/deepseek-v4.1-flash-unc-1017/pages/K-1.html",
-        "video/archive/dailybench-video.zip.part-aa",
+        "video/archive/RESTORE.md",
+        "video/archive/SHA256",
         "docs/ARTIFACTS.md",
         "docs/recording/README.md",
         "docs/recording/record_scene.py",
@@ -86,6 +87,7 @@ def test_published_artefacts_are_tracked(relative: str):
         # Объёмные локальные артефакты ролика и отчёта: не пушатся, см. .gitignore.
         "video/public/clips/deepseek-v4.1-flash-unc__K-1.mp4",
         "video/bin/ffmpeg",
+        "video/archive/dailybench-video.zip.part-aa",
         "video/dailybench-video.zip",
         "video/dailybench-video.tar.zst",
         "video/dist/dailybench-video.zip",
