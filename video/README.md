@@ -43,7 +43,7 @@ tools/
                             # (общее описание подхода и грабель — docs/recording/)
 public/
   clips/<стенд>__<сцена>.mp4    # 1920x1080, 120 fps, 23 с
-archive/                      # только RESTORE.md и SHA256: части архива вне git
+archive/                      # RESTORE.md и SHA256; сами части — вне git
 ```
 
 ## Команды
