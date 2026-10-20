@@ -1,10 +1,16 @@
-"""Category L — free-form art: one self-directed visual work.
+"""Category L — free-form art: one visual work per topic.
 
-The model receives a single free brief: idea, subject, style, palette and
-means of expression are its own. The deliverable is a standalone HTML page
+Every task hands the model a theme and nothing else: idea, composition, palette,
+style and means are its own. The deliverable is a standalone HTML page
 (HTML/CSS, SVG, Canvas, WebGL; the local Three.js build is available but
-optional). The automatic check is technical delivery only — the page must load
-and render a frame; artistic quality is judged by people, not heuristics.
+optional). The only automatic check is technical delivery — the page loads and
+renders a frame; artistic quality is judged by people.
+
+The topics are the ones the earlier strict block used (sunset, neon grid,
+mandala, city, bridge, galaxy, fireworks, aurora, night sky, fractal, metal,
+tunnel, lava lamp, water, flow, trails, eight lofi rain scenes, five orbital
+disasters), but the palette shares, composition formulas, scene API and
+animation are no longer required.
 
 L does not enter the 100-point A–J leaderboard and is reported separately.
 """
@@ -16,7 +22,41 @@ import random
 from .. import art, core
 from ..config import RunConfig
 
-IDS = ("L-1",)
+#: Theme of every task, in the order the block is played. The free brief (L-1)
+#: comes first; the rest name a subject and leave everything else open.
+TOPICS: dict[str, str] = {
+    "L-1": "Свободная работа",
+    "L-2": "Неоновая сетка",
+    "L-3": "Мандала",
+    "L-4": "Ночной город",
+    "L-5": "Мост",
+    "L-6": "Галактика из частиц",
+    "L-7": "Фейерверк",
+    "L-8": "Аврора",
+    "L-9": "Звёздное небо над горами",
+    "L-10": "Фрактал",
+    "L-11": "Жидкий металл и стекло",
+    "L-12": "Бесконечный туннель",
+    "L-13": "Лавовая лампа",
+    "L-14": "Водная поверхность",
+    "L-15": "Поток частиц",
+    "L-16": "Следы сфер",
+    "L-17": "Комната с дождём за окном",
+    "L-18": "Неоновая лапшичная под дождём",
+    "L-19": "Трамвай сквозь дождливый город",
+    "L-20": "Оранжерея на станции под метеорным дождём",
+    "L-21": "Аналоговая рубка с дождём за стеклом",
+    "L-22": "Робот-ремонтник под дождём",
+    "L-23": "Космическая заправка под дождём",
+    "L-24": "Автобусная остановка в неоне",
+    "L-25": "Ядерные взрывы на Земле из космоса",
+    "L-26": "Метеорит входит в атмосферу",
+    "L-27": "Столкновение двух планет",
+    "L-28": "Цепная реакция обломков",
+    "L-29": "Станция уходит, Земля позади",
+}
+
+IDS = tuple(TOPICS)
 
 TITLE = "Free-form art"
 
@@ -27,66 +67,85 @@ BRIEF = """\
 рецепта.
 """
 
-# Smoke fixture for the generator/oracle path, not a model of "correct"
-# aesthetics: an inline SVG scene that renders without scripts or hooks.
-GOLDEN = """\
+#: Тема заданной работы: сюжет назван, всё остальное — на усмотрение автора.
+TOPIC_BRIEF = """\
+Создай самостоятельную визуальную работу на тему «{topic}». Как её показать —
+композиция, палитра, стиль, статика или движение, чем рисовать — решай сам.
+Работу будет оценивать человек по результату, а не по соблюдению рецепта.
+"""
+
+
+def _smoke_page(title: str, hue: int) -> str:
+    """Дымовая страница для selfcheck: рисуется без скриптов и хуков.
+
+    Это не эталон вкуса и не образец композиции — только доказательство, что
+    путь «страница -> кадр -> оценка» живой у каждого задания.
+    """
+    warm = 40 + hue % 120
+    return f"""\
 <!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>Сумеречный маяк</title>
+<title>{title}</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #0b1020; }
-  svg { display: block; width: 100vw; height: 100vh; }
+  html, body {{ margin: 0; height: 100%; background: hsl({hue} 45% 8%); }}
+  svg {{ display: block; width: 100vw; height: 100vh; }}
 </style>
 </head>
 <body>
 <svg viewBox="0 0 960 540" xmlns="http://www.w3.org/2000/svg">
-
   <defs>
-    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#101b3d"/>
-      <stop offset="0.55" stop-color="#3d2f63"/>
-      <stop offset="1" stop-color="#b3542e"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="hsl({hue} 60% 18%)"/>
+      <stop offset="1" stop-color="hsl({(hue + 60) % 360} 55% 6%)"/>
     </linearGradient>
-    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#22143a"/>
-      <stop offset="1" stop-color="#070a18"/>
-    </linearGradient>
+    <radialGradient id="sun">
+      <stop offset="0" stop-color="hsl({warm} 95% 72%)"/>
+      <stop offset="1" stop-color="hsl({warm} 90% 48%)"/>
+    </radialGradient>
   </defs>
-  <rect width="960" height="360" fill="url(#sky)"/>
-  <circle cx="760" cy="300" r="46" fill="#f4c95d"/>
-  <rect y="360" width="960" height="180" fill="url(#sea)"/>
-  <path d="M812 300 L956 258 L956 342 Z" fill="rgba(244,201,93,0.28)"/>
-  <polygon points="470,360 500,240 530,240 560,360" fill="#141a2e"/>
-  <rect x="497" y="208" width="36" height="34" fill="#f4c95d"/>
-  <polygon points="470,360 500,240 497,242 467,360" fill="#1b2340"/>
-  <g stroke="#f4c95d" stroke-width="2" opacity="0.85">
-    <line x1="515" y1="140" x2="640" y2="90"/>
-    <line x1="515" y1="140" x2="515" y2="60"/>
-    <line x1="515" y1="140" x2="392" y2="92"/>
+  <rect width="960" height="540" fill="url(#bg)"/>
+  <circle cx="640" cy="210" r="86" fill="url(#sun)"/>
+  <path d="M0 400 Q 240 350 480 400 T 960 400 L960 540 L0 540 Z"
+        fill="hsl({(hue + 20) % 360} 40% 14%)"/>
+  <g fill="hsl({(hue + 200) % 360} 80% 70%)" opacity="0.75">
+    <circle cx="180" cy="120" r="3"/><circle cx="260" cy="86" r="2"/>
+    <circle cx="340" cy="150" r="2.5"/><circle cx="120" cy="200" r="2"/>
   </g>
-  <g fill="#ffffff" opacity="0.5">
-    <circle cx="120" cy="80" r="1.6"/><circle cx="210" cy="50" r="1.2"/>
-    <circle cx="300" cy="110" r="1.4"/><circle cx="70" cy="180" r="1"/>
-    <circle cx="380" cy="60" r="1.3"/><circle cx="175" cy="150" r="1.1"/>
-  </g>
+  <text x="48" y="500" font-family="ui-sans-serif, sans-serif" font-size="30"
+        fill="hsl({hue} 30% 92%)" opacity="0.9">{title}</text>
 </svg>
 </body>
 </html>
 """
 
 
-def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
-    """One free-form work; the brief does not depend on the seed."""
-    task = art.build_task(
-        task_id="L-1",
-        title="Свободная работа",
-        prompt=BRIEF,
-        golden=GOLDEN,
+GOLDEN = _smoke_page("Свободная работа", 220)
+
+
+def _in_sentence(topic: str) -> str:
+    """Тема внутри фразы: первая буква строчная, имена собственные сохраняются."""
+    return topic[:1].lower() + topic[1:]
+
+
+def build(task_id: str, rng: random.Random) -> core.TaskInstance:
+    topic = TOPICS[task_id]
+    free = task_id == "L-1"
+    return art.build_task(
+        task_id=task_id,
+        title=topic if free else f"{task_id} — {topic}",
+        prompt=BRIEF if free else TOPIC_BRIEF.format(topic=_in_sentence(topic)),
+        golden=_smoke_page(topic, rng.randrange(360)),
     )
-    task.meta["seed_sensitive"] = False
-    return [task]
+
+
+def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
+    """One work per topic; the briefs do not depend on the seed."""
+    tasks = [build(task_id, rng) for task_id in IDS]
+    for task in tasks:
+        task.meta["seed_sensitive"] = False
+    return tasks
 
 
 core.register(

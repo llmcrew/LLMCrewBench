@@ -296,7 +296,7 @@ def render_markdown(run: dict[str, Any]) -> str:
         lines.append("")
         lines.append(
             f"Симуляции K — {summary['showcase_earned']:.0f} / {summary['showcase_possible']:.0f} "
-            "баллов вне итоговой суммы. L — свободная арт-работа: сохраняются страница "
+            "баллов вне итоговой суммы. L — свободные арт-работы: сохраняются страница "
             "и кадр, цвет, тональность и художественное качество оценивает человек."
         )
         lines.append("")

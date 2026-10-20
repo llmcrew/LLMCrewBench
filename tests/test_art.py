@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 
 from dailybench import art, browser, core, visual
+from dailybench.config import RunConfig
 from dailybench.report import summarise
+from dailybench.tasks import art as art_block
 
 SVG_PAGE = """<!DOCTYPE html><html><body style="margin:0;background:#182032">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
@@ -117,3 +119,26 @@ def test_render_check_does_not_add_artistic_quality_points():
     summary = summarise(scores)
     assert summary["headline_earned"] == summary["headline_possible"] == 2.0
     assert summary["showcase_earned"] == summary["showcase_possible"] == 0.0
+
+
+def test_block_asks_every_topic_once_and_stays_free_form():
+    tasks = art_block.generate(__import__("random").Random(1), RunConfig())
+    assert tuple(task.id for task in tasks) == art_block.IDS
+    assert len(tasks) == 29
+    assert [task.id for task in tasks] == [f"L-{i}" for i in range(1, 30)]
+    # L-1 без темы; остальные называют только сюжет, а не рецепт.
+    assert "Идею, сюжет, стиль" in tasks[0].prompt
+    assert "тему «неоновая сетка»" in tasks[1].prompt
+    assert "Тему" not in tasks[1].prompt.split("\n")[0]
+    for task in tasks:
+        assert task.max_points == 1.0
+        assert task.meta["seed_sensitive"] is False
+        assert "palette" not in task.prompt and "__probe" not in task.prompt
+        assert task.oracle["golden_html"].lstrip().lower().startswith("<!doctype html")
+        assert task.oracle["answer_file"] == "index.html"
+
+
+def test_goldens_differ_between_topics():
+    tasks = art_block.generate(__import__("random").Random(7), RunConfig())
+    pages = {task.oracle["golden_html"] for task in tasks}
+    assert len(pages) == len(tasks)
