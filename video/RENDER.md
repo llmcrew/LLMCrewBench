@@ -1,9 +1,9 @@
 # Как отрендерить ролик на другом устройстве
 
 Архив самодостаточен: клипы уже сняты, пересъёмка не нужна. Вес — 828 МБ.
-В git он лежит частями по 90 МБ (`video/archive/`): GitHub отклоняет файлы
-больше 100 МБ. Склейка и sha256 — `video/archive/RESTORE.md`; хеш сверяется с
-`video/archive/SHA256`.
+В git его нет: клипы и записи не публикуются. Рядом лежат только описание
+(`video/archive/RESTORE.md`) и хеш (`video/archive/SHA256`); сам архив — части
+по 90 МБ в `video/archive/` на машине записи, склейка и сверка — в RESTORE.md.
 
 Один клип снят не с прогонной страницы: `qwen38__L-26.mp4` — со страницы
 из ранней сборки Qwen 3.8 (в финальном прогоне задача закрылась без HTML);
@@ -131,6 +131,7 @@ shasum -a 256 /tmp/dailybench-video.zip | cut -d' ' -f1 > <repo>/video/archive/S
 # ^ этот же хеш - в archive/RESTORE.md (строка «ожидается»)
 rm -f <repo>/video/archive/dailybench-video.zip.part-*
 split -b 90m /tmp/dailybench-video.zip <repo>/video/archive/dailybench-video.zip.part-
+# части в git не нужны: трекаются только RESTORE.md и SHA256
 ```
 
 ## Про `bin/`

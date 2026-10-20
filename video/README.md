@@ -39,7 +39,7 @@ tools/
                             # (общее описание подхода и грабель — docs/recording/)
 public/
   clips/<модель>__<сцена>.mp4   # 1920x1080, 60 fps, 23 с
-archive/                      # ролик частями по 90 МБ (RESTORE.md — склейка и sha256)
+archive/                      # только RESTORE.md и SHA256: части архива (828 МБ) вне git
 ```
 
 ## Команды

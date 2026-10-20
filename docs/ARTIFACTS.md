@@ -9,7 +9,6 @@
 |---|---|---|
 | `runs/deepseek-v4.1-flash-unc-1017/` | Прогон deepseek на стенде 1017: `report.md`, `report.html`, `visual.html`, `scores.json`, `speed.json`, `config.json`, `sizing.json` (калибровка long-context), кадры и страницы витрины (`_showcase`), `_vendor` | Публикация тестирования: отчёт открывается без прогона; кадры и живые страницы — доказательство |
 | `reports/comparison-deepseek-1017/` | Сравнение старого стенда (95/100) с новым (100/100) | «До/после» одной модели на двух ingress'ах |
-| `video/archive/` | Видео-архив витрины, 10 частей по 90 МБ | Ролик собирается на другой машине без пересъёмки (`video/RENDER.md`) |
 
 ## Что исключено и почему
 
@@ -21,14 +20,18 @@
 | `runs/_chat`, `runs/_logs`, `runs/_showcase`, `runs/_vendor`, старые прогоны | Внутренние и воспроизводимые |
 | `reports/comparison-deepseek-1017/_vendor/` | 7 МБ копий three.js/plotly: есть в `vendor/` и `reports/comparison/_vendor/` |
 | `video/public/clips/`, `video/bin/` | 834 МБ клипов и macOS-бандл: распакованы из архива |
-| `video/dailybench-video.zip`, `video/dailybench-video.tar.zst`, `video/dist/` | 828 МБ одним файлом (и его zstd-близнец): GitHub отклоняет >100 МБ; в git только части |
+| `video/archive/*.part-*` | 828 МБ частями: до 20.10 лежали в git, теперь только `RESTORE.md` и `SHA256` |
+| `video/dailybench-video.zip`, `video/dailybench-video.tar.zst`, `video/dist/` | 828 МБ одним файлом (и его zstd-близнец): GitHub отклоняет >100 МБ |
 
 ## Склейка архива
 
+Части приходят из `video/archive/` на машине записи; в клоне репозитория
+рядом лежат только `RESTORE.md` и `SHA256`.
+
 ```bash
 cd /tmp && rm -rf restore && mkdir restore && cd restore
-cat <repo>/video/archive/dailybench-video.zip.part-* > dailybench-video.zip
-shasum -a 256 dailybench-video.zip   # сверить с video/archive/SHA256
+cat <архив>/dailybench-video.zip.part-* > dailybench-video.zip
+shasum -a 256 dailybench-video.zip   # сверить с SHA256
 unzip -t dailybench-video.zip
 ```
 

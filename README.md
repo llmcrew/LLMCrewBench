@@ -246,9 +246,9 @@ re-scored without touching a GPU.
 
 ## Published artefacts and the recording framework
 
-`docs/ARTIFACTS.md` lists what is intentionally tracked (one published run, its
-comparison, the video archive in 90 MB parts) and what stays local, with the
-commands to verify a restored archive. `docs/recording/` is a standalone kit for
+`docs/ARTIFACTS.md` lists what is intentionally tracked (one published run and
+its comparison) and what stays local — recordings and the video archive
+included — with the commands to verify a restored archive. `docs/recording/` is a standalone kit for
 capturing live web scenes: a step-driven recorder, a batch driver, the page
 driver, the practices and the pitfalls that cost real time here.
 
