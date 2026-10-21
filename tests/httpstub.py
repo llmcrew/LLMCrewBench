@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -43,6 +44,11 @@ def start(
     tokenize: bool = True,
     completion_tokens: int = 7,
     reasoning_tokens: int = 3,
+    drip: float = 0.0,
+    stall: float = 0.0,
+    finish: bool = True,
+    stream_error: dict[str, Any] | None = None,
+    status: int = 200,
 ) -> tuple[str, ThreadingHTTPServer]:
     """Start the stub and return ``(base_url, server)``.
 
@@ -51,6 +57,11 @@ def start(
     every JSON body received (GET requests are not recorded); ``props`` makes
     ``GET /props`` answer instead of 404, and ``tool_call`` makes every
     completion report one tool call.
+
+    Deadline shapes: ``drip`` writes the blocking body one byte at a time with
+    that delay, ``stall`` pauses mid-stream, ``finish=False`` drops the terminal
+    marker and ``[DONE]``, ``stream_error`` emits an SSE ``error`` event and
+    ``status`` answers with that HTTP code instead of a completion.
     """
     model_list = [DEFAULT_MODEL] if models is None else models
 
@@ -99,6 +110,9 @@ def start(
             if self.path.endswith("/chat/completions"):
                 messages = payload.get("messages") or [{}]
                 content = str(messages[-1].get("content") or "")
+                if status != 200:
+                    self._send_json({"error": {"message": f"stub failure {status}"}}, status)
+                    return
                 if payload.get("stream"):
                     self._send_stream(content)
                 else:
@@ -111,6 +125,11 @@ def start(
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Connection", "close")
             self.end_headers()
+            if stream_error is not None:
+                self.wfile.write(f"data: {json.dumps({'error': stream_error})}\n\n".encode())
+                self.wfile.flush()
+                self.close_connection = True
+                return
             chunks: list[dict[str, Any]] = []
             if reasoning:
                 chunks.append({"choices": [{"delta": {"reasoning_content": reasoning}}]})
@@ -136,13 +155,17 @@ def start(
                         ]
                     }
                 )
-            finish = "tool_calls" if tool_call else "stop"
+            reason = "tool_calls" if tool_call else "stop"
             usage = _usage(content, completion_tokens, reasoning_tokens)
-            chunks.append({"choices": [{"delta": {}, "finish_reason": finish}], "usage": usage})
-            for chunk in chunks:
+            if finish:
+                chunks.append({"choices": [{"delta": {}, "finish_reason": reason}], "usage": usage})
+            for index, chunk in enumerate(chunks):
                 self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8"))
                 self.wfile.flush()
-            self.wfile.write(b"data: [DONE]\n\n")
+                if stall and index == 0:
+                    time.sleep(stall)
+            if finish:
+                self.wfile.write(b"data: [DONE]\n\n")
             self.close_connection = True
 
         def _send_blocking(self, content: str) -> None:
@@ -160,7 +183,7 @@ def start(
                         },
                     }
                 ]
-            self._send_json(
+            body = json.dumps(
                 {
                     "choices": [
                         {
@@ -169,8 +192,20 @@ def start(
                         }
                     ],
                     "usage": _usage(content, completion_tokens, reasoning_tokens),
-                }
-            )
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if drip:
+                for byte in body:
+                    self.wfile.write(bytes([byte]))
+                    self.wfile.flush()
+                    time.sleep(drip)
+            else:
+                self.wfile.write(body)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.payloads = []  # type: ignore[attr-defined]

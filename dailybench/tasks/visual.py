@@ -1,14 +1,22 @@
 """Category K — visual simulations on Three.js, measured outside the score.
 
-Twenty scenarios: physics and fields (K-1..K-11), cells and machines
-(K-12..K-16), and visualisations (K-17..K-20). Each one asks for a working page
-and is checked by *running* it in a headless Chromium (see ``dailybench/visual``
-and ``dailybench/browser``).
+Thirty scenarios: physics and fields (K-1..K-11), cells and machines
+(K-12..K-16), visualisations (K-17..K-20), and the extended slices (K-21..K-30:
+gear kinematics, fluids, circuits, a queue, a lift and structures). Each one asks
+for a working page and is checked by *running* it in a headless Chromium (see
+``dailybench/visual`` and ``dailybench/browser``).
 
 The block is reported on its own screen and never enters the leaderboard
 verdict: a browser build on the measurement machine must not be able to move a
 quality score. That is why its points live in ``core.SHOWCASE_POINTS`` rather
 than in ``CATEGORY_POINTS``.
+
+Profiles pick the scenario set, never the machinery: the baseline runs the
+original twenty, ``pilot`` runs the three host scenarios of the pilot slices
+(K-21, K-23, K-25), and ``stretch-v1`` runs all thirty. Every profile is checked
+against its exact id list and against ``4 * len(ids)`` points, so a slice that
+forgets to register or filters wrongly fails loudly instead of shrinking the
+block.
 """
 
 from __future__ import annotations
@@ -29,16 +37,40 @@ MODULES: tuple[str, ...] = (
     "visual_particles",
     "visual_fields",
     "visual_visuals",
+    "visual_kinematics",
+    "visual_fluids",
+    "visual_circuits",
+    "visual_queue",
+    "visual_lift",
+    "visual_structures",
 )
 
-IDS = (
+BASELINE_IDS = (
     "K-1", "K-2", "K-3", "K-4", "K-5",
     "K-6", "K-7", "K-8", "K-9", "K-10",
     "K-11", "K-12", "K-13", "K-14", "K-15",
     "K-16", "K-17", "K-18", "K-19", "K-20",
 )
 
+#: One host scenario per pilot slice — the cheapest proof that the extended
+#: machinery works before the whole slice joins the stretch suite.
+PILOT_IDS = ("K-21", "K-23", "K-25")
+
+ALL_IDS = BASELINE_IDS + (
+    "K-21", "K-22", "K-23", "K-24", "K-25",
+    "K-26", "K-27", "K-28", "K-29", "K-30",
+)
+
+IDS = BASELINE_IDS
+
+PROFILE_IDS: dict[str, tuple[str, ...]] = {
+    "pilot": PILOT_IDS,
+    "stretch-v1": ALL_IDS,
+}
+
 TITLE = "Visual simulations (Three.js)"
+
+_ORDER = {task_id: index for index, task_id in enumerate(ALL_IDS)}
 
 
 def _present_modules() -> list[Any]:
@@ -50,35 +82,40 @@ def _present_modules() -> list[Any]:
     return found
 
 
-def _expected_ids(modules: list[Any]) -> tuple[str, ...]:
-    """Strict once the category is complete, tolerant while slices are in flight.
-
-    A finished category must emit exactly ``IDS`` in exactly that order; the
-    tolerant branch only exists so a half-written working tree can still run the
-    rest of the suite, and it disappears by itself as soon as the last scenario
-    module exists.
-    """
-    if len(modules) == len(MODULES):
-        return IDS
-    return tuple(task_id for module in modules for task_id in module.IDS)
-
-
 _MODULES = _present_modules()
-_EXPECTED = _expected_ids(_MODULES)
+
+
+def _profile_ids(profile: str) -> tuple[str, ...]:
+    return PROFILE_IDS.get(profile, BASELINE_IDS)
 
 
 def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
-    """Every scenario, each module drawing from the shared category stream."""
+    """The scenarios of the run's profile, each module drawing from the stream.
+
+    Modules outside the profile are not built at all, so a pilot run pays for
+    three scenarios rather than thirty. The result is re-ordered to the
+    declaration order of ``ALL_IDS`` and must match the profile exactly.
+    """
+    profile = core.profile_of(cfg)
+    wanted = _profile_ids(profile)
+    wanted_set = set(wanted)
     tasks: list[core.TaskInstance] = []
     for module in _MODULES:
-        tasks.extend(module.build(rng))
+        if not wanted_set.intersection(module.IDS):
+            continue
+        tasks.extend(task for task in module.build(rng) if task.id in wanted_set)
+    tasks.sort(key=lambda task: _ORDER[task.id])
     ids = tuple(task.id for task in tasks)
-    if ids != _EXPECTED:
-        raise RuntimeError(f"категория K собрала {ids}, ожидалось {_EXPECTED}")
+    # A half-written working tree may still run the rest of the suite; once the
+    # last module exists the exact list is the only accepted answer.
     if len(_MODULES) == len(MODULES):
+        if ids != wanted:
+            raise RuntimeError(f"категория K собрала {ids}, ожидалось {wanted} в профиле {profile}")
         total = sum(task.max_points for task in tasks)
-        if abs(total - core.SHOWCASE_POINTS["K"]) > 1e-9:
-            raise RuntimeError(f"категория K: {total} баллов вместо {core.SHOWCASE_POINTS['K']}")
+        if abs(total - 4 * len(wanted)) > 1e-9:
+            raise RuntimeError(f"категория K: {total} баллов вместо {4 * len(wanted)}")
+    elif ids != tuple(task_id for task_id in wanted if task_id in set(ids)):
+        raise RuntimeError(f"категория K собрала {ids}, ожидалось {wanted} в профиле {profile}")
     return tasks
 
 
@@ -89,8 +126,9 @@ def evaluate(task: core.TaskInstance, transcript: core.Transcript) -> core.Score
 core.register(
     key="K",
     title=TITLE,
-    points=core.SHOWCASE_POINTS["K"],
+    points=core.points_for("K"),
     generate=generate,
     evaluate=evaluate,
-    expected_ids=_EXPECTED,
+    expected_ids=BASELINE_IDS,
+    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": ALL_IDS},
 )

@@ -32,6 +32,24 @@ def _fake_pi(tmp_path: Path, script: str) -> Path:
     return path
 
 
+def _fake_taskkill(folder: Path) -> Path:
+    """A stand-in for the Windows command; it kills the given tree on POSIX."""
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "taskkill"
+    path.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\\n\' "$*" >> "${TASKKILL_LOG:-/dev/null}"\n'
+        "pid=$2\n"
+        'for child in $(/bin/ps -Ao pid=,ppid= | /usr/bin/awk -v p="$pid" \'$2==p {print $1}\'); do\n'
+        '  /bin/kill -9 "$child"\n'
+        "done\n"
+        '/bin/kill -9 "$pid"\n',
+        encoding="utf-8",
+    )
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
 def _events(*records: dict) -> str:
     return "\n".join(json.dumps(record) for record in records) + "\n"
 
@@ -151,6 +169,56 @@ def test_events_become_tool_calls_and_usage(monkeypatch, tmp_path):
     assert result.text == "сделано"
 
 
+def test_the_endpoint_key_is_scrubbed_from_the_event_stream(monkeypatch, tmp_path):
+    """The agent holds the key (``models.json``, ``DAILYBENCH_API_KEY``).
+
+    ``cat``/``echo`` therefore put it into a tool result, and the event log is
+    persisted into ``runs/``. Both the configured value and the generic
+    ``Bearer``/``sk-`` shapes must be scrubbed before an event is recorded.
+    """
+    secret = "taskkey-9f3c1b7a2d"
+    leaked = {
+        "type": "tool_execution_end",
+        "toolCallId": "1",
+        "toolName": "bash",
+        "result": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f'{{"apiKey":"{secret}"}} Authorization: Bearer abcdefghijklmnop '
+                        "nested=sk-nested-0123456789"
+                    ),
+                }
+            ]
+        },
+        "isError": False,
+    }
+    script = _fake_pi(
+        tmp_path,
+        "printf '%s\\n' "
+        + f"'{json.dumps(leaked)}'"
+        + "\n"
+        + "printf '%s\\n' "
+        + f"'{json.dumps(_assistant())}'"
+        + "\n"
+        + f"echo 'DAILYBENCH_API_KEY={secret}' >&2\n",
+    )
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
+    work = tmp_path / "w"
+    work.mkdir()
+    cfg = RunConfig(base_url="http://x/v1", model="m", api_key=secret)
+    result = agent.run("p", work, cfg, agent_dir=tmp_path)
+
+    extra = result.as_extra(secret)["agent"]
+    blob = json.dumps(extra["event_log"], ensure_ascii=False) + extra["stderr"] + json.dumps(result.tool_calls)
+    assert secret not in blob
+    assert "abcdefghijklmnop" not in blob and "sk-nested-0123456789" not in blob
+    assert "***" in blob
+    assert result.ok
+    assert json.dumps(result.events).count(secret) == 0, "сырые события тоже уже очищены"
+
+
 def test_a_nonzero_exit_keeps_the_events_and_the_reason(monkeypatch, tmp_path):
     script = _fake_pi(
         tmp_path,
@@ -219,7 +287,7 @@ def test_a_timeout_kills_the_whole_process_tree(monkeypatch, tmp_path):
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
     work = tmp_path / "w"
     work.mkdir()
-    cfg = RunConfig(base_url="http://x/v1", model="m", request_wall_clock=3.0)
+    cfg = RunConfig(base_url="http://x/v1", model="m", request_wall_clock=60.0, task_wall_clock=3.0)
     started = time.perf_counter()
     result = agent.run("p", work, cfg, agent_dir=tmp_path)
     elapsed = time.perf_counter() - started
@@ -229,6 +297,215 @@ def test_a_timeout_kills_the_whole_process_tree(monkeypatch, tmp_path):
     for name in ("sleep 601.7", "sleep 602.9"):
         survivors = subprocess.run(["pgrep", "-f", name], capture_output=True, text=True).stdout.strip()
         assert not survivors, f"{name} пережил таймаут (pid {survivors})"
+
+
+def test_kill_tree_uses_taskkill_on_a_windows_host(monkeypatch, tmp_path):
+    """Windows has neither ``os.getpgid`` nor ``os.killpg``; taskkill covers it."""
+    tools = tmp_path / "bin"
+    log = tmp_path / "taskkill.log"
+    _fake_taskkill(tools)
+    monkeypatch.setenv("TASKKILL_LOG", str(log))
+    monkeypatch.setenv("PATH", str(tools))
+    monkeypatch.setattr(agent.sys, "platform", "win32")
+    # On a real Windows host these attributes do not exist at all.
+    monkeypatch.delattr(agent.os, "getpgid", raising=False)
+    monkeypatch.delattr(agent.os, "killpg", raising=False)
+    proc = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(607.1)"])
+    try:
+        agent._kill_tree(proc)
+        assert proc.poll() is not None
+        assert f"/PID {proc.pid} /T /F" in log.read_text(encoding="utf-8")
+    finally:
+        if proc.poll() is None:  # pragma: no cover - a broken path
+            proc.kill()
+            proc.wait()
+
+
+def test_a_run_timeout_survives_a_windows_platform_stub(monkeypatch, tmp_path):
+    """The R12 reproduction: no ``os.getpgid``/``killpg``, yet the timeout works."""
+    tools = tmp_path / "bin"
+    _fake_taskkill(tools)
+    script = _fake_pi(
+        tmp_path,
+        "printf '%s\\n' "
+        + f"'{json.dumps(_assistant('до'))}'"
+        + "\nsleep 610.1\n",
+    )
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
+    monkeypatch.setenv("PATH", os.pathsep.join([str(tools), "/bin", "/usr/bin"]))
+    monkeypatch.setattr(agent.sys, "platform", "win32")
+    monkeypatch.delattr(agent.os, "getpgid", raising=False)
+    monkeypatch.delattr(agent.os, "killpg", raising=False)
+    # ``shutil.which`` switches to ``_winapi`` by platform alone.
+    monkeypatch.setattr(
+        agent.shutil, "_winapi", type("_WinAPI", (), {"NeedCurrentDirectoryForExePath": staticmethod(lambda _n: False)})(),
+        raising=False,
+    )
+    work = tmp_path / "w"
+    work.mkdir()
+    started = time.perf_counter()
+    result = agent.run(
+        "p",
+        work,
+        RunConfig(base_url="http://x/v1", model="m", request_wall_clock=60.0, task_wall_clock=1.0),
+        agent_dir=tmp_path,
+    )
+    assert not result.ok and "не уложился" in (result.error or "")
+    assert result.turns == 1 and result.answer_tokens == 20
+    assert time.perf_counter() - started < 12
+
+
+def test_kill_tree_falls_back_to_proc_kill_without_taskkill(monkeypatch, tmp_path):
+    """A stripped Windows image has no taskkill; the root must still die."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.setattr(agent.sys, "platform", "win32")
+    proc = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(607.2)"])
+    try:
+        agent._kill_tree(proc)
+        assert proc.poll() is not None
+    finally:
+        if proc.poll() is None:  # pragma: no cover
+            proc.kill()
+            proc.wait()
+
+
+def test_a_windows_job_covers_the_tree_even_without_taskkill(monkeypatch, tmp_path):
+    """When a job can be attached it is the transport; taskkill is not needed."""
+    calls: list[tuple] = []
+
+    class _Kernel32:
+        def CreateJobObjectW(self, *_args):
+            calls.append(("create",))
+            return 7
+
+        def AssignProcessToJobObject(self, handle, pid):
+            calls.append(("assign", handle, pid))
+            return True
+
+        def TerminateJobObject(self, handle, code):
+            calls.append(("terminate", handle, code))
+            return True
+
+        def CloseHandle(self, handle):
+            calls.append(("close", handle))
+            return True
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    monkeypatch.setattr(agent.sys, "platform", "win32")
+    monkeypatch.setattr(agent, "_win32", lambda: _Kernel32())
+    proc = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(607.3)"])
+    proc._handle = 99  # POSIX Popen has no handle; the job code must still work
+    work = tmp_path / "w"
+    work.mkdir()
+    try:
+        agent._guard_process(proc, work)
+        assert str(work) in agent._OPEN_JOBS
+        agent._kill_tree(proc)
+        assert proc.poll() is not None
+        assert ("terminate", 7, 1) in calls and ("close", 7) in calls
+        assert not agent._PROC_JOBS
+    finally:
+        agent._OPEN_JOBS.pop(str(work), None)
+        if proc.poll() is None:  # pragma: no cover
+            proc.kill()
+            proc.wait()
+
+
+def test_descendants_fall_back_when_ps_is_missing(monkeypatch):
+    """``ps`` is optional: without it the walk must not raise."""
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(agent.shutil, "which", lambda _name: None)
+    assert os.getpid() in agent._descendants(os.getpid())
+
+
+def test_a_term_ignoring_descendant_that_changed_cwd_is_killed(monkeypatch, tmp_path):
+    """The field shape: the child survives its root, ignores TERM and leaves the cwd."""
+    script = _fake_pi(
+        tmp_path,
+        f'{sys.executable} -c "import os,signal,time;'
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN);os.chdir('/');"
+        'time.sleep(608.1)" &\n'
+        "sleep 608.2 &\n"
+        "wait\n",
+    )
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
+    work = tmp_path / "w"
+    work.mkdir()
+    result = agent.run(
+        "p",
+        work,
+        RunConfig(base_url="http://x/v1", model="m", request_wall_clock=60.0, task_wall_clock=1.0),
+        agent_dir=tmp_path,
+    )
+    assert not result.ok and "не уложился" in (result.error or "")
+    time.sleep(0.3)
+    for name in ("608.1", "608.2"):
+        survivors = subprocess.run(["pgrep", "-f", name], capture_output=True, text=True).stdout.strip()
+        assert not survivors, f"{name} пережил таймаут (pid {survivors})"
+
+
+def test_a_timeout_keeps_the_measured_events_and_spend(monkeypatch, tmp_path):
+    """A timeout is an outcome, not amnesia: usage and tool traffic stay recorded."""
+    records = [
+        {
+            "type": "tool_execution_start",
+            "toolCallId": "1",
+            "toolName": "write",
+            "args": {"path": "a.py"},
+        },
+        {
+            "type": "tool_execution_end",
+            "toolCallId": "1",
+            "toolName": "write",
+            "result": {"content": [{"type": "text", "text": "written"}]},
+            "isError": False,
+        },
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "частично"}],
+                "usage": {"input": 50, "output": 7, "reasoning": 3},
+                "stopReason": "stop",
+            },
+        },
+    ]
+    script = _fake_pi(
+        tmp_path,
+        "printf '%s\\n' "
+        + " ".join(f"'{json.dumps(record)}'" for record in records)
+        + "\nsleep 609.1\n",
+    )
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
+    work = tmp_path / "w"
+    work.mkdir()
+    result = agent.run(
+        "p",
+        work,
+        RunConfig(base_url="http://x/v1", model="m", request_wall_clock=60.0, task_wall_clock=1.0),
+        agent_dir=tmp_path,
+    )
+
+    assert not result.ok and "не уложился" in (result.error or "")
+    assert result.turns == 1
+    assert result.prompt_tokens_last == 50
+    assert result.answer_tokens == 7 and result.reasoning_tokens == 3
+    assert result.text == "частично"
+    assert [call["name"] for call in result.tool_calls] == ["write"]
+    assert result.tool_calls[0]["result"] == "written"
+
+    transcript = core.Transcript(task_id="T-1", category="C", extra={})
+    transcript.extra.update(result.as_extra())
+    extra = transcript.extra["agent"]
+    kinds = [event.get("type") for event in extra["event_log"]]
+    assert extra["events"] == len(records) and extra["tool_names"] == ["write"]
+    assert "tool_execution_start" in kinds and "message_end" in kinds
+    assistant = [event for event in extra["event_log"] if event.get("type") == "message_end"][0]
+    assert assistant["message"]["usage"]["output"] == 7
 
 
 def test_the_exit_hook_sweeps_when_the_stack_never_unwinds(tmp_path):

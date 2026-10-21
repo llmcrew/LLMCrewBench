@@ -21,6 +21,22 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["dailybench", "dailybench.tasks"]
 
+# Ресурсы витрины (three.js и plotly) нужны отчёту и рендеру; без них wheel
+# ставится без библиотек, и опубликованная сцена падает (R18). data-files, а не
+# package-data: vendor/ лежит рядом с пакетом, не внутри него.
+[tool.setuptools.data-files]
+"vendor/three" = [
+  "vendor/three/three.core.js",
+  "vendor/three/three.module.js",
+  "vendor/three/LICENSE",
+  "vendor/three/PROVENANCE.md",
+]
+"vendor/plotly" = [
+  "vendor/plotly/plotly.min.js",
+  "vendor/plotly/LICENSE",
+  "vendor/plotly/PROVENANCE.md",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

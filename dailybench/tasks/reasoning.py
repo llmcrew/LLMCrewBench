@@ -4,11 +4,15 @@ Each scenario has one all-or-nothing check worth one point.  The values in a
 fixture are generated from the supplied random stream, while the answer is
 computed here before the prompt is handed to a model.
 
-The fifteen scenarios cover queueing (R-1), critical paths (R-2), subnets
-(R-3), token cost (R-4), bit operations (R-5), batching (R-6), probability
-(R-7), LRU state (R-8), retry timelines (R-9), bin packing (R-10), free-slot
-scheduling (R-11), timezone/DST arithmetic (R-12), conditional probability
-(R-13), constrained makespan (R-14) and topological tie-breaking (R-15).
+The fifteen baseline scenarios cover queueing (R-1), critical paths (R-2),
+subnets (R-3), token cost (R-4), bit operations (R-5), batching (R-6),
+probability (R-7), LRU state (R-8), retry timelines (R-9), bin packing (R-10),
+free-slot scheduling (R-11), timezone/DST arithmetic (R-12), conditional
+probability (R-13), constrained makespan (R-14) and topological tie-breaking
+(R-15).
+
+R-16 is a pilot scenario: the final state of a service after a causally
+ordered event log with retries, partial failures and tombstones.
 """
 
 from __future__ import annotations
@@ -44,6 +48,8 @@ IDS = (
     "R-14",
     "R-15",
 )
+PILOT_IDS = ("R-16",)
+ALL_IDS = IDS + PILOT_IDS
 _POINTS = 1.0
 
 
@@ -1062,6 +1068,370 @@ def r15(rng: random.Random) -> core.TaskInstance:
 
 
 # --------------------------------------------------------------------------- #
+# R-16 — service state from a causally ordered event log
+# --------------------------------------------------------------------------- #
+
+_R16_TRANSITIONS: dict[str, tuple[tuple[str, ...], str, int]] = {
+    "release": (("new", "boot", "active"), "active", 1),
+    "fault": (("active", "degraded"), "degraded", 0),
+    "heal": (("degraded", "active"), "active", 0),
+    "halt": (("active", "degraded", "halted"), "halted", 0),
+    "resume": (("halted", "boot"), "boot", 0),
+}
+"""Transition table: outcome → (allowed source statuses, target status, version bump)."""
+
+_R16_STATUSES = ("new", "active", "degraded", "halted", "boot")
+
+
+class _R16Retry(Exception):
+    """The drawn fixture failed a constraint and the stream must be redrawn."""
+
+
+def _r16_unique(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """First delivery of every event id; later deliveries are retries."""
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for node in nodes:
+        if node["id"] in seen:
+            continue
+        seen.add(node["id"])
+        unique.append(node)
+    return unique
+
+
+def _r16_order(nodes: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    """Kahn topological order; ties by ``(ts, id)`` or, for the mutant, by text id."""
+    position = {id(node): index for index, node in enumerate(nodes)}
+    remaining = {id(node): len(node["deps"]) for node in nodes}
+    children: dict[int, list[dict[str, Any]]] = {id(node): [] for node in nodes}
+    for node in nodes:
+        for dep in node["deps"]:
+            children[id(dep)].append(node)
+    ready = [node for node in nodes if remaining[id(node)] == 0]
+    if key == "ts":
+        def rank(node: dict[str, Any]) -> tuple[Any, ...]:
+            return (node["ts"], node["id"], position[id(node)])
+    else:
+        def rank(node: dict[str, Any]) -> tuple[Any, ...]:
+            return (node["id"], position[id(node)])
+    order: list[dict[str, Any]] = []
+    while ready:
+        ready.sort(key=rank)
+        node = ready.pop(0)
+        order.append(node)
+        for child in children[id(node)]:
+            remaining[id(child)] -= 1
+            if remaining[id(child)] == 0:
+                ready.append(child)
+    return order
+
+
+def _r16_replay(applied: list[dict[str, Any]]) -> tuple[str, int]:
+    """Independent transition replay: walks an already accepted trace."""
+    status, version = "new", 0
+    for node in applied:
+        if node["outcome"] == "tombstone":
+            continue
+        sources, target, bump = _R16_TRANSITIONS[node["outcome"]]
+        assert status in sources, (status, node["outcome"])
+        status = target
+        version += bump
+    return status, version
+
+
+def _r16_drop_dependents(applied: list[dict[str, Any]], revoked: set[str]) -> None:
+    """Remove accepted events that (transitively) depend on a revoked id."""
+    changed = True
+    while changed:
+        changed = False
+        for node in list(applied):
+            if node["outcome"] == "tombstone":
+                continue
+            if any(dep["id"] in revoked for dep in node["deps"]):
+                applied.remove(node)
+                revoked.add(node["id"])
+                changed = True
+
+
+def _r16_first_invalid(applied: list[dict[str, Any]], revoked: set[str]) -> int | None:
+    """Index of the first accepted event the remaining trace no longer allows."""
+    status = "new"
+    applied_ids: set[str] = set()
+    for index, node in enumerate(applied):
+        if node["outcome"] == "tombstone":
+            target = node["revokes"]["id"]
+            if target not in applied_ids and target not in revoked:
+                return index
+            continue
+        sources, target, _ = _R16_TRANSITIONS[node["outcome"]]
+        if status not in sources:
+            return index
+        status = target
+        applied_ids.add(node["id"])
+    return None
+
+
+def _r16_run(
+    nodes: list[dict[str, Any]],
+    *,
+    collapse: bool = False,
+    keep_revoked: bool = False,
+    order_key: str = "ts",
+) -> dict[str, Any]:
+    """Apply the log.
+
+    ``collapse`` folds repeated deliveries of one id into one event (the true
+    reading); ``keep_revoked`` leaves revoked events in force (the mutant);
+    ``order_key`` picks the tie-break of the ready set.
+    """
+    sequence = _r16_unique(nodes) if collapse else list(nodes)
+    status, version = "new", 0
+    applied: list[dict[str, Any]] = []
+    revoked: set[str] = set()
+    rejected: set[str] = set()
+    blocked = 0
+    for node in _r16_order(sequence, order_key):
+        if node["id"] in revoked:
+            continue
+        if any(dep["id"] in revoked for dep in node["deps"]):
+            rejected.add(node["id"])
+            blocked += 1
+            continue
+        if any(dep not in applied for dep in node["deps"]):
+            rejected.add(node["id"])
+            continue
+        if node["outcome"] == "tombstone":
+            if node["revokes"] not in applied:
+                rejected.add(node["id"])
+                continue
+            if keep_revoked:
+                applied.append(node)
+                continue
+            revoked.add(node["revokes"]["id"])
+            # Roll back the revoked effect and every event that depended on it,
+            # then re-check that the shortened trace still transitions legally.
+            applied[:] = [item for item in applied if item["id"] not in revoked]
+            while True:
+                _r16_drop_dependents(applied, revoked)
+                bad = _r16_first_invalid(applied, revoked)
+                if bad is None:
+                    break
+                revoked.add(applied.pop(bad)["id"])
+            applied.append(node)
+            status, version = _r16_replay(applied)
+            continue
+        sources, target, bump = _R16_TRANSITIONS[node["outcome"]]
+        if status not in sources:
+            rejected.add(node["id"])
+            continue
+        status = target
+        version += bump
+        applied.append(node)
+    status, version = _r16_replay(applied)
+    return {
+        "status": status,
+        "version": version,
+        "count": len(applied),
+        "order": applied,
+        "rejected": rejected,
+        "revoked": revoked,
+        "blocked": blocked,
+    }
+
+
+def _r16_signature(result: dict[str, Any]) -> str:
+    return f"{result['status']};{result['version']};{result['count']}"
+
+
+def _r16_verify(nodes: list[dict[str, Any]], result: dict[str, Any]) -> None:
+    """Independent proof of an accepted trace, not a rerun of the loop."""
+    trace = result["order"]
+    assert len(trace) == result["count"]
+    assert (result["status"], result["version"]) == _r16_replay(trace)
+    seen: set[str] = set()
+    for node in trace:
+        assert node["id"] not in result["revoked"]
+        if node["outcome"] == "tombstone":
+            # A tombstone's depends_on only gates its delivery: the rollback it
+            # triggers may remove those very events from the trace.
+            assert node["revokes"]["id"] in seen or node["revokes"]["id"] in result["revoked"]
+        else:
+            assert all(dep["id"] in seen for dep in node["deps"])
+        seen.add(node["id"])
+    applied_ids = {node["id"] for node in trace}
+    unique_ids = {node["id"] for node in nodes}
+    assert applied_ids | result["rejected"] | result["revoked"] == unique_ids
+    assert not any(
+        dep["id"] in result["revoked"]
+        for node in trace
+        if node["outcome"] != "tombstone"
+        for dep in node["deps"]
+    )
+
+
+def _r16_build(rng: random.Random) -> dict[str, Any]:
+    """Draw a bounded-depth backbone, then a tombstone, retries, and an id/time conflict."""
+    count = rng.randrange(11, 19)
+    nodes: list[dict[str, Any]] = []
+    status = "new"
+    for index in range(count):
+        if index == 0:
+            outcome = "release"
+        else:
+            legal = [name for name, (sources, _, _) in _R16_TRANSITIONS.items() if status in sources]
+            others = [name for name in legal if name != "release"]
+            outcome = "release" if "release" in legal and others and rng.random() < 0.22 else rng.choice(others or legal)
+        deps: list[dict[str, Any]] = []
+        window = nodes[max(0, index - 5):index]
+        if index:
+            deps.append(window[-1] if rng.random() < 0.6 else rng.choice(window))
+        if index > 1 and rng.random() < 0.3:
+            extra = rng.choice(window)
+            if extra not in deps:
+                deps.append(extra)
+        node = {"outcome": outcome, "deps": deps, "revokes": None, "ts": 0, "id": ""}
+        assert status in _R16_TRANSITIONS[outcome][0]
+        status = _R16_TRANSITIONS[outcome][1]
+        nodes.append(node)
+
+    targets = [node for node in nodes[1:-2] if any(node in other["deps"] for other in nodes)]
+    if not targets:
+        raise _R16Retry("no event with dependents to revoke")
+    for _ in range(rng.randrange(1, 3)):
+        target = rng.choice(targets)
+        position = rng.randrange(nodes.index(target) + 2, len(nodes) + 1)
+        previous = nodes[position - 1]
+        deps = [target] if previous is target else [target, previous]
+        nodes.insert(
+            position,
+            {"outcome": "tombstone", "deps": deps, "revokes": target, "ts": 0, "id": ""},
+        )
+
+    tick = rng.randrange(1000, 1200)
+    for node in nodes:
+        tick += rng.randrange(3, 40)
+        node["ts"] = tick
+
+    tokens = [f"ev{index:02d}" for index in range(1, len(nodes) + 1)]
+    rng.shuffle(tokens)
+    for node, token in zip(nodes, tokens):
+        node["id"] = token
+
+    deliverable = [node for node in nodes if node["outcome"] != "tombstone"]
+    for _ in range(rng.randrange(1, 4)):
+        source = rng.choice(deliverable)
+        retry = {**source, "deps": list(source["deps"])}
+        nodes.insert(rng.randrange(nodes.index(source) + 1, len(nodes) + 1), retry)
+    unique = len(_r16_unique(nodes))
+    if not 12 <= unique <= 20:
+        raise _R16Retry("unique event count outside 12..20")
+    return {"nodes": nodes, "unique": unique}
+
+
+def _r16_line(node: dict[str, Any]) -> str:
+    deps = ",".join(dep["id"] for dep in node["deps"]) or "-"
+    outcome = node["outcome"]
+    if outcome == "tombstone":
+        outcome = f"tombstone({node['revokes']['id']})"
+    return f"{node['id']} | ts={node['ts']} | depends_on={deps} | {outcome}"
+
+
+def r16(rng: random.Random) -> core.TaskInstance:
+    for _ in range(900):
+        try:
+            fixture = _r16_build(rng)
+        except _R16Retry:
+            continue
+        nodes = fixture["nodes"]
+        truth = _r16_run(nodes, collapse=True)
+        _r16_verify(nodes, truth)
+
+        double = _r16_run(nodes)
+        kept = _r16_run(nodes, collapse=True, keep_revoked=True)
+        text_order = _r16_run(nodes, collapse=True, order_key="id")
+        reference = _r16_signature(truth)
+        signatures = {_r16_signature(double), _r16_signature(kept), _r16_signature(text_order)}
+
+        illegal = len(truth["rejected"]) - truth["blocked"]
+        applied_tombstones = sum(
+            1 for node in truth["order"] if node["outcome"] == "tombstone"
+        )
+        if (
+            reference in signatures
+            or int(_r16_signature(double).split(";")[2]) <= truth["count"]
+            or not (6 <= truth["count"] <= fixture["unique"])
+            or not truth["revoked"]
+            or truth["blocked"] < 1
+            or illegal < 2
+            or applied_tombstones < 1
+            or truth["version"] < 1
+        ):
+            continue
+
+        # The listed order is shuffled: neither ids nor timestamps run in it.
+        shown = list(nodes)
+        rng.shuffle(shown)
+        listing = "\n".join(_r16_line(node) for node in shown)
+        prompt = (
+            "Оркестратор прислал журнал событий службы; порядок строк не важен.\n"
+            "Строка: event_id | ts | depends_on | outcome; depends_on=- значит"
+            " зависимостей нет.\n\n"
+            "Служба начинает в статусе new с версией 0. Допустимые переходы:\n"
+            "release: new|boot|active -> active, версия +1\n"
+            "fault: active|degraded -> degraded\n"
+            "heal: degraded|active -> active\n"
+            "halt: active|degraded|halted -> halted\n"
+            "resume: halted|boot -> boot\n\n"
+            "Разбор журнала:\n"
+            "- событие применяется, только когда применены все его depends_on;\n"
+            "- из готовых применяется событие с меньшим ts, при равном ts — с меньшим id;\n"
+            "- повторная доставка того же id учитывается один раз (retry идемпотентен);\n"
+            "- tombstone(X) отзывает X: X и все зависящие от него применённые события\n"
+            "  отменяются с пересчётом состояния, сам tombstone применяется;\n"
+            "  tombstone с неприменённым X отклоняется;\n"
+            "- событие с недопустимым переходом и событие, зависящее от отозванного\n"
+            "  или отклонённого, отклоняются.\n\n"
+            f"Журнал:\n{listing}\n\n"
+            "Сколько уникальных событий применено (tombstone считается), каковы\n"
+            "итоговые статус и версия?\n\n"
+            "Ответь в формате СТАТУС;ВЕРСИЯ;ПРИМЕНЕНО (например, active;2;9)."
+        )
+        return _task(
+            "R-16",
+            "Журнал событий службы",
+            prompt,
+            reference,
+            kind="svc",
+            reference=reference,
+            meta={
+                "unique_events": fixture["unique"],
+                "deliveries": len(nodes) - fixture["unique"],
+                "reference": reference,
+                "expected": reference,
+                "applied": [node["id"] for node in truth["order"]],
+                "revoked": sorted(truth["revoked"]),
+                "rejected": sorted(truth["rejected"]),
+                "blocked": truth["blocked"],
+                "illegal": illegal,
+                "events": [
+                    {
+                        "id": node["id"],
+                        "ts": node["ts"],
+                        "depends_on": [dep["id"] for dep in node["deps"]],
+                        "outcome": node["outcome"],
+                        "revokes": node["revokes"]["id"] if node["revokes"] else None,
+                    }
+                    for node in nodes
+                ],
+                "mutant_double_retry": _r16_signature(double),
+                "mutant_kept_revoked": _r16_signature(kept),
+                "mutant_text_order": _r16_signature(text_order),
+            },
+        )
+    raise AssertionError("could not generate an R-16 log with all mutants distinct")
+
+
+# --------------------------------------------------------------------------- #
 # Generation and evaluation
 # --------------------------------------------------------------------------- #
 
@@ -1082,12 +1452,19 @@ _BUILDERS: dict[str, Callable[[random.Random], core.TaskInstance]] = {
     "R-13": r13,
     "R-14": r14,
     "R-15": r15,
+    "R-16": r16,
 }
 
 
 def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
-    del cfg
-    return [_BUILDERS[scenario](rng) for scenario in IDS]
+    profile = core.profile_of(cfg)
+    if profile == "pilot":
+        scenarios = PILOT_IDS
+    elif profile == "stretch-v1":
+        scenarios = ALL_IDS
+    else:
+        scenarios = IDS
+    return [_BUILDERS[scenario](rng) for scenario in scenarios]
 
 
 def _compare(kind: str, token: str | None, answer: Any) -> tuple[bool, str]:
@@ -1134,6 +1511,17 @@ def _compare(kind: str, token: str | None, answer: Any) -> tuple[bool, str]:
         # Exact single token: any different (even valid) ordering is rejected.
         passed = token.upper() == str(answer).upper()
         return passed, f"получено {token}, ожидалось {answer}"
+    if kind == "svc":
+        parts = [part.strip() for part in token.split(";")]
+        if len(parts) != 3:
+            return False, f"ожидался формат СТАТУС;ВЕРСИЯ;ПРИМЕНЕНО, получено {token!r}"
+        status, version_raw, count_raw = parts
+        if status not in _R16_STATUSES:
+            return False, f"неизвестный статус {status!r}"
+        if not re.fullmatch(r"\d+", version_raw) or not re.fullmatch(r"\d+", count_raw):
+            return False, f"версия и счётчик должны быть целыми, получено {token!r}"
+        passed = [status, version_raw, count_raw] == str(answer).split(";")
+        return passed, f"получено {token}, ожидалось {answer}"
     if kind == "lru":
         if token.count(";") != 1:
             return False, f"ожидался формат MISSES;MRU_TO_LRU, получено {token!r}"
@@ -1168,4 +1556,5 @@ core.register(
     generate=generate,
     evaluate=evaluate,
     expected_ids=IDS,
+    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": ALL_IDS},
 )

@@ -8,12 +8,32 @@ import {C, FONT_MONO, FONT_SANS} from '../video/theme';
 import {fadeIn, fadeOut} from '../components/ui';
 import {CLIP_SECONDS, OPEN_SECONDS, SHOWCASE_LEAD, SHOWCASE_MODELS, SHOWCASE_TURN_SECONDS} from '../video/data';
 
+export type MediaStatus =
+  | 'ok'
+  | 'skipped'
+  | 'not_run'
+  | 'model_failed'
+  | 'evaluator_unavailable'
+  | 'capture_failed'
+  | 'media_missing';
+
 export type ShowcaseRun = {
   model: string;
   label: string;
   clip: string;
-  missing: boolean;
+  status: MediaStatus;
   accent: string;
+};
+
+/** Причина плашки словами: отсутствие задачи не выдаётся за провал модели. */
+const REASON: Record<MediaStatus, [string, string]> = {
+  ok: ['', ''],
+  not_run: ['не запускалась', 'этой задачи нет в прогоне'],
+  model_failed: ['модель не справилась', 'страница не доставлена или падает до кадра'],
+  capture_failed: ['сбой записи', 'страница жива, клип не снят'],
+  media_missing: ['клип не доставлен', 'файла записи нет в поставке'],
+  evaluator_unavailable: ['оценщик недоступен', 'страница есть, вердикта нет'],
+  skipped: ['задача пропущена', 'в прогоне отмечена как skipped'],
 };
 
 // Ширина полосы считается от фактического числа моделей: полосы вместе с зазорами
@@ -109,22 +129,39 @@ const Lane: React.FC<{
         opacity: appear,
       }}
     >
-      {run.missing ? (
+      {run.status !== 'ok' ? (
         <div
           style={{
             position: 'absolute',
             inset: 0,
-            display: 'grid',
-            placeItems: 'center',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
             textAlign: 'center',
             padding: 20,
-            font: `600 ${interpolate(t, [0, 1], [18, 34])}px/1.3 ${FONT_SANS}`,
+            gap: 12,
             color: C.faint,
           }}
         >
-          модель
-          <br />
-          не справилась
+          <div style={{font: `700 ${interpolate(t, [0, 1], [19, 36])}px/1.2 ${FONT_SANS}`, color: C.ink}}>
+            {REASON[run.status][0]}
+          </div>
+          <div style={{font: `500 ${interpolate(t, [0, 1], [14, 22])}px/1.4 ${FONT_SANS}`, maxWidth: 520}}>
+            {REASON[run.status][1]}
+          </div>
+          <div
+            style={{
+              font: `600 ${interpolate(t, [0, 1], [12, 16])}px/1 ${FONT_MONO}`,
+              letterSpacing: 1,
+              padding: '6px 10px',
+              borderRadius: 6,
+              border: `1px solid ${C.line}`,
+              color: C.muted,
+            }}
+          >
+            {run.status}
+          </div>
         </div>
       ) : (
         <>
@@ -344,7 +381,9 @@ export const ShowcaseScene: React.FC<{
       >
         <span style={{font: `500 21px/1.4 ${FONT_SANS}`, color: C.ink}}>
           решение {runs[openIndex]?.label ?? '—'} · сцена {sceneId} · {openedIndex + 1}/{runs.length} ·{' '}
-          {runs[openIndex]?.missing ? 'страница не ожила' : 'живая страница, снята покадрово'}
+          {runs[openIndex]?.status === 'ok'
+            ? 'живая страница, снята покадрово'
+            : `${runs[openIndex]?.status ?? 'media_missing'} — ${REASON[runs[openIndex]?.status ?? 'media_missing'][0]}`}
         </span>
       </div>
     </AbsoluteFill>

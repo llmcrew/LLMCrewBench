@@ -28,6 +28,13 @@ def _module():
     return mod
 
 
+class FakeWS:
+    """Подменный клиент: готовности из него нужен только список событий."""
+
+    def __init__(self):
+        self.events: list[dict] = []
+
+
 class FakeCall:
     """CDP ``Runtime.evaluate`` подменик: отдаёт заранее заданный вердикт."""
 
@@ -40,23 +47,26 @@ class FakeCall:
         return {"result": {"result": {"value": self.verdict}}}
 
 
-@pytest.mark.parametrize("verdict", ["ready", "driver", "canvas"])
-def test_any_render_sign_counts_as_ready(verdict: str):
+@pytest.mark.parametrize(
+    "verdict, mode",
+    [("ready", "ready"), ("driver", "driver"), ("settled:1|10x10|5", "settled")],
+)
+def test_any_render_sign_counts_as_ready(verdict: str, mode: str):
     mod = _module()
     call = FakeCall(verdict)
-    assert mod.page_ready(call, timeout=1) is True
+    assert mod.page_ready(call, FakeWS(), "L-1", timeout=1.5) == mode
 
 
 def test_empty_page_is_not_ready():
     mod = _module()
-    assert mod.page_ready(FakeCall(""), timeout=0.2) is False
+    assert mod.page_ready(FakeCall(""), FakeWS(), "L-1", timeout=0.1) == ""
 
 
 def test_probe_checks_the_page_not_only_ready_flag():
     """Регресс: ``__ready`` одного мало — иначе L-1 снова станет плашкой."""
     mod = _module()
     call = FakeCall("")
-    mod.page_ready(call, timeout=0.05)
+    mod.page_ready(call, FakeWS(), "L-1", timeout=0.05)
     probe = call.expressions[0]
     assert "__ready" in probe
     assert "__dbscene" in probe
@@ -69,4 +79,4 @@ def test_a_broken_evaluate_does_not_crash_the_recorder():
     def broken(method, params=None, **kwargs):
         return {"error": {"message": "Execution context was destroyed"}}
 
-    assert mod.page_ready(broken, timeout=0.1) is False
+    assert mod.page_ready(broken, FakeWS(), "L-1", timeout=0.1) == ""

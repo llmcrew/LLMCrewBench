@@ -13,6 +13,8 @@
     "reasoning_effort_note": "not forced: the stand decides, the spend is documented instead",
     "request_wall_clock": 1800,
     "request_wall_clock_note": "ceiling per request; a task that hits it is reported as unverified, never as a wrong answer",
+    "task_wall_clock": 3600,
+    "task_wall_clock_note": "ceiling per task across all turns and the stream_options retry; each request gets no more than the remaining time",
     "max_total_tokens": 16384,
     "max_tool_calls": 12,
     "context_window": 262144,

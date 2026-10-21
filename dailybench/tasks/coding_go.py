@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .. import core
 
@@ -511,14 +511,35 @@ def _go_binary() -> str | None:
     return None
 
 
-def _run_go_tests(repo: Path, timeout: int = 300) -> tuple[dict[str, tuple[bool, str]], str]:
+def _json_events(output: str) -> "Iterator[dict]":
+    """Only well-formed ``go test -json`` events; raw text is a journal.
+
+    A package may print anything around the stream (build diagnostics), and the
+    candidate may print ``--- PASS: Test...`` lines from ``init``. Neither is
+    interpreted: the verdict comes from the JSON actions alone.
+    """
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            yield event
+
+
+_ACTIONS = ("run", "pass", "fail", "skip")
+
+
+def _run_go_tests(
+    repo: Path, timeout: int = 300, order: tuple[tuple[str, str], ...] = CHECK_ORDER
+) -> tuple[dict[str, tuple[bool, str]], str]:
     go = _go_binary()
     if not go:
-        return {name: (False, "go toolchain unavailable") for name, _ in CHECK_ORDER}, "go toolchain unavailable"
+        return {name: (False, "go toolchain unavailable") for name, _ in order}, "go toolchain unavailable"
 
     try:
         proc = subprocess.run(
-            [go, "test", "-count=1", "-timeout", "120s", "-v", "./..."],
+            [go, "test", "-json", "-count=1", "-timeout", "120s", "./..."],
             cwd=str(repo),
             capture_output=True,
             text=True,
@@ -528,23 +549,48 @@ def _run_go_tests(repo: Path, timeout: int = 300) -> tuple[dict[str, tuple[bool,
             env=_go_env(),
         )
     except subprocess.TimeoutExpired:
-        return {name: (False, "go test превысил 300 с") for name, _ in CHECK_ORDER}, "timeout"
+        return {name: (False, "go test превысил 300 с") for name, _ in order}, "timeout"
     except OSError as exc:
-        return {name: (False, f"не удалось запустить go test: {exc}") for name, _ in CHECK_ORDER}, str(exc)
+        return {name: (False, f"не удалось запустить go test: {exc}") for name, _ in order}, str(exc)
 
     output = (proc.stdout or "") + (proc.stderr or "")
+    names = {test: name for name, test in order}
     results: dict[str, tuple[bool, str]] = {}
-    for line in output.splitlines():
-        stripped = line.strip()
-        for name, test in CHECK_ORDER:
-            if stripped.startswith("--- PASS: " + test):
-                results[name] = (True, "ok")
-            elif stripped.startswith("--- FAIL: " + test):
-                results[name] = (False, _failure_detail(output, test))
+    logs: dict[str, list[str]] = {}
+    for event in _json_events(output):
+        test = str(event.get("Test", ""))
+        action = event.get("Action")
+        if not test:
+            continue
+        if action == "output":
+            logs.setdefault(test, []).append(str(event.get("Output", "")))
+            continue
+        if action not in _ACTIONS or test not in names:
+            continue
+        name = names[test]
+        if action == "run":
+            results.pop(name, None)  # a rerun invalidates an earlier verdict
+        elif action == "pass":
+            results[name] = (True, "ok")
+        elif action == "skip":
+            # A skip is not a pass: the check was never exercised.
+            results[name] = (False, "skipped")
+        else:
+            results[name] = (False, _failure_detail(logs.get(test, [])) or "тест упал")
+
+    # A non-zero status means the package did not finish cleanly — a panic in
+    # ``init`` may come after perfectly plausible output. Nothing unconfirmed by
+    # a terminal test event survives it.
+    if proc.returncode != 0:
+        cause = f"go test завершился с кодом {proc.returncode}"
+        tail = _last_meaningful_line(output)
+        for name, test in order:
+            if name not in results:
+                results[name] = (False, f"{cause}: {tail}" if tail else f"{cause} ({test})")
 
     fallback = "сборка пакета не удалась" if _looks_like_build_failure(output) else "тест не выполнился"
     tail = _last_meaningful_line(output)
-    for name, test in CHECK_ORDER:
+    for name, test in order:
         results.setdefault(name, (False, f"{fallback}: {tail}" if tail else f"{fallback} ({test})"))
     return results, output
 
@@ -559,14 +605,9 @@ def _last_meaningful_line(output: str) -> str:
     return lines[-1][:200] if lines else ""
 
 
-def _failure_detail(output: str, test: str) -> str:
-    lines = output.splitlines()
-    try:
-        start = next(i for i, line in enumerate(lines) if f"--- FAIL: {test}" in line)
-    except StopIteration:
-        return "тест упал"
-    tail = [line.strip() for line in lines[start : start + 12] if line.strip()]
-    return " | ".join(tail)[:400]
+def _failure_detail(lines: list[str]) -> str:
+    tail = [line.strip() for line in lines if line.strip()]
+    return " | ".join(tail[:12])[:400]
 
 
 def _go_env() -> dict[str, str]:
@@ -617,4 +658,682 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
         score.notes.append("реализация осталась заглушкой (panic \"not implemented\")")
     if "class AsyncTTLCache" in code or "def get_or_load" in code:
         score.notes.append("в ответе оказался Python-код, а не Go")
+    return score
+
+
+# --------------------------------------------------------------------------- #
+# Scenario C-5 (stretch) — pool with backpressure and acknowledged stop
+# --------------------------------------------------------------------------- #
+
+C5_TARGET_FILE = "pool/pool.go"
+
+CHECK_ORDER_C5 = (
+    ("backpressure", "TestBackpressure"),
+    ("concurrency_limit", "TestConcurrencyLimit"),
+    ("accepted_all_complete", "TestAcceptedAllComplete"),
+    ("no_start_after_ack", "TestNoStartAfterAck"),
+    ("stop_rejects_submit", "TestStopRejectsSubmit"),
+    ("results_close", "TestResultsClose"),
+    ("cancel_ack", "TestCancelAck"),
+    ("inflight_context_cancelled", "TestInflightContextCancelled"),
+    ("errors_reported", "TestErrorsReported"),
+    ("no_goroutine_leak", "TestNoGoroutineLeak"),
+)
+
+_STUB_C5 = '''package pool
+
+import (
+\t"context"
+\t"sync"
+)
+
+// Job is one unit of work. Run performs the work and must honour ctx.
+type Job struct {
+\tID  int
+\tRun func(ctx context.Context) error
+}
+
+// Result carries the outcome of a Job.
+type Result struct {
+\tID  int
+\tErr error
+}
+
+// Pool runs accepted Jobs on a fixed number of workers.
+//
+// New starts the workers. Submit accepts a Job and reports whether it was
+// accepted; it applies backpressure while the queue is full. Stop acknowledges
+// the end of acceptance: its channel closes once no further Job can be
+// accepted, and every accepted Job still runs to completion. Results is the
+// output stream; it closes after all accepted Jobs were handled and every
+// worker exited. Cancelling ctx behaves like Stop.
+type Pool struct {
+\t_ sync.Mutex
+}
+
+// New starts a pool with `workers` workers and `capacity` queued Jobs.
+func New(ctx context.Context, workers, capacity int) *Pool {
+\tpanic("not implemented")
+}
+
+// Submit accepts a Job or reports false once the pool stopped accepting.
+func (p *Pool) Submit(job Job) bool {
+\tpanic("not implemented")
+}
+
+// Stop requests the end of acceptance and returns the acknowledgement channel.
+func (p *Pool) Stop() <-chan struct{} {
+\tpanic("not implemented")
+}
+
+// Results returns the output channel.
+func (p *Pool) Results() <-chan Result {
+\tpanic("not implemented")
+}
+'''
+
+_REFERENCE_C5 = '''package pool
+
+import (
+\t"context"
+\t"sync"
+)
+
+// Job is one unit of work. Run performs the work and must honour ctx.
+type Job struct {
+\tID  int
+\tRun func(ctx context.Context) error
+}
+
+// Result carries the outcome of a Job.
+type Result struct {
+\tID  int
+\tErr error
+}
+
+// Pool runs accepted Jobs on a fixed number of workers.
+type Pool struct {
+\tctx     context.Context
+\tjobs    chan Job
+\tresults chan Result
+\tstop    chan struct{}
+\tack     chan struct{}
+\tonce    sync.Once
+\tmu      sync.RWMutex
+\tclosed  bool
+\twg      sync.WaitGroup
+}
+
+// New starts a pool with `workers` workers and `capacity` queued Jobs.
+func New(ctx context.Context, workers, capacity int) *Pool {
+\tif workers < 1 {
+\t\tworkers = 1
+\t}
+\tif capacity < 0 {
+\t\tcapacity = 0
+\t}
+\tp := &Pool{
+\t\tctx:     ctx,
+\t\tjobs:    make(chan Job, capacity),
+\t\tresults: make(chan Result),
+\t\tstop:    make(chan struct{}),
+\t\tack:     make(chan struct{}),
+\t}
+\tp.wg.Add(workers)
+\tfor i := 0; i < workers; i++ {
+\t\tgo p.worker()
+\t}
+\tgo p.supervise()
+\treturn p
+}
+
+// Submit accepts a Job or reports false once the pool stopped accepting.
+func (p *Pool) Submit(job Job) bool {
+\tp.mu.RLock()
+\tdefer p.mu.RUnlock()
+\tif p.closed {
+\t\treturn false
+\t}
+\tp.jobs <- job
+\treturn true
+}
+
+// Stop requests the end of acceptance and returns the acknowledgement channel.
+func (p *Pool) Stop() <-chan struct{} {
+\tp.once.Do(func() { close(p.stop) })
+\treturn p.ack
+}
+
+// Results returns the output channel.
+func (p *Pool) Results() <-chan Result {
+\treturn p.results
+}
+
+func (p *Pool) supervise() {
+\tselect {
+\tcase <-p.stop:
+\tcase <-p.ctx.Done():
+\t}
+\t// The write lock waits for a Submit that is already inside the channel
+\t// send, so closing the queue cannot race with an accepted Job.
+\tp.mu.Lock()
+\tp.closed = true
+\tclose(p.jobs)
+\tp.mu.Unlock()
+\tclose(p.ack)
+\tp.wg.Wait()
+\tclose(p.results)
+}
+
+func (p *Pool) worker() {
+\tdefer p.wg.Done()
+\tfor {
+\t\tselect {
+\t\tcase job, ok := <-p.jobs:
+\t\t\tif !ok {
+\t\t\t\treturn
+\t\t\t}
+\t\t\tp.handle(job)
+\t\tcase <-p.ctx.Done():
+\t\t\t// Accepted Jobs are already in the queue (or inside a blocked
+\t\t\t// Submit): drain them before leaving.
+\t\t\tfor job := range p.jobs {
+\t\t\t\tp.handle(job)
+\t\t\t}
+\t\t\treturn
+\t\t}
+\t}
+}
+
+func (p *Pool) handle(job Job) {
+\tvar err error
+\tif job.Run != nil {
+\t\terr = job.Run(p.ctx)
+\t}
+\tp.results <- Result{ID: job.ID, Err: err}
+}
+'''
+
+_PUBLIC_TEST_C5 = '''package pool
+
+import (
+\t"context"
+\t"testing"
+)
+
+func TestPoolHandlesEveryJob(t *testing.T) {
+\tp := New(context.Background(), 2, 8)
+\tfor i := 0; i < 4; i++ {
+\t\tif !p.Submit(Job{ID: i}) {
+\t\t\tt.Fatalf("job %d was rejected", i)
+\t\t}
+\t}
+\t<-p.Stop()
+\tdone := make(chan int, 1)
+\tgo func() {
+\t\tcount := 0
+\t\tfor range p.Results() {
+\t\t\tcount++
+\t\t}
+\t\tdone <- count
+\t}()
+\tif got := <-done; got != 4 {
+\t\tt.Fatalf("expected 4 results, got %d", got)
+\t}
+}
+'''
+
+_HIDDEN_TESTS_C5 = '''package pool
+
+import (
+	"context"
+	"errors"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func waitUntil(t *testing.T, cond func() bool, message string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal(message)
+}
+
+// collect drains Results from the start: workers deliver unbuffered results, so
+// a test that only reads after submitting would deadlock on backpressure.
+func collect(p *Pool) <-chan []Result {
+	out := make(chan []Result, 1)
+	go func() {
+		rows := make([]Result, 0, 16)
+		for result := range p.Results() {
+			rows = append(rows, result)
+		}
+		out <- rows
+	}()
+	return out
+}
+
+func waitRows(t *testing.T, rows <-chan []Result) []Result {
+	t.Helper()
+	select {
+	case collected := <-rows:
+		return collected
+	case <-time.After(10 * time.Second):
+		t.Fatal("results channel did not close")
+		return nil
+	}
+}
+
+func TestBackpressure(t *testing.T) {
+	p := New(context.Background(), 1, 1)
+	rows := collect(p)
+	release := make(chan struct{})
+	var started int32
+	job := func(id int) Job {
+		return Job{ID: id, Run: func(context.Context) error {
+			atomic.AddInt32(&started, 1)
+			<-release
+			return nil
+		}}
+	}
+	if !p.Submit(job(1)) {
+		t.Fatal("first job was rejected")
+	}
+	waitUntil(t, func() bool { return atomic.LoadInt32(&started) == 1 }, "worker never started the first job")
+	if !p.Submit(job(2)) {
+		t.Fatal("buffered job was rejected")
+	}
+	blocked := make(chan bool, 1)
+	go func() { blocked <- p.Submit(job(3)) }()
+	select {
+	case <-blocked:
+		t.Fatal("Submit did not block while the queue was full")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case ok := <-blocked:
+		if !ok {
+			t.Fatal("blocked Submit reported false before the stop")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked Submit never returned after the queue moved")
+	}
+	<-p.Stop()
+	if got := len(waitRows(t, rows)); got != 3 {
+		t.Fatalf("expected 3 results, got %d", got)
+	}
+}
+
+func TestConcurrencyLimit(t *testing.T) {
+	const workers = 4
+	p := New(context.Background(), workers, 128)
+	rows := collect(p)
+	var running, peak int32
+	for i := 0; i < 64; i++ {
+		p.Submit(Job{ID: i, Run: func(context.Context) error {
+			current := atomic.AddInt32(&running, 1)
+			for {
+				old := atomic.LoadInt32(&peak)
+				if current <= old || atomic.CompareAndSwapInt32(&peak, old, current) {
+					break
+				}
+			}
+			time.Sleep(time.Millisecond)
+			atomic.AddInt32(&running, -1)
+			return nil
+		}})
+	}
+	<-p.Stop()
+	if got := len(waitRows(t, rows)); got != 64 {
+		t.Fatalf("expected 64 results, got %d", got)
+	}
+	if peak > workers {
+		t.Fatalf("peak concurrency %d exceeds workers %d", peak, workers)
+	}
+}
+
+func TestAcceptedAllComplete(t *testing.T) {
+	p := New(context.Background(), 3, 16)
+	rows := collect(p)
+	boom := errors.New("boom")
+	var mu sync.Mutex
+	accepted := map[int]bool{}
+	for i := 0; i < 64; i++ {
+		id := i
+		var want error
+		if id%2 == 0 {
+			want = boom
+		}
+		if p.Submit(Job{ID: id, Run: func(context.Context) error { return want }}) {
+			mu.Lock()
+			accepted[id] = true
+			mu.Unlock()
+		}
+	}
+	<-p.Stop()
+	collected := waitRows(t, rows)
+	if len(collected) != len(accepted) {
+		t.Fatalf("expected %d results, got %d", len(accepted), len(collected))
+	}
+	seen := map[int]bool{}
+	for _, row := range collected {
+		if seen[row.ID] {
+			t.Fatalf("job %d was reported twice", row.ID)
+		}
+		seen[row.ID] = true
+		if !accepted[row.ID] {
+			t.Fatalf("job %d ran but was never accepted", row.ID)
+		}
+		if row.ID%2 == 0 && !errors.Is(row.Err, boom) {
+			t.Fatalf("job %d: expected the Run error, got %v", row.ID, row.Err)
+		}
+		if row.ID%2 == 1 && row.Err != nil {
+			t.Fatalf("job %d: expected nil error, got %v", row.ID, row.Err)
+		}
+	}
+	for id := range accepted {
+		if !seen[id] {
+			t.Fatalf("accepted job %d never completed", id)
+		}
+	}
+}
+
+func TestNoStartAfterAck(t *testing.T) {
+	p := New(context.Background(), 2, 4)
+	rows := collect(p)
+	gate := make(chan struct{})
+	var mu sync.Mutex
+	accepted := map[int]bool{}
+	started := map[int]bool{}
+	var startedCount int32
+	mk := func(id int) Job {
+		return Job{ID: id, Run: func(context.Context) error {
+			mu.Lock()
+			started[id] = true
+			mu.Unlock()
+			atomic.AddInt32(&startedCount, 1)
+			<-gate
+			return nil
+		}}
+	}
+	submitted := make(chan struct{})
+	go func() {
+		defer close(submitted)
+		for i := 0; i < 24; i++ {
+			if !p.Submit(mk(i)) {
+				return
+			}
+			mu.Lock()
+			accepted[i] = true
+			mu.Unlock()
+		}
+	}()
+	waitUntil(t, func() bool { return atomic.LoadInt32(&startedCount) >= 2 }, "workers never started")
+	ack := p.Stop()
+	// The gate is released before the acknowledgement is awaited: a Submit can
+	// be parked on the full queue while the supervisor needs the write lock.
+	close(gate)
+	<-ack
+	<-submitted
+	waitRows(t, rows)
+
+	mu.Lock()
+	defer mu.Unlock()
+	for id := range started {
+		if !accepted[id] {
+			t.Fatalf("job %d started without being accepted", id)
+		}
+	}
+	if len(started) != len(accepted) {
+		t.Fatalf("expected exactly the %d accepted jobs to run, got %d", len(accepted), len(started))
+	}
+}
+
+func TestStopRejectsSubmit(t *testing.T) {
+	p := New(context.Background(), 1, 1)
+	rows := collect(p)
+	var calls int32
+	ack := p.Stop()
+	<-ack
+	if p.Stop() != ack {
+		t.Fatal("second Stop returned a different channel")
+	}
+	if p.Submit(Job{ID: 7, Run: func(context.Context) error {
+		atomic.AddInt32(&calls, 1)
+		return nil
+	}}) {
+		t.Fatal("Submit accepted a job after the acknowledgement")
+	}
+	waitRows(t, rows)
+	if atomic.LoadInt32(&calls) != 0 {
+		t.Fatal("rejected job still ran")
+	}
+}
+
+func TestResultsClose(t *testing.T) {
+	p := New(context.Background(), 2, 4)
+	rows := collect(p)
+	<-p.Stop()
+	if got := len(waitRows(t, rows)); got != 0 {
+		t.Fatalf("expected no results, got %d", got)
+	}
+}
+
+func TestCancelAck(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := New(ctx, 1, 4)
+	rows := collect(p)
+	gate := make(chan struct{})
+	for i := 1; i <= 3; i++ {
+		p.Submit(Job{ID: i, Run: func(context.Context) error {
+			<-gate
+			return nil
+		}})
+	}
+	waitUntil(t, func() bool { return true }, "noop")
+	cancel()
+	select {
+	case <-p.Stop():
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelling ctx did not produce an acknowledgement")
+	}
+	if p.Submit(Job{ID: 9}) {
+		t.Fatal("Submit accepted a job after ctx cancellation")
+	}
+	close(gate)
+	collected := waitRows(t, rows)
+	if len(collected) != 3 {
+		t.Fatalf("accepted jobs were dropped on cancel: got %d results", len(collected))
+	}
+	seen := map[int]bool{}
+	for _, row := range collected {
+		seen[row.ID] = true
+	}
+	for id := 1; id <= 3; id++ {
+		if !seen[id] {
+			t.Fatalf("accepted job %d was lost on cancel", id)
+		}
+	}
+}
+
+func TestInflightContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := New(ctx, 1, 4)
+	rows := collect(p)
+	inside := make(chan struct{}, 1)
+	p.Submit(Job{ID: 1, Run: func(ctx context.Context) error {
+		close(inside)
+		<-ctx.Done()
+		return ctx.Err()
+	}})
+	<-inside
+	cancel()
+	collected := waitRows(t, rows)
+	if len(collected) != 1 {
+		t.Fatalf("expected the in-flight result, got %d results", len(collected))
+	}
+	if !errors.Is(collected[0].Err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", collected[0].Err)
+	}
+}
+
+func TestErrorsReported(t *testing.T) {
+	p := New(context.Background(), 1, 4)
+	rows := collect(p)
+	boom := errors.New("boom")
+	p.Submit(Job{ID: 1, Run: func(context.Context) error { return boom }})
+	p.Submit(Job{ID: 2})
+	<-p.Stop()
+	collected := waitRows(t, rows)
+	if len(collected) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(collected))
+	}
+	if !errors.Is(collected[0].Err, boom) && !errors.Is(collected[1].Err, boom) {
+		t.Fatal("the Run error was lost")
+	}
+}
+
+func TestNoGoroutineLeak(t *testing.T) {
+	baseline := runtime.NumGoroutine()
+	for iteration := 0; iteration < 3; iteration++ {
+		p := New(context.Background(), 4, 16)
+		rows := collect(p)
+		for i := 0; i < 32; i++ {
+			p.Submit(Job{ID: i})
+		}
+		<-p.Stop()
+		waitRows(t, rows)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		runtime.GC()
+		if runtime.NumGoroutine() <= baseline+2 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("goroutine leak: baseline %d, now %d", baseline, runtime.NumGoroutine())
+}
+'''
+
+_PROMPT_C5 = """В пакете pool нужно реализовать пул с backpressure и подтверждённой
+остановкой.
+
+```go
+func New(ctx context.Context, workers, capacity int) *Pool
+func (p *Pool) Submit(job Job) bool
+func (p *Pool) Stop() <-chan struct{}
+func (p *Pool) Results() <-chan Result
+```
+
+Job — задание с ID и Run(ctx) error.
+
+Требования:
+
+1. Одновременно работают не более workers обработчиков; workers < 1
+   считается за 1.
+2. Submit принимает Job; когда очередь заполнена, Submit ждёт
+   (backpressure), а не плодит goroutine.
+3. Каждый принятый Job (Submit вернул true) выполняется ровно один раз и
+   попадает в Results с ID и Err его Run.
+4. Stop возвращает канал ack: он закрывается, когда новые Job больше не
+   принимаются.
+5. После закрытия ack Submit возвращает false, а Run отклонённых Job не
+   вызывается. Повторный Stop возвращает тот же канал.
+6. Все принятые Job всё равно выполняются до конца, включая уже стоящие в
+   очереди.
+7. Results закрывается после обработки всех принятых Job и выхода всех
+   worker-ов.
+8. Отмена ctx равнозначна Stop: ack закрывается, новые Job не принимаются.
+9. Уже выполняющийся Run получает отменённый ctx и его результат
+   доставляется.
+10. После завершения не остаётся goroutine leak.
+
+Порядок берётся из каналов и ack, а не из wall-clock; проверки не
+предполагают конкретный порядок независимых результатов. До 8 workers и
+128 jobs.
+
+Публичные типы и сигнатуры менять запрещено.
+Тесты изменять запрещено.
+
+Верни ТОЛЬКО полный текст файла __TARGET__ целиком, в одном блоке кода.
+
+Файл pool/pool.go в рабочей копии:
+
+```go
+__STUB__```"""
+
+
+def _workspace_c5() -> dict[str, str]:
+    return {
+        "go.mod": _GO_MOD,
+        C5_TARGET_FILE: _STUB_C5,
+        "pool/pool_test.go": _PUBLIC_TEST_C5,
+        "README.md": "# pool\n\nBounded worker pool used by the ingestion service.\n",
+    }
+
+
+def generate_c5(rng: random.Random, cfg: Any) -> core.TaskInstance:
+    return core.TaskInstance(
+        id="C-5",
+        category="C",
+        title="Go bounded pool",
+        prompt=_PROMPT_C5.replace("__TARGET__", C5_TARGET_FILE).replace("__STUB__", _STUB_C5),
+        max_points=8.0,
+        workspace=_workspace_c5(),
+        oracle={
+            "reference": _REFERENCE_C5,
+            "solution": _REFERENCE_C5,
+            "hidden_tests": _HIDDEN_TESTS_C5,
+            "target_file": C5_TARGET_FILE,
+            "answer_file": C5_TARGET_FILE,
+            "go_mod": _GO_MOD,
+            "checks": [name for name, _ in CHECK_ORDER_C5],
+        },
+        meta={"scenario": "C-5"},
+    )
+
+
+def evaluate_c5(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
+    score = core.Score(task_id=task.id, category="C")
+    if not _go_binary():
+        score.skipped = "go toolchain недоступен — сценарий C-5 не мог быть проверен на этой машине"
+        score.notes.append(score.skipped)
+        for name, _ in CHECK_ORDER_C5:
+            score.add(name, False, _POINTS_PER_CHECK, "go toolchain unavailable")
+        return score
+    code = code_of(task, tr)
+    if not code:
+        for name, _ in CHECK_ORDER_C5:
+            score.add(name, False, _POINTS_PER_CHECK, "ответ не содержит кода файла")
+        score.notes.append("не удалось извлечь файл из ответа")
+        return score
+
+    sandbox = Path(tempfile.mkdtemp(prefix="dailybench-c5-"))
+    repo = sandbox / "poolrepo"
+    repo.mkdir(parents=True)
+    for rel, content in task.workspace.items():
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    (repo / C5_TARGET_FILE).write_text(code, encoding="utf-8")
+    hidden = repo / "pool" / "pool_hidden_test.go"
+    hidden.write_text(task.oracle["hidden_tests"], encoding="utf-8")
+
+    results, output = _run_go_tests(repo, order=CHECK_ORDER_C5)
+    for name, test in CHECK_ORDER_C5:
+        passed, detail = results[name]
+        score.add(name, passed, _POINTS_PER_CHECK, detail)
+
+    if "not implemented" in output:
+        score.notes.append("реализация осталась заглушкой (panic \"not implemented\")")
     return score

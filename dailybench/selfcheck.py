@@ -104,7 +104,12 @@ class SelfCheckReport:
             if row.get("skipped"):
                 lines.append(f"| {row['id']} | н/п | н/п | не проверялось |")
                 continue
-            status = "ok" if row["oracle"] == row["max"] and row["garbage"] == 0 else "ПРОБЛЕМА"
+            if row["category"] == "E" and row.get("admission") is None:
+                # Unknown input size is not a failed answer: the row is shown as
+                # unverified and its earned points are still checked.
+                status = "допуск не подтверждён (unverified)"
+            else:
+                status = "ok" if row["oracle"] == row["max"] and row["garbage"] == 0 else "ПРОБЛЕМА"
             lines.append(
                 f"| {row['id']} | {row['oracle']:.0f}/{row['max']:.0f} | {row['garbage']:.0f} | {status} |"
             )
@@ -127,12 +132,14 @@ def selfcheck(cfg: RunConfig, tasks: list[core.TaskInstance] | None = None) -> S
     # the same code path a run uses, and C/K/L are proven end to end by the
     # ``agent`` tests instead.
     cfg = replace(cfg, agent=False)
+    profile = core.profile_of(cfg)
     tasks = tasks if tasks is not None else build_suite(cfg)
-    report.warnings.extend(validate_suite(tasks))
+    report.warnings.extend(validate_suite(tasks, profile))
 
     total = sum(task.max_points for task in tasks)
     scored = sum(t.max_points for t in tasks if t.category in core.SCORED_CATEGORIES)
-    if tasks and abs(scored - core.FULL_TOTAL) > 1e-9 and not cfg.only:
+    # A pilot run is read per task, not as a new /100 total.
+    if tasks and abs(scored - core.FULL_TOTAL) > 1e-9 and not cfg.only and profile != "pilot":
         report.errors.append(f"сумма баллов сьюта {scored} != {core.FULL_TOTAL}")
 
     digest_a = suite_digest(build_suite(cfg))
@@ -154,6 +161,7 @@ def selfcheck(cfg: RunConfig, tasks: list[core.TaskInstance] | None = None) -> S
             "max": task.max_points,
             "oracle": oracle_run.score.earned,
             "garbage": garbage_run.score.earned,
+            "admission": oracle_run.score.admission,
             "oracle_checks": [(c.name, c.passed, c.detail) for c in oracle_run.score.checks],
             "garbage_checks": [(c.name, c.passed, c.detail) for c in garbage_run.score.checks],
         }
@@ -212,7 +220,7 @@ def save_suite(cfg: RunConfig, out_dir: Path | str) -> dict[str, Path]:
         encoding="utf-8",
     )
     written["digest"].write_text(
-        json.dumps(suite_digest(tasks), ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(suite_digest(tasks, cfg.profile), ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return written
 
@@ -225,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
             cfg.seed = int(argv[index + 1])
         if item == "--only" and index + 1 < len(argv):
             cfg.only = tuple(argv[index + 1].split(","))
+        if item == "--profile" and index + 1 < len(argv):
+            cfg.profile = argv[index + 1]
     report = selfcheck(cfg)
     print(report.render())
     return 0 if report.ok else 1

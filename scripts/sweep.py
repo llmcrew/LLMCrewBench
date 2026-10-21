@@ -15,29 +15,32 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from dailybench import launch, reference  # noqa: E402
+from dailybench import core, launch, reference  # noqa: E402
 from dailybench.cli import main as cli_main  # noqa: E402
 from dailybench.measure import used_mib  # noqa: E402
 
 
-def _suite_size(cfg_id: str) -> int:
-    """How many tasks the current suite generates for a reference entry."""
+def _suite_size(cfg_id: str, profile: str) -> int:
+    """How many tasks the suite generates for a reference entry in a profile."""
     from dailybench.config import RunConfig
     from dailybench.suite import build_suite
 
-    return len(build_suite(reference.apply_to_run_config(RunConfig(), reference.resolve(cfg_id))))
+    base = reference.apply_to_run_config(RunConfig(profile=profile), reference.resolve(cfg_id))
+    return len(build_suite(base))
 
 
 def run_one(entry: dict, args: argparse.Namespace) -> dict:
     cfg_id = entry["id"]
     base_url = str(entry.get("base_url") or "http://127.0.0.1:8888/v1")
-    result: dict = {"id": cfg_id, "label": entry.get("label"), "vram_before_mib": used_mib()}
+    result: dict = {"id": cfg_id, "label": entry.get("label"), "profile": args.profile,
+                    "vram_before_mib": used_mib()}
 
     key = launch.ensure_server(base_url, entry)
     ok, note = launch.load_entry(base_url, key, entry)
@@ -60,7 +63,8 @@ def run_one(entry: dict, args: argparse.Namespace) -> dict:
         result["verdict"] = "отклонена preflight'ом"
         return result
 
-    argv = ["run", "--config", cfg_id, "--name", cfg_id, "--speed", "--speed-long", "4096", "--speed-repeats", "2"]
+    argv = ["run", "--config", cfg_id, "--name", cfg_id, "--speed", "--speed-long", "4096",
+            "--speed-repeats", "2", "--profile", args.profile]
     if args.limit:
         argv += ["--limit", str(args.limit)]
     if args.tasks:
@@ -78,7 +82,7 @@ def run_one(entry: dict, args: argparse.Namespace) -> dict:
         from dailybench.report import summarise
 
         scores = json.loads(scores_path.read_text(encoding="utf-8"))
-        summary = summarise(scores, _suite_size(cfg_id))
+        summary = summarise(scores, _suite_size(cfg_id, args.profile))
         result["verdict"] = summary["verdict"]
         result["earned"] = summary["headline_earned"]
         result["possible"] = summary["headline_possible"]
@@ -103,6 +107,8 @@ def main() -> int:
     parser.add_argument("--tasks", default="", help="ограничить сьют заданиями (id через запятую)")
     parser.add_argument("--no-full", action="store_true", help="не заполнять окно в preflight")
     parser.add_argument("--skip-calibration", action="store_true")
+    parser.add_argument("--profile", default=core.DEFAULT_PROFILE, choices=core.PROFILES,
+                        help="версия сьюта: baseline-20261020 (по умолчанию) или stretch-v1")
     args = parser.parse_args()
 
     wanted = {part.strip() for part in args.only.split(",") if part.strip()}

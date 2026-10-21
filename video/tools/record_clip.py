@@ -13,7 +13,10 @@
 
 Источник — артефакт `reports/comparison/_showcase/<model>/pages/<scene>.html`
 (отдаётся локальным http-сервером, `_vendor` рядом). Нет страницы — пишем
-плашку (тёмный клип), текст «модель не справилась» рисует Remotion.
+плашку (тёмный клип), причину кладём в маркер: `not_run`, если задачи нет в
+прогоне, иначе `model_failed`; текст рисует Remotion. Коды выхода: 0 — клип,
+3 — страница не дошла до кадра (`model_failed`), 4 — сбой записи
+(`capture_failed`; страница при этом может быть жива).
 
 Все клипы: 1920x1080, 120 fps, h264, 23 с (окно движения сцены целиком).
 Частота выше частоты показа (120 против 60): при раскрытии полосы клип
@@ -29,20 +32,28 @@ import functools
 import http.server
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
+sys.path.insert(0, str(Path(__file__).parent))
+import media_status  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
+VIDEO = ROOT / "video"
 #: Источник страниц — последнее сравнение (два ingress'а одной модели).
 ART = ROOT / "reports" / "comparison-deepseek-1017"
-BIN = ROOT / "video" / "bin"
-FF = BIN / "ffmpeg"
+OUT = VIDEO / "public" / "clips"
+MODELS = ("deepseek-v4.1-flash-unc", "deepseek-v4.1-flash-unc-1017")
+SCENES = tuple(f"K-{i}" for i in range(1, 21)) + tuple(f"L-{i}" for i in range(1, 30))
+
 #: Частота клипа. Пара с `FPS` в `src/video/data.ts`: клип снят покадрово, и
 #: расхождение играло бы его рывками (кадр клипа не ложился бы на кадр ролика).
 #: Шагов сцены на клип ровно `secs * FPS` — с ростом частоты шаг мельче.
@@ -51,7 +62,82 @@ FPS = 120
 #: как в её живом показе (там тот же шаг зовётся из rAF).
 DT = 1 / FPS
 W, H = 1920, 1080
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+#: Коды выхода: 0 — клип снят, 3 — страница не дошла до кадра, 4 — сбой записи.
+EXIT = {"ok": 0, "model_failed": 3, "capture_failed": 4}
+
+
+def _find(name: str, *preferred: str, verify: bool = False) -> Path | None:
+    """Бинарник: сначала кандидаты платформы (macOS), затем PATH.
+
+    ``verify`` отсеивает бинарник чужой платформы: комплектный macOS-arm ffmpeg
+    на Linux иначе выбран бы и упал на exec format.
+    """
+    for candidate in (*preferred, shutil.which(name) or ""):
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if not (path.is_file() and os.access(path, os.X_OK)):
+            continue
+        if verify:
+            try:
+                probe = subprocess.run([str(path), "-version"], cwd=str(path.parent),
+                                       capture_output=True, text=True)
+            except OSError:
+                continue
+            if probe.returncode != 0:
+                continue
+        return path
+    return None
+
+
+def ffmpeg() -> Path:
+    path = _find("ffmpeg", str(VIDEO / "bin" / "ffmpeg"), verify=True)
+    if path is None:
+        raise SystemExit("ffmpeg не найден: положите его в PATH или в video/bin/")
+    return path
+
+
+def ffprobe() -> Path:
+    path = _find("ffprobe", str(VIDEO / "bin" / "ffprobe"), verify=True)
+    if path is None:
+        raise SystemExit("ffprobe не найден: положите его в PATH или в video/bin/")
+    return path
+
+
+def chrome() -> Path:
+    path = _find(
+        "google-chrome",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        str(VIDEO / "bin" / "chrome"),
+        verify=True,
+    ) or _find("chromium", verify=True) or _find("chromium-browser", verify=True) or _find(
+        "google-chrome-stable", verify=True
+    )
+    if path is None:
+        raise SystemExit("Chrome не найден: поставьте Google Chrome или chromium в PATH")
+    return path
+
+
+def run_bin(exe: Path, args: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Запуск комплектного бинарника: dylib лежат рядом, cwd обязан быть его."""
+    return subprocess.run([str(exe), *args], cwd=str(exe.parent), check=True, **kwargs)
+
+
+def check_target(model: str, scene: str, out_dir: Path) -> Path:
+    """Containment аргументов CLI: модель/сцена по схеме, OUT только в public/clips."""
+    if model not in MODELS:
+        raise SystemExit(f"неизвестная модель {model!r}: {', '.join(MODELS)}")
+    if scene not in SCENES:
+        raise SystemExit(f"неизвестная сцена {scene!r}: K-1..K-20, L-1..L-29")
+    target = out_dir.resolve()
+    try:
+        target.relative_to(OUT.resolve())
+    except ValueError:
+        raise SystemExit(f"OUT {target} вне {OUT}") from None
+    return target
+
 
 #: Плашки страницы (модель · сцена · клавиши) в видео не нужны: подписи свои,
 #: а плашка перекрывает сцену. Перезагрузка посреди клипа сносит DOM, поэтому
@@ -170,35 +256,67 @@ new Promise((res) => {
 """
 
 
-def page_ready(call, timeout: float = 12.0) -> bool:
-    """Дошла ли страница до первого кадра.
+def page_ready(call, ws, scene: str, timeout: float = 12.0) -> str:
+    """Дошла ли страница до кадра; ``''`` — нет, иначе способ готовности.
 
-    Признаки: ``__ready`` (ставит последняя строка страницы), живой драйвер
-    ``__dbscene`` или собственный цикл отрисовки rAF с непустым canvas. Третье
-    нужно страницам, которые рисуют сами и хуков не выставляют (у стенда 1017
-    так L-1) — иначе живая страница получала плашку.
+    K детерминированы и обязаны выставить ``__ready``/``__dbscene``. L хуков не
+    обещают: там ждём settled-состояние — документ догружен, разметка перестала
+    меняться, а на странице есть непустой текст/canvas/svg. ``__ready`` и драйвер
+    принимаются и на L: свободная страница может их иметь.
 
-    Поллим коротышами, а не одним awaitPromise: драйвер страницы перезагружает
-    вкладку (сносит контекст), и висящий промис обрывается ошибкой. Страница,
-    упавшая на исключении, не покажет ни одного признака никогда.
+    Поллим короткими evaluate: драйвер перезагружает вкладку и сносит контекст,
+    висящий промис при этом обрывается. Упавшая страница не даст ни признака.
     """
     probe = """
 (() => {
   if (window.__ready === true) return 'ready';
   const s = window.__dbscene;
-  if (s && s.mode && s.mode !== 'measuring') return 'driver';
+  if (s && s.mode) return s.mode === 'measuring' ? '' : 'driver';
+  if (document.readyState !== 'complete') return '';
   const c = document.querySelector('canvas');
-  // Пустой canvas (0x0 или чёрный по пикселю) — не кадр, а место под него.
-  if (c && c.width > 1 && c.height > 1) return 'canvas';
-  return '';
+  const live = (c && c.width > 1 && c.height > 1) ||
+               document.querySelector('svg, img, video') ||
+               (document.body && (document.body.innerText || '').trim().length > 0);
+  if (!live) return '';
+  return 'settled:' + [
+    document.body ? document.body.querySelectorAll('*').length : 0,
+    c ? c.width + 'x' + c.height : '',
+    (document.body ? document.body.innerText : '').length,
+  ].join('|');
 })()"""
-    limit = time.time() + timeout
-    while time.time() < limit:
-        r = call("Runtime.evaluate", {"expression": probe, "returnByValue": True}, timeout=5)
-        if "error" not in r and ((r.get("result") or {}).get("result") or {}).get("value"):
-            return True
+    deterministic = scene.startswith("K-")
+    deadline = time.time() + (timeout * 2 if not deterministic else timeout)
+    settled_at: float | None = None
+    last = ""
+    while time.time() < deadline:
+        if any(e.get("method") == "Runtime.exceptionThrown" for e in ws.events):
+            # Исключение до кадра — вердикт, ждать больше нечего.
+            return ""
+        try:
+            r = call("Runtime.evaluate", {"expression": probe, "returnByValue": True}, timeout=5)
+        except TimeoutError:
+            continue
+        value = ((r.get("result") or {}).get("result") or {}).get("value") or ""
+        if value == "ready":
+            return "ready"
+        if value == "driver":
+            return "driver"
+        if value.startswith("settled:"):
+            mark = value.split(":", 1)[1]
+            if mark == last:
+                if settled_at is None:
+                    settled_at = time.time()
+                elif not deterministic and time.time() - settled_at >= 0.9:
+                    # K обязан выставить протокол: settled без хука — не K-кадр.
+                    return "settled"
+            else:
+                last = mark
+                settled_at = None
+        if not deterministic and not value:
+            last = ""
+            settled_at = None
         time.sleep(0.05)
-    return False
+    return ""
 
 
 def wait_scene(call, deadline: float = 100.0) -> bool:
@@ -226,7 +344,12 @@ def apply_styles(call) -> None:
 
 
 class WS:
-    """Минимальный CDP-клиент (websocket с обязательной маскировкой фреймов)."""
+    """Минимальный CDP-клиент (websocket с обязательной маскировкой фреймов).
+
+    JS-диалог (`alert`/`confirm`/`prompt`) останавливает главный поток страницы:
+    незакрытый, он вешает `Runtime.evaluate` до таймаута, и клип получает
+    плашку. Диалоги принимаются сразу, их текст остаётся в `dialogs`.
+    """
 
     def __init__(self, url: str):
         u = urlparse(url)
@@ -242,6 +365,9 @@ class WS:
             buf += self.sock.recv(4096)
         self._id = 0
         self.lock = threading.Lock()
+        #: Тексты показанных страницей диалогов (для маркера).
+        self.dialogs: list[str] = []
+        self._send_lock = threading.Lock()
         self.events: list[dict] = []
         threading.Thread(target=self._reader, daemon=True).start()
 
@@ -269,8 +395,25 @@ class WS:
                     msg = json.loads(payload)
                 except Exception:
                     continue
+                if msg.get("method") == "Page.javascriptDialogOpening":
+                    # Ответ шлём из отдельного потока: читатель обязан читать
+                    # дальше (в том числе ответ на handleJavaScriptDialog).
+                    threading.Thread(target=self._accept_dialog, args=(msg,), daemon=True).start()
                 with self.lock:
                     self.events.append(msg)
+
+    def _accept_dialog(self, msg: dict) -> None:
+        self.dialogs.append(str((msg.get("params") or {}).get("message") or ""))
+        try:
+            self.call("Page.handleJavaScriptDialog", {"accept": True},
+                      session_id=msg.get("sessionId"), timeout=10)
+        except Exception:
+            pass
+
+    def dialog_note(self) -> str:
+        """Последний показанный диалог; ``''`` — их не было."""
+        with self.lock:
+            return self.dialogs[-1] if self.dialogs else ""
 
     def _send(self, payload: bytes) -> None:
         n = len(payload)
@@ -282,7 +425,10 @@ class WS:
         else:
             head += bytes([0x80 | 127]) + n.to_bytes(8, "big")
         mask = os.urandom(4)
-        self.sock.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+        frame = head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        # write может прийти из потока диалога: кадры не должны переплетаться.
+        with self._send_lock:
+            self.sock.sendall(frame)
 
     def call(self, method: str, params: dict | None = None, session_id: str | None = None, timeout: float = 120) -> dict:
         with self.lock:
@@ -330,31 +476,38 @@ def html_server() -> tuple[http.server.ThreadingHTTPServer, str]:
 
 
 def encode(frames: Path, out: Path) -> None:
-    subprocess.run([str(FF), "-hide_banner", "-loglevel", "error", "-framerate", str(FPS),
-                    "-i", str(frames / "%06d.jpg"),
-                    "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,scale={W}:{H}",
-                    "-r", str(FPS), "-c:v", "libx264", "-preset", "medium", "-crf", "21",
-                    "-pix_fmt", "yuv420p", "-y", str(out)], cwd=str(FF.parent), check=True)
+    exe = ffmpeg()
+    run_bin(exe, ["-hide_banner", "-loglevel", "error", "-framerate", str(FPS),
+                  "-i", str(frames / "%06d.jpg"),
+                  "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,scale={W}:{H}",
+                  "-r", str(FPS), "-c:v", "libx264", "-preset", "medium", "-crf", "21",
+                  "-pix_fmt", "yuv420p", "-y", str(out)])
 
 
 def placeholder(out: Path, secs: float) -> None:
-    subprocess.run([str(FF), "-hide_banner", "-loglevel", "error",
-                    # В комплектном ffmpeg нет фильтра `color`: берём nullsrc.
-                    "-f", "lavfi", "-i", f"nullsrc=s={W}x{H}:r={FPS}:d={secs}",
-                    "-c:v", "libx264", "-preset", "medium", "-crf", "21",
-                    "-pix_fmt", "yuv420p", "-y", str(out)], cwd=str(FF.parent), check=True)
+    exe = ffmpeg()
+    run_bin(exe, ["-hide_banner", "-loglevel", "error",
+                  # В комплектном ffmpeg нет фильтра `color`: берём nullsrc.
+                  "-f", "lavfi", "-i", f"nullsrc=s={W}x{H}:r={FPS}:d={secs}",
+                  "-c:v", "libx264", "-preset", "medium", "-crf", "21",
+                  "-pix_fmt", "yuv420p", "-y", str(out)])
 
 
-def record(model: str, scene: str, out_dir: Path, secs: float, warmup: float, base_url: str) -> bool:
-    """Снять клип. ``False`` — страница падает до первого кадра, звать плашку."""
+def record(model: str, scene: str, out_dir: Path, secs: float, warmup: float, base_url: str) -> tuple[str, str]:
+    """Снять клип: ``("статус", причина)``. Сбой инфраструктуры — исключение.
+
+    Причина — текст JS-диалога страницы, если он был: диалоги принимаются
+    автоматически, но их след остаётся для маркера.
+    """
     src = ART / "_showcase" / model / "pages" / f"{scene}.html"
     frames = out_dir / "_frames" / f"{model}__{scene}"
-    subprocess.run(["rm", "-rf", str(frames)], check=False)
+    shutil.rmtree(frames, ignore_errors=True)
     frames.mkdir(parents=True)
     port = free_port()
-    profile = f"/tmp/rec-chrome-{os.getpid()}"
+    exe = chrome()
+    profile = Path(tempfile.mkdtemp(prefix="rec-chrome-"))
     proc = subprocess.Popen(
-        [CHROME, "--headless=new", f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
+        [str(exe), "--headless=new", f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
          "--no-first-run", "--no-default-browser-check",
          "--use-angle=metal", "--disable-gpu-sandbox",
          "--hide-scrollbars", f"--window-size={W},{H}",
@@ -370,33 +523,27 @@ def record(model: str, scene: str, out_dir: Path, secs: float, warmup: float, ba
         call = lambda m, p=None, **kw: ws.call(m, p, session_id=sid, **kw)  # noqa: E731
         url = f"{base_url}/_showcase/{model}/pages/{scene}.html"
         call("Page.enable")
+        call("Runtime.enable")
         call("Emulation.setDeviceMetricsOverride", {"width": W, "height": H, "deviceScaleFactor": 1, "mobile": False})
-        # Один awaitPromise-eval вместо тысяч round-trip: готовность сцены
-        # наступает за десятки миллисекунд, а поллинг из Python по 0.1 с
-        # растягивал её до десятков секунд на каждую сцену.
         call("Page.navigate", {"url": url})
-        call("Runtime.evaluate", {"expression": """
-new Promise((res) => {
-  const t0 = performance.now();
-  const t = setInterval(() => {
-    const done = window.__ready === true ||
-                 (!!document.querySelector('canvas') && performance.now() - t0 > 2500) ||
-                 performance.now() - t0 > 60000;
-    if (done) { clearInterval(t); res(true); }
-  }, 25);
-})""", "awaitPromise": True, "returnByValue": True}, timeout=90)
-        # Страница, упавшая на исключении до первого кадра, отдаёт чёрный клип.
-        # Вердикт тот же, что у harness (0 баллов), так что честнее плашка:
-        # маркер .missing -> витрина нарисует «модель не справилась».
-        ready = page_ready(call)
+        # Готовность — по режиму сцены, без единого требования `__ready` к L.
+        # Страница, упавшая до первого кадра, честно получает model_failed:
+        # тот же вердикт, что у harness (0 баллов), а не чёрный клип.
+        ready = page_ready(call, ws, scene)
         if not ready:
-            subprocess.run(["rm", "-rf", str(frames)], check=False)
-            return False
+            note = ws.dialog_note()
+            shutil.rmtree(frames, ignore_errors=True)
+            return "model_failed", (f"диалог: {note}" if note else "")
         # Драйвер страницы замеряет окно движения и перезагружается — только
         # после перезагрузки сцена стоит в начале (шаг 0). Паузу шлём тем же
         # evaluate, что застал драйвер живым: без лишнего round-trip, за который
         # автоплей успел бы уйти вперёд (seek назад не ходит).
-        has_driver = wait_scene(call)
+        has_driver = ready == "driver"
+        if not has_driver:
+            has_driver = bool(((call("Runtime.evaluate", {
+                "expression": "!!(window.__dbscene && window.__dbscene.mode)",
+                "returnByValue": True})).get("result") or {}).get("result", {}).get("value"))
+        has_driver = has_driver and wait_scene(call)
         base = 0
         if has_driver:
             r = call("Runtime.evaluate", {"expression": """
@@ -452,45 +599,56 @@ new Promise((res) => {
             (frames / f"{k:06d}.jpg").write_bytes(base64.b64decode(data))
     finally:
         proc.terminate()
-        subprocess.run(["rm", "-rf", profile], check=False)
+        shutil.rmtree(profile, ignore_errors=True)
     out = out_dir / f"{model}__{scene}.mp4"
     encode(frames, out)
-    subprocess.run(["rm", "-rf", str(frames)], check=False)
-    return True
+    shutil.rmtree(frames, ignore_errors=True)
+    return "ok", ""
 
 
 def main() -> int:
     if len(sys.argv) < 4:
         print(__doc__)
         return 2
-    # resolve: encode() зовёт ffmpeg с cwd=bin, относительный путь до кадров
-    # иначе ищется от bin/ и сборка падает.
-    model, scene, out_dir = sys.argv[1], sys.argv[2], Path(sys.argv[3]).resolve()
+    model, scene = sys.argv[1], sys.argv[2]
+    out_dir = check_target(model, scene, Path(sys.argv[3]))
     secs = float(sys.argv[4]) if len(sys.argv) > 4 else 23.0
     warmup = float(sys.argv[5]) if len(sys.argv) > 5 else 0.6
+    force = "--force" in sys.argv
     out_dir.mkdir(parents=True, exist_ok=True)
+    runs_root = ROOT / "runs"
     src = ART / "_showcase" / model / "pages" / f"{scene}.html"
     out = out_dir / f"{model}__{scene}.mp4"
-    if out.is_file() and "--force" not in sys.argv:
+    if out.is_file() and not force:
         print(f"[rec] {model}/{scene}: уже есть")
         return 0
     if not src.is_file():
+        # Отсутствие страницы — не всегда вина модели: задачи могло не быть в
+        # прогоне. Причину пишем в маркер, а не общее `1`.
+        reason = media_status.task_status(model, scene, runs_root) or "model_failed"
+        if reason == "ok":
+            reason = "model_failed"
         placeholder(out, secs)
-        (out_dir / f"{model}__{scene}.missing").write_text("1")
-        print(f"[rec] {model}/{scene}: нет страницы -> плашка")
-        return 0
+        media_status.write_marker(out_dir, model, scene, reason)
+        print(f"[rec] {model}/{scene}: нет страницы -> плашка ({reason})")
+        return EXIT["model_failed"]
     srv, base = html_server()
     try:
         t0 = time.time()
-        alive = record(model, scene, out_dir, secs, warmup, base)
-        if not alive:
-            # Страница упала до кадра — плашка вместо черноты (и маркер, чтобы
-            # витрина её нарисовала, а ретрай не переснимал зря).
+        note = ""
+        try:
+            status, note = record(model, scene, out_dir, secs, warmup, base)
+        except Exception as exc:  # noqa: BLE001 — сбой записи, а не вердикт модели
+            status = "capture_failed"
+            print(f"[rec] {model}/{scene}: сбой записи: {exc}", file=sys.stderr, flush=True)
+        if status != "ok":
+            # Плашка вместо черноты; маркер объясняет причину и не даёт ретраю
+            # переснимать сцену зря.
             placeholder(out, secs)
-            (out_dir / f"{model}__{scene}.missing").write_text("1")
-            print(f"[rec] {model}/{scene}: страница упала -> плашка")
-            return 0
-        (out_dir / f"{model}__{scene}.missing").unlink(missing_ok=True)
+            media_status.write_marker(out_dir, model, scene, status, note)
+            print(f"[rec] {model}/{scene}: плашка ({status}{', ' + note if note else ''})")
+            return EXIT[status]
+        media_status.clear_marker(out_dir, model, scene)
         print(f"[rec] {model}/{scene}: {out.stat().st_size/1e6:.1f} МБ за {time.time()-t0:.0f}с")
     finally:
         srv.shutdown()

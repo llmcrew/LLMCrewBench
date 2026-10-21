@@ -175,3 +175,152 @@ def test_prompt_states_the_answer_contract() -> None:
     # the way the prompt describes it (misses first, keys comma-separated).
     misses, order = r8.oracle["reference"].split(";", 1)
     assert "," in order or len(r8.meta["final_order"]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# R-16 — pilot scenario, run on the pilot profile only
+# --------------------------------------------------------------------------- #
+
+DEV_SEEDS = (20260915, 20260916, 20260917, 20260918, 20260919)
+
+
+def _pilot_tasks(seed: int) -> list[core.TaskInstance]:
+    return reasoning.generate(random.Random(seed), RunConfig(seed=seed, profile="pilot"))
+
+
+def _pilot(seed: int) -> core.TaskInstance:
+    return _pilot_tasks(seed)[0]
+
+
+def _r16_nodes(task: core.TaskInstance) -> list[dict]:
+    """Rebuild the generator's node graph from the published oracle.
+
+    A retry is a separate object with the same payload; its dependencies and
+    the tombstone targets point at the first delivery of that id.
+    """
+    nodes = [
+        {
+            "id": event["id"],
+            "ts": event["ts"],
+            "outcome": event["outcome"],
+            "revokes": None,
+            "deps": [],
+        }
+        for event in task.meta["events"]
+    ]
+    first: dict[str, dict] = {}
+    for node in nodes:
+        first.setdefault(node["id"], node)
+    for node, event in zip(nodes, task.meta["events"]):
+        node["deps"] = [first[dep] for dep in event["depends_on"]]
+        if event["revokes"]:
+            node["revokes"] = first[event["revokes"]]
+    return nodes
+
+
+def test_r16_is_pilot_only_and_registered_by_profile() -> None:
+    assert "R-16" not in reasoning.IDS
+    assert [task.id for task in _tasks(20260915)] == list(reasoning.IDS)
+    assert [task.id for task in _pilot_tasks(20260915)] == ["R-16"]
+    stretch = reasoning.generate(
+        random.Random(20260915), RunConfig(seed=20260915, profile="stretch-v1")
+    )
+    assert [task.id for task in stretch] == list(reasoning.IDS) + ["R-16"]
+
+    module = core.REGISTRY["B"]
+    assert module.expected_ids == reasoning.IDS
+    assert module.expected_ids_for() == reasoning.IDS
+    assert module.expected_ids_for("pilot") == ("R-16",)
+    assert module.expected_ids_for("stretch-v1") == reasoning.IDS + ("R-16",)
+
+
+def test_r16_reference_scores_full_and_every_mutant_fails() -> None:
+    for seed in DEV_SEEDS:
+        task = _pilot(seed)
+        reference = task.oracle["reference"]
+        assert task.max_points == 1.0
+        score = reasoning.evaluate(task, _transcript(task, reference))
+        assert score.earned == 1.0
+        assert score.possible == 1.0
+        assert len(score.checks) == 1 and score.checks[0].name == "value"
+
+        for name in ("mutant_double_retry", "mutant_kept_revoked", "mutant_text_order"):
+            mutant = task.meta[name]
+            assert mutant != reference, name
+            assert reasoning.evaluate(task, _transcript(task, mutant)).earned == 0.0, name
+
+        for junk in ("", "не знаю", "active;2", reference + "\nобъяснение", reference + " объяснение"):
+            assert reasoning.evaluate(task, _transcript(task, junk)).earned == 0.0, junk
+
+
+def test_r16_oracle_survives_an_independent_replay() -> None:
+    """The published trace is re-proved by the verifier, not by the loop."""
+    for seed in DEV_SEEDS:
+        task = _pilot(seed)
+        nodes = _r16_nodes(task)
+        result = reasoning._r16_run(nodes, collapse=True)
+        reasoning._r16_verify(nodes, result)
+        assert reasoning._r16_signature(result) == task.oracle["reference"]
+        # Rerunning the same graph in the mutant modes must move the answer.
+        for mutant in (
+            reasoning._r16_run(nodes),
+            reasoning._r16_run(nodes, collapse=True, keep_revoked=True),
+            reasoning._r16_run(nodes, collapse=True, order_key="id"),
+        ):
+            assert reasoning._r16_signature(mutant) != task.oracle["reference"]
+
+
+def test_r16_fixture_edge_cases_and_seed_determinism() -> None:
+    for seed in DEV_SEEDS:
+        first = _pilot(seed)
+        second = _pilot(seed)
+        assert (first.prompt, first.oracle, first.meta) == (second.prompt, second.oracle, second.meta)
+
+        meta = first.meta
+        events = meta["events"]
+        unique = meta["unique_events"]
+        assert 12 <= unique <= 20
+        assert meta["deliveries"] >= 1
+        assert meta["revoked"] and meta["blocked"] >= 1 and meta["illegal"] >= 2
+        assert len(events) == unique + meta["deliveries"]
+
+        # Retries are byte-identical redeliveries of one event id.
+        rows: dict[str, set[tuple]] = {}
+        for event in events:
+            rows.setdefault(event["id"], set()).add(
+                (event["ts"], event["outcome"], event["revokes"], tuple(event["depends_on"]))
+            )
+        assert len(rows) == unique
+        assert any(len(payloads) == 1 and sum(e["id"] == key for e in events) > 1 for key, payloads in rows.items())
+
+        # Every dependency is causally earlier, and tombstones name a real event.
+        by_id = {event["id"]: event for event in events}
+        assert all(
+            by_id[dep]["ts"] < event["ts"] for event in events for dep in event["depends_on"]
+        )
+        tombstones = [event for event in events if event["outcome"] == "tombstone"]
+        assert tombstones
+        assert all(tombstone["revokes"] in by_id for tombstone in tombstones)
+
+        # The listing order is neither the id order nor the timestamp order.
+        id_order = [event["id"] for event in sorted(events, key=lambda event: event["id"])]
+        ts_order = [
+            event["id"] for event in sorted(events, key=lambda event: (event["ts"], event["id"]))
+        ]
+        assert id_order != ts_order
+
+        status, version, count = first.oracle["reference"].split(";")
+        assert status in reasoning._R16_STATUSES
+        assert (version, count) == (str(int(version)), str(int(count)))
+        assert len(meta["applied"]) == int(count)
+        assert not set(meta["revoked"]) & set(meta["applied"])
+        assert all(event_id in by_id for event_id in meta["applied"])
+
+        # Retry is idempotent: only the applied count moves, never backwards.
+        doubled = meta["mutant_double_retry"].split(";")
+        assert int(doubled[2]) > int(count)
+        assert doubled[0] == status or doubled[1] != version
+
+        assert "tombstone" in first.prompt and "один раз" in first.prompt
+        assert "СТАТУС;ВЕРСИЯ;ПРИМЕНЕНО" in first.prompt
+        assert "одной строкой без пояснений" in first.prompt

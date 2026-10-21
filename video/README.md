@@ -17,8 +17,10 @@
   headless-Chromium покадрово, 120 fps; окно движения сцены развёрнуто на все
   23 секунды клипа — кадр клипа равен кадру показа; на раскрытии клип
   переигрывается с первого кадра за 8 с (≈2,8×), и 120 исходных fps держат это плавным.
-- Где решения нет — полоса с надписью «модель не справилась»: страницы нет
-  вовсе или страница падает до первого кадра (у harness та же сцена — 0 баллов).
+- Где решения нет — полоса с причиной, а не одним общим ярлыком: `not_run`
+  (задачи нет в прогоне — «не запускалась»), `model_failed` (страница не
+  доставлена/падает до кадра), `capture_failed` (страница жива, запись сорвалась),
+  `media_missing` (клипа нет в поставке). `not_run` не обвиняет модель.
 
 ## Состав
 
@@ -36,13 +38,16 @@ src/
   scenes/ShowcaseReel.tsx   # все 49 сцен подряд
   scenes/Final.tsx          # hero, вывод, аутро
   data/runs.json            # цифры прогонов (генерируются)
-  data/showcase.json        # манифест витрины: сцены × модели, кто раскрывается
+  data/showcase.json        # единый источник статуса: сцена × модель, кто раскрывается
 tools/
+  preflight.py              # манифест + маркеры + ffprobe до Studio/render
   record_clip.py            # запись одного клипа (живая страница, CDP)
   record_all.py             # все 49×2 клипов параллельно + манифест
                             # (общее описание подхода и грабель — docs/recording/)
 public/
   clips/<стенд>__<сцена>.mp4    # 1920x1080, 120 fps, 23 с
+  clips/<стенд>__<сцена>.missing # причина плашки (not_run/model_failed/...)
+  clips.json                    # производная showcase.json: model/scene/status
 archive/                      # RESTORE.md и SHA256; сами части — вне git
 ```
 
@@ -50,12 +55,15 @@ archive/                      # RESTORE.md и SHA256; сами части — в
 
 ```bash
 npm install
+npm run preflight              # манифест, маркеры, ffprobe: ошибка до Studio/render
 npm run studio                 # превью
-npm run render                 # out/dailybench.mp4
+npm run render                 # preflight + out/dailybench.mp4
 npx remotion still scene-showcase out/frame.png --frame=300
 
+python3 tools/preflight.py --no-decode       # без ffprobe: только согласованность
 python3 tools/record_all.py 4 23 0.6          # дополнить пропущенные клипы
 python3 tools/record_all.py 4 23 0.6 --force  # перезаписать все 98
+# ^ код 1 — инфраструктурный сбой записи (capture_failed), а не вердикт модели
 python3 tools/probe_pages.py 6                # пересчитать плашки: жива ли страница
 python3 tools/format_labels.py                # подписи стендов в данных
 ```
@@ -66,8 +74,9 @@ python3 tools/format_labels.py                # подписи стендов в
 
 1. Тайминги и реплики — `src/video/data.ts` (`SCENES`): сумма задаёт длительность.
 2. Текст диктора — `docs/voiceover.md`.
-3. Витрина (какая сцена, кто раскрывается) — `src/data/showcase.json`;
-   пересобирается `tools/record_all.py` по факту наличия клипов.
+3. Статусы витрины (какая сцена, кто раскрывается) — `src/data/showcase.json`;
+   пересобирается `tools/record_all.py` по маркерам и файлам, а не правится
+   вручную. `clips.json` — производная проекция `${model}/${scene}/${status}`.
 
 Общий разбор подхода записи, грабли и чек-лист приёмки — `docs/recording/`
 (фреймворк `record_scene.py`/`record_batch.py` и драйвер `page-driver.js`
@@ -97,11 +106,19 @@ python3 tools/format_labels.py                # подписи стендов в
   последний: `renderer.domElement` страница добавляет после своей разметки, а
   пустой canvas-декой из разметки иначе занимал кадр пустым, и
   сжимал сцену в половину. Остальные canvas'ы скрываются.
-- Плашка «модель не справилась» — когда решения нет вовсе (страницы нет) или
-  страница падает на исключении до первого кадра (тот же вердикт, что у harness:
-  0 баллов). Прежде такие сцены снимались чёрными.
-- Chrome — обычный `/Applications/Google Chrome.app` (не for Testing: тот лезет
-  в связку ключей macOS), флаги `--use-angle=metal`, свой `--user-data-dir`.
+- Плашка объясняет причину. `model_failed` — страницы нет при существующей
+  задаче или страница падает до первого кадра (тот же вердикт, что у harness:
+  0 баллов); `not_run` — задачи нет в прогоне; `capture_failed` — страница
+  жива, запись сорвалась. Прежде такие сцены снимались чёрными.
+- Chrome и ffmpeg ищутся переносимо: сначала macOS-путь/video/bin, затем PATH;
+  временные профили — `tempfile`, уборка — pathlib. Аргументы CLI проверяются:
+  модель/сцена по схеме, `OUT` только внутри `public/clips`.
+- Готовность по режиму: K — `__ready`/`__dbscene`, свободным L без хуков
+  достаточно settled-разметки (документ догружен, разметка стабильна); `__ready`
+  у L не требуется.
+- Chrome — обычный `/Applications/Google Chrome.app` или chromium из PATH
+  (не for Testing: тот лезет в связку ключей macOS), флаги `--use-angle=metal`,
+  свой `--user-data-dir`.
 
 ## Звука нет
 

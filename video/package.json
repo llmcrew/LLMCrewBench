@@ -5,7 +5,8 @@
   "description": "Видео DailyBench-16: разбор бенчмарка, четыре модели, витрина визуальных решений",
   "scripts": {
     "studio": "remotion studio",
-    "render": "remotion render DailyBench out/dailybench.mp4",
+    "preflight": "python3 tools/preflight.py",
+    "render": "python3 tools/preflight.py && remotion render DailyBench out/dailybench.mp4",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

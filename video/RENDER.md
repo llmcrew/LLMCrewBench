@@ -17,12 +17,14 @@ cat <repo>/video/archive/dailybench-video.zip.part-* > dailybench-video.zip
 unzip dailybench-video.zip
 cd dailybench-video
 npm ci
+npm run preflight                       # манифест, маркеры и decode до рендера
 npx remotion render DailyBench out/dailybench.mp4 --concurrency=4 --timeout=180000
 # → out/dailybench.mp4, ролик 1920x1080, 120 fps, ≈19 мин; сам рендер — часы
 ```
 
 `public/clips/` (98 записей: 70 живых клипов и 28 плашек) уже внутри — ничего
-записывать не нужно.
+записывать не нужно. `npm run preflight` сверяет манифест с маркерами и
+декодирует клипы; `npm run render` зовёт его сам.
 
 ## Требования
 
@@ -45,8 +47,9 @@ npx remotion render DailyBench out/dailybench.mp4 --concurrency=4 --timeout=1800
 
 - сцены и клипы платформо-независимы (h264 mp4 + React);
 - `bin/` (комплектный ffmpeg от Remotion под macOS-arm) **для рендера не нужен** —
-  он только для `tools/record_*.py` (пересъёмка клипов). На другой ОС
-  пересъёмка потребует любого `ffmpeg` в `PATH`;
+  он только для `tools/record_*.py` (пересъёмка клипов). Chrome/ffmpeg ищутся
+  сначала по macOS-пути/video/bin, затем в `PATH`: на другой ОС поставьте
+  chromium и ffmpeg в `PATH`;
 - шрифты рендерятся как есть, подстановок системных нет.
 
 ## Пересъёмка клипов
@@ -74,6 +77,7 @@ python3 tools/probe_pages.py 6                # пересчитать плаш�
 ```bash
 unzip dailybench-video.zip && cd dailybench-video
 npm ci
+npm run preflight                       # манифест, маркеры и decode до рендера
 npx remotion render DailyBench out/dailybench.mp4 --concurrency=4 --timeout=180000
 ```
 
@@ -108,14 +112,15 @@ npx remotion still scene-showcase out/check-showcase.png --frame=300
 
 ```
 src/            144K  сцены, таймлайн (SCENES), данные — весь ролик отсюда
-public/clips/   1,5G  98 записей: 70 живых + 28 плашек «модель не справилась»
-                      (у стенда 1017 L-2…L-29 — плашки: страниц нет)
+public/clips/   1,5G  98 записей: 70 живых + 28 плашек
+                      (у стенда 1017 L-2…L-29 — `not_run`: задач нет в прогоне)
 docs/           56K   текст диктора (voiceover.md), это руководство и фреймворк
                       записи (recording/: рекордер, драйвер, гайд, грабли)
 tools/          24K   утилиты (для рендера не обязательны)
   build_runs_data.py    переносит цифры из runs/ в src/data/runs.json (нужен `runs/`;
                         в архиве данные уже готовы)
   format_labels.py      человеческие имена моделей
+  preflight.py          — манифест/маркеры/ffprobe до Studio/render
   record_clip.py, record_all.py — пересъёмка клипов
   probe_pages.py        — пересчёт плашек: страница падает до кадра или живёт
 package.json, package-lock.json, tsconfig.json
@@ -144,7 +149,7 @@ split -b 90m /tmp/dailybench-video.zip <repo>/video/archive/dailybench-video.zip
 
 `bin/` — комплектный ffmpeg от Remotion под macOS-arm64 (16 МБ). Для **рендера
 не нужен**; пригодится только для пересъёмки клипов (`tools/record_*.py`) на macOS.
-На Linux поставь любой `ffmpeg` в `PATH`.
+На Linux поставь любой `ffmpeg`/`ffprobe` в `PATH`.
 
 ## Что не нужно
 

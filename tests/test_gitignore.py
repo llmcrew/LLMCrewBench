@@ -58,6 +58,8 @@ def _ignored(relative: str) -> bool:
         "runs/deepseek-v4.1-flash-unc-1017/sizing.json",
         "runs/deepseek-v4.1-flash-unc-1017/_showcase/deepseek-v4.1-flash-unc-1017/frames/K-1.png",
         "reports/comparison-deepseek-1017/index.html",
+        "reports/comparison-deepseek-1017/_vendor/plotly.min.js",
+        "reports/comparison-deepseek-1017/_vendor/three.global.js",
         "reports/comparison-deepseek-1017/_showcase/deepseek-v4.1-flash-unc-1017/pages/K-1.html",
         "video/archive/RESTORE.md",
         "video/archive/SHA256",
@@ -100,7 +102,6 @@ def test_published_artefacts_are_tracked(relative: str):
         "runs/deepseek-v4.1-flash-unc-1017/transcripts/L-1.json",
         "runs/_logs/deepseek-v4.1-flash-unc-1017.log",
         "runs/smoke-t1/config.json",
-        "reports/comparison-deepseek-1017/_vendor/plotly.min.js",
     ],
 )
 def test_generated_files_are_ignored(relative: str):

@@ -15,7 +15,7 @@ type ModelRow = {
   K: {e: number; p: number};
   L: {e: number; p: number};
   totals: Record<string, {earned: number; possible: number}>;
-  spend: {answer: number; reasoning: number; tools: number; minutes: number};
+  spend: {answer: number | null; reasoning: number | null; tools: number; minutes: number | null};
 };
 
 const MODELS = (models as unknown as ModelRow[]).slice().sort((a, b) => b.score - a.score);
@@ -119,12 +119,14 @@ export const Board: React.FC = () => {
           >
             <div style={{font: `500 14px/1 ${FONT_MONO}`, color: C.faint}}>токены ответа</div>
             <div style={{font: `600 22px/1.2 ${FONT_MONO}`, marginTop: 6}}>
-              {Math.round(m.spend.answer / 1000)}K
+              {m.spend.answer == null ? 'н/д' : `${Math.round(m.spend.answer / 1000)}K`}
             </div>
             <div style={{font: `500 14px/1 ${FONT_MONO}`, color: C.faint, marginTop: 10}}>вызовы инструментов</div>
             <div style={{font: `600 22px/1.2 ${FONT_MONO}`, marginTop: 6}}>{m.spend.tools}</div>
             <div style={{font: `500 14px/1 ${FONT_MONO}`, color: C.faint, marginTop: 10}}>минут генерации</div>
-            <div style={{font: `600 22px/1.2 ${FONT_MONO}`, marginTop: 6}}>{Math.round(m.spend.minutes)}</div>
+            <div style={{font: `600 22px/1.2 ${FONT_MONO}`, marginTop: 6}}>
+              {m.spend.minutes == null ? 'н/д' : Math.round(m.spend.minutes)}
+            </div>
           </div>
         ))}
       </div>

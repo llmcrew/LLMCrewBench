@@ -25,9 +25,12 @@ and reported. A page that quietly needs the internet is not a working page.
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import importlib.metadata
 import json
 import os
+import platform
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -424,18 +427,139 @@ def _predicates_report(predicates: Sequence[Predicate], payload: dict[str, Any])
     return passed, "; ".join(details)
 
 
-#: Frame-format version for the cache key. Bumped when ``PIXEL_PROBE`` or the
-#: viewport changes: without it a page keyed by content alone kept returning a
-#: frame produced by the *previous* extractor, and one report could mix frames
-#: from two versions of the checks. The art block already had this guard.
+#: Frame-format version for the cache key. Bumped when the *scoring contract*
+#: changes; the render environment is fingerprinted separately below, so a new
+#: browser or library invalidates the cache without a manual bump.
 FRAME_VERSION = 1
 
+#: Schema of the render fingerprint. Bumped when the fingerprint *composition*
+#: changes, not when one of its inputs does — inputs hash themselves.
+RENDER_FINGERPRINT_VERSION = 1
 
-def _frame_key(html: str, steps: int, dt: float) -> str:
-    return hashlib.sha256(
-        f"v{FRAME_VERSION}:{browser.DEFAULT_VIEWPORT[0]}x{browser.DEFAULT_VIEWPORT[1]}:"
-        f"{steps}:{dt}:{html}".encode("utf-8")
-    ).hexdigest()[:32]
+
+def _sha_file(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return "missing"
+
+
+def _browser_build() -> str:
+    """Identity of the installed browser, without launching it.
+
+    A different Chromium build changes pixels, so a frame from the old build is
+    not evidence for the new one. The playwright version and the installed
+    ``chromium-*`` directories name the build; an absent install stays ``?``.
+    """
+    parts = [f"playwright={_package_version('playwright')}"]
+    roots: list[Path] = []
+    raw = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if raw and raw != "0":
+        roots.append(Path(raw))
+    roots += [
+        Path.home() / ".cache" / "ms-playwright",
+        Path.home() / "Library" / "Caches" / "ms-playwright",
+    ]
+    for root in roots:
+        try:
+            parts += sorted(entry.name for entry in root.iterdir() if entry.name.startswith("chromium"))
+        except OSError:
+            continue
+    return "|".join(parts) or "?"
+
+
+def _package_version(name: str) -> str:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "?"
+
+
+@functools.lru_cache(maxsize=1)
+def _render_fingerprint() -> str:
+    """Hash of everything that decides what a frame looks like.
+
+    Page content alone is not enough: the same HTML renders differently after a
+    vendor bump, a different Chromium, other GL flags, a changed extractor or
+    capture profile. Each of those was able to serve a stale frame as a hit.
+    """
+    payload = {
+        "schema": RENDER_FINGERPRINT_VERSION,
+        # оба файла библиотеки: страница может импортировать core напрямую
+        "vendor": {
+            name: _sha_file(browser.VENDOR / name) for name in ("three.module.js", "three.core.js")
+        },
+        "browser": _browser_build(),
+        # драйвер и extractor: правка browser.py меняет способ снятия кадра
+        "driver": _sha_file(Path(browser.__file__)),
+        "extractor": hashlib.sha256(browser.PIXEL_PROBE.encode("utf-8")).hexdigest(),
+        "renderer": {
+            "launch_args": list(browser.LAUNCH_ARGS),
+            "headless": True,
+            "dpr": 1,
+            "app": browser.APP_NAME,
+        },
+        "capture": {
+            "timeout_ms": browser.DEFAULT_TIMEOUT_MS,
+            "screenshot_timeout_ms": browser.SCREENSHOT_TIMEOUT_MS,
+            "live_settle_ms": browser.LIVE_SETTLE_MS,
+            "live_interval_ms": browser.LIVE_SAMPLE_INTERVAL_MS,
+            "reduced_motion_fixed": "reduce",
+            "reduced_motion_live": "no-preference",
+            "again_for_live": False,
+        },
+        "python": platform.python_version(),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _frame_key(
+    html: str,
+    steps: int,
+    dt: float,
+    viewport: tuple[int, int] = browser.DEFAULT_VIEWPORT,
+    mode: str = "fixed",
+    kind: str = "fixed",
+    probe_sha: str = "",
+) -> str:
+    """Cache identity of one render: page, sampling and the whole environment.
+
+    ``probe_sha`` — отпечаток probe, которым кадр был измерен. Он есть только
+    после рендера, поэтому имя записи складывается из базового ключа (без
+    probe) и ключа с ним: кадр нельзя выдать за снятый с другим probe.
+    """
+    material = json.dumps(
+        {
+            "v": FRAME_VERSION,
+            "kind": kind,
+            "render": _render_fingerprint(),
+            "viewport": list(viewport),
+            "dpr": 1,
+            "steps": steps,
+            "dt": dt,
+            "mode": mode,
+            "probe": probe_sha,
+            "html": html,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
+
+def _probe_sha(result: browser.RenderResult) -> str:
+    """Отпечаток probe-полезной нагрузки: чем кадр был измерен."""
+    material = json.dumps(
+        {"probe": result.probe, "stepped": result.stepped}, sort_keys=True, default=repr
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def _entry_paths(html: str, steps: int, dt: float, probe_sha: str) -> tuple[Path, Path]:
+    """Пара файлов одной записи: blob, затем кадр."""
+    folder = cache_dir()
+    base = _frame_key(html, steps, dt)
+    key = _frame_key(html, steps, dt, probe_sha=probe_sha)
+    return folder / f"{base}__{key}.json", folder / f"{base}__{key}.png"
 
 
 def _cached_render(html: str, steps: int, dt: float) -> tuple[browser.RenderResult, bool]:
@@ -447,22 +571,40 @@ def _cached_render(html: str, steps: int, dt: float) -> tuple[browser.RenderResu
     still *writes* such a result — a page that really is broken must fail
     quickly — but the next call re-renders it. The frame file is required too:
     without it the entry has no picture to score.
+
+    An entry is only reused when its stored probe hashes to the seal in its own
+    name: the numbers in the blob and the picture beside it must come from one
+    render, or the checks would score a fresh run with someone else's probe.
     """
-    key = _frame_key(html, steps, dt)
     folder = cache_dir()
-    blob = folder / f"{key}.json"
-    shot = folder / f"{key}.png"
-    if blob.is_file() and shot.is_file():
+    base = _frame_key(html, steps, dt)
+    for blob in folder.glob(f"{base}__*.json"):
+        shot = blob.with_suffix(".png")
+        if not shot.is_file():
+            continue
         try:
             data = json.loads(blob.read_text(encoding="utf-8"))
             result = browser.RenderResult(**data["result"])
-            result.shot = shot.read_bytes()
-            if result.ok:
-                return result, True
         except Exception:
-            pass
+            continue
+        # Хеш сохранённого probe пересчитывается, а не берётся на веру.
+        if _frame_key(html, steps, dt, probe_sha=_probe_sha(result)) != blob.stem.split("__", 1)[1]:
+            continue
+        result.shot = shot.read_bytes()
+        # Хеш сохранённого кадра считается от самих байт, а не берётся из
+        # блоба: он обязан оставаться валидным доказательством, даже если
+        # страницу больше нельзя перерисовать (нет браузера, стенд уехал).
+        if result.shot:
+            result.shot_sha = hashlib.sha256(result.shot).hexdigest()
+        if result.ok:
+            return result, True
     result = browser.render(html, steps=steps, dt=dt)
     folder.mkdir(parents=True, exist_ok=True)
+    blob, shot = _entry_paths(html, steps, dt, _probe_sha(result))
+    # Прочие запечатки этого кадра (другой probe, другая среда) уже не годятся.
+    for stale in folder.glob(f"{base}__*"):
+        if stale not in (blob, shot):
+            stale.unlink(missing_ok=True)
     # Кадр — до блоба и своим try: probe, который не сериализуется (или blob,
     # упавший по любой причине), не должен оставлять галерею без картинки.
     if result.shot:
@@ -489,8 +631,16 @@ def _cached_render(html: str, steps: int, dt: float) -> tuple[browser.RenderResu
 
 
 def shot_path(html: str, steps: int, dt: float) -> Path:
-    """Where the frame of this page is cached, if it rendered."""
-    return cache_dir() / f"{_frame_key(html, steps, dt)}.png"
+    """Where the frame of this page is cached, if it rendered.
+
+    Записи запечатаны отпечатком probe, поэтому кадр ищется по базовому ключу:
+    годится самый свежий снимок этой страницы, а при пустом кэше — путь под
+    будущую запись.
+    """
+    folder = cache_dir()
+    base = _frame_key(html, steps, dt)
+    sealed = sorted(folder.glob(f"{base}__*.png"), key=lambda p: p.stat().st_mtime)
+    return sealed[-1] if sealed else folder / f"{base}.png"
 
 
 def page_of(task: core.TaskInstance, transcript: core.Transcript) -> str:

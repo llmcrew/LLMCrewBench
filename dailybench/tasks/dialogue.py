@@ -16,21 +16,38 @@ exactly two separable things:
   point for the recomputed value, one for the superseded values never appearing
   in the final answer.
 
+* H-4 (pilot) — *accumulated constraints*: the format and a selection rule
+  stand from turn 1, a slot is excluded on turn 2 and exactly one rule is
+  changed on turn 3; the closing "explain" request must not dissolve the
+  format. The evaluator walks the transcript turn by turn, so a right final
+  answer after wrong intermediate ones is partial credit only.
+* H-5 (stretch) — *parameter replacement and exception rollback*: four state
+  fields, an explicit replacement, a separate revocation of a temporary
+  exclusion and a quoted README that is not a correction. Every turn is
+  checked against an expected state and the final reply has to be strict JSON.
+
 Everything is checkable without a judge model: a labelled token, a member of an
 allow-set, an integer, and a fixed set of forbidden substrings.
 """
 
 from __future__ import annotations
 
+import json
 import random
 import re
 from typing import Any
 
 from .. import core, text
 
-IDS = ("H-1", "H-2", "H-3")
+BASELINE_IDS = ("H-1", "H-2", "H-3")
+PILOT_IDS = ("H-4",)
+ALL_IDS = BASELINE_IDS + PILOT_IDS + ("H-5",)
+
+IDS = BASELINE_IDS
 _CHECK = 1.0
 _POINTS = 2.0
+#: H-4/H-5 issue four unit checks each; the budget is the issue itself.
+_WIDE_POINTS = 4.0
 
 #: H-2 — status vocabulary the whole conversation must stay inside.
 STATUS_SET = ("ok", "degraded", "down")
@@ -42,6 +59,42 @@ _SERVICES = ("payments", "billing", "auth", "search", "notify", "ledger")
 _LIMITS_OLD = (120, 140, 160, 180, 200)
 _LIMITS_NEW = (260, 300, 340, 400, 440)
 _PERCENTS = (75, 80, 90)
+
+#: H-4 — slot names that never nest inside each other, so a text search for a
+#: forbidden slot cannot hit a different one.
+_HOSTS = (
+    "node-alfa",
+    "node-bravo",
+    "node-charlie",
+    "node-delta",
+    "node-echo",
+    "node-foxtrot",
+    "node-golf",
+    "node-hotel",
+    "node-india",
+    "node-juliet",
+    "node-kilo",
+    "node-lima",
+    "node-mike",
+    "node-november",
+    "node-oscar",
+    "node-papa",
+)
+
+_SLOT_RE = re.compile(
+    r"итог\s*:\s*(?P<host>[a-z][a-z0-9-]*)\s*\|\s*ram=(?P<ram>\d+)\s*\|"
+    r"\s*uptime=(?P<uptime>\d+)\s*\|\s*причина=(?P<reason>[^\s|]+)",
+    re.IGNORECASE,
+)
+
+#: H-5 — four state fields, one replacement, one temporary exclusion.
+_STATE_FIELDS = ("region", "min_cpu", "limit", "exclude_tag")
+_REGIONS = ("eu-west", "us-east", "ap-south")
+_MIN_CPU = (6, 8, 12, 16)
+_LIMIT_BASE = (20, 24, 28)
+_TAGS = ("legacy", "canary", "beta")
+#: The quoted README value: never a valid active ``min_cpu``.
+_QUOTED_MIN_CPU = 4
 
 
 # --------------------------------------------------------------------------- #
@@ -328,15 +381,345 @@ def _eval_h3(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 
 
 # --------------------------------------------------------------------------- #
+# H-4 — the format and the exclusion survive the rule change
+# --------------------------------------------------------------------------- #
+
+
+def _slot_line(values: dict[str, tuple[int, int]], host: str, reason: str) -> str:
+    ram, uptime = values[host]
+    return f"итог: {host} | ram={ram} | uptime={uptime} | причина={reason}"
+
+
+def _parse_slot(reply: str) -> dict[str, str] | None:
+    """The single formatted line of a reply, or ``None`` if the shape is off."""
+    lines = text.answer_lines(reply)
+    if len(lines) != 1:
+        return None
+    match = _SLOT_RE.fullmatch(lines[0])
+    return match.groupdict() if match else None
+
+
+def _chosen_host(reply: str) -> str:
+    """The slot named in the reply, independent of the rest of the format."""
+    match = re.search(r"итог\s*:\s*([a-z][a-z0-9-]*)", reply or "", re.IGNORECASE)
+    return match.group(1).casefold() if match else ""
+
+
+def _h4(rng: random.Random) -> core.TaskInstance:
+    hosts = rng.sample(_HOSTS, 8)
+    edge, core_hosts = hosts[:4], hosts[4:]
+    # Two core slots outrank every edge slot by RAM, so dropping the zone rule
+    # changes the choice; the excluded slot leads both rankings, so dropping
+    # the exclusion changes it as well once the rule is switched to uptime.
+    rams = sorted(rng.sample(range(24, 120, 8), 8), reverse=True)
+    uptimes = sorted(rng.sample(range(16, 216, 8), 8), reverse=True)
+    values: dict[str, tuple[int, int]] = {
+        core_hosts[0]: (rams[0], uptimes[4]),
+        core_hosts[1]: (rams[1], uptimes[5]),
+        edge[0]: (rams[2], uptimes[0]),  # excluded on turn 2, leads both metrics
+        edge[1]: (rams[3], uptimes[2]),
+        edge[2]: (rams[4], uptimes[1]),  # uptime leader once turn 3 applies
+        edge[3]: (rams[5], uptimes[3]),
+        core_hosts[2]: (rams[6], uptimes[6]),
+        core_hosts[3]: (rams[7], uptimes[7]),
+    }
+    assert max(values[host][0] for host in hosts) == values[core_hosts[0]][0] > values[edge[0]][0]
+    assert max(values[host][1] for host in hosts) == values[edge[0]][1]
+    assert min(rams) < values[edge[0]][0] and min(uptimes) < values[edge[3]][1]
+
+    rows = [
+        f"{host} — зона={'edge' if host in edge else 'core'}, "
+        f"ram={values[host][0]}, uptime={values[host][1]}"
+        for host in hosts
+    ]
+    rng.shuffle(rows)
+
+    excluded = edge[0]
+    answers = [
+        _slot_line(values, edge[0], "максимум"),
+        _slot_line(values, edge[1], "резерв"),
+        _slot_line(values, edge[2], "старейший"),
+        _slot_line(values, edge[2], "старейший"),
+    ]
+    return core.TaskInstance(
+        id="H-4",
+        category="H",
+        title="Накопленные ограничения и одна поправка",
+        prompt=(
+            "Слоты кластера (зона, свободная RAM, uptime в часах):\n\n"
+            + "\n".join(rows)
+            + "\n\nВыбери слот зоны edge с МАКСИМАЛЬНОЙ свободной RAM.\n"
+            "Ответ — ровно одна строка и ровно такой формы:\n"
+            "`итог: <слот> | ram=<ram> | uptime=<uptime> | причина=<одно слово>`\n"
+            "Без пояснений и лишних строк."
+        ),
+        max_points=_WIDE_POINTS,
+        dialogue=[
+            f"Из списка ещё исключи слот {excluded} — он в резерве. "
+            "Остальные правила и формат прежние.",
+            "Меняю одно правило: нужен самый большой uptime среди оставшихся, "
+            "а не максимальная RAM. Зона и исключение прежние, формат прежний.",
+            "И объясни причину выбора — одним словом в поле «причина». "
+            "Ответ по-прежнему ровно одна строка в прежнем формате.",
+        ],
+        oracle={
+            "reference": answers[-1],
+            "turn_answers": answers,
+            "turn_hosts": [edge[0], edge[1], edge[2], edge[2]],
+            "turn_values": [values[host] for host in (edge[0], edge[1], edge[2], edge[2])],
+            "excluded": excluded,
+            "zone": "edge",
+            "naive": "не знаю",
+        },
+        meta={
+            "scenario": "H-4",
+            "turns": 4,
+            "kind": "accumulated_constraints",
+            "constraints": ["format", "zone=edge", f"exclude {excluded}"],
+        },
+    )
+
+
+def _eval_h4(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
+    score = core.Score(task_id=task.id, category="H")
+    expected_hosts = task.oracle["turn_hosts"]
+    expected_values = task.oracle["turn_values"]
+    replies = [turn.reply.text or "" for turn in tr.turns]
+    parsed = [_parse_slot(reply) for reply in replies]
+
+    # Every turn is answered, not only the last one: a model that gets the
+    # first choices wrong and only the final one right loses this check.
+    hosts = [_chosen_host(reply) for reply in replies]
+    answers_ok = len(replies) == len(expected_hosts) and hosts == [
+        host.casefold() for host in expected_hosts
+    ]
+    score.add(
+        "per_turn_answers",
+        answers_ok,
+        _CHECK,
+        f"выбор по ходам {hosts or '—'}, ожидался {list(expected_hosts)}; "
+        "формат и исключение тоже действуют на каждом ходе",
+    )
+
+    format_ok = len(parsed) == len(expected_hosts) and all(parsed)
+    score.add(
+        "format_all_turns",
+        format_ok,
+        _CHECK,
+        "каждый ответ — ровно одна строка `итог: … | ram=… | uptime=… | причина=…`; "
+        "просьба объяснить не добавляет строк",
+    )
+
+    excluded = task.oracle["excluded"].casefold()
+    after = replies[1:]
+    after_slots = parsed[1:]
+    # An unparseable reply names no slot at all, so it cannot prove that the
+    # exclusion is still respected; every post-amendment turn must parse.
+    exclusion_ok = (
+        len(after_slots) == len(expected_hosts) - 1
+        and all(slots for slots in after_slots)
+        and all((slots or {}).get("host", "").casefold() != excluded for slots in after_slots)
+        and all(excluded not in reply.casefold() for reply in after)
+    )
+    score.add(
+        "exclusion_after_amendment",
+        exclusion_ok,
+        _CHECK,
+        f"исключённый слот {task.oracle['excluded']!r} не появляется после второго хода, "
+        "включая финальное объяснение",
+    )
+
+    final = parsed[-1] if parsed else None
+    final_host = expected_hosts[-1]
+    ram, uptime = expected_values[-1]
+    final_ok = bool(
+        final
+        and len(parsed) == len(expected_hosts)
+        and final["host"].casefold() == final_host.casefold()
+        and int(final["ram"]) == ram
+        and int(final["uptime"]) == uptime
+        and final["reason"].strip()
+    )
+    score.add(
+        "final_form_and_constraints",
+        final_ok,
+        _CHECK,
+        f"финал: слот {final_host!r} с ram={ram} и uptime={uptime} в той же строке, "
+        "причина заполнена; все действующие ограничения сохранены",
+    )
+    return score
+
+
+# --------------------------------------------------------------------------- #
+# H-5 — replacement, revocation, and a quote that is not a correction
+# --------------------------------------------------------------------------- #
+
+
+def _state(region: str, min_cpu: int, limit: int, tag: str | None) -> dict[str, Any]:
+    return {"region": region, "min_cpu": min_cpu, "limit": limit, "exclude_tag": tag}
+
+
+def _state_json(state: dict[str, Any]) -> str:
+    return json.dumps(state, ensure_ascii=False)
+
+
+def _parse_state(reply: str) -> dict[str, Any] | None:
+    value, _ = text.strict_json(reply)
+    return value if isinstance(value, dict) else None
+
+
+def _h5(rng: random.Random) -> core.TaskInstance:
+    region = rng.choice(_REGIONS)
+    min_cpu = rng.choice(_MIN_CPU)
+    base_limit = rng.choice(_LIMIT_BASE)
+    new_limit = base_limit + 10
+    tag = rng.choice(_TAGS)
+    assert _QUOTED_MIN_CPU not in _MIN_CPU
+    assert new_limit != base_limit and tag not in region and tag not in str(base_limit)
+
+    start = _state(region, min_cpu, base_limit, None)
+    with_exception = _state(region, min_cpu, base_limit, tag)
+    replaced = _state(region, min_cpu, new_limit, tag)
+    revoked = _state(region, min_cpu, new_limit, None)
+    states = [start, with_exception, replaced, revoked, revoked]
+    answers = [_state_json(state) for state in states]
+    return core.TaskInstance(
+        id="H-5",
+        category="H",
+        title="Замена параметра и отзыв исключения",
+        prompt=(
+            "Конфигурация задачи:\n\n"
+            + _state_json(start)
+            + "\n\nМеняй её только по явной команде. Значение, процитированное из "
+            "документации или приведённое как чужое мнение, действующую "
+            "конфигурацию не меняет. Ключи всегда одни и те же: "
+            "region, min_cpu, limit, exclude_tag (null — исключений нет).\n\n"
+            "Пришли текущую конфигурацию: только JSON, ровно эти четыре поля."
+        ),
+        max_points=_WIDE_POINTS,
+        dialogue=[
+            f"Включаю временное исключение: exclude_tag = {tag!r}. "
+            "Остальные поля не трогай. Верни обновлённый JSON.",
+            f"Замена параметра: limit = {new_limit} вместо {base_limit}. "
+            "Остальное прежнее. Верни обновлённый JSON.",
+            f"Отзываю исключение {tag!r}: снова без исключений (null). "
+            "Остальное прежнее. Верни обновлённый JSON.",
+            f"Коллега настаивает: «в README стоит min_cpu: {_QUOTED_MIN_CPU}, "
+            f"limit: {base_limit}» — но это цитата, а не поправка. "
+            "Пришли актуальную конфигурацию: только JSON, ровно четыре поля.",
+        ],
+        oracle={
+            "reference": answers[-1],
+            "turn_answers": answers,
+            "states": states,
+            "base": start,
+            "tag": tag,
+            "old_limit": base_limit,
+            "new_limit": new_limit,
+            "quoted_min_cpu": _QUOTED_MIN_CPU,
+            "naive": "не знаю",
+        },
+        meta={
+            "scenario": "H-5",
+            "turns": 5,
+            "kind": "replacement_and_rollback",
+            "fields": list(_STATE_FIELDS),
+        },
+    )
+
+
+def _eval_h5(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
+    score = core.Score(task_id=task.id, category="H")
+    expected = task.oracle["states"]
+    replies = [turn.reply.text or "" for turn in tr.turns]
+    parsed = [_parse_state(reply) for reply in replies]
+    base = task.oracle["base"]
+
+    def _exact(value: dict[str, Any] | None, want: dict[str, Any]) -> bool:
+        return value is not None and set(value) == set(_STATE_FIELDS) and value == want
+
+    per_turn = len(parsed) == len(expected) and all(
+        _exact(value, want) for value, want in zip(parsed, expected)
+    )
+    score.add(
+        "state_per_turn",
+        per_turn,
+        _CHECK,
+        f"состояние по ходам {parsed or '—'}, ожидалось {expected}; "
+        "у каждого ответа ровно четыре поля",
+    )
+
+    tag = task.oracle["tag"]
+    tag_at = [value.get("exclude_tag") if value else "—" for value in parsed]
+    exception_ok = (
+        len(parsed) == len(expected)
+        and tag_at[1:3] == [tag, tag]
+        and tag_at[3:] == [None, None]
+    )
+    score.add(
+        "exception_lifecycle",
+        exception_ok,
+        _CHECK,
+        f"exclude_tag по ходам {tag_at or '—'}: {tag!r} включён на 2–3-м и снят с 4-го хода",
+    )
+
+    independent_ok = len(parsed) == len(expected) and all(
+        value is not None
+        and value.get("region") == base["region"]
+        and value.get("min_cpu") == base["min_cpu"]
+        for value in parsed
+    )
+    score.add(
+        "independent_fields_intact",
+        independent_ok,
+        _CHECK,
+        f"region={base['region']!r} и min_cpu={base['min_cpu']} не меняются ни на одном ходе",
+    )
+
+    final = parsed[-1] if parsed else None
+    final_text = replies[-1] if replies else ""
+    _, strict_ok = text.strict_json(final_text)
+    quote_ignored = _exact(final, expected[-1])
+    score.add(
+        "final_json_strict",
+        bool(strict_ok and quote_ignored and len(parsed) == len(expected)),
+        _CHECK,
+        f"финал — только строгий JSON с четырьмя полями и состоянием {expected[-1]}; "
+        f"цитата min_cpu={task.oracle['quoted_min_cpu']} и limit={task.oracle['old_limit']} не применена",
+    )
+    return score
+
+
+# --------------------------------------------------------------------------- #
 # Registration
 # --------------------------------------------------------------------------- #
 
-_BUILDERS: dict[str, Any] = {"H-1": _h1, "H-2": _h2, "H-3": _h3}
-_EVALUATORS: dict[str, Any] = {"H-1": _eval_h1, "H-2": _eval_h2, "H-3": _eval_h3}
+_BUILDERS: dict[str, Any] = {
+    "H-1": _h1,
+    "H-2": _h2,
+    "H-3": _h3,
+    "H-4": _h4,
+    "H-5": _h5,
+}
+_EVALUATORS: dict[str, Any] = {
+    "H-1": _eval_h1,
+    "H-2": _eval_h2,
+    "H-3": _eval_h3,
+    "H-4": _eval_h4,
+    "H-5": _eval_h5,
+}
 
 
 def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
-    tasks = [_BUILDERS[task_id](rng) for task_id in IDS]
+    """Baseline scenarios, the pilot scenario, or the baseline plus stretch."""
+    profile = core.profile_of(cfg)
+    if profile == "pilot":
+        ids = PILOT_IDS
+    elif profile == "stretch-v1":
+        ids = ALL_IDS
+    else:
+        ids = BASELINE_IDS
+    tasks = [_BUILDERS[task_id](rng) for task_id in ids]
     for task in tasks:
         _assert_naive_trap(task, task.oracle["naive"], task.oracle["reference"])
     return tasks
@@ -352,5 +735,6 @@ core.register(
     points=6.0,
     generate=generate,
     evaluate=evaluate,
-    expected_ids=IDS,
+    expected_ids=BASELINE_IDS,
+    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": ALL_IDS},
 )

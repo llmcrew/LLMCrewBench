@@ -19,7 +19,7 @@ type ModelRow = {
   K: {e: number; p: number};
   L: {e: number; p: number};
   totals: Record<string, {earned: number; possible: number}>;
-  spend: {answer: number; reasoning: number; tools: number; minutes: number};
+  spend: {answer: number | null; reasoning: number | null; tools: number; minutes: number | null};
   accent?: string;
 };
 
@@ -157,7 +157,8 @@ export const Suite: React.FC = () => {
         <div style={{gridRow: 'span 2', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: 20, borderRadius: 12, border: `1px solid ${C.pink}55`, background: `${C.pink}10`, ...riseIn(frame, 84)}}>
           <div style={{font: `700 27px/1.2 ${FONT_SANS}`, color: C.pink}}>L — 29 арт-сцен</div>
           <div style={{font: `400 17px/1.5 ${FONT_SANS}`, color: C.muted, marginTop: 6}}>
-            Свободная форма: палитра, композиция, детали, движение. Смотрится глазами, в балл не входит.
+            Свободная форма: палитра, композиция, детали, движение. Автоматом — только доставка
+            страницы (1 технический балл); вкус смотрится глазами, не процентом.
           </div>
         </div>
         <div style={{display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: 20, borderRadius: 12, border: `1px solid ${C.line}`, background: C.bgSoft, ...riseIn(frame, 108)}}>
@@ -201,14 +202,14 @@ export const Models: React.FC = () => {
             <div style={{display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 24}}>
               <Chip>D {m.totals.D?.earned ?? 0}/{m.totals.D?.possible ?? 0}</Chip>
               <Chip>K {m.K.e}/{m.K.p}</Chip>
-              <Chip>L {m.L.e}/{m.L.p}</Chip>
-              <Chip>{Math.round(m.spend.minutes)} мин</Chip>
+              <Chip>L доставка {m.L.e}/{m.L.p}</Chip>
+              <Chip>{m.spend.minutes == null ? 'н/д' : `${Math.round(m.spend.minutes)} мин`}</Chip>
             </div>
           </div>
         ))}
       </div>
       <div style={{position: 'absolute', bottom: 76, left: 96, right: 96, font: `400 20px/1.5 ${FONT_SANS}`, color: C.muted, ...riseIn(frame, 140)}}>
-        Обе колонки — одна и та же модель и один сид: разница только в стенде. Дробь на плашках — заработано/возможно по блокам D, K и L. Витрина покажет, что собрал каждый стенд.
+        Обе колонки — одна и та же модель и один сид: разница только в стенде. Дробь на плашках — заработано/возможно по блокам D и K; у L — покрытие доставки, не художественная оценка. Витрина покажет, что собрал каждый стенд.
       </div>
     </Shell>
   );

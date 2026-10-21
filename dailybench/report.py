@@ -9,19 +9,34 @@ of the verdict.
 
 from __future__ import annotations
 
+import html
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import core
+from . import core, gallery, generation
 
 SHORT_ORDER = core.ADMISSION_CATEGORIES
 
 
+def _esc(value: Any) -> str:
+    return html.escape(str(value if value is not None else "—"))
+
+
+def _file_name(task_id: str) -> str:
+    """One path component for an id that is not ``K-1``-shaped."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", task_id).lstrip(".") or "task"
+
+
 def load_run(directory: Path | str) -> dict[str, Any]:
     directory = Path(directory)
-    scores_path = directory / "scores.json"
+    # A committed generation is one consistent checkpoint. The root copies are
+    # for tools that treat a run as plain files; readers must not mix them when
+    # a save was interrupted between two of them.
+    base = generation.committed(directory)
+    scores_path = base / "scores.json"
     if not scores_path.is_file():
         raise FileNotFoundError(f"{scores_path} not found — run the suite first")
     data: dict[str, Any] = {
@@ -29,7 +44,7 @@ def load_run(directory: Path | str) -> dict[str, Any]:
         "scores": json.loads(scores_path.read_text(encoding="utf-8")),
     }
     for name in ("config", "provider", "hardware", "suite", "speed", "tasks", "sizing", "rescored"):
-        path = directory / f"{name}.json"
+        path = base / f"{name}.json"
         if path.is_file():
             data[name] = json.loads(path.read_text(encoding="utf-8"))
     return data
@@ -71,6 +86,7 @@ def summarise(
             "earned": 0.0,
             "possible": 0.0,
             "admitted": True,
+            "admission": "passed",
             "tasks": 0,
             "errors": 0,
             "skipped": 0,
@@ -104,12 +120,22 @@ def summarise(
         row["possible"] += possible
         if score.get("error"):
             row["errors"] += 1
-        if score.get("admission") is False:
+        admission = score.get("admission")
+        if admission is False:
+            row["admission"] = "failed"
             row["admitted"] = False
-        else:
+        elif category == "E" and admission is None and row["admission"] == "passed":
+            # Only the long-context block has an admission check; every other
+            # evaluator leaves the field unset, so ``None`` there is no signal.
+            # For E, unknown is not a pass: the measurement may still turn out
+            # bad, so the state stays unverified until a real verdict arrives.
+            row["admission"] = "unverified"
+            row["admitted"] = False
+        if admission is not False:
             row["earned"] += score.get("earned", 0.0)
 
-    long_context_admitted = per_category.get("E", {}).get("admitted", True)
+    admission_state = per_category.get("E", {}).get("admission", "passed")
+    long_context_admitted = admission_state == "passed"
     admitted_total = round(sum(per_category[key]["earned"] for key in core.SCORED_CATEGORIES), 3)
     short_total = round(sum(per_category[key]["earned"] for key in SHORT_ORDER), 3)
     possible_total = round(sum(row["possible"] for row in per_category.values()), 3)
@@ -129,19 +155,23 @@ def summarise(
     elif isinstance(suite_tasks, int):
         expected_scored = suite_tasks
 
-    if long_context_admitted:
-        headline_earned, headline_possible = admitted_total, possible_total
-    else:
+    if admission_state == "failed":
         headline_earned = short_total
         headline_possible = round(sum(per_category[key]["possible"] for key in SHORT_ORDER), 3)
+    else:
+        # Unknown admission keeps the full numerator and denominator: an
+        # unmeasured input size is not a failed capability (R02).
+        headline_earned, headline_possible = admitted_total, possible_total
 
     if expected_scored:
         full_suite = ran >= expected_scored
     else:
         full_suite = possible_total >= core.FULL_TOTAL - 1e-9
     verdict = f"{headline_earned:.0f}/{headline_possible:.0f}"
-    if not long_context_admitted:
+    if admission_state == "failed":
         verdict += " (из доступных баллов: long context не прошёл допуск)"
+    elif admission_state == "unverified":
+        verdict += " (допуск не подтверждён: runtime не сообщил размер входа)"
     if not full_suite:
         verdict += f" (частичный прогон: {possible_total:.0f} из {core.FULL_TOTAL:.0f} баллов сьюта)"
     if skipped_total:
@@ -165,6 +195,7 @@ def summarise(
         "headline_earned": headline_earned,
         "headline_possible": headline_possible,
         "long_context_admitted": long_context_admitted,
+        "admission_state": admission_state,
         "errors": errors,
         "ran": ran,
         "ran_showcase": ran_showcase,
@@ -202,6 +233,7 @@ def render_markdown(run: dict[str, Any]) -> str:
     lines.append(f"| Квант | {quant} |")
     lines.append(f"| Runtime | {config.get('runtime') or provider.get('provider', 'n/a')} |")
     lines.append(f"| Endpoint | `{config.get('base_url', '')}` |")
+    lines.append(f"| Профиль | `{config.get('profile') or core.DEFAULT_PROFILE}` |")
     lines.append(f"| Веса SHA-256 | `{config.get('weights_sha256') or 'не указан'}` |")
     lines.append(f"| KV-cache | {config.get('kv_type') or 'n/a'} |")
     lines.append(f"| Окно контекста | {config.get('context_window')} |")
@@ -263,7 +295,7 @@ def render_markdown(run: dict[str, Any]) -> str:
         score_text = f"{row['earned']:.0f} / {row['possible']:.0f}"
         if row["skipped"]:
             score_text += f" (не проверялось: {row['skipped']})"
-        admitted = "да" if row["admitted"] else "нет"
+        admitted = {"passed": "да", "unverified": "не подтверждён"}.get(row["admission"], "нет")
         lines.append(f"| {key}. {title} | {score_text} | {admitted} | {row['errors']} |")
     lines.append("")
     lines.append("## Задания")
@@ -356,7 +388,7 @@ def render_markdown(run: dict[str, Any]) -> str:
 def compare_markdown(runs: list[dict[str, Any]]) -> str:
     """Side-by-side table across runs: quality first, then memory and speed."""
     lines = ["# Сравнение конфигураций", ""]
-    header = ["Модель", "Квант", "Итог"]
+    header = ["Модель", "Профиль", "Квант", "Итог"]
     for key in sorted(core.CATEGORY_POINTS):
         header.append(f"{key}, %")
     header += [f"{key} (визуальный), %" for key in sorted(core.SHOWCASE_CATEGORIES)]
@@ -368,15 +400,18 @@ def compare_markdown(runs: list[dict[str, Any]]) -> str:
     for run in runs:
         config = run.get("config", {})
         summary = summarise(run["scores"], run.get("suite") or {})
-        row = [config.get("model", "?"), config.get("quant") or "n/a", summary["verdict"]]
+        row = [config.get("model", "?"), config.get("profile") or core.DEFAULT_PROFILE,
+               config.get("quant") or "n/a", summary["verdict"]]
         for key in sorted(core.CATEGORY_POINTS):
             entry = summary["per_category"].get(key)
             if not entry or not entry["tasks"]:
                 row.append("—")
             elif entry["skipped"] == entry["tasks"]:
                 row.append("не проверялось")
-            elif not entry["admitted"]:
+            elif entry["admission"] == "failed":
                 row.append("не допущен")
+            elif entry["admission"] == "unverified":
+                row.append("допуск не подтверждён")
             elif entry["possible"]:
                 row.append(f"{100 * entry['earned'] / entry['possible']:.0f}")
             else:
@@ -417,12 +452,24 @@ def compare_markdown(runs: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _shot_of(entry: dict[str, Any]) -> str:
-    """Path of the frame the visual check stored for one task, if any."""
+def _shot_of(entry: dict[str, Any], run_dir: Path) -> str:
+    """Path of the frame the visual check stored for one task, if any.
+
+    A recorded path is only trusted when it lies inside the run or the render
+    cache, the same roots the gallery copies from: an imported ``tasks.json``
+    must not make the page reference (and the writer copy) an arbitrary file.
+    """
     transcript = entry.get("transcript") or {}
     info = (transcript.get("extra") or {}).get("visual") or {}
     shot = str(info.get("shot") or "")
-    return shot if shot and Path(shot).is_file() else ""
+    if not shot:
+        return ""
+    path = Path(shot)
+    if not path.is_absolute():
+        path = run_dir / path
+    if not path.is_file() or not gallery._within(path, gallery._allowed_roots(run_dir)):
+        return ""
+    return str(path.resolve())
 
 
 def write_visual_gallery(run: dict[str, Any]) -> Path | None:
@@ -454,12 +501,14 @@ def write_visual_gallery(run: dict[str, Any]) -> Path | None:
             title = title.split("—", 1)[-1].strip() if "—" in title else title.split("-", 1)[-1].strip()
         score = scores.get(task_id) or {}
         earned, possible = score.get("earned"), score.get("possible")
-        shot = _shot_of(entry)
+        shot = _shot_of(entry, run_dir)
         if shot:
-            name = f"{task_id}.png"
+            # The id becomes a file name: ``../x`` would land outside ``visual/``,
+            # so anything off-schema is reduced to one path component.
+            name = f"{task_id}.png" if gallery._ID_SCHEMA.fullmatch(task_id) else f"{_file_name(task_id)}.png"
             shutil.copyfile(shot, target / name)
             copied += 1
-            image = f'<img src="visual/{name}" alt="{task_id}" loading="lazy">'
+            image = f'<img src="visual/{_esc(name)}" alt="{_esc(task_id)}" loading="lazy">'
         else:
             image = '<div class="missing">кадра нет: страница не отрисовалась</div>'
         failed = [c["name"] for c in score.get("checks", []) if not c["passed"]]
@@ -470,14 +519,14 @@ def write_visual_gallery(run: dict[str, Any]) -> Path | None:
         )
         block = core.SHOWCASE_TITLES.get(task.get("category", ""), task.get("category", ""))
         cards.append(
-            f'<figure><figcaption><span class="block">{block}</span> {task_id} — {title} '
-            f'<span class="score">{status}</span></figcaption>{image}'
-            f'<div class="checks">{"провалено: " + ", ".join(failed) if failed else "все проверки пройдены"}</div>'
+            f'<figure><figcaption><span class="block">{_esc(block)}</span> {_esc(task_id)} — {_esc(title)} '
+            f'<span class="score">{_esc(status)}</span></figcaption>{image}'
+            f'<div class="checks">{_esc("провалено: " + ", ".join(failed) if failed else "все проверки пройдены")}</div>'
             "</figure>"
         )
 
     page = f"""<!DOCTYPE html>
-<html lang="ru"><head><meta charset="utf-8"><title>Витрина — {run_dir.name}</title>
+<html lang="ru"><head><meta charset="utf-8"><title>Витрина — {_esc(run_dir.name)}</title>
 <style>
  body {{ background:#0d1117; color:#e6edf3; font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; margin:24px }}
  h1 {{ font-size:20px; margin:0 0 4px }}

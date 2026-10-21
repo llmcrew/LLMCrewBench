@@ -39,7 +39,7 @@ def test_k1_registers_in_the_suite_with_its_points():
     task = tasks[0]
     assert task.category == "K"
     assert task.max_points == 4.0
-    assert task.max_points == core.SHOWCASE_POINTS["K"] / 20
+    assert task.max_points == core.points_for("K", core.DEFAULT_PROFILE) / 20
 
 
 def test_k1_is_deterministic_in_the_seed_and_varies_with_it():

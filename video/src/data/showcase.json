@@ -7,14 +7,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-1.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-1.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -28,14 +28,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-2.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-2.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -49,14 +49,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-3.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-3.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -70,14 +70,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-4.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-4.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -91,14 +91,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-5.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-5.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -112,14 +112,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-6.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-6.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -133,14 +133,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-7.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-7.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -154,14 +154,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-8.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-8.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -175,14 +175,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-9.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-9.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -196,14 +196,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-10.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-10.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -217,14 +217,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-11.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-11.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -238,14 +238,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-12.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-12.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -259,14 +259,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-13.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-13.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -280,14 +280,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-14.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-14.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -301,14 +301,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-15.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-15.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -322,14 +322,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-16.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-16.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -343,14 +343,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-17.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-17.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -364,14 +364,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-18.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-18.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -385,14 +385,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-19.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-19.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -406,14 +406,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__K-20.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__K-20.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -427,14 +427,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-1.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-1.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -448,14 +448,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-2.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-2.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -469,14 +469,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-3.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-3.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -490,14 +490,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-4.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-4.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -511,14 +511,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-5.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-5.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -532,14 +532,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-6.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-6.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -553,14 +553,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-7.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-7.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -574,14 +574,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-8.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-8.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -595,14 +595,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-9.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-9.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -616,14 +616,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-10.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-10.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -637,14 +637,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-11.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-11.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -658,14 +658,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-12.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-12.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -679,14 +679,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-13.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-13.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -700,14 +700,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-14.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-14.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -721,14 +721,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-15.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-15.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -742,14 +742,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-16.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-16.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -763,14 +763,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-17.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-17.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -784,14 +784,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-18.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-18.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -805,14 +805,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-19.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-19.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -826,14 +826,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-20.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-20.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -847,14 +847,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-21.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-21.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -868,14 +868,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-22.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-22.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -889,14 +889,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-23.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-23.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -910,14 +910,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-24.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-24.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -931,14 +931,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-25.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-25.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -952,14 +952,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-26.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-26.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -973,14 +973,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-27.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-27.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -994,14 +994,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-28.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-28.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],
@@ -1015,14 +1015,14 @@
     "model": "deepseek-v4.1-flash-unc",
     "label": "DeepSeek 4.1 Flash · стенд A",
     "clip": "clips/deepseek-v4.1-flash-unc__L-29.mp4",
-    "missing": false,
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017",
     "label": "DeepSeek 4.1 Flash · стенд 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017__L-29.mp4",
-    "missing": true,
+    "status": "not_run",
     "accent": "#ffb45c"
    }
   ],

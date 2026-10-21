@@ -61,10 +61,10 @@
    }
   },
   "spend": {
-   "answer": 1037184,
+   "answer": null,
    "reasoning": 585622,
    "tools": 1449,
-   "minutes": 140.3
+   "minutes": 140.2
   }
  },
  {
@@ -129,10 +129,10 @@
    }
   },
   "spend": {
-   "answer": 337436,
+   "answer": 174853,
    "reasoning": 162583,
    "tools": 609,
-   "minutes": 32.2
+   "minutes": 32.1
   }
  }
 ]

@@ -7,6 +7,8 @@ import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .core import DEFAULT_PROFILE, PROFILES
+
 DEFAULT_SEED = 20260915
 
 #: Neutral system text, identical in wording for every model. The chat template
@@ -92,7 +94,25 @@ class RunConfig:
     that hits the ceiling is reported as unverified, never as a wrong answer.
     """
 
+    task_wall_clock: float = 3600.0
+    """Hard ceiling for one whole task, retries and tool turns included.
+
+    ``request_wall_clock`` alone bounds neither a multi-turn tool loop (every
+    turn got a fresh full budget) nor the ``stream_options`` retry (a second
+    request with a fresh full budget): a task could run for hours while the
+    wording read as a per-request ceiling. One absolute deadline is armed when
+    the task starts, an exhausted budget stops the loop, and the later turns
+    and the retry get only the remaining time.
+    """
+
     # --- suite ------------------------------------------------------------- #
+    profile: str = DEFAULT_PROFILE
+    """Suite version: ``baseline-20261020``, ``pilot`` or ``stretch-v1``.
+
+    A run carries the profile in its saved config, so a resume or a re-score
+    regenerates exactly the same task list instead of mixing suite versions.
+    """
+
     seed: int = DEFAULT_SEED
     only: tuple[str, ...] = ()
     sql_backend: str = "sqlite"  # "sqlite" | "postgres"
@@ -142,6 +162,10 @@ class RunConfig:
         for field_name, (env_name, fallback) in self._ENV_DEFAULTS.items():
             if not getattr(self, field_name):
                 setattr(self, field_name, _env(env_name) or fallback)
+        if self.profile not in PROFILES:
+            raise ValueError(
+                f"неизвестный профиль {self.profile!r}; допустимы: {', '.join(PROFILES)}"
+            )
 
     #: Space kept between prompt + answer and the declared window, so a request
     #: is never rejected for exceeding the context by a handful of tokens.
@@ -185,6 +209,11 @@ class RunConfig:
     def to_json(self) -> str:
         data = asdict(self)
         data["out_dir"] = str(self.out_dir)
+        # The key itself is local; a published run only says whether one was
+        # used. ``from_dict`` still accepts the old field and env resolution
+        # fills it again, so a saved config remains replayable.
+        data.pop("api_key", None)
+        data["api_key_set"] = bool(self.api_key and self.api_key != "not-needed")
         return json.dumps(data, indent=2, ensure_ascii=False)
 
     @classmethod

@@ -73,6 +73,13 @@ export const Verdict: React.FC = () => {
   const best = MODELS[0];
   const worst = MODELS[MODELS.length - 1];
   const gap = Math.round((best.score - worst.score) * 10) / 10;
+  // Совместимость: K сравниваем процентом только при одинаковом полном
+  // покрытии; L — доставка, а не художественный процент (у 1017 это 1/1).
+  const kCompatible = best.K.p > 0 && MODELS.every((m) => m.K.p === best.K.p);
+  const lCompatible = best.L.p > 0 && MODELS.every((m) => m.L.p === best.L.p);
+  const pct = (e: number, p: number) => `${Math.round((e / Math.max(1, p)) * 100)}%`;
+  const lFact = `L: доставка ${MODELS.map((m) => `${m.L.e}/${m.L.p} (${m.label})`).join(' · ')}`
+    + (lCompatible ? ' — техническая доставка, не вкус' : ' — не сравнивается процентом');
   // Категории, где стенды различаются: только они и составляют разницу итога.
   const cats = new Set(MODELS.flatMap((m) => Object.keys(m.totals ?? {})));
   const escored = [...cats]
@@ -86,7 +93,7 @@ export const Verdict: React.FC = () => {
     })
     .filter((x) => Math.abs(x.delta) > 0.5);
   const facts = [
-    ['Итог', MODELS.map((m) => `${m.label} — ${m.verdict || `${m.score.toFixed(0)}/100`}`).join(' · '), best.accent],
+    ['Итог A–J', MODELS.map((m) => `${m.label} — ${m.verdict || `${m.score.toFixed(0)}/100`}`).join(' · '), best.accent],
     [
       'Где именно разошлись (1017 минус A)',
       escored.length
@@ -94,13 +101,15 @@ export const Verdict: React.FC = () => {
         : 'нет — общая часть A–J совпала',
       C.accent,
     ],
-    ['Разница итога', `${gap} ${gap % 10 === 1 && gap !== 11 ? 'балл' : 'баллов'} — ровно на них`, worst.accent],
+    ['Разница итога A–J', `${gap} ${gap % 10 === 1 && gap !== 11 ? 'балл' : 'баллов'} — ровно на них`, worst.accent],
     [
       'Симуляции (K)',
-      MODELS.map((m) => `${m.label}: ${Math.round((m.K.e / Math.max(1, m.K.p)) * 100)}%`).join(' · '),
+      kCompatible
+        ? MODELS.map((m) => `${m.label}: ${pct(m.K.e, m.K.p)}`).join(' · ')
+        : `${MODELS.map((m) => `${m.label}: ${m.K.e}/${m.K.p}`).join(' · ')} — покрытие разное, без процента`,
       C.purple,
     ],
-    ['Арт-сцены (L)', MODELS.map((m) => `${m.label}: ${m.L.p} из 145 в блоке · ${Math.round((m.L.e / Math.max(1, m.L.p)) * 100)}%`).join(' · '), C.pink],
+    ['Арт-сцены (L): доставка, не вкус', lFact, C.pink],
   ] as const;
   return (
     <AbsoluteFill style={{backgroundColor: C.bg, color: C.ink}}>
