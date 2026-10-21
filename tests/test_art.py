@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import random
+
+import pytest
 
 from dailybench import art, browser, core, visual
 from dailybench.config import RunConfig
@@ -122,8 +125,8 @@ def test_render_check_does_not_add_artistic_quality_points():
 
 
 def test_block_asks_every_topic_once_and_stays_free_form():
-    tasks = art_block.generate(__import__("random").Random(1), RunConfig())
-    assert tuple(task.id for task in tasks) == art_block.IDS
+    tasks = art_block.generate(random.Random(1), RunConfig())
+    assert tuple(task.id for task in tasks) == art_block.IDS_BASELINE
     assert len(tasks) == 29
     assert [task.id for task in tasks] == [f"L-{i}" for i in range(1, 30)]
     # L-1 без темы; остальные называют только сюжет, а не рецепт.
@@ -142,3 +145,54 @@ def test_goldens_differ_between_topics():
     tasks = art_block.generate(__import__("random").Random(7), RunConfig())
     pages = {task.oracle["golden_html"] for task in tasks}
     assert len(pages) == len(tasks)
+
+
+STRETCH_IDS = tuple(f"L-{index}" for index in range(30, 40))
+
+STRETCH_TOPICS = (
+    "Архив древних карт",
+    "Коралловый риф без людей",
+    "Заброшенный карьер",
+    "Читальный зал после закрытия",
+    "Мастерская часовщика",
+    "Путь перелётных птиц через водно-болотные угодья",
+    "Палеонтологический раскоп",
+    "Рынок на рассвете",
+    "Детская площадка в масштабе насекомого",
+    "Радиотелескоп на пустынном плато",
+)
+
+
+def test_stretch_appends_the_new_themes_to_the_baseline():
+    baseline = [task.id for task in art_block.generate(random.Random(2), RunConfig())]
+    stretch = [
+        task.id
+        for task in art_block.generate(random.Random(2), RunConfig(profile="stretch-v1"))
+    ]
+    assert stretch == list(art_block.IDS_BASELINE) + list(STRETCH_IDS)
+    assert baseline == list(art_block.IDS_BASELINE)
+    assert art_block.IDS_BY_PROFILE["pilot"] == art_block.IDS_BASELINE
+    assert art_block.IDS_BY_PROFILE["stretch-v1"] == art_block.IDS
+    assert art_block.IDS == art_block.IDS_BASELINE + STRETCH_IDS
+
+
+def test_new_topics_match_the_roadmap_and_never_repeat():
+    assert tuple(art_block.TOPICS[task_id] for task_id in STRETCH_IDS) == STRETCH_TOPICS
+    assert len(set(art_block.TOPICS.values())) == len(art_block.TOPICS)
+
+
+def test_each_new_topic_has_a_smoke_golden_and_is_delivered(monkeypatch, tmp_path):
+    tasks = {
+        task.id: task
+        for task in art_block.generate(random.Random(3), RunConfig(profile="stretch-v1"))
+    }
+    monkeypatch.setenv(visual.CACHE_ENV, str(tmp_path))
+    monkeypatch.setattr(browser, "availability", lambda: (True, ""))
+    monkeypatch.setattr(browser, "render", lambda html, **kwargs: _frame())
+    for task_id in STRETCH_IDS:
+        task = tasks[task_id]
+        page = task.oracle["golden_html"]
+        assert page.lstrip().lower().startswith("<!doctype html")
+        assert str(task.prompt).split("\n")[0]
+        score = art.evaluate(task, _answer(page))
+        assert score.earned == score.possible == 1.0

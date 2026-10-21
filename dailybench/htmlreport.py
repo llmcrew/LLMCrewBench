@@ -66,6 +66,18 @@ def _pct(earned: float, possible: float) -> float | None:
     return round(100 * earned / possible, 1) if possible else None
 
 
+def _caveat(summary: dict[str, Any]) -> str:
+    """The verdict's caveats, without the score the headline already shows.
+
+    ``summarise`` never changes a denominator silently: a failed or unverified
+    admission, a partial run and skipped tasks are all spelled out in the
+    verdict. The markdown report carries that sentence verbatim; the HTML must
+    too, or a reader of the published page sees "85/90" with no reason.
+    """
+    verdict = str(summary.get("verdict") or "")
+    return verdict.split(" ", 1)[1] if " " in verdict else ""
+
+
 def _selector_of(run: dict[str, Any]) -> set[str]:
     """Every name a caller may plausibly use for this run."""
     config = run.get("config") or {}
@@ -80,19 +92,25 @@ def _select_runs(runs: list[dict[str, Any]], wanted: list[str]) -> list[dict[str
     real footgun: ``--compare qwen36`` (the name of the command that produced the
     run) used to fail because the run's label was "Qwen3.6 35B-A3B".
     """
-    by_selector: dict[str, dict[str, Any]] = {}
+    by_selector: dict[str, list[dict[str, Any]]] = {}
     for run in runs:
         for selector in _selector_of(run):
-            by_selector.setdefault(selector, run)
+            by_selector.setdefault(selector, []).append(run)
     missing = [name for name in wanted if name not in by_selector]
     if missing:
         raise ValueError(
             f"неизвестные модели для сравнения: {missing}; есть {sorted(by_selector)}"
         )
     picked: list[dict[str, Any]] = []
+    used: dict[str, int] = {}
     for name in wanted:
-        run = by_selector[name]
-        if run not in picked:
+        candidates = by_selector[name]
+        # A repeated selector means "the next run with this label", so two runs
+        # of one model can be put side by side explicitly.
+        index = min(used.get(name, 0), len(candidates) - 1)
+        used[name] = index + 1
+        run = candidates[index]
+        if not any(run is present for present in picked):
             picked.append(run)
     return picked
 
@@ -105,6 +123,12 @@ def _suite_facts(runs: list[dict[str, Any]]) -> dict[str, int]:
     stored), then the live registry. Hard-coding these was wrong the moment a
     category was added — the header claimed 83 tasks while the suite shipped 96,
     and a 100-point suite was advertised as 559.
+
+    Weights follow the run instead of today's baseline: the profile comes from
+    the config (or the digest) and the per-task points from the digest when it
+    recorded them. The category ceiling was also wrong for a filtered run — a
+    ``--only IF-1`` report advertised A's whole 10 points for one 2-point task,
+    and a ``pilot`` one an 80-point visual block where the profile offers 12.
     """
     # The registry holds the per-category weights (K's block total, L's per-task
     # weight); without it the showcase column under-counts silently.
@@ -112,10 +136,13 @@ def _suite_facts(runs: list[dict[str, Any]]) -> dict[str, int]:
 
     load_all()
     per_task: list[dict[str, Any]] = []
+    profile = core.DEFAULT_PROFILE
     for run in runs:
-        rows = (run.get("suite") or {}).get("per_task") or []
+        digest = run.get("suite") or {}
+        rows = digest.get("per_task") or []
         if len(rows) > len(per_task):
             per_task = rows
+            profile = _run_profile(run, digest)
     if not per_task:
         per_task = _rebuilt_digest(runs)
     scored = [row for row in per_task if row.get("category") in SCORED]
@@ -124,14 +151,34 @@ def _suite_facts(runs: list[dict[str, Any]]) -> dict[str, int]:
         "tasks": len(per_task),
         "scored": len(scored),
         "showcase": len(showcase),
-        # Points belong to the *category*, not to each task: a per-task sum gave
-        # 559 "points" for a 100-point suite. ``suite_points`` is the ceiling of
-        # the whole scored half, so a showcase-only run can still say what it did
-        # not test instead of implying a 0-point suite.
-        "scored_points": int(sum(core.CATEGORY_POINTS.get(key, 0) for key in {r["category"] for r in scored})),
-        "showcase_points": int(sum(_showcase_points(key) for key in {r["category"] for r in showcase})),
-        "suite_points": int(core.FULL_TOTAL),
+        # ``scored_points`` is the sum over the tasks that were actually offered;
+        # a digest without weights falls back to the category ceiling, which is
+        # exact for a full run. ``suite_points`` stays the ceiling of the whole
+        # scored half, so a showcase-only run can still say what it did not test
+        # instead of implying a 0-point suite.
+        "scored_points": int(_scored_points(scored, profile)),
+        "showcase_points": int(sum(_showcase_points(key, profile) for key in {r["category"] for r in showcase})),
+        "suite_points": int(sum(core.points_for(key, profile) or 0 for key in SCORED)),
     }
+
+
+def _run_profile(run: dict[str, Any], digest: dict[str, Any]) -> str:
+    """The profile a run was built for; the baseline when it is unknown."""
+    name = (run.get("config") or {}).get("profile") or digest.get("profile")
+    return name if name in core.PROFILES else core.DEFAULT_PROFILE
+
+
+def _scored_points(rows: list[dict[str, Any]], profile: str) -> float:
+    """What the scored tasks on offer were worth.
+
+    A digest that recorded ``max_points`` answers exactly (a filtered run only
+    offered its own tasks' points). An older digest cannot, so the category
+    ceiling — the profile's weight — is the best remaining answer.
+    """
+    weights = [row.get("max_points") for row in rows]
+    if rows and all(isinstance(weight, (int, float)) for weight in weights):
+        return float(sum(weights))
+    return float(sum(core.points_for(row["category"], profile) or 0.0 for row in rows))
 
 
 def _rebuilt_digest(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -151,7 +198,8 @@ def _rebuilt_digest(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         try:
             cfg = RunConfig.from_dict(config)
             return sorted(
-                ({"id": task.id, "category": task.category} for task in build_suite(cfg)),
+                ({"id": task.id, "category": task.category, "max_points": task.max_points}
+                 for task in build_suite(cfg)),
                 key=lambda row: row["id"],
             )
         except Exception:  # pragma: no cover - a config from an older version
@@ -159,16 +207,18 @@ def _rebuilt_digest(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return []
 
 
-def _showcase_points(category: str) -> float:
+def _showcase_points(category: str, profile: str = core.DEFAULT_PROFILE) -> float:
     """Points a showcase category carries.
 
-    ``SHOWCASE_POINTS`` totals the whole block under ``K``; the art category
-    ``L`` has no entry of its own (no leaderboard points), so a per-category
-    lookup has to fall back to its registered weight instead of counting it as
-    zero.
+    ``SHOWCASE_POINTS`` totals the whole block under ``K``; for the art
+    category ``L`` the number is informational only. The block depends on the
+    profile (pilot 12, stretch 120), so the caller passes the run's own. A
+    category without a declared weight falls back to its registered one instead
+    of counting as zero.
     """
-    if category in core.SHOWCASE_POINTS:
-        return float(core.SHOWCASE_POINTS[category])
+    declared = core.points_for(category, profile)
+    if declared is not None:
+        return float(declared)
     module = core.REGISTRY.get(category)
     return float(module.points) if module is not None else 0.0
 
@@ -215,13 +265,38 @@ def _spend_totals(run: dict[str, Any]) -> dict[str, float]:
             "answer_per_min": answer / (seconds / 60) if seconds > 1 else 0.0}
 
 
+def _json_script(payload: Any) -> str:
+    """JSON that is safe inside a ``<script>`` block.
+
+    ``json.dumps`` leaves ``<``/``>`` (so ``</script>`` closes the block early)
+    and U+2028/U+2029 (line terminators in older JS) as-is. Escaping them keeps
+    imported metadata from breaking out of the data block (R16).
+    """
+    text = json.dumps(payload, ensure_ascii=False)
+    for raw, safe in (("&", "\\u0026"), ("<", "\\u003c"), (">", "\\u003e"),
+                      ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
+        text = text.replace(raw, safe)
+    return text
+
+
+def _run_id(run: dict[str, Any]) -> str:
+    """Immutable identity of a run: its directory name, never a model label."""
+    return Path(str(run.get("dir") or "")).name
+
+
 def _model_name(run: dict[str, Any]) -> str:
     config = run.get("config") or {}
     label = config.get("label") or config.get("model") or "?"
     return str(label)
 
 
-def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
+def _column_name(run: dict[str, Any]) -> str:
+    """Column caption: the label alone is ambiguous for two runs of one model."""
+    label = _model_name(run)
+    return label if not _run_id(run) or _run_id(run) == label else f"{label} · {_run_id(run)}"
+
+
+def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_run: bool = False) -> str:
     """One card per model: score, showcase, spend, and where the points went."""
     cards = []
     for place, (run, summary) in enumerate(summaries, 1):
@@ -234,7 +309,7 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
         link = (
             f"<div class='sub'><a class='link' href='runs/{_cell(own)}/index.html'>"
             "отчёт по этой модели →</a></div>"
-        ) if own else ""
+        ) if own and not per_run else ""
         failed = sum(1 for r in rows if r.get("earned", 0) < r.get("possible", 0) and not r.get("skipped"))
         zero = sum(1 for r in rows if not r.get("earned") and not r.get("skipped") and r.get("possible"))
         failed_cats = sorted({r["category"] for r in rows
@@ -247,6 +322,7 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
             f"{summary['headline_earned']:.0f}<span class='of'>/{summary['headline_possible']:.0f}</span>"
             f"<span class='unit'>баллов качества</span></div>"
             f"<div class='meter'><i style='width:{100 * summary['headline_earned'] / (summary['headline_possible'] or 1):.0f}%'></i></div>"
+            f"{f'<div class=\'sub verdict\'>{_cell(_caveat(summary))}</div>' if _caveat(summary) else ''}"
             f"<div class='sub'>симуляции K: <b>{summary['showcase_earned']:.0f}/{summary['showcase_possible']:.0f}</b> · L — оценка человеком · "
             f"заданий с потерей: <b>{failed}</b> (нулевых {zero})</div>"
             f"<div class='sub'>категории с потерей: {_cell(', '.join(failed_cats) or 'нет')}</div>"
@@ -277,10 +353,23 @@ def _verdict_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> st
         cells = [
             f"<td class='model'>{_cell(_model_name(run))}</td>",
             f"<td class='verdict {_tone(summary['headline_earned'], summary['headline_possible'])}'>"
-            f"{summary['headline_earned']:.0f}/{summary['headline_possible']:.0f}</td>",
+            f"{summary['headline_earned']:.0f}/{summary['headline_possible']:.0f}"
+            f"{f'<span class=\'th-sub\'>{_cell(_caveat(summary))}</span>' if _caveat(summary) else ''}</td>",
         ]
         for key in SCORED:
             row = summary["per_category"].get(key, {})
+            if row.get("tasks") and row.get("skipped") == row.get("tasks"):
+                cells.append("<td class='num'><span class='th-sub'>не проверялось</span></td>")
+                continue
+            if key == "E" and row.get("admission") in ("failed", "unverified"):
+                # E is the only category whose admission can move the verdict:
+                # its percentage alone would read as an ordinary zero.
+                label = "не допущен" if row["admission"] == "failed" else "допуск не подтверждён"
+                cells.append(
+                    f"<td class='num admission {row['admission']}' "
+                    f"title='{row.get('earned', 0):.0f}/{row.get('possible', 0):.0f}'>{label}</td>"
+                )
+                continue
             pct = _pct(row.get("earned", 0), row.get("possible", 0))
             cells.append(f"<td class='num'>{'—' if pct is None else f'{pct:.0f}%'}</td>")
         for key in SHOWCASE:
@@ -300,20 +389,22 @@ def _verdict_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> st
 
 
 def _suite_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
-    """Suite × solutions: one row per task, one column per model.
+    """Suite × solutions: one row per task, one column per run.
 
     The matrix is the point of the report: the same task for everyone, so the
     differences are visible side by side instead of in three separate tables.
+    Columns are keyed by the immutable run directory: two runs of one model are
+    two columns, not one overwriting the other.
     """
-    by_model: dict[str, dict[str, dict[str, Any]]] = {}
+    by_run: dict[str, dict[str, dict[str, Any]]] = {}
     order: list[tuple[str, str, str]] = []
     for run, _summary in summaries:
-        name = _model_name(run)
-        by_model.setdefault(name, {})
+        run_id = _run_id(run)
+        by_run.setdefault(run_id, {})
         for score in run["scores"]:
             task_id = score["task_id"]
-            if task_id not in by_model[name]:
-                by_model[name][task_id] = score
+            if task_id not in by_run[run_id]:
+                by_run[run_id][task_id] = score
             if all(task_id != tid for tid, _, _ in order):
                 entry = next((e for e in (run.get("tasks") or [])
                               if (e.get("task") or {}).get("id") == task_id), {})
@@ -326,12 +417,12 @@ def _suite_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
 
     order.sort(key=order_key)
 
-    header = "".join(f"<th>{_cell(_model_name(run))}</th>" for run, _ in summaries)
+    header = "".join(f"<th>{_cell(_column_name(run))}</th>" for run, _ in summaries)
     rows = []
     for task_id, category, title in order:
         cells = []
         for run, _ in summaries:
-            score = by_model.get(_model_name(run), {}).get(task_id)
+            score = by_run.get(_run_id(run), {}).get(task_id)
             if not score:
                 cells.append("<td class='cell miss'>—</td>")
                 continue
@@ -590,7 +681,7 @@ def render_html(
         + "</div>"
     ) if per_run else ""
 
-    charts = json.dumps(_charts_payload([run for run, _ in summaries]), ensure_ascii=False)
+    charts = _json_script(_charts_payload([run for run, _ in summaries]))
     compare_rows = "".join(
         f"<label class='pick'><input type='checkbox' class='cmp' value='{_cell(item['id'])}' "
         f"data-model='{_cell(item['model'])}'><span>{_cell(item['model'])}</span> {_cell(item['id'])}</label>"
@@ -629,6 +720,8 @@ def render_html(
  td.num {{ text-align:right; white-space:nowrap }}
  td.model {{ font-weight:600; white-space:nowrap }}
  .verdict-table td.verdict {{ font-weight:700 }}
+ .verdict-table .admission {{ font-size:11.5px; white-space:nowrap; color:#e3b341 }}
+ .verdict-table .admission.failed {{ color:#ff7b72 }}
  .verdict-table td.show, .suite-table .cell {{ font-variant-numeric:tabular-nums }}
  .suite-table .task {{ width:34%; font-size:12.5px }}
  .suite-table .cat {{ display:block; color:#8b949e; font-size:11px }}
@@ -688,8 +781,8 @@ def render_html(
 <header>
  <div id="filehint" class="warn" hidden>Отчёт открыт как <code>file://</code>: живая витрина тянет ES-модули,
  которые браузер с такого origin не грузит (кадры работают). Запустите <code>make serve DIR=runs</code>
- и откройте <code>http://127.0.0.1:8765/{page_name}</code>.</div>
- <h1>{title}</h1>
+ и откройте <code>http://127.0.0.1:8765/{_cell(page_name)}</code>.</div>
+ <h1>{_cell(title)}</h1>
  <p class="hint">{lead}</p>
 </header>
 <nav class="tabs">
@@ -702,7 +795,7 @@ def render_html(
 
 <div class="panel active" id="p-summary">
  <h2>Кто сколько набрал</h2>
- <div class="cards">{_model_cards(summaries)}</div>
+ <div class="cards">{_model_cards(summaries, per_run=per_run)}</div>
  <h2>Качество по категориям сьюта</h2>
  <p class="hint">A–J — балльные категории (проценты от возможного), K и L — витрина: A инстр., B рассужд., C код,
  D инструм., E контекст, F галлюц., G JSON, H диалог, I файлы, J ревью.</p>
@@ -865,12 +958,38 @@ function visibleCards() {{
 
 function openViewer(items, index) {{
   current = items;
-  framesEl.innerHTML = items.map((it, i) => `
-    <div class="pane${{items.length === 1 ? ' solo' : ''}}">
-      <div class="cap"><span>${{it.model}} · ${{it.id}}</span><span>${{it.score}}</span></div>
-      ${{it.page ? `<div class="stage"><iframe data-i="${{i}}" src="${{it.page}}" sandbox="allow-scripts"></iframe></div>`
-                 : '<div class="missing">модель не дошла до HTML</div>'}}
-    </div>`).join('');
+  // Пользовательские строки (метка модели, id, путь) идут в DOM API, а не в
+  // innerHTML: кавычка или `<` в импортированных metadata больше не может
+  // переписать разметку viewer (R16).
+  framesEl.replaceChildren();
+  items.forEach((it, i) => {{
+    const pane = document.createElement('div');
+    pane.className = 'pane' + (items.length === 1 ? ' solo' : '');
+    const cap = document.createElement('div');
+    cap.className = 'cap';
+    const who = document.createElement('span');
+    who.textContent = `${{it.model}} · ${{it.id}}`;
+    const score = document.createElement('span');
+    score.textContent = it.score;
+    cap.append(who, score);
+    pane.append(cap);
+    if (it.page) {{
+      const stage = document.createElement('div');
+      stage.className = 'stage';
+      const frame = document.createElement('iframe');
+      frame.dataset.i = String(i);
+      frame.src = it.page;
+      frame.setAttribute('sandbox', 'allow-scripts');
+      stage.append(frame);
+      pane.append(stage);
+    }} else {{
+      const missing = document.createElement('div');
+      missing.className = 'missing';
+      missing.textContent = 'модель не дошла до HTML';
+      pane.append(missing);
+    }}
+    framesEl.append(pane);
+  }});
   document.getElementById('viewer-title').textContent =
     items.length === 1 ? `${{items[0].model}} · ${{items[0].id}}` : `сравнение: ${{items.length}} решения`;
   framesEl.classList.toggle('many', items.length > 1);
@@ -993,9 +1112,9 @@ if (location.protocol === 'file:') {{ document.getElementById('filehint').hidden
 
 def _vendor_plotly(target: Path) -> None:
     """Plotly next to the page: charts must work without the network."""
-    from .browser import REPO
+    from .browser import PLOTLY
 
-    source = REPO / "vendor" / "plotly" / "plotly.min.js"
+    source = PLOTLY / "plotly.min.js"
     if not source.is_file():
         return
     target.mkdir(parents=True, exist_ok=True)

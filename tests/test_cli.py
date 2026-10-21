@@ -261,6 +261,164 @@ def test_resume_refuses_to_mix_two_models(endpoint, tmp_path: Path):
     assert missing == [] and [run.task.id for run in kept] == ["IF-1"]
 
 
+def test_resume_ignores_a_mirror_the_master_no_longer_lists(endpoint, tmp_path: Path):
+    """R09: mirrors recover a corrupt master, they do not extend a valid one.
+
+    After C-1/C-2 a checkpoint containing only C-1 was written; the C-2 mirror
+    stayed on disk and resume used to resurrect it next to the new master.
+    """
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1,IF-2", "--name", "mirrors") == 0
+    run_dir = out / "mirrors"
+
+    from dailybench.core import Score
+    from dailybench.runner import RunResult, TaskRun, transcript_from_dict
+
+    saved = _read(run_dir / "tasks.json")
+    cfg = RunConfig.from_dict(_read(run_dir / "config.json"))
+    task = next(t for t in build_suite(cfg) if t.id == "IF-1")
+    first = TaskRun(
+        task=task,
+        transcript=transcript_from_dict(saved[0]["transcript"], task),
+        score=Score.from_dict(saved[0]["score"]),
+    )
+    RunResult(cfg=cfg, runs=[first]).save(run_dir)
+    assert (run_dir / "transcripts" / "IF-2.json").is_file(), "старое зеркало обязано остаться на диске"
+
+    from dailybench.cli import _resume_tasks
+
+    missing, kept = _resume_tasks(cfg, build_suite(cfg))
+    assert [run.task.id for run in kept] == ["IF-1"], "старое зеркало не должно воскреснуть"
+    assert [item.id for item in missing] == ["IF-2"]
+
+
+def test_resume_ignores_mirrors_without_a_master(endpoint, tmp_path: Path):
+    """R09: without tasks.json there is no checkpoint to trust the mirrors for."""
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1,IF-2", "--name", "orphan") == 0
+    run_dir = out / "orphan"
+    (run_dir / "tasks.json").unlink()
+    assert list((run_dir / "transcripts").glob("*.json")), "зеркала на месте, но master отсутствует"
+
+    from dailybench.cli import _resume_tasks
+
+    cfg = RunConfig.from_dict(_read(run_dir / "config.json"))
+    missing, kept = _resume_tasks(cfg, build_suite(cfg))
+    assert kept == []
+    assert [item.id for item in missing] == ["IF-1", "IF-2"]
+
+
+def test_resume_rejects_an_agent_switch(endpoint, tmp_path: Path):
+    """R09: agent=True and agent=False are different harness contracts."""
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1", "--name", "agent-switch") == 0
+
+    from dailybench.cli import _resume_tasks
+
+    cfg = RunConfig.from_dict(_read(out / "agent-switch" / "config.json"))
+    cfg.agent = False
+    with pytest.raises(SystemExit, match="resume смешал бы"):
+        _resume_tasks(cfg, build_suite(cfg))
+
+
+def test_run_exits_two_when_every_chat_request_fails_infrastructure(endpoint, tmp_path: Path, monkeypatch):
+    """R14: a dead transport is not a wrong model answer."""
+    from dailybench.providers import OpenAICompatibleProvider, ProviderError
+
+    base_url, _server = endpoint
+
+    def dead(self, *args, **kwargs):
+        raise ProviderError("HTTP 500: upstream is down")
+
+    monkeypatch.setattr(OpenAICompatibleProvider, "chat", dead)
+    assert _run(base_url, tmp_path, "--only", "IF-1,IF-2", "--name", "infra", "--no-html") == 2
+
+
+def test_run_keeps_the_normal_exit_code_on_a_partial_infrastructure_failure(
+    endpoint, tmp_path: Path, monkeypatch
+):
+    """R14: one surviving answer means the run still describes the model."""
+    from dailybench.providers import OpenAICompatibleProvider, ProviderError
+
+    base_url, _server = endpoint
+    real = OpenAICompatibleProvider.chat
+    calls = {"n": 0}
+
+    def flaky(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real(self, *args, **kwargs)
+        raise ProviderError("HTTP 500: upstream is down")
+
+    monkeypatch.setattr(OpenAICompatibleProvider, "chat", flaky)
+    assert _run(base_url, tmp_path, "--only", "IF-1,IF-2", "--name", "partial", "--no-html") == 0
+    scores = _read(tmp_path / "partial" / "scores.json")
+    assert any(row.get("error") for row in scores) and any(not row.get("error") for row in scores)
+
+
+def test_resume_rejects_a_changed_weight(endpoint, tmp_path: Path, monkeypatch):
+    """The same fixtures scored out of another denominator are another measurement.
+
+    ``suite_digest`` used to hash prompts, dialogue, workspace and tools only, so
+    a weight change left the identity intact and resume merged 2-point tasks
+    with 5-point ones under one score file.
+    """
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1,IF-2", "--name", "weights") == 0
+
+    from dailybench import suite as suite_module
+    from dailybench.cli import _resume_tasks
+
+    real = suite_module.apply_profile_weights
+
+    def heavier(tasks, profile):
+        real(tasks, profile)
+        for task in tasks:
+            task.max_points *= 2
+
+    monkeypatch.setattr(suite_module, "apply_profile_weights", heavier)
+    cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "weights",
+                    model="test-model", base_url=base_url)
+    with pytest.raises(SystemExit, match="разошёлся"):
+        _resume_tasks(cfg, build_suite(cfg))
+
+
+def test_resume_rejects_a_saved_denominator(tmp_path: Path):
+    """A suite.json recording another possible_total cannot be resumed into."""
+    from dailybench.cli import _resume_tasks, build_suite_digest
+
+    cfg = RunConfig(seed=SEED, out_dir=tmp_path / "full")
+    cfg.out_dir.mkdir()
+    digest = build_suite_digest(cfg)
+    digest["possible_total"] = float(digest.get("possible_total") or 0.0) + 1
+    (cfg.out_dir / "suite.json").write_text(json.dumps(digest, ensure_ascii=False), encoding="utf-8")
+    (cfg.out_dir / "tasks.json").write_text("[]", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="знаменател"):
+        _resume_tasks(cfg, build_suite(cfg))
+
+
+def test_resume_rejects_a_suite_off_the_profile_total(tmp_path: Path, monkeypatch):
+    """A generated suite must weigh exactly what its profile declares."""
+    from dailybench import core
+    from dailybench.cli import _resume_tasks, build_suite_digest
+
+    cfg = RunConfig(seed=SEED, out_dir=tmp_path / "full")
+    cfg.out_dir.mkdir()
+    (cfg.out_dir / "suite.json").write_text(
+        json.dumps(build_suite_digest(cfg), ensure_ascii=False), encoding="utf-8"
+    )
+    (cfg.out_dir / "tasks.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(core, "profile_total", lambda profile=core.DEFAULT_PROFILE: 999.0)
+
+    with pytest.raises(SystemExit, match="знаменател"):
+        _resume_tasks(cfg, build_suite(cfg))
+
+
 def test_resume_without_speed_keeps_the_saved_profile(endpoint, tmp_path: Path):
     """`--resume` must not wipe speed.json just because the flag was omitted.
 
@@ -279,6 +437,16 @@ def test_resume_without_speed_keeps_the_saved_profile(endpoint, tmp_path: Path):
     assert _run(base_url, out, "--only", "IF-1", "--name", "sp", "--resume", "--no-html") == 0
     kept = _read(out / "sp" / "speed.json")
     assert kept and kept[0]["generation_tok_s"] == 42.0, "сохранённый профиль обязан пережить resume"
+
+
+def test_bench_forwards_the_profile_to_run():
+    from dailybench.cli import _bench_run_argv, build_parser
+
+    argv = _bench_run_argv(build_parser().parse_args(
+        ["bench", "--base-url", "http://127.0.0.1:1/v1", "--model", "test-model",
+         "--profile", "pilot"]
+    ))
+    assert argv[argv.index("--profile") + 1] == "pilot"
 
 
 def test_bench_forwards_resume_to_run():
@@ -354,6 +522,33 @@ def test_run_maps_unsupported_onto_the_config(endpoint, tmp_path: Path):
     assert httpstub.chat_payloads(server) == [], "непроверяемая категория не должна вызывать модель"
     scores = _read(tmp_path / "skipped" / "scores.json")
     assert scores and all(row.get("skipped") for row in scores)
+
+
+def test_run_persists_the_profile_and_hides_the_key(endpoint, tmp_path: Path, monkeypatch):
+    base_url, _server = endpoint
+    monkeypatch.setenv("DAILYBENCH_API_KEY", "sk-canary")
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1", "--limit", "1", "--name", "prof",
+                "--profile", "stretch-v1") == 0
+    config = _read(out / "prof" / "config.json")
+    assert config["profile"] == "stretch-v1"
+    assert "api_key" not in config
+    assert config["api_key_set"] is True
+    assert "sk-canary" not in (out / "prof" / "config.json").read_text(encoding="utf-8")
+    suite = _read(out / "prof" / "suite.json")
+    assert suite["profile"] == "stretch-v1"
+
+
+def test_resume_rejects_another_profile(endpoint, tmp_path: Path):
+    base_url, _ = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1", "--limit", "1", "--name", "same") == 0
+    same = _run(base_url, out, "--only", "IF-1", "--limit", "1", "--name", "same", "--resume")
+    assert same == 0
+    with pytest.raises(SystemExit) as exc:
+        _run(base_url, out, "--only", "IF-1", "--limit", "1", "--name", "same",
+             "--profile", "stretch-v1", "--resume")
+    assert "профил" in str(exc.value)
 
 
 def test_run_unreachable_endpoint_returns_two(tmp_path: Path, capsys):

@@ -1,4 +1,4 @@
-"""Category G — structured output (JSON Schema conformance), 4 scenarios × 2 points.
+"""Category G — structured output (JSON Schema conformance), 4 baseline scenarios × 2 points.
 
 Every scenario hands the model facts in prose and asks for one strict JSON
 document. Scoring is therefore split the same way everywhere: one point for the
@@ -9,7 +9,8 @@ shape, one for the content.
   ``oracle["schema"]``. The subset is validated by ``validate`` in this module:
   ``type`` (object/array/string/integer/number/boolean/null), ``required``,
   ``properties``, ``additionalProperties=false``, ``enum``, ``items``,
-  ``minItems``/``maxItems``, ``minimum``/``maximum``, ``pattern``.
+  ``minItems``/``maxItems``, ``minimum``/``maximum``, ``pattern``, and ``oneOf``
+  for the discriminator-dependent record shapes of G-5.
 * ``content`` — the parsed payload equals the oracle exactly. For the two array
   scenarios that includes the order: the prompt demands dedupe and a named sort
   key, and an array in the wrong order is a wrong answer even though it is a
@@ -32,6 +33,10 @@ Scenarios:
 * G-4 — repair of a draft config: string digits to integer, unknown keys dropped,
   missing optional fields stay missing, enum lower-cased; the repaired object
   must equal the oracle exactly.
+* G-5 (pilot only) — mixed inventory of ``network``/``disk`` records: the
+  discriminator decides which fields are allowed, foreign and unknown keys are
+  dropped, an absent optional field stays absent (never ``null``), and the array
+  is sorted by id.
 """
 
 from __future__ import annotations
@@ -45,7 +50,11 @@ from typing import Any
 
 from .. import core, text
 
-IDS = ("G-1", "G-2", "G-3", "G-4")
+BASELINE_IDS = ("G-1", "G-2", "G-3", "G-4")
+PILOT_IDS = ("G-5",)
+ALL_IDS = BASELINE_IDS + PILOT_IDS
+# The historical name the baseline tests use.
+IDS = BASELINE_IDS
 
 _POINT_SCHEMA = 1.0
 _POINT_CONTENT = 1.0
@@ -66,6 +75,15 @@ _SEVERITY_WORDS = {
 }
 
 _BASE_TIME = dt.datetime(2026, 3, 4, 9, 15)
+
+# G-5: two record kinds; the discriminator decides which fields may appear.
+KINDS = ("network", "disk")
+_UNKNOWN_KEYS = {
+    "vendor": ("acme", "globex", "initech"),
+    "rack": ("r03", "r07", "r12"),
+    "serial": ("SN-1042", "SN-8815", "SN-3390"),
+    "note": ("spare", "reserved", "on order"),
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -90,6 +108,7 @@ _SUPPORTED_KEYWORDS = (
     "minimum",
     "maximum",
     "pattern",
+    "oneOf",
 )
 
 
@@ -140,6 +159,23 @@ def validate(payload: Any, schema: dict[str, Any]) -> list[str]:
 
 
 def _validate(value: Any, schema: dict[str, Any], path: str, errors: list[str]) -> None:
+    if "oneOf" in schema:
+        # Exactly one branch must accept the value. The branches themselves carry
+        # the type keyword, so they are tried before the local "type".
+        matched = 0
+        reports: list[str] = []
+        for branch in schema["oneOf"]:
+            branch_errors: list[str] = []
+            _validate(value, branch, path, branch_errors)
+            if branch_errors:
+                reports.extend(branch_errors)
+            else:
+                matched += 1
+        if matched == 0:
+            errors.append(f"{path}: не подходит ни один вариант oneOf ({'; '.join(reports[:3])})")
+        elif matched > 1:
+            errors.append(f"{path}: значение подходит сразу к {matched} вариантам oneOf")
+
     expected = schema.get("type")
     if expected is not None and not _type_matches(value, expected):
         errors.append(f"{path}: ожидался тип {expected}, получен {_json_type(value)}")
@@ -204,6 +240,11 @@ def check_schema(schema: dict[str, Any], path: str = "$") -> None:
         raise ValueError(f"{path}: pattern должен быть строкой")
     for key, sub in (schema.get("properties") or {}).items():
         check_schema(sub, f"{path}.{key}")
+    if "oneOf" in schema:
+        if not isinstance(schema["oneOf"], list) or not schema["oneOf"]:
+            raise ValueError(f"{path}: oneOf должен быть непустым списком")
+        for index, sub in enumerate(schema["oneOf"]):
+            check_schema(sub, f"{path}.oneOf[{index}]")
     if "items" in schema:
         check_schema(schema["items"], f"{path}[]")
 
@@ -551,6 +592,163 @@ def _g4(rng: random.Random) -> core.TaskInstance:
 
 
 # --------------------------------------------------------------------------- #
+# G-5 — mixed inventory with a discriminator
+# --------------------------------------------------------------------------- #
+
+_G5_SCHEMA_ITEM = {
+    "oneOf": [
+        {
+            "type": "object",
+            "required": ["id", "kind", "mac"],
+            "additionalProperties": False,
+            "properties": {
+                "id": {"type": "string", "pattern": r"^dev-\d{2}$"},
+                "kind": {"type": "string", "enum": ["network"]},
+                "mac": {"type": "string", "pattern": r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$"},
+                "mtu": {"type": "integer", "minimum": 576, "maximum": 9000},
+            },
+        },
+        {
+            "type": "object",
+            "required": ["id", "kind", "size_gb"],
+            "additionalProperties": False,
+            "properties": {
+                "id": {"type": "string", "pattern": r"^dev-\d{2}$"},
+                "kind": {"type": "string", "enum": ["disk"]},
+                "size_gb": {"type": "integer", "minimum": 1, "maximum": 4096},
+                "rotational": {"type": "boolean"},
+            },
+        },
+    ],
+}
+
+
+def _g5(rng: random.Random) -> core.TaskInstance:
+    count = rng.randrange(3, 6)
+    ids = [f"dev-{number:02d}" for number in sorted(rng.sample(range(1, 40), count))]
+    # Both discriminators are always present: the conditional schema would be
+    # vacuous with a single kind.
+    kinds = list(KINDS) + [rng.choice(KINDS) for _ in range(count - 2)]
+    rng.shuffle(kinds)
+
+    # At least one record lacks its optional field, so "absent stays absent" is
+    # always observable and the null distractor always applies somewhere.
+    omitted = {rng.randrange(count)} | {index for index in range(count) if rng.random() < 0.35}
+
+    records: list[dict[str, Any]] = []
+    for index, (device_id, kind) in enumerate(zip(ids, kinds)):
+        record: dict[str, Any] = {"id": device_id, "kind": kind}
+        if kind == "network":
+            record["mac"] = f"aa:bb:cc:00:{int(device_id[-2:]):02x}:01"
+            if index not in omitted:
+                record["mtu"] = rng.randrange(576, 9001)
+        else:
+            record["size_gb"] = rng.randrange(1, 4097)
+            if index not in omitted:
+                record["rotational"] = rng.choice((True, False))
+        records.append(record)
+
+    # Source lines are shuffled: the prompt demands a sort by id. Fields of the
+    # other kind and keys outside the schema are mixed in and have to be dropped.
+    lines: list[str] = []
+    unknown = 0
+    for record in records:
+        device_id, kind = record["id"], record["kind"]
+        tokens = [device_id]
+        if "mac" in record:
+            tokens.append(f"mac={record['mac']}")
+        if "mtu" in record:
+            tokens.append(f"mtu={record['mtu']}")
+        if "size_gb" in record:
+            tokens.append(f"size_gb={record['size_gb']}")
+        if "rotational" in record:
+            tokens.append(f"rotational={str(record['rotational']).lower()}")
+        # Every record carries at least one field of the other kind; a second
+        # one is added at random. Both have to be dropped when answering.
+        if kind == "network":
+            foreign_tokens = [
+                f"size_gb={rng.randrange(1, 4097)}",
+                f"rotational={str(rng.choice((True, False))).lower()}",
+            ]
+        else:
+            foreign_tokens = [
+                f"mac=aa:bb:cc:00:{rng.randrange(0, 256):02x}:02",
+                f"mtu={rng.randrange(576, 9001)}",
+            ]
+        rng.shuffle(foreign_tokens)
+        tokens.extend(foreign_tokens[: 1 + (rng.random() < 0.4)])
+        if rng.random() < 0.7:
+            key = rng.choice(tuple(_UNKNOWN_KEYS))
+            tokens.append(f"{key}={rng.choice(_UNKNOWN_KEYS[key])}")
+            unknown += 1
+        rng.shuffle(tokens)
+        lines.append(f"{kind} " + " ".join(tokens))
+
+    # The source must carry at least one unknown key too: force it if the coin
+    # flipped tails on every line.
+    if not unknown:
+        line = lines[rng.randrange(count)]
+        key = rng.choice(tuple(_UNKNOWN_KEYS))
+        lines[lines.index(line)] = f"{line} {key}={rng.choice(_UNKNOWN_KEYS[key])}"
+        unknown += 1
+
+    # The unknown-key trap is really present in the dump.
+    assert unknown
+    # The lines are shuffled, but a short shuffle can land sorted: force it.
+    source_ids = [next(token for token in line.split() if token.startswith("dev-")) for line in lines]
+    if source_ids == ids:
+        lines[0], lines[-1] = lines[-1], lines[0]
+        source_ids[0], source_ids[-1] = source_ids[-1], source_ids[0]
+    assert source_ids != ids
+
+    answer = sorted(records, key=lambda record: record["id"])
+
+    schema = {
+        "type": "array",
+        "minItems": count,
+        "maxItems": count,
+        "items": copy.deepcopy(_G5_SCHEMA_ITEM),
+    }
+
+    # The classic "fill every field" mistake: an absent optional becomes null.
+    optional_of = {"network": "mtu", "disk": "rotational"}
+    distractor = copy.deepcopy(answer)
+    position = next(
+        index for index, record in enumerate(answer) if optional_of[record["kind"]] not in record
+    )
+    distractor[position][optional_of[distractor[position]["kind"]]] = None
+
+    prompt = (
+        "Ниже инвентарный список устройств. Первое слово строки — тип записи, "
+        "дальше id и поля; часть полей чужого типа и лишние ключи.\n\n"
+        + "\n".join(lines)
+        + "\n\n"
+        f"Верни ТОЛЬКО JSON-массив без Markdown и без пояснений, ровно столько объектов, "
+        f"сколько строк (в этом списке — {count}), в порядке возрастания id. Набор полей зависит от типа:\n"
+        '- network: обязательные id, kind ("network"), mac; необязательное mtu (целое 576..9000);\n'
+        '- disk: обязательные id, kind ("disk"), size_gb (целое 1..4096); '
+        "необязательное rotational (true|false).\n"
+        "Правила:\n"
+        "- kind — это тип строки, id уже задан в строке;\n"
+        "- mac и mtu допустимы только у network, size_gb и rotational — только у disk; "
+        "поля чужого типа удали;\n"
+        "- незнакомые ключи удали;\n"
+        "- отсутствующее необязательное поле не добавляй, null вместо него не подставляй;\n"
+        "- порядок — по id по возрастанию."
+    )
+
+    task = _finish("G-5", prompt, schema, answer, distractor)
+    # The fixture claims the tests rely on.
+    assert len(lines) == count
+    assert source_ids != ids
+    assert {record["kind"] for record in answer} == set(KINDS)
+    assert [record["id"] for record in answer] == ids
+    assert any(optional_of[record["kind"]] not in record for record in answer)
+    assert any(record["kind"] == "network" and "size_gb" not in record for record in answer)
+    return task
+
+
+# --------------------------------------------------------------------------- #
 # Registration
 # --------------------------------------------------------------------------- #
 
@@ -563,7 +761,13 @@ _SCENARIOS = (
 
 
 def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
-    return [builder(rng) for _, builder in _SCENARIOS]
+    profile = core.profile_of(cfg)
+    if profile == "pilot":
+        return [_g5(rng)]
+    tasks = [builder(rng) for _, builder in _SCENARIOS]
+    if profile == "stretch-v1":
+        tasks.append(_g5(rng))
+    return tasks
 
 
 def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
@@ -599,5 +803,6 @@ core.register(
     points=8.0,
     generate=generate,
     evaluate=evaluate,
-    expected_ids=IDS,
+    expected_ids=BASELINE_IDS,
+    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": ALL_IDS},
 )

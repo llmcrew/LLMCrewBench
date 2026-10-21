@@ -19,7 +19,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from . import core, reference
+from . import core, generation, reference
 from .config import DEFAULT_SEED, RunConfig
 from .measure import (
     SpeedResult,
@@ -30,7 +30,7 @@ from .measure import (
 )
 from .providers import OpenAICompatibleProvider, Provider, ProviderError
 from .report import render_markdown, summarise, write_reports
-from .runner import RunResult, Runner
+from .runner import RunResult, Runner, run_identity
 from .selfcheck import save_suite, selfcheck, write_selfcheck_report
 from .suite import build_suite, fit_suite_sizing, public_prompts
 
@@ -57,6 +57,7 @@ def _config_from(args: argparse.Namespace) -> RunConfig:
         api_key=getattr(args, "api_key", "") or None,
         request_timeout=getattr(args, "timeout", 1800.0),
         seed=args.seed,
+        profile=getattr(args, "profile", core.DEFAULT_PROFILE),
         quant=getattr(args, "quant", "") or "",
         runtime=getattr(args, "runtime", "") or "",
         weights_path=getattr(args, "weights", "") or "",
@@ -183,7 +184,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
     written = save_suite(cfg, args.out)
     for name, path in written.items():
         print(f"{name}: {path}")
-    print("\nФайл prompts.json можно публиковать; oracles.json содержит ответы.")
+    print(f"\nПрофиль: {cfg.profile}. Файл prompts.json можно публиковать; oracles.json содержит ответы.")
     return 0
 
 
@@ -266,13 +267,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     started = datetime.now()
     print(
         f"Запуск {len(tasks)} заданий: model={cfg.model} quant={cfg.quant or 'n/a'} "
-        f"seed={cfg.seed} out={cfg.out_dir}"
+        f"seed={cfg.seed} profile={cfg.profile} out={cfg.out_dir}"
         + (f" reference={cfg.reference}" if cfg.reference else "")
         + (f" не проверяются: {','.join(cfg.unsupported)}" if cfg.unsupported else ""),
         flush=True,
     )
 
     runs: list = list(saved_runs)
+    attempted: list = []
     result = RunResult(
         cfg=cfg,
         runs=runs,
@@ -286,6 +288,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             result.speed = json.loads(saved_speed.read_text(encoding="utf-8"))
     for index, task in enumerate(tasks, start=1):
         run = runner.run_task(task)
+        attempted.append(run)
         _merge_run(runs, run)
         marker = "ERR" if run.score.error else f"{run.score.earned:.0f}/{run.score.possible:.0f}"
         extra = f" tokens={run.transcript.prompt_tokens()}" if run.transcript.prompt_tokens() else ""
@@ -334,6 +337,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"живые сцены: make serve DIR={cfg.out_dir.parent}")
     if summary["errors"]:
         print(f"Прогонов с ошибками: {summary['errors']} (см. tasks.json)", file=sys.stderr)
+    infra = [run for run in attempted if run.transcript.extra.get("infra_error")]
+    if attempted and len(infra) == len(attempted):
+        # Transport/protocol failure is not a wrong answer: every chat request
+        # died before the model could reply, so the score describes nothing.
+        print(
+            f"все chat-запросы упали инфраструктурно ({len(infra)}/{len(attempted)}): "
+            "результат не отражает модель",
+            file=sys.stderr,
+        )
+        return 2
     return 0
 
 
@@ -385,6 +398,7 @@ def _bench_run_argv(args: argparse.Namespace) -> list[str]:
         "--api-key", args.api_key,
         "--timeout", str(args.timeout),
         "--seed", str(args.seed),
+        "--profile", args.profile,
         "--sql-backend", args.sql_backend,
         "--context-window", str(args.context_window),
         "--max-new-tokens", str(args.max_new_tokens),
@@ -601,10 +615,12 @@ def cmd_rescore(args: argparse.Namespace) -> int:
         changed = marker["changed"]
         print(f"{directory}: пересчитано заданий {marker['tasks']}, изменений {len(changed)}")
         for row in changed:
-            if "earned_before" in row:
+            if "before" in row:
+                before, after = row["before"], row["after"]
                 print(
-                    f"  {row['task_id']}: {row['earned_before']} → {row['earned_after']} "
-                    f"(допуск {row['admission_before']} → {row['admission_after']})"
+                    f"  {row['task_id']}: {before['status']} {before['earned']}/{before['possible']} "
+                    f"→ {after['status']} {after['earned']}/{after['possible']} "
+                    f"(допуск {before['admission']} → {after['admission']})"
                 )
             else:
                 print(f"  {row['task_id']}: {row['status']}")
@@ -614,7 +630,7 @@ def cmd_rescore(args: argparse.Namespace) -> int:
 def build_suite_digest(cfg: RunConfig) -> dict:
     from .suite import suite_digest
 
-    return suite_digest(build_suite(cfg))
+    return suite_digest(build_suite(cfg), cfg.profile)
 
 
 def _resume_tasks(cfg: RunConfig, tasks: list) -> tuple[list, list]:
@@ -623,9 +639,14 @@ def _resume_tasks(cfg: RunConfig, tasks: list) -> tuple[list, list]:
     A saved task is kept only when its transcript is *complete*: a reboot or a
     wall-clock timeout kills the agent mid-flight and leaves a truncated record,
     and re-running one task beats shipping half an artefact. The suite digest
-    must match, or the merged run would mix two different task generations.
+    and the full run identity (config contract, suite, harness version) must
+    match, or the merged run would mix two different task generations.
+
+    Mirrors under ``transcripts/`` are a recovery aid, not a second source of
+    truth: a valid master already lists every kept task, so old mirrors must
+    not add tasks back. Without a master there is no checkpoint to anchor them
+    and the mirrors are ignored.
     """
-    from .report import load_run  # noqa: F401 - symmetry with the render path
     from .runner import TaskRun, transcript_from_dict
     from .suite import build_suite, suite_digest
 
@@ -635,9 +656,32 @@ def _resume_tasks(cfg: RunConfig, tasks: list) -> tuple[list, list]:
     if not tasks_path.is_file() or not suite_path.is_file():
         return tasks, []
 
-    saved_digest = json.loads(suite_path.read_text(encoding="utf-8"))
+    saved_digest = generation.read_json(directory, "suite.json")
+    saved_profile = saved_digest.get("profile") or core.DEFAULT_PROFILE
+    if saved_profile != cfg.profile:
+        raise SystemExit(
+            f"{directory}: сохранённый прогон собран в профиле {saved_profile}, "
+            f"а сейчас {cfg.profile} — resume смешал бы версии сьюта"
+        )
     full = build_suite(cfg)
-    current = suite_digest(full)
+    current = suite_digest(full, cfg.profile)
+    # A filtered or limited resume carries a smaller denominator by design; a
+    # complete one must weigh exactly the profile's declared total.
+    complete = not cfg.only and len(tasks) >= len(full)
+    if complete:
+        expected_total = core.profile_total(cfg.profile)
+        current_total = float(current.get("possible_total") or 0.0)
+        if abs(current_total - expected_total) > 1e-9:
+            raise SystemExit(
+                f"{directory}: сьют весит {current_total:g} возможных баллов, а профиль "
+                f"{cfg.profile} объявляет {expected_total:g} — resume смешал бы разные знаменатели"
+            )
+        saved_total = saved_digest.get("possible_total")
+        if saved_total is not None and abs(float(saved_total) - current_total) > 1e-9:
+            raise SystemExit(
+                f"{directory}: в сохранённом прогоне {float(saved_total):g} возможных баллов, "
+                f"в текущем сьюте {current_total:g} — resume смешал бы разные знаменатели"
+            )
     if saved_digest.get("sha256") != current.get("sha256"):
         raise SystemExit(
             f"{directory}: сьют разошёлся с сохранённым "
@@ -645,24 +689,31 @@ def _resume_tasks(cfg: RunConfig, tasks: list) -> tuple[list, list]:
             "догрузка смешала бы два сьюта"
         )
     saved_config = directory / "config.json"
-    if saved_config.is_file():
-        old = json.loads(saved_config.read_text(encoding="utf-8"))
-        identity = ("model", "base_url", "seed", "quant", "system_prompt",
-                    "temperature", "top_p", "max_new_tokens", "max_total_tokens")
-        changed = [
+    if not saved_config.is_file():
+        raise SystemExit(f"{directory}: нет config.json — сохранённый прогон нечем опознать")
+    old = generation.read_json(directory, "config.json")
+    saved_identity = old.get("identity")
+    if not saved_identity:
+        raise SystemExit(
+            f"{directory}: в сохранённом config.json нет identity — "
+            "прогон сделан до checkpoint-контракта, продолжать его нельзя"
+        )
+    identity = run_identity(cfg, str(current.get("sha256") or ""))
+    if saved_identity != identity:
+        changed = sorted(
             key
-            for key in identity
-            if str(old.get(key, "")) != str(getattr(cfg, key, "") if getattr(cfg, key, None) is not None else "")
-        ]
-        if changed:
-            raise SystemExit(
-                f"{directory}: resume смешал бы два прогона — "
-                f"{', '.join(changed)} не совпадает с config.json "
-                "(продолжать нельзя; запустите новый прогон с новым --name)"
-            )
+            for key in set(old) | set(cfg.__dataclass_fields__)
+            if key not in {"identity", "run_id", "api_key_set", "out_dir", "only"}
+            and str(old.get(key)) != str(getattr(cfg, key, None))
+        )
+        detail = f": {', '.join(changed)}" if changed else ""
+        raise SystemExit(
+            f"{directory}: resume смешал бы два прогона — identity {str(identity)[:12]} ≠ "
+            f"{str(saved_identity)[:12]}{detail} (продолжать нельзя; запустите новый прогон с новым --name)"
+        )
 
     by_id = {task.id: task for task in full}
-    saved = _saved_entries(directory)
+    saved = _saved_entries(directory, identity)
     kept: list = []
     damaged: set[str] = set()
     for entry in saved:
@@ -687,39 +738,40 @@ def _resume_tasks(cfg: RunConfig, tasks: list) -> tuple[list, list]:
     return missing, kept
 
 
-def _saved_entries(directory: Path) -> list[dict]:
-    """Records worth merging back, from ``tasks.json`` or its per-task mirror.
+def _saved_entries(directory: Path, identity: str) -> list[dict]:
+    """Records of *this* run, from the master or — if it is corrupt — its mirrors.
 
-    ``tasks.json`` is rewritten whole at every checkpoint; a reboot exactly while
-    it was being written used to leave a truncated file and resume died on
-    ``json.loads``. Each record is also mirrored under ``transcripts/``, so a
-    corrupt master is rebuilt from there instead of losing hours of GPU time.
+    The master is written whole at every checkpoint and already contains every
+    kept task. A stale mirror therefore must not be merged into a valid master;
+    mirrors only stand in when the master itself cannot be parsed.
     """
     tasks_path = directory / "tasks.json"
+    if not tasks_path.is_file():
+        return []
+    try:
+        raw = generation.read_json(directory, "tasks.json")
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        print(f"{tasks_path}: битый JSON ({exc}) — собираю из transcripts/", flush=True)
+        return _mirror_entries(directory, identity)
+    return [entry for entry in raw if entry.get("identity") == identity]
+
+
+def _mirror_entries(directory: Path, identity: str) -> list[dict]:
+    """Per-task mirrors written by the same run identity."""
+    folder = directory / "transcripts"
     entries: list[dict] = []
     seen: set[str] = set()
-    if tasks_path.is_file():
+    if not folder.is_dir():
+        return entries
+    for path in sorted(folder.glob("*.json")):
         try:
-            raw = json.loads(tasks_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            print(f"{tasks_path}: битый JSON ({exc}) — собираю из transcripts/", flush=True)
-        else:
-            for entry in raw:
-                task_id = str((entry.get("task") or {}).get("id"))
-                if task_id not in seen:
-                    seen.add(task_id)
-                    entries.append(entry)
-    folder = directory / "transcripts"
-    if folder.is_dir():
-        for path in sorted(folder.glob("*.json")):
-            try:
-                entry = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue
-            task_id = str((entry.get("task") or {}).get("id"))
-            if task_id and task_id not in seen:
-                seen.add(task_id)
-                entries.append(entry)
+            entry = generation.read_json(directory, f"transcripts/{path.name}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        task_id = str((entry.get("task") or {}).get("id"))
+        if task_id and task_id not in seen and entry.get("identity") == identity:
+            seen.add(task_id)
+            entries.append(entry)
     return entries
 
 
@@ -780,6 +832,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_common(target: argparse.ArgumentParser, *, endpoint: bool = False) -> None:
         target.add_argument("--seed", type=int, default=DEFAULT_SEED, help="master seed of the suite")
+        target.add_argument(
+            "--profile",
+            default=core.DEFAULT_PROFILE,
+            choices=core.PROFILES,
+            help="версия сьюта: baseline-20261020 (рейтинг), pilot (только пилотные), "
+                 "stretch-v1 (baseline + новые сценарии, те же 100 баллов)",
+        )
         target.add_argument("--only", default="", help="категории или ID заданий через запятую (A,B / IF-1,R-7)")
         target.add_argument("--limit", type=int, default=0, help="ограничить число заданий (для дымового прогона)")
         target.add_argument("--sql-backend", default="sqlite", choices=("sqlite", "postgres"))

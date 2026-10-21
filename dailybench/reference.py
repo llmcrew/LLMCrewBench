@@ -49,6 +49,9 @@ POLICY: dict[str, Any] = {
     "reasoning_effort_note": "not forced: the stand decides, the spend is documented instead",
     "request_wall_clock": 1800,
     "request_wall_clock_note": "ceiling per request; a task that hits it is reported as unverified, never as a wrong answer",
+    "task_wall_clock": 3600,
+    "task_wall_clock_note": ("ceiling per task across all turns and the stream_options retry; "
+                             "each request gets no more than the remaining time"),
     "max_total_tokens": 16384,
     "max_tool_calls": 12,
     "context_window": 262144,
@@ -294,6 +297,7 @@ def apply_to_run_config(cfg: RunConfig, reference: ReferenceConfig) -> RunConfig
             "L": int(policy.get("answer_budget_visual_art", policy.get("answer_budget_artifact", 8192))),
         },
         request_wall_clock=float(policy.get("request_wall_clock", 600)),
+        task_wall_clock=float(policy.get("task_wall_clock", 3600)),
         max_total_tokens=int(policy["max_total_tokens"]),
         max_tool_calls=int(policy["max_tool_calls"]),
         offload=str(entry.get("offload") or "none"),

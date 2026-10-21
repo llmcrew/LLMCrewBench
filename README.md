@@ -3,9 +3,10 @@
 A deterministic, programmatically scored benchmark for **local** language models
 run under a 16 GiB VRAM budget (internally: *DailyBench-16*).
 
-Ten scored categories, 47 tasks, 100 points, plus two **visual blocks** — 20
-simulation scenarios and 1 free-form art task — measured in a headless
-browser and shown outside the score. Every point comes from an observable result — a parsed answer, a file on
+Ten scored categories: the frozen baseline has 47 A–J tasks and 100 points,
+plus two **visual blocks** — 20 simulation scenarios and 29 free-form art works
+(30 and 39 in the `stretch-v1` profile) — measured in a headless browser and
+shown outside the score. Every point comes from an observable result — a parsed answer, a file on
 disk, a hidden test run, a tool-call log, a rendered frame — and never from a
 judge model. The whole suite is regenerated from a single seed, so two runs of
 two different quantizations face byte-identical tasks.
@@ -47,7 +48,70 @@ zero.
 | J | Code review | 5 | 2 | The planted defect localised, and the fix passes hidden tests |
 
 Every category is scored 0–100 % inside the run report, and the total is the sum
-of the earned points (100 possible).
+of the earned points (100 possible in the baseline).
+
+The counts above are the baseline. `stretch-v1` adds a sixth instruction task
+(IF-6), a sixteenth reasoning task (R-16), C-5/C-6, T-8/T-9, LC-6/LC-7, F-2,
+G-5, H-4/H-5, I-3/I-4 and J-3/J-4 without changing the 100 A–J points: the
+category total is divided evenly over the category's tasks
+(`suite.apply_profile_weights`, see *Profiles*).
+
+## Profiles
+
+`core.PROFILES` accepts three profiles. The profile is written to `config.json`
+and `suite.json`, and `resume`/`rescore` refuse to mix them.
+
+| Profile | What it contains |
+|---|---|
+| `baseline-20261020` (default) | Frozen ranked suite: 47 A–J tasks, 100 points, K-1…K-20, L-1…L-29 |
+| `pilot` | Only the scenarios not admitted to the ranking: IF-6, R-16, C-4, T-8, LC-6, F-2, G-5, H-4, I-3, J-3, visual hosts K-21, K-23, K-25 and L-1…L-29 — 42 tasks |
+| `stretch-v1` | Baseline plus the pilot tasks and the rest of the new ones: C-5, C-6, T-9, LC-7, H-5, I-4, J-4, K-21…K-30, L-30…L-39 — 64 A–J, 30 K and 39 L tasks |
+
+`pilot` is not collapsed into a new `/100`: A–J tasks keep the per-task weights
+their modules declare, and each task is read on its own. `stretch-v1` keeps the
+A–J total at 100 and only enlarges the visual showcase (K 120 points, L 39,
+informational). `apply_profile_weights` spreads the declared category total over
+that category's tasks, and the last task takes the rounding tail, so the sum is
+exactly the declared one. Weights are assigned before the `--only` filter, so a slice keeps
+the weight it has in the complete profile.
+
+Each profile is checked against its exact id list
+(`CategoryModule.expected_ids_by_profile`, `tasks/visual.PILOT_IDS`): a module
+that generates another list fails the run instead of shrinking a category.
+
+## Result states
+
+Every score row has `status` = `ok`, `skipped` or `error`. Skip reasons stay
+apart: `not_run` (the task is not in the run), `model_failed` (the task ran, but
+no page was delivered or it died before a frame), `evaluator_unavailable` (no
+browser, Go toolchain or similar on this machine), `capture_failed` (the page is
+alive, the recording broke), `media_missing` (the clip is not on disk). An `ok`
+row can still be partial.
+
+Admission is a separate axis: `unverified` means the runtime never reported the
+input size — the full numerator and denominator are kept and the verdict says so
+instead of counting a guessed zero. Only `skipped` leaves both numerator and
+denominator; admission `failed` reports the run out of the short total.
+
+## Evidence layers
+
+Three artefacts are never mixed:
+
+* **original** — the answer page exactly as scored (the agent's `index.html`, or
+  the fenced block in a chat reply) and the frame the checks scored. The frame
+  hash is SHA-256 over the bytes on disk and is recomputed on every cache read;
+* **display** — the report's `pages/<id>.html`: the original plus the
+  `__dbscene` step hook, rewritten `./vendor/three.module.js` imports against a
+  standalone `three.global.js`, a caption and, for K, zoom-to-fit. For L a
+  fresh capture is *a* frame of the same work, not necessarily the byte-identical
+  scored frame;
+* **capture** — video clips: JPEG q90 frames encoded as H.264 CRF 21 /
+  yuv420p. Lossy by construction, so a clip never stands for the scored frame;
+  it sits next to its status marker and its reason.
+
+Only the scored frame carries a content hash (`shot_sha`, SHA-256 over the file
+bytes); display pages and clips are derived and identified by path. A display
+page or a preview never substitutes the original evidence.
 
 ## The answer limit is the window, not a laboratory ceiling
 
@@ -115,10 +179,10 @@ points the run at a specific binary.
 
 ## Visual blocks (measured, outside the score)
 
-| Key | Block | Tasks | What is actually checked |
-|---|---|---:|---|
-| K | Visual simulations (Three.js r186) | 20 | The agent writes `index.html`; the page runs in headless Chromium, reports its scene through `window.__probe()`, advances exactly by `window.__step(dt)`, and renders a reproducible 800×600 frame |
-| L | Free-form art | 29 | The agent writes `index.html`; `L-1` is fully free, the other 28 name only a subject (neon grid, mandala, aurora, lava lamp, rain scenes, orbital disasters…), and the model picks composition, style, palette and means (HTML/CSS, SVG, Canvas, WebGL; the vendored Three.js is available but optional). The only automatic check is technical delivery: the page loads without external requests or errors and a 1920×1080 frame is captured. Artistic quality is judged by people from the gallery frames |
+| Key | Block | Points (baseline / stretch) | Tasks (baseline / stretch) | What is actually checked |
+|---|---|---:|---:|---|
+| K | Visual simulations (Three.js r186) | 80 / 120 | 20 / 30 | The agent writes `index.html`; the page runs in headless Chromium, reports its scene through `window.__probe()`, advances exactly by `window.__step(dt)`, and renders a reproducible 800×600 frame |
+| L | Free-form art | 29 / 39 (informational) | 29 / 39 | The agent writes `index.html`; `L-1` is fully free, the other 28 (38 in stretch, up to `L-39`) name only a subject, and the model picks composition, style, palette and means (HTML/CSS, SVG, Canvas, WebGL; the vendored Three.js is available but optional). The single check of 1 point is technical delivery: the page loads without external requests or errors and a 1920×1080 frame is captured |
 
 Each scenario asks one question: does the model produce a *working* page —
 ballistics, pendulums, collision boxes, particle fountains, boids, heat
@@ -126,6 +190,11 @@ diffusion, cellular automata, terrain, a 3D bar chart, an orrery, a two-link
 robot arm? Four checks of one point (html, scene, simulation, image) are taken
 from the browser: the probe payload, the state after a stated number of steps
 recomputed independently in Python, and the frame itself.
+
+K is 80 points on K-1…K-20 in the baseline, 12 points on the three hosts
+K-21/K-23/K-25 in `pilot`, and 120 points on K-1…K-30 in `stretch-v1`. L earns
+1 point per work for delivery only, so its total is 29 or 39 and stays
+informational: artistic quality is judged by people from the gallery frames.
 
 Both blocks are deliberately kept out of the verdict: a browser build on the
 measurement machine must not move a quality score. The frames are copied into
@@ -156,7 +225,9 @@ without it the block is reported as unverified rather than failing. Authoring ru
   ceilings.
 - **Fixtures**: generated from `(master_seed, task_id)`, never shared between
   tasks; `suite.json` publishes a SHA-256 of every prompt so a published run can
-  be tied to the exact suite.
+  be tied to the exact suite, plus the per-task weights and the evaluator
+  contract (a bumped `core.EVALUATOR_CONTRACT` or a changed evaluator module is
+  a different measurement).
 - **Long context is measured, not estimated**: the documents are sized against
   the real tokenizer at run start (`calibrate_chars_per_token`), and a document
   that came out smaller than its target, or an input that does not fit the
@@ -165,11 +236,16 @@ without it the block is reported as unverified rather than failing. Authoring ru
 - **Not verified is not a zero**: a category the configuration cannot do (a
   template without tool support), or a scenario that cannot be verified on this
   machine (no Go toolchain), leaves both the numerator and the denominator.
-- **Probe trust (K)**: the scene checks read `window.__probe()` values the
-  page itself reports. A page can hardcode them instead of reading its own
-  scene — recorded in an audit as a model error (the contract asks for
-  actual values), but a future hardening may read `camera.position` from
-  the JS context directly.
+- **The probe is not the oracle**: `scene` and `simulation` compare
+  `window.__probe()` — numbers the page itself reports — against an independent
+  Python recomputation of the prompt's scheme. Values are rounded to 4 decimals;
+  `visual.near` defaults to `1e-3`, integer counters and steps use `0`, and a
+  few quantities are stricter (`1e-4`/`1e-6`), so a tolerance follows from
+  rounding and cross-language accumulation rather than a copied constant. Image
+  checks sample the largest visible canvas sparsely (`PIXEL_PROBE`), which does
+  not prove that canvas dominates the screenshot. A page that echoes expected
+  probe numbers without simulating still passes; the audit records it as a model
+  error because the contract asks for actual values.
 - **Provenance**: weights path and SHA-256, runtime build, quant, KV type,
   context window, offload mode and the exact server launch line are recorded in
   the run directory.
@@ -181,15 +257,27 @@ without it the block is reported as unverified rather than failing. Authoring ru
 | `dailybench setup` (Make target) | create `.venv`, install pytest |
 | `dailybench selfcheck` | replay every task with a perfect answer and with garbage; both must land where expected. No GPU needed |
 | `dailybench list` | show the generated suite (ids, points, sizes) |
-| `dailybench generate --out suite/<seed>` | write `prompts.json` (publishable) and `oracles.json` (answers) |
+| `dailybench generate --out suite/<seed>` | write `prompts.json` (publishable) and `oracles.json` (answers); `--profile` picks the suite version |
 | `dailybench doctor` | GPU, toolchain, agent runtime, endpoint and tokenizer reachability |
 | `dailybench preflight --config <id> --full` | verify a running runtime against a reference configuration |
 | `dailybench visual <page.html> --steps N` | render one page exactly as the visual checks do (probe, frame, frame statistics) |
 | `dailybench bench --config <id> --speed` | bring the runtime up, preflight, run the suite, write `report.md` + `report.html` (`--no-html` skips the page) |
-| `dailybench run --base-url … --model …` | the same suite against an endpoint you started yourself (`--no-agent` keeps C/K/L on the chat path); results hit the disk after every task, so a crash at task 90 keeps the first 89. `--resume` finishes an interrupted run in place: saved tasks are not re-asked, truncated ones (timeout, reboot) are re-run, the calibration is taken from the saved `config.json`, the suite is verified by SHA-256, and a torn `tasks.json` is rebuilt from `transcripts/` |
+| `dailybench run --base-url … --model …` | the same suite against an endpoint you started yourself (`--no-agent` keeps C/K/L on the chat path); results hit the disk after every task, so a crash at task 90 keeps the first 89. `--resume` finishes an interrupted run in place: saved tasks are not re-asked, truncated ones (timeout, reboot) are re-run, the calibration is taken from the saved `config.json`, the suite weights, the total denominator and the full run identity (config, budgets, agent mode, harness version) are verified, and only a checkpoint generation whose every file still hashes to its manifest is read |
 | `dailybench report <dirs…>` | re-render `report.md`, one `<run>/report.html` per run, `comparison.md` and `comparison.html` (`--no-html` skips the pages, `--compare` picks the models) |
-| `dailybench rescore <dir>` | re-score saved transcripts with the current evaluators — no model call |
+| `dailybench rescore <dir>` | re-score saved transcripts with the current evaluators — no model call; a fixture that drifted keeps its old score and is flagged (a legacy `suite.json` without per-task rows is compared by whole-suite hash) |
 | `scripts/sweep.py` | load every reference configuration in turn and run the whole suite |
+
+`--profile baseline-20261020` is the frozen ranked suite (47 A–J, 100 points).
+`pilot` shows only the scenarios not admitted to the ranking (see *Profiles*) and
+is not collapsed into a new `/100`; its A–J tasks keep the module weights.
+`stretch-v1` adds scenarios on top of the baseline while keeping 100 A–J points:
+a category's weight is split evenly across its tasks, the showcase grows to
+K 120 / L 39. A runtime that never reports the input size leaves the admission
+`unverified` instead of failing it. The profile is written to `config.json` and
+`suite.json`; `resume` and `rescore` refuse to mix profiles. Every checkpoint also carries the full run identity (config,
+budgets, agent mode, suite digest, harness version) and `resume` rejects a
+directory written by another run; mirror records are only trusted when they
+belong to that same identity and a master checkpoint exists.
 
 ## The report
 
@@ -277,8 +365,12 @@ Rules the suite enforces (see `dailybench/core.py` for the full contract):
 - The sum of the checks of a task equals its `max_points`.
 - The reference answer scores full points, and the garbage answer scores zero —
   `dailybench selfcheck` fails the build otherwise.
-- New modules are added to `dailybench/tasks/__init__.py`; the category total goes
-  into `CATEGORY_POINTS` (the registry refuses a mismatch).
+- A scenario reaches the baseline only through `expected_ids`; new ones are
+  declared in `IDS_BY_PROFILE` / `expected_ids_by_profile`, so `pilot` and
+  `stretch-v1` are checked against their exact lists.
+- New modules are added to `dailybench/tasks/__init__.py`; the category total
+  goes into `CATEGORY_POINTS`, or into `SHOWCASE_POINTS` for a showcase block
+  (the registry refuses a mismatch).
 
 ## Development
 
@@ -326,9 +418,9 @@ python -m dailybench bench --config qwen3.8-27b-ud-q3-k-xl
 ```
 
 `dailybench doctor` prints the resolved endpoint, so what the run will talk to is
-visible before it starts; the key itself is never printed (only its absence or
-presence matters) and is recorded in `runs/<name>/config.json`, because a run has
-to be reproducible.
+visible before it starts. The key itself is neither printed nor written to
+`runs/<name>/config.json`: the config keeps only the `api_key_set` marker, and a
+re-score or resume resolves the value from the environment again.
 
 ## Where the numbers come from
 

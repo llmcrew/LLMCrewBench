@@ -9,11 +9,17 @@ fetched from the network.
 from __future__ import annotations
 
 import json
+import re
+import shutil
+import subprocess
+import sys
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from dailybench import core, gallery
+from dailybench.browser import REPO
 from dailybench.htmlreport import render_html, write_html, write_report_html
 from dailybench.report import summarise
 
@@ -313,3 +319,272 @@ def test_a_frameless_timeout_keeps_its_sample_point(monkeypatch, tmp_path: Path)
     assert seen == {"steps": 48, "dt": 1.0 / 60}
     assert item["steps"] == 48 and item["dt"] == 1.0 / 60
     assert Path(item["shot"]).is_file(), "кадр обязан восстановиться, а не потеряться"
+
+
+# --------------------------------------------------------------------------- #
+# Run identity, injection, containment and rebuild safety (R06/R16/R17/R24)
+# --------------------------------------------------------------------------- #
+
+
+def test_two_runs_of_one_model_are_two_columns(tmp_path: Path):
+    """R06: the matrix is keyed by run id, never by the display label."""
+    first = _run(tmp_path, "run-a", model="одна модель")
+    second = _run(tmp_path, "run-b", model="одна модель")
+    scores = json.loads((second / "scores.json").read_text(encoding="utf-8"))
+    for score in scores:
+        score["earned"] = 0.0
+    (second / "scores.json").write_text(json.dumps(scores), encoding="utf-8")
+
+    page = render_html([first, second])
+    head = page.split("<table class='grid suite-table'>")[1].split("</thead>")[0]
+    assert "<th>одна модель · run-a</th>" in head
+    assert "<th>одна модель · run-b</th>" in head
+    row = next(chunk for chunk in page.split("<tr>") if "IF-1" in chunk)
+    # Первая колонка — 2/2, вторая — 0/2. При ключе по label обе показывали 2.
+    assert "2.0" in row and "0.0" in row
+
+
+def test_imported_metadata_is_escaped_everywhere(tmp_path: Path):
+    """R16: markup, ``</script>`` and quotes must not break the document."""
+    directory = _run(tmp_path, "run-a")
+    label = 'модель "<b>x</b>"\u2028</script>'
+    config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+    config["model"] = label
+    (directory / "config.json").write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    tasks = json.loads((directory / "tasks.json").read_text(encoding="utf-8"))
+    tasks[0]["task"]["title"] = '</script><script>alert("t")</script>'
+    (directory / "tasks.json").write_text(json.dumps(tasks, ensure_ascii=False), encoding="utf-8")
+
+    page = render_html([directory], per_run=True, page_name="report.html")
+    assert "<h1>DailyBench — модель &quot;&lt;b&gt;x&lt;/b&gt;&quot;" in page
+    assert page.count("<script") == page.count("</script>")
+    data = page.split("const DATA = ", 1)[1].split(";\n\n", 1)[0]
+    assert "<" not in data and "\\u2028" in data
+    assert json.loads(data)["models"] == [label]
+    # Viewer собирается DOM API, а не innerHTML.
+    assert "framesEl.innerHTML" not in page
+    assert "createElement('iframe')" in page
+
+
+def test_an_id_outside_the_schema_does_not_escape_pages(tmp_path: Path):
+    """R17: ``../review-escape`` must not write next to ``pages/``."""
+    directory = _run(tmp_path, "run-a")
+    tasks = json.loads((directory / "tasks.json").read_text(encoding="utf-8"))
+    tasks[1]["task"]["id"] = "../review-escape"
+    (directory / "tasks.json").write_text(json.dumps(tasks, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="недопустимый id задания"):
+        gallery.materialise(directory, tmp_path / "out")
+    assert not (tmp_path / "out" / "review-escape.html").is_file()
+    assert not (tmp_path / "out" / "pages" / "review-escape.html").is_file()
+
+
+def test_a_frame_outside_the_run_and_cache_is_not_copied(monkeypatch, tmp_path: Path):
+    """R17: a recorded ``visual.shot`` is only trusted inside allowed roots."""
+    from dailybench import browser, visual
+
+    monkeypatch.setenv(visual.CACHE_ENV, str(tmp_path / "cache"))
+    monkeypatch.setattr(visual, "_cached_render", lambda *a: (browser.RenderResult(ok=False), False))
+    directory = _run(tmp_path, "run-a")
+    canary = tmp_path / "canary.png"
+    canary.write_bytes(FRAME + b"canary")
+    tasks = json.loads((directory / "tasks.json").read_text(encoding="utf-8"))
+    tasks[1]["transcript"]["extra"]["visual"]["shot"] = str(canary)
+    (directory / "tasks.json").write_text(json.dumps(tasks, ensure_ascii=False), encoding="utf-8")
+
+    write_report_html(directory)
+    frames = list((directory / "_showcase").rglob("*.png"))
+    assert not frames, "локальный файл вне run/cache не должен попасть в публикацию"
+
+
+def test_rebuild_without_tasks_keeps_published_pages_and_frames(tmp_path: Path):
+    """R24: a published run lost its tasks.json; rebuild is read-only."""
+    directory = _run(tmp_path, "run-a")
+    write_report_html(directory)
+    showcase = directory / "_showcase" / "run-a"
+    assert (showcase / "pages" / "K-1.html").is_file()
+    assert (showcase / "frames" / "K-1.png").is_file()
+
+    (directory / "tasks.json").unlink()
+    write_report_html(directory)
+
+    assert (showcase / "pages" / "K-1.html").is_file()
+    assert (showcase / "frames" / "K-1.png").is_file()
+    page = (directory / "report.html").read_text(encoding="utf-8")
+    assert "_showcase/run-a/pages/K-1.html" in page
+
+
+# --------------------------------------------------------------------------- #
+# Self-contained publication and wheel assets (R18)
+# --------------------------------------------------------------------------- #
+
+
+def test_published_report_has_no_broken_local_links(tmp_path: Path):
+    from dailybench.cli import main
+
+    directory = _run(tmp_path, "run-a")
+    out = tmp_path / "pub"
+    assert main(["publish", str(directory), "--out", str(out)]) == 0
+
+    missing: list[str] = []
+    for page in out.rglob("*.html"):
+        for ref in re.findall(r"""(?:src|href)='([^']+)'""", page.read_text(encoding="utf-8")):
+            if ref.startswith(("http:", "https:", "data:", "mailto:", "#")):
+                continue
+            if not (page.parent / ref).resolve().exists():
+                missing.append(f"{page.relative_to(out)} -> {ref}")
+    assert not missing
+
+
+def _wheel_python() -> str | None:
+    """An interpreter able to build this wheel without the network."""
+    for candidate in (sys.executable, shutil.which("python3"), shutil.which("python")):
+        if not candidate:
+            continue
+        probe = subprocess.run([candidate, "-c", "import setuptools, wheel"],
+                               capture_output=True, text=True)
+        if probe.returncode == 0:
+            return candidate
+    return None
+
+
+def test_wheel_contains_the_visual_assets(tmp_path: Path):
+    try:
+        import tomllib
+    except ImportError:  # Python 3.10
+        tomllib = pytest.importorskip("tomli")
+
+    config = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = config["tool"]["setuptools"]["data-files"]
+    assert "vendor/three/three.module.js" in declared["vendor/three"]
+    assert "vendor/plotly/plotly.min.js" in declared["vendor/plotly"]
+
+    python = _wheel_python()
+    if python is None:
+        pytest.skip("нет интерпретатора с setuptools/wheel")
+    out = tmp_path / "wheel"
+    subprocess.run(
+        [python, "setup.py", "egg_info", "--egg-base", str(tmp_path),
+         "build", "--build-base", str(tmp_path / "build"),
+         "bdist_wheel", "--dist-dir", str(out)],
+        cwd=REPO, check=True, capture_output=True, text=True,
+    )
+    wheel = next(out.glob("*.whl"))
+    names = zipfile.ZipFile(wheel).namelist()
+    assert any(name.endswith("vendor/three/three.module.js") for name in names), names[:5]
+    assert any(name.endswith("vendor/plotly/plotly.min.js") for name in names), names[:5]
+
+
+# --------------------------------------------------------------------------- #
+# Verdict caveats and per-profile suite figures (P2b/P3c/P3d)
+# --------------------------------------------------------------------------- #
+
+
+def _with_e(directory: Path, admission: bool | None) -> None:
+    """Append a long-context score, optionally with an unknown admission."""
+    path = directory / "scores.json"
+    scores = json.loads(path.read_text(encoding="utf-8"))
+    scores.append({
+        "task_id": "LC-1", "category": "E", "earned": 4.0 if admission is not False else 0.0,
+        "possible": 4.0, "admission": admission, "checks": [],
+    })
+    path.write_text(json.dumps(scores), encoding="utf-8")
+
+
+def test_the_verdict_caveats_reach_the_card_and_the_table(tmp_path: Path):
+    """An admission failure changes the denominator; the page must say why."""
+    for admission, marker in ((True, None), (False, "не прошёл допуск"),
+                              (None, "допуск не подтверждён")):
+        directory = _run(tmp_path, f"run-{admission}", model=f"модель-{admission}")
+        _with_e(directory, admission)
+        page = render_html([directory])
+        if marker:
+            assert marker in page, marker
+        else:
+            assert "не прошёл допуск" not in page
+            assert "допуск не подтверждён" not in page
+
+
+def test_the_long_context_cell_names_the_admission_state(tmp_path: Path):
+    """The E percentage alone reads as an ordinary zero for a failed admission."""
+    failed = _run(tmp_path, "run-failed", model="недопущенная")
+    _with_e(failed, False)
+    page = render_html([failed])
+    assert "admission failed'" in page and "не допущен" in page
+
+    unknown = _run(tmp_path, "run-unknown", model="неизвестная")
+    _with_e(unknown, None)
+    page = render_html([unknown])
+    assert "admission unverified'" in page and "допуск не подтверждён" in page
+
+    admitted = _run(tmp_path, "run-ok", model="допущенная")
+    _with_e(admitted, True)
+    page = render_html([admitted])
+    assert "class='num admission" not in page
+    assert "100%" in page  # 4/4 у E и остальные полные
+
+
+def test_the_header_weighs_the_tasks_on_offer_not_the_category_ceiling(tmp_path: Path):
+    """``--only IF-1`` offered 2 points, not A's whole 10."""
+    directory = _run(tmp_path, "run-only")
+    (directory / "suite.json").write_text(json.dumps({
+        "tasks": 1, "sha256": "abc",
+        "per_task": [{"id": "IF-1", "category": "A", "max_points": 2.0}],
+    }), encoding="utf-8")
+    page = render_html([directory], per_run=True, page_name="report.html")
+    assert "1 балльных (2 баллов качества)" in page
+
+
+def test_the_header_follows_the_profile_weights(tmp_path: Path):
+    """A pilot K block is 12 points, a stretch one 120 — not the baseline 80."""
+    for profile, ceiling in (("pilot", 12), ("stretch-v1", 120)):
+        directory = _run(tmp_path, f"run-{profile}")
+        config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+        config["profile"] = profile
+        (directory / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        (directory / "suite.json").write_text(json.dumps({
+            "tasks": 2, "sha256": "abc", "profile": profile,
+            "per_task": [{"id": "IF-1", "category": "A", "max_points": 2.0},
+                         {"id": "K-1", "category": "K", "max_points": 0.6}],
+        }), encoding="utf-8")
+        page = render_html([directory], per_run=True, page_name="report.html")
+        assert f"потолок блока {ceiling}" in page, profile
+
+
+def test_the_visual_gallery_escapes_and_contains_imported_values(tmp_path: Path):
+    """P3d: ``<b>`` must not become markup and ``../`` must not escape ``visual/``."""
+    from dailybench.report import write_visual_gallery
+
+    directory = _run(tmp_path, "run-a")
+    tasks = json.loads((directory / "tasks.json").read_text(encoding="utf-8"))
+    tasks[1]["task"]["id"] = "../K-<b>1</b>"
+    tasks[1]["task"]["title"] = "Кадр <b>жирный</b>"
+    tasks[1]["score"]["task_id"] = "../K-<b>1</b>"
+    scores = json.loads((directory / "scores.json").read_text(encoding="utf-8"))
+    scores[2]["task_id"] = "../K-<b>1</b>"
+    write_visual_gallery({"dir": str(directory), "tasks": tasks, "scores": scores})
+
+    page = (directory / "visual.html").read_text(encoding="utf-8")
+    assert "&lt;b&gt;жирный&lt;/b&gt;" in page
+    assert "<b>жирный</b>" not in page
+    assert "src=\"visual/_K-_b_1_b_.png\"" in page
+    assert (directory / "visual" / "_K-_b_1_b_.png").is_file()
+    assert "visual/../" not in page
+
+
+def test_the_visual_gallery_skips_a_frame_outside_the_run(tmp_path: Path):
+    """An imported ``visual.shot`` outside the run and cache is not copied."""
+    from dailybench.report import write_visual_gallery
+
+    directory = _run(tmp_path, "run-a")
+    tasks = json.loads((directory / "tasks.json").read_text(encoding="utf-8"))
+    outside = tmp_path / "вне.png"
+    outside.write_bytes(FRAME)
+    tasks[1]["transcript"]["extra"]["visual"]["shot"] = str(outside)
+    scores = json.loads((directory / "scores.json").read_text(encoding="utf-8"))
+    write_visual_gallery({"dir": str(directory), "tasks": tasks, "scores": scores})
+
+    page = (directory / "visual.html").read_text(encoding="utf-8")
+    assert "кадров нет" not in page
+    assert "кадра нет: страница не отрисовалась" in page
+    assert not (directory / "visual" / "K-1.png").exists()

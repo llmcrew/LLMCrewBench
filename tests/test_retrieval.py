@@ -7,6 +7,8 @@ of the read-only workspace driver.
 
 from __future__ import annotations
 
+import json
+
 from dailybench import ModelReply, RunConfig, TaskInstance, Transcript, Turn, core, text
 from dailybench.rng import task_rng
 from dailybench.runner import Runner, materialise
@@ -191,3 +193,344 @@ def test_i2_first_and_last_file_win_traps_earn_shape_only() -> None:
         assert score.earned == 1.0, (key, _failed(score))
         assert score.checks[0].passed is True
         assert score.checks[1].passed is False
+
+
+# --------------------------------------------------------------------------- #
+# Profile contract
+# --------------------------------------------------------------------------- #
+
+_PROFILES = ("pilot", "stretch-v1")
+
+
+def _profile_tasks(profile: str, seed: int = 20260915) -> list[TaskInstance]:
+    return retrieval.generate(task_rng(seed, "I"), RunConfig(seed=seed, profile=profile))
+
+
+def test_profile_lists_are_registered_and_generated() -> None:
+    assert retrieval.IDS == retrieval.BASELINE_IDS == ("I-1", "I-2")
+    assert retrieval.PILOT_IDS == ("I-3",)
+    assert retrieval.ALL_IDS == ("I-1", "I-2", "I-3", "I-4")
+
+    module = core.REGISTRY["I"]
+    assert module.expected_ids == retrieval.BASELINE_IDS
+    assert module.expected_ids_for("pilot") == retrieval.PILOT_IDS
+    assert module.expected_ids_for("stretch-v1") == retrieval.ALL_IDS
+    assert module.expected_ids_for() == retrieval.BASELINE_IDS
+
+    assert [task.id for task in _profile_tasks("pilot")] == ["I-3"]
+    assert [task.id for task in _profile_tasks("stretch-v1")] == ["I-1", "I-2", "I-3", "I-4"]
+    assert [task.id for task in _tasks()] == ["I-1", "I-2"]
+
+
+# --------------------------------------------------------------------------- #
+# I-3 / I-4 shared contract
+# --------------------------------------------------------------------------- #
+
+_NEW_TASKS = ("I-3", "I-4")
+
+
+def _new_task(task_id: str, seed: int = 20260915) -> TaskInstance:
+    return next(task for task in _profile_tasks("stretch-v1", seed) if task.id == task_id)
+
+
+def _resolved_i3(workspace: dict[str, str]) -> tuple[dict[str, object], dict[str, str]]:
+    """Second, text-oriented resolver: the oracle is computed from structure."""
+    values: dict[str, object] = {}
+    sources: dict[str, str] = {}
+    stack: list[str] = []
+
+    def visit(path: str) -> None:
+        if path in stack:
+            return
+        stack.append(path)
+        for number, line in enumerate(workspace[path].splitlines(), start=1):
+            if line.startswith("include "):
+                visit(line[len("include "):])
+                continue
+            key, _, raw = line.partition(" = ")
+            raw = raw.strip()
+            if raw == "UNSET":
+                continue
+            if raw == "null":
+                value: object = None
+            elif raw.startswith("["):
+                value = [item.strip() for item in raw[1:-1].split(",")]
+            else:
+                try:
+                    value = int(raw)
+                except ValueError:
+                    value = raw
+            values[key] = value
+            sources[key] = f"{path}:{number}"
+        stack.pop()
+
+    visit("conf/main.conf")
+    return values, sources
+
+
+def _resolved_i4(workspace: dict[str, str]) -> dict[str, object]:
+    active: dict[str, tuple[str, str]] = {}
+    for path in sorted(workspace):
+        for number, line in enumerate(workspace[path].splitlines(), start=1):
+            if not line:
+                continue
+            if line.startswith("DELETE "):
+                active.pop(line[len("DELETE "):], None)
+                continue
+            ident, _, owner = line.split(" ")
+            active[ident] = (owner, f"{path}:{number}")
+    by_owner: dict[str, int] = {}
+    for owner, _ in active.values():
+        by_owner[owner] = by_owner.get(owner, 0) + 1
+    return {
+        "active": len(active),
+        "by_owner": dict(sorted(by_owner.items())),
+        "source": {ident: source for ident, (_, source) in sorted(active.items())},
+    }
+
+
+def test_new_generation_is_deterministic_and_seeded() -> None:
+    for profile in _PROFILES:
+        first = _profile_tasks(profile)
+        second = _profile_tasks(profile)
+        other = _profile_tasks(profile, 20260916)
+        assert [task.id for task in first] == [task.id for task in other]
+        assert [task.prompt for task in first] == [task.prompt for task in second]
+        assert [task.workspace for task in first] == [task.workspace for task in second]
+        assert [task.oracle for task in first] == [task.oracle for task in second]
+        # The I-3 prompt is static (the fixture lives in the workspace); only
+        # the workspace and the oracle must move with the seed.
+        assert any(a.workspace != b.workspace for a, b in zip(first, other))
+        assert any(a.oracle["reference"] != b.oracle["reference"] for a, b in zip(first, other))
+
+
+def test_new_tasks_carry_three_checks_summing_to_the_budget() -> None:
+    for task_id in _NEW_TASKS:
+        task = _new_task(task_id)
+        score = retrieval.evaluate(task, _transcript(task, task.oracle["reference"]))
+        assert sum(check.points for check in score.checks) == task.max_points == 2.0
+        assert len(score.checks) == 3
+        score.fit_points(task.max_points)
+        assert abs(sum(check.points for check in score.checks) - task.max_points) < 1e-9
+
+
+def test_new_references_score_full_and_garbage_scores_zero() -> None:
+    for task_id in _NEW_TASKS:
+        task = _new_task(task_id)
+        score = retrieval.evaluate(task, _transcript(task, task.oracle["reference"]))
+        assert score.earned == 2.0, _failed(score)
+        run = Runner(RunConfig(), GarbageProvider()).run_task(task)
+        assert run.score.earned == 0.0
+
+
+def test_new_reference_transcripts_read_the_whole_workspace() -> None:
+    for task_id in _NEW_TASKS:
+        task = _new_task(task_id)
+        run = Runner(RunConfig(), OracleProvider(task)).run_task(task)
+        assert run.transcript.error is None
+        assert run.transcript.extra.get("driver") == "I"
+        reads = [call for call in run.transcript.tool_log if call["name"] == "read_file"]
+        assert len(reads) == len(task.oracle["golden_calls"]) == len(task.oracle["files"])
+        assert not any(call["error"] for call in run.transcript.tool_log)
+        assert run.score.earned == 2.0
+
+
+def test_new_prompts_do_not_leak_the_raw_files() -> None:
+    for seed in range(5):
+        for task_id in _NEW_TASKS:
+            task = _new_task(task_id, seed)
+            for content in task.workspace.values():
+                for line in content.splitlines():
+                    assert line not in task.prompt
+
+
+# --------------------------------------------------------------------------- #
+# I-3 semantics and mutants
+# --------------------------------------------------------------------------- #
+
+
+def test_i3_fixture_bounds_and_semantics() -> None:
+    for seed in range(5):
+        task = _new_task("I-3", seed)
+        files = task.oracle["files"]
+        assert 6 <= len(files) <= 8
+
+        def depth(path: str, seen: tuple[str, ...] = ()) -> int:
+            if path in seen:
+                return 0
+            includes = [
+                line[len("include "):]
+                for line in task.workspace[path].splitlines()
+                if line.startswith("include ")
+            ]
+            return 1 + max((depth(item, seen + (path,)) for item in includes), default=0)
+
+        assert depth("conf/main.conf") - 1 <= 3, "не больше трёх include-уровней"
+        assert task.oracle["values"]["cache.ttl"] is None
+        assert len(task.oracle["values"]["routes"]) == 3
+        assert task.oracle["values"]["service.port"] == 8081
+        assert task.oracle["values"]["logging.level"] == "debug"
+        assert task.oracle["values"]["max_conns"] == 900
+        # UNSET inherits: the winning source is never the UNSET line.
+        assert "defaults.conf" not in task.oracle["sources"]["cache.ttl"]
+        assert task.oracle["sources"]["max_conns"].startswith("conf/overrides.conf:")
+        # Exact file/line references point into an existing line of an existing file.
+        for key, source in task.oracle["sources"].items():
+            path, _, number = source.rpartition(":")
+            lines = task.workspace[path].splitlines()
+            assert 1 <= int(number) <= len(lines)
+            assert lines[int(number) - 1].startswith(f"{key} = ")
+
+
+def test_i3_independent_resolver_matches_the_oracle() -> None:
+    for seed in range(10):
+        task = _new_task("I-3", seed)
+        values, sources = _resolved_i3(task.workspace)
+        assert values == task.oracle["values"]
+        assert sources == task.oracle["sources"]
+
+
+def test_i3_cycle_seed_terminates_with_a_valid_oracle() -> None:
+    task = next(
+        task
+        for seed in range(60)
+        for task in [_new_task("I-3", seed)]
+        if task.oracle["cycle"]
+    )
+    assert "include conf/limits.conf" in task.workspace["conf/overrides.conf"]
+    assert "include conf/overrides.conf" in task.workspace["conf/limits.conf"]
+    values, sources = _resolved_i3(task.workspace)
+    assert values == task.oracle["values"] and sources == task.oracle["sources"]
+    score = retrieval.evaluate(task, _transcript(task, task.oracle["reference"]))
+    assert score.earned == 2.0
+
+
+def test_i3_mutants_never_reach_full_score() -> None:
+    for seed in range(5):
+        task = _new_task("I-3", seed)
+        assert task.oracle["naive_answer"] != task.oracle["reference"]
+        assert task.oracle["naive_concat_answer"] != task.oracle["reference"]
+        assert task.oracle["naive_null_answer"] != task.oracle["reference"]
+        for key in ("naive_answer", "naive_concat_answer", "naive_null_answer"):
+            _, strict = text.strict_json(task.oracle[key])
+            assert strict is True, "мутант обязан быть строгим JSON"
+            score = retrieval.evaluate(task, _transcript(task, task.oracle[key]))
+            assert 0 < score.earned < 2.0, (seed, key, _failed(score))
+            assert score.checks[0].passed is True
+    # List concatenation is exactly what the second mutant copies.
+    payload = text.strict_json(_new_task("I-3").oracle["naive_concat_answer"])[0]
+    assert len(payload["values"]["routes"]) == 5, "2 + 3 элемента склеены"
+
+
+def test_i3_right_values_with_wrong_sources_earn_values_only() -> None:
+    task = _new_task("I-3")
+    sources = {key: "conf/main.conf:1" for key in task.oracle["sources"]}
+    payload = text.strict_json(task.oracle["reference"])[0]
+    payload["sources"] = sources
+    score = retrieval.evaluate(task, _transcript(task, json.dumps(payload, ensure_ascii=False)))
+    assert score.checks[0].passed is True
+    assert score.checks[1].passed is True
+    assert score.checks[2].passed is False
+    assert score.earned == 1.25
+
+
+# --------------------------------------------------------------------------- #
+# I-4 semantics and mutants
+# --------------------------------------------------------------------------- #
+
+
+def _records(workspace: dict[str, str]) -> list[str]:
+    return [
+        line
+        for content in workspace.values()
+        for line in content.splitlines()
+        if line and not line.startswith("DELETE ")
+    ]
+
+
+def test_i4_fixture_bounds_and_state() -> None:
+    for seed in range(5):
+        task = _new_task("I-4", seed)
+        files = task.oracle["files"]
+        assert 8 <= len(files) <= 10
+        assert 12 <= len(_records(task.workspace)) <= 30
+        reference = text.strict_json(task.oracle["reference"])[0]
+        assert reference["active"] == sum(reference["by_owner"].values())
+        assert set(reference["source"]) == {
+            ident for ident in task.oracle["source"]
+        }
+        # Every live id has one winning line, and it is the latest one.
+        for ident, source in task.oracle["source"].items():
+            path, _, number = source.rpartition(":")
+            assert task.workspace[path].splitlines()[int(number) - 1].startswith(f"{ident} ")
+        # Tombstoned records are absent; the resurrected one is present.
+        assert len(task.oracle["deleted"]) == 1
+        for ident in task.oracle["deleted"]:
+            assert ident not in reference["source"]
+        assert task.oracle["revived"] in reference["source"]
+
+
+def test_i4_independent_resolver_matches_the_oracle() -> None:
+    for seed in range(10):
+        task = _new_task("I-4", seed)
+        assert _resolved_i4(task.workspace) == text.strict_json(task.oracle["reference"])[0]
+
+
+def test_i4_name_pairs_share_a_display_name_but_not_an_id() -> None:
+    for seed in range(5):
+        task = _new_task("I-4", seed)
+        names: dict[str, list[str]] = {}
+        for value in task.workspace.values():
+            for line in value.splitlines():
+                if line and not line.startswith("DELETE "):
+                    ident, name, _ = line.split(" ")
+                    names.setdefault(name, []).append(ident)
+        pairs = [idents for idents in names.values() if len({*idents}) == 2]
+        assert len(pairs) == 2, "нужны ровно две пары совпадающих имён"
+
+
+def test_i4_mutants_never_reach_full_score() -> None:
+    for seed in range(5):
+        task = _new_task("I-4", seed)
+        for key in ("naive_answer", "naive_deleted_answer", "naive_stale_answer"):
+            _, strict = text.strict_json(task.oracle[key])
+            assert strict is True, "мутант обязан быть строгим JSON"
+            score = retrieval.evaluate(task, _transcript(task, task.oracle[key]))
+            assert 0 < score.earned < 2.0, (seed, key, _failed(score))
+            assert score.checks[0].passed is True
+    # The by-name mutant loses exactly one active object per shared name pair.
+    payload = text.strict_json(_new_task("I-4").oracle["naive_deleted_answer"])[0]
+    reference = text.strict_json(_new_task("I-4").oracle["reference"])[0]
+    assert payload["active"] == reference["active"] + 1, "удалённый объект посчитан"
+
+
+def test_i4_right_state_with_a_stale_source_earns_state_only() -> None:
+    task = _new_task("I-4")
+    payload = text.strict_json(task.oracle["reference"])[0]
+    stale = dict(payload["source"])
+    corrected = [
+        ident
+        for ident, source in stale.items()
+        if sum(
+            1
+            for content in task.workspace.values()
+            for line in content.splitlines()
+            if line.startswith(f"{ident} ")
+        )
+        > 1
+    ]
+    assert corrected, "нужен объект с исправлением владельца"
+    for ident in corrected:
+        first = next(
+            f"{path}:{number}"
+            for path, content in sorted(task.workspace.items())
+            for number, line in enumerate(content.splitlines(), start=1)
+            if line.startswith(f"{ident} ")
+        )
+        stale[ident] = first
+    payload["source"] = stale
+    score = retrieval.evaluate(task, _transcript(task, json.dumps(payload, ensure_ascii=False)))
+    assert score.checks[0].passed is True
+    assert score.checks[1].passed is True
+    assert score.checks[2].passed is False
+    assert score.earned == 1.25

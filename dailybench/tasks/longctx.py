@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+import re
 from typing import Any
 
 from .. import core, text
@@ -387,15 +388,391 @@ def _lc5(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     )
 
 
+# --------------------------------------------------------------------------- #
+# State-machine scenarios (LC-6 pilot, LC-7 stretch)
+# --------------------------------------------------------------------------- #
+
+ASSIGNED = "ASSIGNED"
+UNRESOLVED = "UNRESOLVED"
+
+_STATUS_RE = re.compile(r"СТАТУС\s*[:=\-]?\s*([A-Za-zА-Яа-я_]+)", re.IGNORECASE)
+_OWNER_RE = re.compile(r"OWNER\s*[:=\-]?\s*([A-Za-z][\w\-]*)", re.IGNORECASE)
+_EVIDENCE_RE = re.compile(r"СОБЫТИЯ\s*[:=\-]?\s*(.+)$", re.IGNORECASE)
+_EVENT_ID_RE = re.compile(r"EV-\d{3}")
+
+
+def _single_line(reply: str) -> str | None:
+    lines = text.answer_lines(reply)
+    return lines[0] if len(lines) == 1 else None
+
+
+def _parse_state_answer(reply: str) -> tuple[str, tuple[str, ...]] | None:
+    """Parse ``СТАТУС <...>; СОБЫТИЯ <ids>``; the ID list keeps its order."""
+    line = _single_line(reply)
+    if line is None:
+        return None
+    status = _STATUS_RE.search(line)
+    evidence = _EVIDENCE_RE.search(line)
+    if status is None or evidence is None:
+        return None
+    ids = tuple(_EVENT_ID_RE.findall(evidence.group(1)))
+    if not ids:
+        return None
+    return status.group(1).upper(), ids
+
+
+def _parse_chain_answer(reply: str) -> tuple[str, tuple[str, ...]] | None:
+    """Parse ``OWNER <entity>; СОБЫТИЯ <ids>``."""
+    line = _single_line(reply)
+    if line is None:
+        return None
+    owner = _OWNER_RE.search(line)
+    evidence = _EVIDENCE_RE.search(line)
+    if owner is None or evidence is None:
+        return None
+    ids = tuple(_EVENT_ID_RE.findall(evidence.group(1)))
+    return (owner.group(1), ids) if ids else None
+
+
+def _state_answer(status: str, evidence: list[str] | tuple[str, ...]) -> str:
+    return f"СТАТУС {status}; СОБЫТИЯ {','.join(evidence)}"
+
+
+def _chain_answer(entity: str, evidence: list[str] | tuple[str, ...]) -> str:
+    return f"OWNER {entity}; СОБЫТИЯ {','.join(evidence)}"
+
+
+def _stamp(day: str, hhmm: str) -> str:
+    return f"{day}T{hhmm}:00Z"
+
+
+def _active_by_version(events: list[dict[str, Any]], cutoff: str) -> list[dict[str, Any]]:
+    """Events in force at ``cutoff``: apply-time order with the version rule.
+
+    Only events up to the cutoff take part, and of several versions of one key
+    only the highest one survives — a later line with a lower version is a
+    correction, not a newer state, and a higher version after the cutoff has not
+    happened yet at the snapshot. A retraction is not a version of the
+    assignment: it stays in force and clears the key it names.
+    """
+    active = [event for event in events if event["ts"] <= cutoff]
+    best: dict[str, int] = {}
+    for event in active:
+        if event["op"] == "assign":
+            best[event["key"]] = max(best.get(event["key"], 0), int(event["version"]))
+    kept = [
+        event
+        for event in active
+        if event["op"] != "assign" or int(event["version"]) == best[event["key"]]
+    ]
+    return sorted(kept, key=lambda event: (event["ts"], event["id"]))
+
+
+def replay_owner(events: list[dict[str, Any]], cutoff: str) -> tuple[str, tuple[str, ...]]:
+    """Reference state machine: owner status plus the deciding event IDs."""
+    owner: str | None = None
+    owner_key: str | None = None
+    evidence: list[str] = []
+    for event in _active_by_version(events, cutoff):
+        if event["op"] == "assign":
+            owner = str(event["team"])
+            owner_key = str(event["key"])
+            evidence = [str(event["id"])]
+        elif owner_key == event["key"]:
+            # A retraction only clears the key it names; its evidence is the
+            # assignment it revokes plus itself, in application order.
+            owner = None
+            owner_key = None
+            evidence.append(str(event["id"]))
+    return (ASSIGNED if owner else UNRESOLVED), tuple(evidence)
+
+
+def _fold_owner(events: list[dict[str, Any]], cutoff: str) -> tuple[str, tuple[str, ...]]:
+    """Independent recomputation of :func:`replay_owner` (seen-version fold)."""
+    active = [event for event in events if event["ts"] <= cutoff]
+    seen: dict[str, int] = {}
+    order = sorted(active, key=lambda event: (event["ts"], event["id"]))
+    owner: str | None = None
+    owner_key: str | None = None
+    evidence: list[str] = []
+    for event in order:
+        if event["op"] == "assign":
+            if int(event["version"]) < seen.get(event["key"], 0):
+                continue
+            seen[event["key"]] = int(event["version"])
+            owner, owner_key, evidence = str(event["team"]), str(event["key"]), [str(event["id"])]
+        elif owner_key == event["key"]:
+            owner, owner_key, evidence = None, None, [*evidence, str(event["id"])]
+    return (ASSIGNED if owner else UNRESOLVED), tuple(evidence)
+
+
+def _event_lines(service: str, events: list[dict[str, Any]]) -> list[str]:
+    lines = []
+    for event in events:
+        if event["op"] == "retract":
+            lines.append(f"event {event['id']} at {event['ts']}: service {service} retraction of key {event['key']}")
+        else:
+            lines.append(
+                f"event {event['id']} at {event['ts']} v{event['version']}: "
+                f"service {service} owner = {event['team']} key {event['key']}"
+            )
+    return lines
+
+
+def _lc6(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
+    """Owner on a cutoff date from assignments, corrections, a tombstone and versions."""
+    service = f"kanopus-{_suffix(rng)}"
+    teams: list[str] = []
+    while len(teams) < 8:
+        candidate = f"team-{rng.randrange(100, 1000)}"
+        if candidate not in teams:
+            teams.append(candidate)
+    base = rng.randrange(101, 780)
+    ids = [f"EV-{base + index:03d}" for index in range(10)]
+    day = f"2026-05-{rng.randrange(10, 28):02d}"
+    times = ("09:05", "09:40", "10:20", "11:00", "11:35", "12:10", "12:40", "13:15", "13:15", "14:00")
+    events = [
+        {"id": ids[0], "ts": _stamp(day, times[0]), "version": 1, "key": "K1", "op": "assign", "team": teams[0]},
+        {"id": ids[1], "ts": _stamp(day, times[1]), "version": 1, "key": "K2", "op": "assign", "team": teams[1]},
+        # A correction re-issues K1 with a higher version: the first line is void.
+        {"id": ids[2], "ts": _stamp(day, times[2]), "version": 2, "key": "K1", "op": "assign", "team": teams[2]},
+        {"id": ids[3], "ts": _stamp(day, times[3]), "version": 1, "key": "K1", "op": "retract"},
+        # The surviving K3 version is the earlier line; the later one is lower.
+        {"id": ids[4], "ts": _stamp(day, times[4]), "version": 2, "key": "K3", "op": "assign", "team": teams[3]},
+        {"id": ids[5], "ts": _stamp(day, times[5]), "version": 1, "key": "K3", "op": "assign", "team": teams[4]},
+        {"id": ids[6], "ts": _stamp(day, times[6]), "version": 1, "key": "K3", "op": "retract"},
+        # Equal timestamps: the larger ID is applied later and wins.
+        {"id": ids[7], "ts": _stamp(day, times[7]), "version": 1, "key": "K4", "op": "assign", "team": teams[5]},
+        {"id": ids[8], "ts": _stamp(day, times[8]), "version": 1, "key": "K5", "op": "assign", "team": teams[6]},
+        # Higher version after the cutoff: must not be used at the snapshot.
+        {"id": ids[9], "ts": _stamp(day, times[9]), "version": 2, "key": "K4", "op": "assign", "team": teams[7]},
+    ]
+    cutoff = _stamp(day, rng.choice(("13:00", "13:30")))
+    status, evidence = replay_owner(events, cutoff)
+    assert _fold_owner(events, cutoff) == (status, evidence), "state machine disagrees with itself"
+    answer = _state_answer(status, evidence)
+
+    naive_no_tombstone = replay_owner([event for event in events if event["op"] != "retract"], cutoff)
+    naive_no_cutoff = replay_owner(events, "9999")
+
+    question = (
+        f"Восстанови состояние owner службы {service} на момент CUTOFF.\n"
+        "Правила: 1) действуют только события с ts <= CUTOFF; 2) из событий одного key "
+        "действует версия с наибольшим v, версии с меньшим v исправлены и не применяются; "
+        "3) применённые события упорядочиваются по (ts, id), при равных ts позже идёт событие "
+        "с большим id; 4) assign задаёт owner, retraction очищает owner своего key.\n"
+        "Ответь одной строкой: СТАТУС <ASSIGNED|UNRESOLVED>; СОБЫТИЯ <ID через запятую>. "
+        "Для ASSIGNED перечисли применённое назначение, для UNRESOLVED — применённое "
+        "назначение и его отзыв в порядке применения."
+    )
+    header = f"service {service} holds an event journal for {day}."
+    cutoff_line = f"cutoff = {cutoff}"
+    last_line = _event_lines(service, [events[-1]])[0]
+    shuffled = events[:-1]
+    rng.shuffle(shuffled)
+    lines = _event_lines(service, shuffled) + [last_line]
+    special = [header, cutoff_line, *lines]
+    fractions = [0.02, 0.05, *sorted(rng.uniform(0.08, 0.90) for _ in range(9)), 0.94]
+    target = _target(cfg, 20480, 0.625)
+    prompt, sizing = _targeted_records(
+        rng, target, "event", special, fractions, question, special, ratio=_ratio(cfg, "LC-6")
+    )
+    positions = sizing["fact_positions"]
+    last_event = max(events, key=lambda event: positions[_event_lines(service, [event])[0]])
+    # A naive reader takes the last event line as the current state.
+    naive_last = (ASSIGNED, (last_event["id"],)) if last_event["op"] == "assign" else (UNRESOLVED, (last_event["id"],))
+    meta = _base_meta(cfg, target, sizing["estimated_tokens"], sizing["prompt_chars"])
+    meta.update({key: sizing[key] for key in ("document_chars", "target_facts", "fact_positions")})
+    meta["cutoff"] = cutoff
+    return _task(
+        "LC-6",
+        prompt,
+        {
+            "answer": answer,
+            "reference": answer,
+            "format": "state",
+            "status": status,
+            "evidence": list(evidence),
+            "cutoff": cutoff,
+            "target_entity": service,
+            "events": [dict(event) for event in events],
+            "naive_last_position_answer": _state_answer(*naive_last),
+            "naive_ignore_tombstone_answer": _state_answer(*naive_no_tombstone),
+            "naive_ignore_cutoff_answer": _state_answer(*naive_no_cutoff),
+            "answer_without_ids": f"СТАТУС {status}",
+            "target_facts": special,
+            "positions": positions,
+            "comparison_note": "Статус и ID событий сравниваются точно, порядок ID значим.",
+        },
+        meta,
+    )
+
+
+def _edges_in_force(edges: list[dict[str, Any]], cutoff: str) -> list[dict[str, Any]]:
+    active = [edge for edge in edges if edge["ts"] <= cutoff]
+    best: dict[str, int] = {}
+    for edge in active:
+        best[edge["key"]] = max(best.get(edge["key"], 0), int(edge["version"]))
+    return [edge for edge in active if int(edge["version"]) == best[edge["key"]]]
+
+
+def walk_chain(
+    edges: list[dict[str, Any]], start: tuple[str, str], cutoff: str, hops: int = 4
+) -> tuple[str, tuple[str, ...]]:
+    """Follow exactly one edge per hop from ``start``; returns the last object and IDs."""
+    active = _edges_in_force(edges, cutoff)
+    current = start
+    evidence: list[str] = []
+    for _ in range(hops):
+        matches = [edge for edge in active if edge["subject"] == current]
+        if len(matches) != 1:
+            raise AssertionError(f"hop from {current} matched {len(matches)} edges")
+        evidence.append(str(matches[0]["id"]))
+        current = matches[0]["object"]
+    return current[1], tuple(evidence)
+
+
+def _edge_line(edge: dict[str, Any]) -> str:
+    _, value = edge["subject"]
+    object_kind, object_value = edge["object"]
+    body = {
+        "node": f"incident {value} affects node {object_value}",
+        "shard": f"node {value} hosts shard {object_value}",
+        "service": f"shard {value} belongs to service {object_value}",
+        "owner": f"service {value} owner = {object_value}",
+    }[object_kind]
+    return f"edge {edge['id']} at {edge['ts']} v{edge['version']} {edge['key']}: {body}"
+
+
+def _lc7(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
+    """Follow incident -> node -> shard -> service -> owner through three chains."""
+    day = f"2026-06-{rng.randrange(10, 28):02d}"
+    cutoff = _stamp(day, "14:00")
+
+    def distinct(count: int, low: int, high: int) -> list[int]:
+        values: list[int] = []
+        while len(values) < count:
+            value = rng.randrange(low, high)
+            if value not in values:
+                values.append(value)
+        return values
+
+    incident_ids = [f"IN-{value}" for value in distinct(3, 1000, 9000)]
+    node_ids = [f"zircon-{value}" for value in distinct(2, 2, 40)]
+    shard_ids = [f"S{value:02d}" for value in distinct(3, 10, 99)]
+    services = ["hestia", "nereid", "iris"]
+    teams = [f"team-{value}" for value in distinct(4, 100, 1000)]
+    base = rng.randrange(101, 700)
+    ids = [f"EV-{base + index:03d}" for index in range(12)]
+
+    def edge(index: int, hhmm: str, version: int, key: str, subject: tuple[str, str], obj: tuple[str, str]) -> dict[str, Any]:
+        return {"id": ids[index], "ts": _stamp(day, hhmm), "version": version, "key": key,
+                "subject": subject, "object": obj}
+
+    target_node, distractor_node = node_ids
+    target_shard, distractor_shard, post_shard = shard_ids
+    target_team = teams[0]
+    distractor_team = teams[1]
+    post_team = teams[2]
+    edges = [
+        # Target chain; the node -> shard link is versioned.
+        edge(0, "10:05", 1, "IN1", ("incident", incident_ids[0]), ("node", target_node)),
+        edge(1, "10:40", 1, "NODE1", ("node", target_node), ("shard", target_shard)),
+        edge(2, "11:20", 2, "SHARD1", ("shard", target_shard), ("service", services[0])),
+        edge(3, "12:05", 1, "SVC1", ("service", services[0]), ("owner", target_team)),
+        # Conflicting lower version of the same shard link, printed later.
+        edge(4, "12:50", 1, "SHARD1", ("shard", target_shard), ("service", services[1])),
+        # A complete, plausible second chain that shares the shard wording.
+        edge(5, "09:10", 1, "IN2", ("incident", incident_ids[1]), ("node", distractor_node)),
+        edge(6, "09:45", 1, "NODE2", ("node", distractor_node), ("shard", distractor_shard)),
+        edge(7, "10:30", 1, "SHARD2", ("shard", distractor_shard), ("service", services[1])),
+        edge(8, "11:05", 1, "SVC2", ("service", services[1]), ("owner", distractor_team)),
+        # Repointed node -> shard edge after the cutoff, with its own tail.
+        edge(9, "15:10", 2, "NODE1", ("node", target_node), ("shard", post_shard)),
+        edge(10, "15:40", 1, "SHARD3", ("shard", post_shard), ("service", services[2])),
+        edge(11, "16:05", 1, "SVC3", ("service", services[2]), ("owner", post_team)),
+    ]
+    answer_owner, evidence = walk_chain(edges, ("incident", incident_ids[0]), cutoff)
+    answer = _chain_answer(answer_owner, evidence)
+
+    distract_owner, distract_evidence = walk_chain(edges, ("incident", incident_ids[1]), cutoff)
+    post_owner, post_evidence = walk_chain(edges, ("incident", incident_ids[0]), "9999")
+    # The last document line is the superseded lower version of the shard edge.
+    tail_owner, tail_ids = walk_chain(edges, edges[4]["object"], cutoff, hops=1)
+    naive_last = _chain_answer(tail_owner, (edges[4]["id"], *tail_ids))
+
+    question = (
+        f"По журналу связей построй путь incident -> node -> shard -> service -> owner "
+        f"для incident {incident_ids[0]} на момент CUTOFF.\n"
+        "Правила: 1) действуют только рёбра с ts <= CUTOFF; 2) для одного key действует "
+        "только версия с наибольшим v; 3) каждый следующий шаг берётся по ребру, субъект "
+        "которого равен текущей сущности.\n"
+        "Ответь одной строкой: OWNER <team>; СОБЫТИЯ <ID рёбер в порядке прохода>."
+    )
+    header = f"graph snapshot for {day}."
+    cutoff_line = f"cutoff = {cutoff}"
+    ordered = [_edge_line(edge_item) for edge_item in edges]
+    rng.shuffle(ordered)
+    # Deliberately positional: a superseded lower version closes the document.
+    closing = _edge_line(edges[4])
+    ordered.remove(closing)
+    ordered.append(closing)
+    special = [header, cutoff_line, *ordered]
+    fractions = [0.01, 0.03, *sorted(rng.uniform(0.06, 0.88) for _ in range(11)), 0.93]
+    target = _target(cfg, rng.randrange(24_000, 28_001), rng.uniform(0.73, 0.86))
+    prompt, sizing = _targeted_records(
+        rng, target, "incident", special, fractions, question, special, ratio=_ratio(cfg, "LC-7")
+    )
+    meta = _base_meta(cfg, target, sizing["estimated_tokens"], sizing["prompt_chars"])
+    meta.update({key: sizing[key] for key in ("document_chars", "target_facts", "fact_positions")})
+    meta["cutoff"] = cutoff
+    mixed = _chain_answer(distract_owner, distract_evidence)
+    return _task(
+        "LC-7",
+        prompt,
+        {
+            "answer": answer,
+            "reference": answer,
+            "format": "chain",
+            "target_incident": incident_ids[0],
+            "target_node": target_node,
+            "target_shard": target_shard,
+            "target_service": services[0],
+            "answer_entity": answer_owner,
+            "evidence": list(evidence),
+            "cutoff": cutoff,
+            "edges": [dict(item) for item in edges],
+            "distractor_incident": incident_ids[1],
+            "distractor_entities": [incident_ids[1], distractor_node, distractor_shard, services[1], distractor_team],
+            "distractor_answer": mixed,
+            "naive_mixed_chain_answer": mixed,
+            "naive_last_position_answer": naive_last,
+            "naive_last_version_answer": _chain_answer(post_owner, post_evidence),
+            "answer_without_ids": f"OWNER {answer_owner}",
+            "target_facts": special,
+            "positions": sizing["fact_positions"],
+            "comparison_note": "Сущность и ID рёбер сравниваются точно, порядок ID значим.",
+        },
+        meta,
+    )
+
+
 def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
-    """Generate all five deterministic scenarios from the supplied RNG."""
-    return [
+    """Generate the scenarios of the run's profile, deterministically."""
+    profile = core.profile_of(cfg)
+    if profile == "pilot":
+        return [_lc6(rng, cfg)]
+    tasks = [
         _lc1(rng, cfg),
         _lc2(rng, cfg),
         _lc3(rng, cfg),
         _lc4(rng, cfg),
         _lc5(rng, cfg),
     ]
+    if profile == "stretch-v1":
+        tasks.append(_lc6(rng, cfg))
+        tasks.append(_lc7(rng, cfg))
+    return tasks
 
 
 def _context_overflow(error: str | None) -> bool:
@@ -457,6 +834,29 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
                 score.notes.append(f"Фактический вход {prompt_tokens} при цели {target} токенов.")
 
     whitelist = tuple(task.oracle.get("unit_whitelist", ()))
+    answer_format = task.oracle.get("format")
+    if answer_format in ("state", "chain"):
+        if answer_format == "state":
+            parsed_state = _parse_state_answer(tr.final_text)
+            expected = (str(task.oracle["status"]), tuple(str(value) for value in task.oracle["evidence"]))
+            name = "точный статус и event IDs"
+            shown = None if parsed_state is None else _state_answer(*parsed_state)
+        else:
+            parsed_state = _parse_chain_answer(tr.final_text)
+            expected = (str(task.oracle["answer_entity"]),
+                        tuple(str(value) for value in task.oracle["evidence"]))
+            name = "точная сущность и event IDs"
+            shown = None if parsed_state is None else _chain_answer(*parsed_state)
+        passed = parsed_state is not None and parsed_state == expected
+        reference_text = task.oracle["reference"]
+        score.add(
+            name,
+            passed,
+            _POINTS,
+            f"ответ {shown!r} совпал с {reference_text!r}" if passed else f"получено {shown!r}, ожидалось {reference_text!r}",
+        )
+        return score
+
     parsed = text.answer_token(tr.final_text, whitelist)
     reference = str(task.oracle["answer"])
     # Accepted spellings are fixed in the oracle before the run: the question asks
@@ -477,11 +877,17 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     return score
 
 
+BASELINE_IDS = ("LC-1", "LC-2", "LC-3", "LC-4", "LC-5")
+PILOT_IDS = ("LC-6",)
+ALL_IDS = BASELINE_IDS + ("LC-6", "LC-7")
+
+
 core.register(
     key="E",
     title="Long context",
     points=10.0,
     generate=generate,
     evaluate=evaluate,
-    expected_ids=("LC-1", "LC-2", "LC-3", "LC-4", "LC-5"),
+    expected_ids=BASELINE_IDS,
+    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": ALL_IDS},
 )

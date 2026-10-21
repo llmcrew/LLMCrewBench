@@ -99,12 +99,22 @@ def test_keys_come_from_the_environment(monkeypatch: pytest.MonkeyPatch):
     assert RunConfig().api_key == "not-needed"
 
 
-def test_a_run_config_carries_the_key_but_no_path(monkeypatch: pytest.MonkeyPatch):
+def test_a_run_config_keeps_the_key_out_and_only_marks_it(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DAILYBENCH_API_KEY", "sk-local-secret")
-    payload = json.loads(RunConfig().to_json())
-    assert payload["api_key"] == "sk-local-secret"  # ключ нужен для воспроизведения
+    cfg = RunConfig()
+    payload = json.loads(cfg.to_json())
+    assert "api_key" not in payload, "значение ключа не публикуется"
+    assert payload["api_key_set"] is True
     assert payload["weights_path"] == ""  # путь появляется только из reference-записи
+    assert "sk-local-secret" not in cfg.to_json()
     assert "/Users/" not in json.dumps(payload) and "C:\\\\Users" not in json.dumps(payload)
+
+    # Replayability: a saved config still resolves the key from the environment.
+    restored = RunConfig.from_dict(payload)
+    assert restored.api_key == "sk-local-secret"
+
+    monkeypatch.delenv("DAILYBENCH_API_KEY")
+    assert json.loads(RunConfig().to_json())["api_key_set"] is False
 
 
 def test_env_override_reaches_the_client(monkeypatch: pytest.MonkeyPatch):

@@ -24,6 +24,32 @@ from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
 # --------------------------------------------------------------------------- #
+# Suite profiles
+# --------------------------------------------------------------------------- #
+
+DEFAULT_PROFILE = "baseline-20261020"
+"""Frozen suite version every old artefact belongs to."""
+
+PROFILES: tuple[str, ...] = (DEFAULT_PROFILE, "pilot", "stretch-v1")
+"""Accepted profile names.
+
+``baseline`` is the published 47-scenario suite; ``pilot`` carries only the
+scenarios that are not admitted to the ranking yet; ``stretch`` adds tasks to
+the baseline and redistributes the same category totals inside it, so the
+A–J denominator stays 100 while ``pilot`` is read per task instead of as a
+/new total.
+"""
+
+
+def profile_of(cfg: Any) -> str:
+    """Validated profile of a run configuration."""
+    profile = getattr(cfg, "profile", DEFAULT_PROFILE)
+    if profile not in PROFILES:
+        raise ValueError(f"неизвестный профиль {profile!r}; допустимы: {', '.join(PROFILES)}")
+    return profile
+
+
+# --------------------------------------------------------------------------- #
 # Scoring constants
 # --------------------------------------------------------------------------- #
 
@@ -62,8 +88,13 @@ FULL_TOTAL = sum(CATEGORY_POINTS.values())  # 100.0
 SCORED_CATEGORIES = tuple(CATEGORY_POINTS)
 """Categories that add up to the leaderboard verdict."""
 
-SHOWCASE_POINTS: dict[str, float] = {
-    "K": 80.0,  # 20 visual scenarios, 4 checks of 1.0 each
+SHOWCASE_POINTS: dict[str, dict[str, float]] = {
+    DEFAULT_PROFILE: {
+        "K": 80.0,  # 20 visual scenarios, 4 checks of 1.0 each
+        "L": 29.0,  # 29 art works; information only, not in the verdict
+    },
+    "pilot": {"K": 12.0, "L": 29.0},
+    "stretch-v1": {"K": 120.0, "L": 39.0},
 }
 """Categories that are measured and reported but never enter the verdict.
 
@@ -92,21 +123,52 @@ SHOWCASE_TITLES: dict[str, str] = {
     "L": "Free-form art",
 }
 
-SHOWCASE_CATEGORIES = tuple(SHOWCASE_POINTS)  # категории витрины (без арт-блока)
+SHOWCASE_CATEGORIES = ("K",)  # категории витрины (без арт-блока)
 
 #: Все категории, которые показываются кадрами, включая оценку глазами.
 VISUAL_CATEGORIES = SHOWCASE_CATEGORIES + ART_CATEGORIES
 
+PROFILE_POINTS: dict[str, dict[str, float]] = {
+    "pilot": dict(CATEGORY_POINTS),
+    "stretch-v1": dict(CATEGORY_POINTS),
+}
+"""Category totals per profile where they differ from the baseline.
 
-def points_for(key: str) -> float | None:
+``pilot`` carries a single admitted scenario per category, so the full category
+total rides on that one task; ``stretch`` keeps the A–J total at 100 and only
+enlarges the visual showcase (see ``SHOWCASE_POINTS``). The totals are
+distributed evenly over the tasks of the profile by ``suite.build_suite``, so
+the denominator stays independent of how many new scenarios a category
+received.
+"""
+
+
+#: Bumped whenever the evaluator contract changes: the meaning of a check, the
+#: shape of ``Score.checks``, or how points map to checks. The suite digest
+#: folds it in, so a resume can never mix scores produced under two contracts.
+EVALUATOR_CONTRACT = 1
+
+
+def points_for(key: str, profile: str = DEFAULT_PROFILE) -> float | None:
     """Declared points of a category, if it has any.
 
-    ``None`` for the art block: it is drawn, not scored — the sum of its checks
-    is written next to the frame for information only.
+    The art block's number is informational: it is drawn, not scored into the
+    verdict. A profile may override the total of a category (the stretch
+    showcase); the baseline constants stay untouched.
     """
+    override = PROFILE_POINTS.get(profile) or {}
+    if key in override:
+        return override[key]
     if key in CATEGORY_POINTS:
         return CATEGORY_POINTS[key]
-    return SHOWCASE_POINTS.get(key)
+    showcase = SHOWCASE_POINTS.get(profile) or SHOWCASE_POINTS[DEFAULT_PROFILE]
+    return showcase.get(key)
+
+
+def profile_total(profile: str = DEFAULT_PROFILE) -> float:
+    """Full denominator of a profile, independent of filters or a partial run."""
+    keys = set(CATEGORY_POINTS) | set(SHOWCASE_POINTS.get(profile) or SHOWCASE_POINTS[DEFAULT_PROFILE])
+    return sum(points_for(key, profile) or 0.0 for key in keys)
 
 
 def category_title(key: str) -> str:
@@ -366,6 +428,23 @@ class Score:
     still managed to make are objectively passed, and an artefact written
     before the agent hit its wall clock is graded from disk like any other."""
 
+    max_points: float | None = None
+    """Fixed budget of the task as the harness knows it.
+
+    The harness sets it on every score, so the denominator is a property of the
+    task and never of the answer: an evaluator that adds a penalty check cannot
+    enlarge ``possible`` beyond the declared maximum.
+    """
+
+    @property
+    def status(self) -> str:
+        """Machine-readable state of the row: ``ok``, ``skipped`` or ``error``."""
+        if self.skipped:
+            return "skipped"
+        if self.error:
+            return "error"
+        return "ok"
+
     @property
     def earned(self) -> float:
         if self.skipped:
@@ -374,10 +453,46 @@ class Score:
 
     @property
     def possible(self) -> float:
+        """Denominator of the task: its fixed budget, or the issued checks.
+
+        A skipped task stays at zero: not verified counts in neither numerator
+        nor denominator. Otherwise a score without a harness budget falls back
+        to the checks actually issued.
+        """
+        if self.skipped:
+            return 0.0
+        if self.max_points is not None:
+            return round(float(self.max_points), 4)
         return round(sum(c.points for c in self.checks), 4)
 
     def add(self, name: str, passed: bool, points: float, detail: str = "") -> None:
         self.checks.append(Check(name=name, passed=bool(passed), points=points, detail=detail))
+
+    def fit_points(self, max_points: float | None = None) -> None:
+        """Scale the issued checks to the task budget, keeping their relation.
+
+        Category modules hard-code the baseline per-check points; a profile that
+        splits a category total differently must not leave the sum of checks
+        above or below ``max_points``. Proportional scaling preserves the
+        partial credit of every check and puts the rounding tail on the last
+        one, so the sum is exact.
+        """
+        budget = float(self.max_points if max_points is None else max_points)
+        total = sum(check.points for check in self.checks)
+        if not self.checks or abs(total - budget) <= 1e-9:
+            return
+        if total <= 0:
+            share = round(budget / len(self.checks), 4)
+            for index, check in enumerate(self.checks):
+                check.points = share if index < len(self.checks) - 1 else round(
+                    budget - share * (len(self.checks) - 1), 4
+                )
+            return
+        ratio = budget / total
+        scaled = [round(check.points * ratio, 4) for check in self.checks]
+        scaled[-1] = max(0.0, round(budget - sum(scaled[:-1]), 4))
+        for check, points in zip(self.checks, scaled):
+            check.points = points
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -385,6 +500,8 @@ class Score:
             "category": self.category,
             "earned": self.earned,
             "possible": self.possible,
+            "max_points": self.max_points,
+            "status": self.status,
             "admission": self.admission,
             "skipped": self.skipped,
             "error": self.error,
@@ -403,6 +520,7 @@ class Score:
             admission=data.get("admission"),
             skipped=data.get("skipped"),
             error=data.get("error"),
+            max_points=data.get("max_points"),
         )
 
 
@@ -419,7 +537,13 @@ class CategoryModule:
     generate: Callable[[random.Random, Any], list[TaskInstance]]
     evaluate: Callable[[TaskInstance, Transcript], Score]
     # Scenarios this module is expected to emit, for suite integrity checks.
+    # ``expected_ids`` is the baseline list; a profile may override it.
     expected_ids: tuple[str, ...] = ()
+    expected_ids_by_profile: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def expected_ids_for(self, profile: str = DEFAULT_PROFILE) -> tuple[str, ...]:
+        """Expected scenario ids in one profile (baseline list by default)."""
+        return self.expected_ids_by_profile.get(profile, self.expected_ids)
 
 
 REGISTRY: dict[str, CategoryModule] = {}
@@ -432,13 +556,21 @@ def register(
     generate: Callable[[random.Random, Any], list[TaskInstance]],
     evaluate: Callable[[TaskInstance, Transcript], Score],
     expected_ids: Sequence[str] = (),
+    expected_ids_by_profile: dict[str, Sequence[str]] | None = None,
 ) -> None:
-    """Register a category module. Called at import time by ``tasks/*``."""
+    """Register a category module. Called at import time by ``tasks/*``.
+
+    ``expected_ids`` is the baseline contract; ``expected_ids_by_profile``
+    overrides it for a profile that generates more (or other) scenarios.
+    """
     if key in REGISTRY:
         raise RuntimeError(f"category {key!r} registered twice")
     declared = points_for(key)
     if declared is not None and abs(points - declared) > 1e-9:
         raise RuntimeError(f"category {key!r} declares {points} points, expected {declared}")
+    unknown = set(expected_ids_by_profile or {}) - set(PROFILES)
+    if unknown:
+        raise RuntimeError(f"category {key!r}: неизвестные профили {sorted(unknown)}")
     REGISTRY[key] = CategoryModule(
         key=key,
         title=title,
@@ -446,6 +578,9 @@ def register(
         generate=generate,
         evaluate=evaluate,
         expected_ids=tuple(expected_ids),
+        expected_ids_by_profile={
+            name: tuple(ids) for name, ids in (expected_ids_by_profile or {}).items()
+        },
     )
 
 

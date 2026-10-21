@@ -1,8 +1,11 @@
-"""Category C — coding, 25 points across three independent scenarios.
+"""Category C — coding.
 
-``C-1`` Python (10 hidden checks), ``C-2`` Go (10 hidden checks) and ``C-3`` SQL
-(5 generated databases). Scoring is behavioural: the hidden tests and the real
-result sets decide the points, never the shape of the patch or a judge model.
+Baseline: ``C-1`` Python (10 hidden checks), ``C-2`` Go (10 hidden checks) and
+``C-3`` SQL (5 generated databases). The pilot adds ``C-4`` (generational async
+cache) and ``stretch-v1`` adds ``C-5`` (bounded Go pool with acknowledged stop)
+and ``C-6`` (SQL order-journal snapshot). Scoring is behavioural: hidden tests
+and real result sets decide the points, never the shape of the patch or a judge
+model.
 """
 
 from __future__ import annotations
@@ -13,21 +16,35 @@ from typing import Any
 from .. import core
 from . import coding_go, coding_python, coding_sql
 
-IDS = ("C-1", "C-2", "C-3")
+BASELINE_IDS = ("C-1", "C-2", "C-3")
+PILOT_IDS = ("C-4",)
+STRETCH_IDS = BASELINE_IDS + ("C-4", "C-5", "C-6")
 
-_HELPERS = {
-    "C-1": coding_python,
-    "C-2": coding_go,
-    "C-3": coding_sql,
+IDS = BASELINE_IDS
+
+_SCENARIOS = {
+    "C-1": (coding_python.generate, coding_python.evaluate),
+    "C-2": (coding_go.generate, coding_go.evaluate),
+    "C-3": (coding_sql.generate, coding_sql.evaluate),
+    "C-4": (coding_python.generate_c4, coding_python.evaluate_c4),
+    "C-5": (coding_go.generate_c5, coding_go.evaluate_c5),
+    "C-6": (coding_sql.generate_c6, coding_sql.evaluate_c6),
 }
 
 
 def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
-    return [_HELPERS[scenario].generate(rng, cfg) for scenario in IDS]
+    profile = core.profile_of(cfg)
+    if profile == "pilot":
+        scenarios = PILOT_IDS
+    elif profile == "stretch-v1":
+        scenarios = STRETCH_IDS
+    else:
+        scenarios = BASELINE_IDS
+    return [_SCENARIOS[scenario][0](rng, cfg) for scenario in scenarios]
 
 
 def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
-    return _HELPERS[task.id].evaluate(task, tr)
+    return _SCENARIOS[task.id][1](task, tr)
 
 
 core.register(
@@ -36,5 +53,6 @@ core.register(
     points=20.0,
     generate=generate,
     evaluate=evaluate,
-    expected_ids=IDS,
+    expected_ids=BASELINE_IDS,
+    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": STRETCH_IDS},
 )

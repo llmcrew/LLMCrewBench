@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from . import agent, browser, core
+from .visual import _frame_key as _visual_frame_key
 from .visual import cache_dir, extract_html
 
 POINTS_PER_CHECK = 1.0
@@ -26,8 +27,10 @@ HTML/CSS, SVG, Canvas, WebGL или их сочетание. Если нужен
 
 
 def _frame_key(html: str) -> str:
-    size = f"{browser.ART_VIEWPORT[0]}x{browser.ART_VIEWPORT[1]}"
-    return hashlib.sha256(f"art: v{FRAME_VERSION}:live:{size}:{html}".encode("utf-8")).hexdigest()[:32]
+    """Общий render fingerprint плюс версия арт-контракта и live-режим."""
+    return _visual_frame_key(
+        html, 0, 1 / 60, viewport=browser.ART_VIEWPORT, mode="live", kind=f"art:v{FRAME_VERSION}"
+    )
 
 
 def art_shot_path(html: str) -> Path:
@@ -46,6 +49,10 @@ def cached_art_render(html: str) -> tuple[browser.RenderResult, bool]:
             result = browser.RenderResult(**data["result"])
             if result.ok:
                 result.shot = shot.read_bytes()
+                # Хеш — от сохранённых байт: кадр остаётся доказательством и
+                # без возможности перерисовать страницу заново.
+                if result.shot:
+                    result.shot_sha = hashlib.sha256(result.shot).hexdigest()
                 return result, True
         except (OSError, ValueError, TypeError):
             pass

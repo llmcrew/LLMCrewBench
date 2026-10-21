@@ -8,12 +8,16 @@ the scenario — that separation is the point of the category.
 
 from __future__ import annotations
 
+import json
 import random
 from typing import Any
 
 from .. import core, text
 
 IDS = ("IF-1", "IF-2", "IF-3", "IF-4", "IF-5")
+PILOT_IDS = ("IF-6",)
+"""Scenarios that only the ``pilot`` and ``stretch-v1`` profiles measure."""
+STRETCH_IDS = IDS + PILOT_IDS
 
 SERVICES = ("api-01", "api-02", "api-03", "web-01", "web-02", "db-01", "cache-07")
 LEVELS = ("INFO", "WARN", "ERROR")
@@ -510,6 +514,182 @@ def _eval_if5(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 
 
 # --------------------------------------------------------------------------- #
+# IF-6 — CSV log summary with exception precedence (pilot)
+# --------------------------------------------------------------------------- #
+
+_IF6_FIELDS = ("id", "msg", "service", "level", "ms", "flag")
+
+_IF6_MESSAGES = (
+    "timeout, retry scheduled",
+    'disk "full" on /var',
+    "upstream 502, fallback opened",
+    "queue backlog high",
+    "tls handshake reset",
+    "pool exhausted",
+    "gc pause, long",
+    "route table refresh",
+    'header "retry-after" missing',
+    "cache warmup done",
+    "replica lag, growing",
+    "socket closed, peer reset",
+)
+
+
+def _if6_field(value: str) -> str:
+    """RFC 4180 field: quote when the value carries a comma, quote or newline."""
+    if any(char in value for char in ',"\n'):
+        return '"' + value.replace('"', '""') + '"'
+    return value
+
+
+def _if6(rng: random.Random) -> core.TaskInstance:
+    """A CSV summary where the exception and the exclusion both override the rule.
+
+    The oracle is computed from the structured rows, never from the rendered
+    CSV: the prompt is the serialisation, so a quoting bug cannot agree with
+    itself. Four rows carry a comma or an escaped quote in ``msg``, which is
+    exactly where a naive ``split(",")`` shifts the semantic columns.
+    """
+    target_service = rng.choice(SERVICES)
+    other_service = rng.choice([service for service in SERVICES if service != target_service])
+    threshold = rng.choice((250, 300, 360))
+
+    rows: list[dict[str, Any]] = []
+
+    def add(msg: str, service: str, level: str, ms: int, flag: str = "no") -> dict[str, Any]:
+        row = {"msg": msg, "service": service, "level": level, "ms": ms, "flag": flag}
+        rows.append(row)
+        return row
+
+    # Rule 1: the general inclusion rule.
+    for _ in range(3):
+        add(rng.choice(_IF6_MESSAGES), target_service, "ERROR", threshold + rng.randrange(40, 500))
+    boundary = add("timeout, retry scheduled", target_service, "ERROR", threshold)
+    # Rule 2: CRITICAL from the target service is included regardless of ms.
+    critical = add('disk "full" on /var', target_service, "CRITICAL", rng.randrange(20, threshold - 10))
+    # Rule 3: ignore removes a record that both rules above would have taken.
+    ignored_general = add("upstream 502, fallback opened", target_service, "ERROR", threshold + rng.randrange(30, 300), "ignore")
+    ignored_critical = add("socket closed, peer reset", target_service, "CRITICAL", rng.randrange(10, threshold - 20), "ignore")
+    # Near misses the rule may not swallow.
+    add(rng.choice(_IF6_MESSAGES), other_service, "ERROR", threshold + rng.randrange(50, 600))
+    add(rng.choice(_IF6_MESSAGES), target_service, "WARN", threshold + rng.randrange(50, 600))
+    add(rng.choice(_IF6_MESSAGES), target_service, "ERROR", threshold - 1)
+    add(rng.choice(_IF6_MESSAGES), target_service, "ERROR", rng.randrange(10, threshold - 40))
+    for _ in range(rng.randrange(10, 21)):
+        add(rng.choice(_IF6_MESSAGES), rng.choice(SERVICES), rng.choice(LEVELS), rng.randrange(20, 1000))
+
+    assert 20 <= len(rows) <= 40, "fixture stays inside the announced 20–40 rows"
+    pool = rng.sample(range(100, 1000), len(rows))
+    for row_id, row in zip(pool, rows):
+        row["id"] = row_id
+    rng.shuffle(rows)
+
+    selected = [
+        row for row in rows
+        if row["flag"] != "ignore"
+        and row["service"] == target_service
+        and (row["level"] == "CRITICAL" or (row["level"] == "ERROR" and row["ms"] >= threshold))
+    ]
+    expected_ids = sorted(row["id"] for row in selected)
+    # Five constructed hits always qualify; a filler row may legitimately add
+    # another, so only the lower bound is fixed.
+    assert len(expected_ids) >= 5, "the constructed hits must all survive the rules"
+
+    reference = json.dumps(
+        {"ids": expected_ids, "count": len(expected_ids), "total_ms": sum(row["ms"] for row in selected)},
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    csv_body = "\n".join(
+        ",".join([
+            str(row["id"]),
+            _if6_field(row["msg"]),
+            row["service"],
+            row["level"],
+            str(row["ms"]),
+            row["flag"],
+        ])
+        for row in rows
+    )
+    prompt = (
+        "Даны записи журнала в CSV (RFC 4180, разделитель — запятая);\n"
+        "первая строка — заголовок, flag принимает значения yes или no:\n\n"
+        f"{','.join(_IF6_FIELDS)}\n"
+        f"{csv_body}\n\n"
+        "Правила применяются сверху вниз:\n"
+        f"1. include: service = {target_service} и level = ERROR и ms >= {threshold};\n"
+        f"2. исключение: service = {target_service} и level = CRITICAL включаются всегда, независимо от ms;\n"
+        "3. записи с flag = ignore исключаются, даже если подходят под п.1 или п.2.\n\n"
+        "ids — числовые id отобранных записей по возрастанию.\n"
+        "count — сколько записей отобрано, total_ms — сумма их ms.\n\n"
+        "Верни ТОЛЬКО валидный JSON:\n\n"
+        '{"ids":[],"count":0,"total_ms":0}\n\n'
+        "Никакого Markdown и дополнительного текста."
+    )
+    return core.TaskInstance(
+        id="IF-6",
+        category="A",
+        title="Сводка журнала с исключениями",
+        prompt=prompt,
+        max_points=2.0,
+        oracle={
+            "reference": reference,
+            "ids": expected_ids,
+            "count": len(expected_ids),
+            "total_ms": sum(row["ms"] for row in selected),
+            "target_service": target_service,
+            "threshold": threshold,
+            "boundary_id": boundary["id"],
+            "critical_id": critical["id"],
+            "ignored_ids": sorted((ignored_general["id"], ignored_critical["id"])),
+        },
+        meta={"scenario": "IF-6", "rows": len(rows), "service": target_service, "threshold": threshold},
+    )
+
+
+def _eval_if6(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
+    score = core.Score(task_id=task.id, category="A")
+    oracle = task.oracle
+    value, strict = text.strict_json(tr.final_text)
+    payload = value if isinstance(value, dict) else text.loose_json(tr.final_text)
+
+    def integer(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    fmt_ok = (
+        strict
+        and isinstance(payload, dict)
+        and set(payload) == {"ids", "count", "total_ms"}
+        and isinstance(payload.get("ids"), list)
+        and all(integer(item) for item in payload.get("ids", []))
+        and integer(payload.get("count"))
+        and integer(payload.get("total_ms"))
+    )
+    ids_ok = isinstance(payload, dict) and payload.get("ids") == oracle["ids"]
+    aggregate_ok = (
+        isinstance(payload, dict)
+        and payload.get("count") == oracle["count"]
+        and payload.get("total_ms") == oracle["total_ms"]
+    )
+    _format_point(score, "json_format",
+        fmt_ok,
+        "ожидался строгий JSON с ключами ids, count, total_ms и целыми значениями"
+        if not fmt_ok else "ok",
+    )
+    _content_point(score, "ids",
+        ids_ok,
+        f"получено {payload.get('ids') if isinstance(payload, dict) else None}, ожидалось {oracle['ids']}",
+    )
+    _content_point(score, "aggregate",
+        aggregate_ok,
+        f"получено {payload.get('count') if isinstance(payload, dict) else None}/"
+        f"{payload.get('total_ms') if isinstance(payload, dict) else None}, "
+        f"ожидалось {oracle['count']}/{oracle['total_ms']}",
+    )
+    return score
+
+
+# --------------------------------------------------------------------------- #
 # Registration
 # --------------------------------------------------------------------------- #
 
@@ -521,11 +701,19 @@ _SCENARIOS = (
     ("IF-5", _if5, _eval_if5),
 )
 
-_EVALUATORS = {scenario: fn for scenario, _, fn in _SCENARIOS}
+_PILOT_SCENARIOS = (("IF-6", _if6, _eval_if6),)
+
+_EVALUATORS = {scenario: fn for scenario, _, fn in _SCENARIOS + _PILOT_SCENARIOS}
 
 
 def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
-    return [builder(rng) for _, builder, _ in _SCENARIOS]
+    profile = core.profile_of(cfg)
+    if profile == "pilot":
+        return [builder(rng) for _, builder, _ in _PILOT_SCENARIOS]
+    tasks = [builder(rng) for _, builder, _ in _SCENARIOS]
+    if profile == "stretch-v1":
+        tasks.extend(builder(rng) for _, builder, _ in _PILOT_SCENARIOS)
+    return tasks
 
 
 def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
@@ -539,4 +727,5 @@ core.register(
     generate=generate,
     evaluate=evaluate,
     expected_ids=IDS,
+    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": STRETCH_IDS},
 )

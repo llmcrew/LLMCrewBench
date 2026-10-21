@@ -34,9 +34,11 @@ import functools
 import hashlib
 import http.server
 import json
+import multiprocessing
 import os
 import shutil
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -45,13 +47,50 @@ from pathlib import Path
 from typing import Any
 
 REPO = Path(__file__).resolve().parent.parent
-VENDOR = REPO / "vendor" / "three"
+
+
+def _asset(*parts: str) -> Path:
+    """Vendored resources from a checkout, else from a wheel's data files.
+
+    ``pyproject.toml`` installs them under ``<prefix>/vendor``; a source checkout
+    keeps them in ``<repo>/vendor``. Looking up the prefix as well is what makes
+    an isolated wheel install usable (R18).
+    """
+    candidates = [REPO / "vendor" / Path(*parts), Path(sys.prefix) / "vendor" / Path(*parts)]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+VENDOR = _asset("three")
+PLOTLY = _asset("plotly")
 APP_NAME = "app.html"
 DEFAULT_VIEWPORT = (800, 600)
 #: Арт-блок рисует крупнее: кадр 1920x1080, чтобы сцены было видно на большом
 #: экране и в записи. Категория K остаётся на 800x600 — там важны координаты.
 ART_VIEWPORT = (1920, 1080)
 DEFAULT_TIMEOUT_MS = 20_000
+#: A page hook (``__ready``/``__probe``/``__step``) runs JavaScript in the page
+#: thread, so Playwright's own per-call timeout cannot pre-empt a busy loop.
+#: The whole render therefore runs in a separate process that is killed at the
+#: absolute deadline; this grace is the IPC round-trip after it.
+DEADLINE_GRACE_S = 0.04
+WORKER_START_TIMEOUT_S = 60.0
+#: After the deadline the parent waits this long for the child to move to the
+#: next stage: an awaited Playwright timeout fires with a little jitter, and
+#: the frame that follows it must still be taken. A hook that never returns
+#: never bumps the progress counter and is killed after the same window.
+STALL_S = 0.05
+#: A hook that starts after the render deadline (the previous hook consumed
+#: the whole budget, e.g. a page without ``__ready``) still gets this much time
+#: to answer, so a working probe is not cut off together with the timeout.
+HOOK_CONTINUATION_S = 3.0
+#: Stage ids shared with the parent so it knows what it is waiting on.
+STAGE_IDLE, STAGE_SETUP, STAGE_NAV, STAGE_HOOK, STAGE_SHOT = 0, 1, 2, 3, 4
+#: Browser launch and context creation are infrastructure, not page work: a
+#: cold Chromium start must not eat the hook budget.
+SETUP_TIMEOUT_S = 60.0
 #: Скриншот не наследует таймаут запроса: под параллельной нагрузкой (догрузка
 #: сьюта рисует кадры в соседнем процессе) сцена 1920x1080 не укладывалась в
 #: дефолтные 30 с Playwright и весь рендер падал «TimeoutError: Page.screenshot».
@@ -506,6 +545,20 @@ PIXEL_PROBE = """
 """
 
 
+def _budget_ms(deadline: float, timeout_ms: int) -> int:
+    """Timeout for one awaited call under the absolute deadline.
+
+    Only 90 % of the remaining budget is given to a single call, so its own
+    timeout fires just *before* the deadline: the render still has time to
+    move to the next stage instead of being killed between two calls. A call
+    that starts after the deadline gets the continuation window.
+    """
+    left = (deadline - time.monotonic()) * 1000
+    if left <= 0:
+        return max(1, int(HOOK_CONTINUATION_S * 1000))
+    return max(1, min(int(left * 0.9), timeout_ms))
+
+
 def _page_pass(
     url: str,
     port: int,
@@ -514,19 +567,40 @@ def _page_pass(
     viewport: tuple[int, int],
     timeout_ms: int,
     mode: str = "fixed",
+    stage: Any = None,
+    progress: Any = None,
 ) -> dict[str, Any]:
     """Load a page and capture its observable output.
+
+    Every await is bounded by the same absolute ``deadline`` (monotonic
+    seconds): a navigation timeout is only a part of the budget, and a hook
+    that overruns is cut by the parent process rather than resetting it.
 
     ``fixed`` and ``time`` use the page's deterministic stepping protocol.
     ``live`` waits for DOMContentLoaded and a brief settle, then takes two
     screenshots of the same page at a fixed wall-clock interval. It never calls
     page-defined hooks and treats pixel statistics as optional.
+
+    ``stage``/``progress`` are shared with the parent process: a stage change
+    or a new call bumps the progress counter, so the parent can tell a hook
+    that is merely slow to start from one that is hung.
     """
+
+    def _mark(kind: int) -> None:
+        if stage is not None:
+            stage.value = kind
+        if progress is not None:
+            progress.value += 1
+
+    _mark(STAGE_SETUP)
     context = _browser().new_context(
         viewport={"width": viewport[0], "height": viewport[1]},
         device_scale_factor=1,
         reduced_motion="no-preference" if mode == "live" else "reduce",
     )
+    # Browser launch and context creation are infrastructure: the page budget
+    # starts here, not when the job was dispatched.
+    deadline = time.monotonic() + timeout_ms / 1000
     errors: list[str] = []
     external: list[str] = []
     allowed = f"http://127.0.0.1:{port}/"
@@ -549,7 +623,8 @@ def _page_pass(
         if mode == "live":
             navigated = True
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                _mark(STAGE_NAV)
+                page.goto(url, wait_until="domcontentloaded", timeout=_budget_ms(deadline, timeout_ms))
             except Exception as exc:
                 errors.append(f"navigation: {exc.__class__.__name__}: {str(exc)[:200]}")
                 navigated = False
@@ -561,18 +636,20 @@ def _page_pass(
             shot_later = None
             if navigated:
                 try:
-                    page.wait_for_timeout(LIVE_SETTLE_MS)
+                    page.wait_for_timeout(_budget_ms(deadline, LIVE_SETTLE_MS))
                 except Exception as exc:
                     errors.append(f"settle: {exc.__class__.__name__}: {str(exc)[:200]}")
                 try:
+                    _mark(STAGE_SHOT)
                     shot = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
                 except Exception as exc:
                     errors.append(f"screenshot: {exc.__class__.__name__}: {str(exc)[:200]}")
                 try:
-                    page.wait_for_timeout(LIVE_SAMPLE_INTERVAL_MS)
+                    page.wait_for_timeout(_budget_ms(deadline, LIVE_SAMPLE_INTERVAL_MS))
                 except Exception as exc:
                     errors.append(f"sample wait: {exc.__class__.__name__}: {str(exc)[:200]}")
                 try:
+                    _mark(STAGE_SHOT)
                     shot_later = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
                 except Exception as exc:
                     errors.append(f"later screenshot: {exc.__class__.__name__}: {str(exc)[:200]}")
@@ -591,10 +668,12 @@ def _page_pass(
                 "ready_failed": False,
             }
 
-        page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        _mark(STAGE_NAV)
+        page.goto(url, wait_until="domcontentloaded", timeout=_budget_ms(deadline, timeout_ms))
         ready_failed = False
         try:
-            page.wait_for_function("() => window.__ready === true", timeout=timeout_ms)
+            _mark(STAGE_HOOK)
+            page.wait_for_function("() => window.__ready === true", timeout=_budget_ms(deadline, timeout_ms))
         except Exception:
             # Протокол мог не дойти: страница падает до `__ready` (L-20,
             # pageerror в конструкторе) или вовсе его не выставляет. Исключение
@@ -602,6 +681,7 @@ def _page_pass(
             # страница уже что-то нарисовала. Теперь кадр снимается, а провал
             # протокола остаётся вердиктом.
             ready_failed = True
+        _mark(STAGE_HOOK)
         probe = page.evaluate(
             # try — потому что __probe страницы может кидать (K-15: TypeError
             # внутри probe после шага), и падение evaluate рушило весь проход
@@ -613,6 +693,7 @@ def _page_pass(
         if steps:
             # Шаг оборачиваем в try: страница без __probe (частый дефект модели)
             # роняла весь проход, и у витрины не оставалось даже кадра.
+            _mark(STAGE_HOOK)
             stepped = page.evaluate(
                 "([dt, n]) => { try { for (let i = 0; i < n; i++) window.__step(dt); }"
                 " catch (e) { return null; }"
@@ -620,7 +701,9 @@ def _page_pass(
                 " catch (e) { return null; } }",
                 [dt, steps],
             )
+        _mark(STAGE_HOOK)
         pixels = page.evaluate(PIXEL_PROBE)
+        _mark(STAGE_SHOT)
         shot = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
         result: dict[str, Any] = {
             "errors": errors,
@@ -636,6 +719,7 @@ def _page_pass(
             # without trusting the page's own clock.
             # Проба без __probe/__step возвращает null — страница всё равно
             # должна досчитаться до кадра, иначе витрина остаётся без картинки.
+            _mark(STAGE_HOOK)
             moved = page.evaluate(
                 "([dt, n]) => { if (typeof window.__step !== 'function') return false;"
                 " const grab = () => { try { return typeof window.__probe === 'function' ? window.__probe() : null; } catch (e) { return null; } };"
@@ -647,6 +731,7 @@ def _page_pass(
                 [dt, max(1, steps)],
             )
             result["animated"] = bool(moved)
+            _mark(STAGE_SHOT)
             result["shot_later"] = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
         return result
     finally:
@@ -658,29 +743,195 @@ def _page_pass(
 # --------------------------------------------------------------------------- #
 
 
-def render(
-    html: str,
-    *,
-    steps: int = 0,
-    dt: float = 1 / 60,
-    viewport: tuple[int, int] = DEFAULT_VIEWPORT,
-    timeout_ms: int = DEFAULT_TIMEOUT_MS,
-    again: bool = True,
-    mode: str = "fixed",
-) -> RenderResult:
-    """Render one candidate page in a fixed, time-driven, or ordinary live mode."""
-    usable, reason = availability()
-    if not usable:
-        return RenderResult(ok=False, reason=reason)
-    if not (html or "").strip():
-        return RenderResult(ok=False, reason="пустой ответ: рендерить нечего")
+_WORKER: dict[str, Any] = {}
 
+
+def _recv(conn: Any) -> tuple[str, Any]:
+    try:
+        return conn.recv()
+    except (EOFError, OSError) as exc:
+        raise RuntimeError(f"рендер-процесс завершился: {exc}") from exc
+
+
+def _kill_worker() -> None:
+    """Force the render process down; the next render starts a fresh one."""
+    proc = _WORKER.pop("proc", None)
+    conn = _WORKER.pop("conn", None)
+    for key in ("ready", "stage", "progress"):
+        _WORKER.pop(key, None)
+    if conn is not None:
+        with contextlib.suppress(Exception):
+            conn.close()
+    if proc is None:
+        return
+    if proc.is_alive():
+        # SIGKILL: a child stuck in a page hook cannot run signal handlers or
+        # flush Playwright state, and there is nothing to preserve between runs.
+        proc.kill()
+        proc.join(1.0)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(1.0)
+
+
+def _shutdown_worker() -> None:  # pragma: no cover - interpreter shutdown
+    proc = _WORKER.get("proc")
+    conn = _WORKER.get("conn")
+    if proc is not None and proc.is_alive() and conn is not None:
+        with contextlib.suppress(Exception):
+            conn.send(None)
+        proc.join(2.0)
+    _kill_worker()
+
+
+atexit.register(_shutdown_worker)
+
+
+_DEVNULL: Any = None
+
+
+def _worker_main(conn: Any, stage: Any, progress: Any) -> None:
+    """Render-process entry point: one Playwright session, jobs over a pipe."""
+    global _DEVNULL
+    # The Playwright driver inherits stderr; a killed driver answers its closed
+    # pipe with an EPIPE stack trace that would land in every run log.
+    _DEVNULL = open(os.devnull, "w")
+    sys.stderr = _DEVNULL
+    try:
+        conn.send(("ready", None))
+        while True:
+            try:
+                job = conn.recv()
+            except EOFError:
+                return
+            if job is None:
+                return
+            try:
+                result: RenderResult = _render_inline(**job, stage=stage, progress=progress)
+            except BaseException as exc:  # noqa: BLE001 - never leave a caller waiting
+                result = RenderResult(ok=False, reason=f"{type(exc).__name__}: {str(exc)[:200]}")
+            conn.send(("done", result))
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
+def _ensure_worker() -> Any:
+    proc = _WORKER.get("proc")
+    if proc is not None and proc.is_alive() and _WORKER.get("ready"):
+        return _WORKER["conn"]
+    _kill_worker()
+    ctx = multiprocessing.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe(duplex=True)
+    stage = ctx.Value("i", STAGE_IDLE)
+    progress = ctx.Value("i", 0)
+    process = ctx.Process(target=_worker_main, args=(child_conn, stage, progress), daemon=True)
+    process.start()
+    child_conn.close()
+    _WORKER.update(proc=process, conn=parent_conn, ready=False, stage=stage, progress=progress)
+    if not parent_conn.poll(WORKER_START_TIMEOUT_S):
+        _kill_worker()
+        raise RuntimeError(f"рендер-процесс не ответил за {WORKER_START_TIMEOUT_S:.0f} с")
+    kind, message = _recv(parent_conn)
+    if kind != "ready":
+        _kill_worker()
+        raise RuntimeError(str(message))
+    _WORKER["ready"] = True
+    return parent_conn
+
+
+def _call_worker(job: dict[str, Any], deadline: float) -> RenderResult | None:
+    """Send the job and wait for the result; ``None`` means the deadline hit.
+
+    The budget is per stage: navigation and hooks share the render deadline,
+    while a screenshot gets its own ``SCREENSHOT_TIMEOUT_MS`` (a 1920x1080
+    frame under parallel load is slow even when the page is not). A hook that
+    starts after the deadline gets a short continuation, because the previous
+    hook legitimately spent the budget; a hook that never returns does not.
+    """
+    conn = _ensure_worker()
+    stage = _WORKER["stage"]
+    progress = _WORKER["progress"]
+    try:
+        conn.send(job)
+    except (BrokenPipeError, OSError) as exc:
+        _kill_worker()
+        raise RuntimeError(f"рендер-процесс недоступен: {exc}") from exc
+    armed = False
+    seen = (-1, -1)
+    stage_deadline = deadline
+    last_progress = time.monotonic()
+    expired_at: float | None = None
+    while True:
+        now = time.monotonic()
+        key = (stage.value, progress.value)
+        if key != seen:
+            seen = key
+            last_progress = now
+            expired_at = None
+            kind = key[0]
+            if kind in (STAGE_IDLE, STAGE_SETUP):
+                stage_deadline = now + SETUP_TIMEOUT_S
+            elif kind == STAGE_SHOT:
+                stage_deadline = now + SCREENSHOT_TIMEOUT_MS / 1000
+            elif kind == STAGE_NAV:
+                # A new page pass: its budget starts now (a cold context is
+                # excluded, a hung navigation is not).
+                deadline = now + job["timeout_ms"] / 1000
+                stage_deadline = deadline
+                armed = True
+            elif kind == STAGE_HOOK and not armed:
+                # The poll may miss a short navigation stage and observe the
+                # first hook instead; the budget still starts at page work.
+                deadline = now + job["timeout_ms"] / 1000
+                stage_deadline = deadline
+                armed = True
+            elif now >= deadline:
+                stage_deadline = now + HOOK_CONTINUATION_S
+            else:
+                stage_deadline = deadline
+        limit = max(stage_deadline, last_progress + STALL_S)
+        remaining = limit - now
+        if remaining <= 0:
+            # The awaited call may be firing its own timeout right now; give
+            # the child a short window to bump the progress counter.
+            if expired_at is None:
+                expired_at = now
+            if now - expired_at > DEADLINE_GRACE_S:
+                return None
+            slice_s = 0.01
+        else:
+            expired_at = None
+            slice_s = min(0.01, remaining)
+        if conn.poll(slice_s):
+            kind, payload = _recv(conn)
+            if kind == "done" and isinstance(payload, RenderResult):
+                return payload
+            raise RuntimeError(str(payload))
+
+
+def _render_inline(
+    html: str,
+    steps: int,
+    dt: float,
+    viewport: tuple[int, int],
+    timeout_ms: int,
+    again: bool,
+    mode: str,
+    stage: Any = None,
+    progress: Any = None,
+) -> RenderResult:
+    """Render body; runs inside the worker process under the parent deadline."""
     started = time.time()
     try:
         with _served(html) as (url, port):
-            first = _page_pass(url, port, steps, dt, viewport, timeout_ms, mode)
+            first = _page_pass(
+                url, port, steps, dt, viewport, timeout_ms, mode, stage, progress
+            )
             second = (
-                _page_pass(url, port, steps, dt, viewport, timeout_ms, mode)
+                _page_pass(
+                    url, port, steps, dt, viewport, timeout_ms, mode, stage, progress
+                )
                 if again and mode != "live"
                 else None
             )
@@ -741,6 +992,66 @@ def render(
     elif result.errors:
         result.ok = False
         result.reason = "ошибки в консоли страницы"
+    return result
+
+
+def render(
+    html: str,
+    *,
+    steps: int = 0,
+    dt: float = 1 / 60,
+    viewport: tuple[int, int] = DEFAULT_VIEWPORT,
+    timeout_ms: int = DEFAULT_TIMEOUT_MS,
+    again: bool = True,
+    mode: str = "fixed",
+) -> RenderResult:
+    """Render one candidate page in a fixed, time-driven, or ordinary live mode.
+
+    The render runs in a separate process under one absolute deadline: a page
+    hook can be an infinite loop, which no Playwright timeout can pre-empt.
+    When the deadline passes the process is killed and the task is reported as
+    a timeout — the evaluator is never held by the page. Starting the worker is
+    excluded from the deadline (a cold Playwright launch is not a hung page).
+    """
+    usable, reason = availability()
+    if not usable:
+        return RenderResult(ok=False, reason=reason)
+    if not (html or "").strip():
+        return RenderResult(ok=False, reason="пустой ответ: рендерить нечего")
+
+    started = time.time()
+    try:
+        _ensure_worker()
+    except Exception as exc:
+        return RenderResult(ok=False, reason=f"рендер-процесс не запустился: {exc}")
+
+    deadline = time.monotonic() + timeout_ms / 1000
+    job = {
+        "html": html,
+        "steps": steps,
+        "dt": dt,
+        "viewport": viewport,
+        "timeout_ms": timeout_ms,
+        "again": again,
+        "mode": mode,
+    }
+    try:
+        result = _call_worker(job, deadline)
+    except Exception as exc:
+        _kill_worker()
+        return RenderResult(ok=False, reason=f"{type(exc).__name__}: {str(exc)[:200]}")
+    if result is None:
+        _kill_worker()
+        # The navigation timeout is only a part of the budget, so the reason
+        # names the whole render deadline; the stage is kept separately.
+        stage = "navigation" if mode == "live" else "hook"
+        return RenderResult(
+            ok=False,
+            errors=[f"{stage}: TimeoutError: дедлайн рендера {timeout_ms} мс исчерпан"],
+            reason=f"дедлайн рендера {timeout_ms} мс исчерпан: страница не вернула управление",
+            duration_s=time.time() - started,
+        )
+    result.duration_s = time.time() - started
     return result
 
 

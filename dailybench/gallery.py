@@ -17,14 +17,20 @@ from __future__ import annotations
 import html
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from . import core
-from .visual import extract_html
+from .visual import cache_dir, extract_html
 
 #: Vendored library is served to the gallery pages from this relative folder.
 ASSET_DIR = "_vendor"
+
+#: Task ids become file names, so they must not carry a path. The registry uses
+#: ``K-1``/``IF-2``; anything else is refused instead of being written with a
+#: silent ``pages/../`` escape (R17).
+_ID_SCHEMA = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*$")
 
 
 def _cell(value: Any) -> str:
@@ -124,8 +130,12 @@ STEP_HOOK = """
     // seek(n) — ручной покадровый прогон до шага n (гарантирует первый кадр)
     scene.seek = (n) => {
       auto = false;
-      if (shown === 0) { beat(); shown++; }
-      while (shown < (n | 0)) { beat(); shown++; }
+      const target = Math.max(0, n | 0);
+      // Нулевой кадр — это состояние до первого шага: seek(0) только рисует,
+      // но физическое время не двигает. Шагов ровно столько, сколько просят:
+      // повторный seek(n) на том же шаге уже ничего не продвигает.
+      while (shown < target) { beat(); shown++; }
+      probe(); draw();
       scene.step = shown;
       return shown;
     };
@@ -209,39 +219,73 @@ STEP_HOOK = """
 """
 
 
+#: Every way an answer may import the vendored library: the relative path the
+#: contract gives, and the bare ``three`` specifier of an importmap.
+_THREE_SOURCE = r"(?:\./vendor/three\.module\.js|three)"
+_IMPORT_FROM = re.compile(
+    rf"""import\s+(?P<what>[^'"]+?)\s+from\s+['"](?:{_THREE_SOURCE})['"];?"""
+)
+_IMPORT_BARE = re.compile(rf"""import\s+['"](?:{_THREE_SOURCE})['"];?""")
+_JS_NAME = r"[A-Za-z_$][\w$]*"
+
+
+def _three_binding(what: str) -> str:
+    """``window.THREE`` equivalent of one supported import clause.
+
+    Supported forms: ``* as N``, ``{A}``, ``{A as B}`` and empty braces. A
+    default import or a default/namespace combination has no equivalent in the
+    bundle and is refused explicitly instead of leaving a broken module (R27).
+    """
+    clause = what.strip()
+    namespace = re.fullmatch(rf"\*\s+as\s+({_JS_NAME})", clause)
+    if namespace:
+        return f"const {namespace.group(1)} = window.THREE;"
+    named = re.fullmatch(r"\{(.*)\}", clause, re.S)
+    if not named:
+        raise ValueError(f"standalone-экспорт не поддерживает import {clause!r}")
+    pairs: list[str] = []
+    for part in named.group(1).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        pieces = [piece.strip() for piece in part.split(" as ")]
+        if len(pieces) == 1 and re.fullmatch(_JS_NAME, pieces[0]):
+            pairs.append(pieces[0])
+        elif len(pieces) == 2 and all(re.fullmatch(_JS_NAME, p) for p in pieces):
+            # A property renamed by the module: destructuring keeps the alias.
+            pairs.append(f"{pieces[0]}: {pieces[1]}")
+        else:
+            raise ValueError(f"standalone-экспорт не поддерживает import {clause!r}")
+    return "const { " + ", ".join(pairs) + " } = window.THREE;"
+
+
 def standalone_html(page: str, bundle: str = "./three.global.js") -> str:
     """Ответ, который запускается прямо с диска (``file://``), без сервера.
 
     Страница ответа импортирует ``./vendor/three.module.js`` — это ES-модуль, а
     под ``file://`` Chrome не грузит внешние модули (политика CORS для origin
     ``null``). Поэтому: классический бандл ``three.global.js`` кладётся рядом и
-    подключается первым, а сам импорт заменяется на ``window.THREE`` — модульный
-    скрипт остаётся, но библиотеку уже не тянет.
+    подключается первым, а каждый импорт заменяется деструктуризацией
+    ``window.THREE`` — с сохранением локальных имён и алиасов. Импорт, у
+    которого нет эквивалента (default), — явная ошибка экспорта, а не молча
+    сломанный HTML.
     """
-    import_alias = re.search(
-        r"""import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s+['"](\./vendor/three\.module\.js|three)['"];?""",
-        page,
-    )
-    if not import_alias:
+    named = list(_IMPORT_FROM.finditer(page))
+    bare = list(_IMPORT_BARE.finditer(page))
+    if not named and not bare:
         return page
-    alias = import_alias.group(1)
+
+    edits: list[tuple[int, int, str]] = [(match.span(), "") for match in bare]
+    for match in named:
+        edits.append((match.span(), _three_binding(match.group("what"))))
+    # С конца, чтобы более ранние смещения не сдвигались.
+    for (start, end), replacement in sorted(edits, reverse=True):
+        page = page[:start] + replacement + page[end:]
+
     inject = f"<script src='{bundle}'></script>\n"
     if "</head>" in page:
-        page = page.replace("</head>", inject + "</head>", 1)
-    else:
-        page = inject + page
-    page = page.replace(import_alias.group(0), f"const {alias} = window.THREE;")
-    # Страницы с importmap тянут пакет по голому имени `three`: импорт выше
-    # заменён, но модульный скрипт всё равно остался бы ждать importmap —
-    # заменяем и его, чтобы страница грузилась и с диска (file://), и по http.
-    named = re.search(
-        r"""import\s*\{([^}]*)\}\s*from\s*['"](\./vendor/three\.module\.js|three)['"];?""",
-        page,
-    )
-    if named:
-        names = ", ".join(part.strip().split(" as ")[-1] for part in named.group(1).split(",") if part.strip())
-        page = page.replace(named.group(0), f"const {{{names}}} = window.THREE;")
-    return page
+        return page.replace("</head>", inject + "</head>", 1)
+    return inject + page
 
 
 def three_bundle(vendor: Path) -> str:
@@ -369,8 +413,36 @@ def scene_page(item: dict[str, Any], target: Path, task_id: str) -> str:
     return page
 
 
-def showcase_entries(run: dict[str, Any]) -> list[dict[str, Any]]:
+def _allowed_roots(run_root: Path | None) -> list[Path]:
+    """Where a recorded frame may come from: the run and the render cache."""
+    roots = [cache_dir()]
+    if run_root is not None:
+        roots.append(run_root)
+    return [path.resolve() for path in roots]
+
+
+def _within(path: Path, roots: list[Path]) -> bool:
+    """``True`` when the resolved file lies inside one of the allowed roots."""
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return False
+    return any(resolved == root or root in resolved.parents for root in roots)
+
+
+def _shot_candidate(raw: str, run_root: Path | None) -> Path | None:
+    if not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute() and run_root is not None:
+        path = run_root / path
+    return path
+
+
+def showcase_entries(run: dict[str, Any], run_root: Path | None = None) -> list[dict[str, Any]]:
     """Every showcase task of a run: id, block, title, page, frame, spend."""
+    if run_root is None and run.get("dir"):
+        run_root = Path(str(run["dir"]))
     out: list[dict[str, Any]] = []
     for entry in run.get("tasks") or []:
         task = entry.get("task") or {}
@@ -397,7 +469,7 @@ def showcase_entries(run: dict[str, Any]) -> list[dict[str, Any]]:
                 "title": task.get("title", ""),
                 "html": answer_html(entry),
                 "raw": _raw_page(entry),
-                "shot": _shot_for(entry, sample),
+                "shot": _shot_for(entry, sample, run_root),
                 "score": entry.get("score") or {},
                 "spend": transcript.get("spend") or {},
 
@@ -421,7 +493,7 @@ def _raw_page(entry: dict[str, Any]) -> str:
     return extract_html(raw)
 
 
-def _shot_for(entry: dict[str, Any], visual: dict[str, Any]) -> str:
+def _shot_for(entry: dict[str, Any], visual: dict[str, Any], run_root: Path | None = None) -> str:
     """The frame of this answer, re-rendered when the cached file is gone.
 
     The cache lives outside the run (``~/.cache/dailybench/visual``) and is keyed
@@ -431,9 +503,25 @@ def _shot_for(entry: dict[str, Any], visual: dict[str, Any]) -> str:
     page (L) is *a* frame of the same work, not necessarily the byte-identical
     one the check scored. A browser-less machine just keeps whatever the run
     recorded.
+
+    A recorded frame is only trusted inside the run directory or the render
+    cache: an imported ``visual.shot`` used to be copied wherever it pointed,
+    including a local file outside the run (R17).
     """
-    existing = str(visual.get("shot") or "")
-    if existing and Path(existing).is_file():
+    roots = _allowed_roots(run_root)
+    existing_path = _shot_candidate(str(visual.get("shot") or ""), run_root)
+    existing = ""
+    fallback = ""
+    if existing_path is not None:
+        if not existing_path.is_file():
+            # A path that no longer exists cannot be proven to escape; keep it
+            # as a fallback while a fresh render is attempted.
+            fallback = str(existing_path)
+        elif run_root is None or _within(existing_path, roots):
+            # A caller without a known root (a hand-built dict) cannot prove
+            # containment; keep the historical behaviour there.
+            existing = str(existing_path)
+    if existing:
         return existing
     steps, dt = visual.get("steps"), visual.get("dt")
     # The frame must be rendered from the *raw* answer, not from the gallery copy:
@@ -442,7 +530,7 @@ def _shot_for(entry: dict[str, Any], visual: dict[str, Any]) -> str:
     # the pixels differed). The checks scored the raw page, and so must the frame.
     page = str(entry.get("raw") or "") or _raw_page(entry)
     if not page:
-        return existing
+        return fallback
     from . import art, visual
 
     try:
@@ -453,36 +541,79 @@ def _shot_for(entry: dict[str, Any], visual: dict[str, Any]) -> str:
                 art.cached_art_render(page)
         else:
             if not steps or not dt:
-                return existing
-            path = visual.shot_path(page, int(steps), float(dt))
+                return fallback
+            steps, dt = int(steps), float(dt)
+            path = visual.shot_path(page, steps, dt)
             if not path.is_file():
-                visual._cached_render(page, int(steps), float(dt))
-        return str(path) if path.is_file() else existing
+                visual._cached_render(page, steps, dt)
+                # Запись запечатана отпечатком probe, и имя меняется при рендере:
+                # путь переспрашивается, иначе кадр остался бы «потерянным».
+                path = visual.shot_path(page, steps, dt)
+        return str(path) if path.is_file() and _within(path, roots) else fallback
     except Exception:  # pragma: no cover - a broken frame must not lose the entry
-        return existing
+        return fallback
 
 
-def materialise(run_dir: Path, target: Path) -> dict[str, Any]:
-    """Copy frames and pages next to the gallery; returns per-model index.
+def _check_id(task_id: str) -> None:
+    if not _ID_SCHEMA.fullmatch(task_id):
+        raise ValueError(
+            f"недопустимый id задания {task_id!r}: ожидается схема вида K-1 "
+            "(без '/' и '..')"
+        )
 
-    The library is copied once per report: an answer page imports
-    ``./vendor/three.module.js``, so the copied page must sit next to a folder
-    with the same name — otherwise the live view would need the network.
+
+def _index_existing(target: Path, data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Index of an already published showcase when the raw ``tasks.json`` is gone.
+
+    A published run carries pages and frames but not the raw transcript. Leaving
+    the showcase empty and pruning the files was destroying the only evidence
+    (R24); the published files themselves are a sufficient manifest for a
+    read-only rebuild.
     """
-    target.mkdir(parents=True, exist_ok=True)
+    scores = {score.get("task_id"): score for score in data.get("scores") or []}
+    pages = {path.stem: path for path in (target / "pages").glob("*.html")}
+    frames = {path.stem: path for path in (target / "frames").glob("*.png")}
+    ids = set(pages) | set(frames)
+
+    def order(task_id: str) -> tuple[int, int, str]:
+        category = (scores.get(task_id) or {}).get("category", task_id.split("-")[0])
+        number = int(task_id.split("-")[-1]) if task_id.split("-")[-1].isdigit() else 0
+        rank = (core.SCORED_CATEGORIES.index(category) if category in core.SCORED_CATEGORIES
+                else len(core.SCORED_CATEGORIES) + (core.SHOWCASE_CATEGORIES.index(category)
+                                                    if category in core.SHOWCASE_CATEGORIES
+                                                    else len(core.SHOWCASE_CATEGORIES)))
+        return rank, number, task_id
+
+    index: list[dict[str, Any]] = []
+    for task_id in sorted(ids, key=order):
+        score = scores.get(task_id) or {}
+        record: dict[str, Any] = {
+            "id": task_id,
+            "category": score.get("category") or task_id.split("-")[0],
+            "title": "",
+            "score": score,
+            "spend": {},
+        }
+        if task_id in pages:
+            record["page"] = f"pages/{pages[task_id].name}"
+        if task_id in frames:
+            record["frame"] = f"frames/{frames[task_id].name}"
+        index.append(record)
+    return index
+
+
+def _publish_into(data: dict[str, Any], run_dir: Path, target: Path) -> dict[str, Any]:
+    """Build pages and frames in ``target``; the caller swaps it in afterwards."""
     pages = target / "pages"
     frames = target / "frames"
-    pages.mkdir(exist_ok=True)
-    frames.mkdir(exist_ok=True)
-    from .report import load_run
-
-    data = load_run(run_dir)
-    ensure_vendor(target.parent.parent)  # <report>/_showcase/<model> -> <report>
+    pages.mkdir(parents=True, exist_ok=True)
+    frames.mkdir(parents=True, exist_ok=True)
     index: list[dict[str, Any]] = []
     kept_pages: set[str] = set()
     kept_frames: set[str] = set()
-    for item in showcase_entries(data):
+    for item in showcase_entries(data, run_dir):
         task_id = item["id"]
+        _check_id(task_id)
         record = {"id": task_id, "category": item["category"], "title": item["title"],
                   "score": item["score"], "spend": item["spend"]}
         if item["html"]:
@@ -503,6 +634,52 @@ def materialise(run_dir: Path, target: Path) -> dict[str, Any]:
     _prune(pages, kept_pages)
     _prune(frames, kept_frames)
     return {"model": (data.get("config") or {}).get("model", run_dir.name), "dir": run_dir.name, "tasks": index}
+
+
+def materialise(run_dir: Path, target: Path) -> dict[str, Any]:
+    """Copy frames and pages next to the gallery; returns per-model index.
+
+    The library is copied once per report: an answer page imports
+    ``./vendor/three.module.js``, so the copied page must sit next to a folder
+    with the same name — otherwise the live view would need the network.
+
+    A complete run (``tasks.json`` present) is built in a staging folder and then
+    swapped in, so a failure halfway never leaves a half-replaced showcase. A
+    published run without ``tasks.json`` is read-only: its existing pages and
+    frames are indexed in place instead of being pruned into nothing (R24).
+    """
+    from .report import load_run
+
+    data = load_run(run_dir)
+    run_dir = Path(run_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    ensure_vendor(target.parent.parent)  # <report>/_showcase/<model> -> <report>
+    if "tasks" not in data:
+        return {
+            "model": (data.get("config") or {}).get("model", run_dir.name),
+            "dir": run_dir.name,
+            "tasks": _index_existing(target, data) if target.is_dir() else [],
+        }
+
+    staging = Path(tempfile.mkdtemp(prefix=f".{target.name}-", dir=target.parent))
+    try:
+        result = _publish_into(data, run_dir, staging)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    backup = target.with_name(f"{target.name}.old")
+    shutil.rmtree(backup, ignore_errors=True)
+    try:
+        if target.exists():
+            target.rename(backup)
+        staging.rename(target)
+    except Exception:
+        if not target.exists() and backup.exists():
+            backup.rename(target)
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    shutil.rmtree(backup, ignore_errors=True)
+    return result
 
 
 def _prune(folder: Path, kept: set[str]) -> None:

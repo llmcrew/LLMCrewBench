@@ -10,6 +10,8 @@ object carries the timing even when only the text is used.
 
 from __future__ import annotations
 
+import contextlib
+import http.client
 import json
 import threading
 import time
@@ -24,7 +26,17 @@ Message = dict[str, Any]
 
 
 class ProviderError(RuntimeError):
-    """Transport or protocol failure — distinct from a wrong model answer."""
+    """Transport or protocol failure — distinct from a wrong model answer.
+
+    ``infra`` is true when the endpoint itself failed (unreachable, timeout,
+    5xx/408/429) rather than the model protocol (4xx, broken terminal state).
+    The CLI ends the run with a non-zero code only when every chat request
+    failed for infrastructure reasons; a protocol failure stays a task error.
+    """
+
+    def __init__(self, message: str, *, infra: bool = True) -> None:
+        super().__init__(message)
+        self.infra = infra
 
 
 class Provider(Protocol):
@@ -81,13 +93,52 @@ class OpenAICompatibleProvider:
             return path
         return self.base_url.rstrip("/") + path
 
-    def _request(self, path: str, payload: dict[str, Any] | None, method: str = "POST"):
+    def _request(
+        self,
+        path: str,
+        payload: dict[str, Any] | None,
+        method: str = "POST",
+        *,
+        deadline: float | None = None,
+        wall_clock: float | None = None,
+    ):
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         req = urllib.request.Request(self._url(path), data=data, method=method)
         req.add_header("Content-Type", "application/json")
         if self.api_key and self.api_key != "not-needed":
             req.add_header("Authorization", f"Bearer {self.api_key}")
-        return urllib.request.urlopen(req, timeout=self.timeout)
+        timeout = self.timeout
+        if deadline is not None:
+            # The socket timeout is the *remaining* budget, not the whole one:
+            # connect and the first read share the same absolute deadline.
+            timeout = min(timeout, self._left(deadline, wall_clock))
+        return urllib.request.urlopen(req, timeout=timeout)
+
+    def _left(self, deadline: float, wall_clock: float | None, received: int = 0) -> float:
+        """Remaining seconds before ``deadline``; raises once it has passed."""
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise ProviderError(
+                f"предел времени на запрос {wall_clock or 0:g} с исчерпан "
+                f"({received} символов получено)"
+            )
+        return left
+
+    def _arm(self, resp: Any, deadline: float | None, wall_clock: float | None, received: int = 0) -> None:
+        """Re-arm the socket for the rest of the budget before every read.
+
+        ``urlopen(timeout=...)`` only bounds one socket operation, so a server
+        that trickles bytes could otherwise stay ahead of it forever. The
+        timeout is therefore re-set to the remaining budget on each iteration,
+        and the caller checks ``monotonic`` after the read as well.
+        """
+        if deadline is None:
+            return
+        left = self._left(deadline, wall_clock, received)
+        sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.settimeout(left)
 
     def list_models(self) -> list[str]:
         try:
@@ -129,28 +180,29 @@ class OpenAICompatibleProvider:
         payload.update(self.extra_body)
 
         started = time.perf_counter()
+        deadline = (started + wall_clock) if wall_clock else None
         try:
             if stream:
-                reply = self._chat_stream(payload, started, wall_clock)
+                reply = self._chat_stream(payload, started, deadline, wall_clock)
             else:
-                # The blocking path gets the same wall-clock ceiling as the
-                # stream: urllib's timeout is per socket operation, so a slow
-                # server could otherwise hold the request far past the limit
-                # (measured: a 0.05 s ceiling finishing at 0.60 s).
-                deadline = wall_clock if wall_clock else None
-                if deadline:
-                    old_timeout = self.timeout
-                    self.timeout = min(self.timeout, deadline)
-                try:
-                    reply = self._chat_blocking(payload, started)
-                finally:
-                    if deadline:
-                        self.timeout = old_timeout
+                reply = self._chat_blocking(payload, started, deadline, wall_clock)
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", "replace")[:600]
+            body = ""
+            with contextlib.suppress(Exception):
+                body = exc.read().decode("utf-8", "replace")[:600]
             if self.include_usage and "stream_options" in body:
                 # The runtime does not know the option: drop it and retry once.
+                # The retry is a *new* request but not a new budget: it gets
+                # only the time left on this call's deadline, so a rejected
+                # first attempt cannot silently double the task's wall clock.
                 self.include_usage = False
+                retry_budget = wall_clock
+                if deadline is not None:
+                    retry_budget = deadline - time.monotonic()
+                    if retry_budget <= 0:
+                        raise ProviderError(
+                            f"предел времени на запрос {wall_clock or 0:g} с исчерпан (повтор)"
+                        ) from exc
                 return self.chat(
                     messages,
                     tools,
@@ -159,23 +211,64 @@ class OpenAICompatibleProvider:
                     top_p=top_p,
                     seed=seed,
                     stream=stream,
-                    wall_clock=wall_clock,
+                    wall_clock=retry_budget,
                 )
-            raise ProviderError(f"HTTP {exc.code} from {self._url('/chat/completions')}: {body}") from exc
+            raise ProviderError(
+                f"HTTP {exc.code} from {self._url('/chat/completions')}: {body}",
+                infra=exc.code >= 500 or exc.code in (408, 429),
+            ) from exc
+        except TimeoutError as exc:
+            # A socket timeout is the deadline, not a half-answer: it happens
+            # when the server trickles slower than the remaining budget.
+            raise ProviderError(
+                f"предел времени на запрос {wall_clock or 0:g} с исчерпан (сокет)"
+            ) from exc
+        except (ConnectionError, http.client.HTTPException) as exc:
+            raise ProviderError(f"обрыв соединения: {exc.__class__.__name__}: {exc}") from exc
         except urllib.error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise ProviderError(
+                    f"предел времени на запрос {wall_clock or 0:g} с исчерпан (сокет)"
+                ) from exc
             raise ProviderError(f"{self.base_url} unreachable: {exc}") from exc
         return reply
 
-    def _chat_blocking(self, payload: dict[str, Any], started: float) -> ModelReply:
-        with self._request("/chat/completions", payload) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+    def _chat_blocking(
+        self,
+        payload: dict[str, Any],
+        started: float,
+        deadline: float | None,
+        wall_clock: float | None,
+    ) -> ModelReply:
+        chunks: list[bytes] = []
+        received = 0
+        with self._request(
+            "/chat/completions", payload, deadline=deadline, wall_clock=wall_clock
+        ) as resp:
+            while True:
+                # ``read1`` returns after one socket read: ``read(n)`` would
+                # loop internally and reset the timeout on every byte, so a
+                # one-byte-at-a-time server could outlive the ceiling.
+                self._arm(resp, deadline, wall_clock, received)
+                piece = resp.read1(65536)
+                if not piece:
+                    break
+                chunks.append(piece)
+                received += len(piece)
+                if deadline is not None:
+                    self._left(deadline, wall_clock, received)
+        try:
+            data = json.loads(b"".join(chunks).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProviderError(f"ответ не является JSON: {exc}") from exc
         return self._parse_completion(data, time.perf_counter() - started)
 
     def _chat_stream(
         self,
         payload: dict[str, Any],
         started: float,
-        wall_clock: float | None = None,
+        deadline: float | None,
+        wall_clock: float | None,
     ) -> ModelReply:
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -183,32 +276,34 @@ class OpenAICompatibleProvider:
         ttft: float | None = None
         usage: dict[str, Any] = {}
         finish_reason: str | None = None
+        received = 0
 
-        deadline = (started + wall_clock) if wall_clock else None
-        with self._request("/chat/completions", payload) as resp:
-            for raw_line in resp:
-                if deadline and time.perf_counter() > deadline:
-                    # A single runaway generation must not hold the GPU for the
-                    # whole sweep: the task is reported as unverified instead.
-                    raise ProviderError(
-                        f"предел времени на запрос {wall_clock:.0f} с исчерпан "
-                        f"({len(''.join(text_parts))} символов получено)"
-                    )
-                line = raw_line.decode("utf-8", "replace").strip()
-                if not line or not line.startswith("data:"):
-                    continue
-                chunk = line[5:].strip()
-                if chunk == "[DONE]":
-                    break
-                try:
-                    event = json.loads(chunk)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(event, dict):
-                    continue
-                if event.get("usage"):
-                    usage = event["usage"]
-                for choice in event.get("choices") or []:
+        def _event(raw_line: bytes) -> bool:
+            """Consume one SSE line; ``True`` when the stream is complete."""
+            nonlocal usage, finish_reason, ttft
+            line = raw_line.decode("utf-8", "replace").strip()
+            if not line or not line.startswith("data:"):
+                return False
+            chunk = line[5:].strip()
+            if chunk == "[DONE]":
+                return True
+            try:
+                event = json.loads(chunk)
+            except json.JSONDecodeError:
+                # A keep-alive or comment line is not a terminal state.
+                return False
+            if not isinstance(event, dict):
+                return False
+            if event.get("error"):
+                # An SSE-level error is a terminal event: without this the
+                # stream ended as an empty successful reply (R14).
+                detail = event["error"]
+                if not isinstance(detail, str):
+                    detail = detail.get("message") or json.dumps(detail, ensure_ascii=False)
+                raise ProviderError(f"SSE error: {str(detail)[:600]}")
+            if event.get("usage"):
+                usage = event["usage"]
+            for choice in event.get("choices") or []:
                     if choice.get("finish_reason"):
                         finish_reason = choice["finish_reason"]
                     delta = choice.get("delta") or choice.get("message") or {}
@@ -234,7 +329,41 @@ class OpenAICompatibleProvider:
                             slot["name"] = fn["name"]
                         if fn.get("arguments"):
                             slot["arguments"] += fn["arguments"]
+            return False
 
+        pending = b""
+        done = False
+        with self._request(
+            "/chat/completions", payload, deadline=deadline, wall_clock=wall_clock
+        ) as resp:
+            while True:
+                self._arm(resp, deadline, wall_clock, received)
+                # ``read1`` = one socket read, so the timeout is re-armed for
+                # every trickled byte instead of being reset inside a buffer.
+                piece = resp.read1(65536)
+                if not piece:
+                    break
+                received += len(piece)
+                if deadline is not None:
+                    self._left(deadline, wall_clock, received)
+                pending += piece
+                while b"\n" in pending:
+                    raw_line, pending = pending.split(b"\n", 1)
+                    if _event(raw_line):
+                        done = True
+                        break
+                if done:
+                    break
+            if not done and pending:
+                _event(pending)
+
+        if finish_reason is None:
+            # EOF without a terminal marker: the runtime died mid-generation.
+            # Accepting it as a reply turned a cut answer into a model verdict.
+            received = len("".join(text_parts))
+            raise ProviderError(
+                f"SSE-поток оборвался без finish_reason ({received} символов получено)"
+            )
         total = time.perf_counter() - started
         return self._finish_reply(
             "".join(text_parts),
@@ -247,8 +376,15 @@ class OpenAICompatibleProvider:
         )
 
     def _parse_completion(self, data: dict[str, Any], total: float) -> ModelReply:
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
+        choices = data.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            raise ProviderError(f"ответ без choices: {json.dumps(data, ensure_ascii=False)[:300]}")
+        choice = choices[0]
+        if not choice.get("finish_reason"):
+            raise ProviderError(f"ответ без finish_reason: {json.dumps(data, ensure_ascii=False)[:300]}")
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise ProviderError(f"ответ без message: {json.dumps(data, ensure_ascii=False)[:300]}")
         tool_calls = []
         for tc in message.get("tool_calls") or []:
             fn = tc.get("function") or {}

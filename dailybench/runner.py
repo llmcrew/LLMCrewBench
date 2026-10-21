@@ -11,21 +11,69 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 from . import core
 from . import agent
+from . import generation
 from .config import RunConfig
 from .measure import VramSampler
 from .providers import Provider, ProviderError
 from .rng import derived_seed
 
 SYSTEM_SENTINEL = "<<system>>"
+
+#: Bumped when the meaning of a checkpoint changes; a resume must not mix
+#: records written by a different harness contract.
+HARNESS_CONTRACT = 2
+
+#: Config fields that belong to the identity of a run. ``only`` is a selection
+#: over the same suite, ``out_dir`` is the location, and the key is local.
+_IDENTITY_EXCLUDED = {"api_key", "out_dir", "only"}
+
+
+def _canonical(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (tuple, list)):
+        return [_canonical(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _canonical(item) for key, item in value.items()}
+    return value
+
+
+def config_identity(cfg: RunConfig) -> str:
+    """Hash of everything that makes two runs incomparable when it differs.
+
+    Agent mode is part of it on purpose: a ``agent=True`` answer is produced by
+    a different harness than a chat answer, so continuing one with the other
+    would present two regimes as one run.
+    """
+    payload = {
+        item.name: _canonical(getattr(cfg, item.name))
+        for item in fields(RunConfig)
+        if item.name not in _IDENTITY_EXCLUDED
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def run_identity(cfg: RunConfig, suite_sha256: str) -> str:
+    """Full checkpoint identity: config contract, suite digest, harness version."""
+    blob = json.dumps(
+        {
+            "schema": HARNESS_CONTRACT,
+            "config": config_identity(cfg),
+            "suite": suite_sha256,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def _prompt_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> int:
@@ -189,11 +237,11 @@ class Runner:
                 "(конфигурация не поддерживает её — результат не проверялся)"
             )
             transcript = core.Transcript(task_id=task.id, category=task.category, extra={"skipped": reason})
-            return TaskRun(
-                task=task,
-                transcript=transcript,
-                score=core.Score(task_id=task.id, category=task.category, skipped=reason, notes=[reason]),
-            )
+            score = core.Score(task_id=task.id, category=task.category, skipped=reason, notes=[reason])
+            # The budget is a property of the task even when nothing is scored;
+            # ``Score.possible`` still reports 0 for a skip.
+            score.max_points = task.max_points
+            return TaskRun(task=task, transcript=transcript, score=score)
 
         agent_mode = self._uses_agent(task)
         work_dir = agent.prepare_work_dir(task) if agent_mode else materialise(task)
@@ -225,6 +273,12 @@ class Runner:
             messages.append({"role": "system", "content": self.cfg.system_prompt})
         messages.append({"role": "user", "content": task.prompt})
         started = time.perf_counter()
+        # One absolute deadline for the whole task, not one per request: the
+        # old per-request ceiling was multiplied by every tool turn and doubled
+        # again by the ``stream_options`` retry. Each request below gets the
+        # smaller of its own ceiling and what is left on this deadline.
+        total_wall_clock = float(self.cfg.task_wall_clock or self.cfg.request_wall_clock or 1800)
+        task_deadline = started + total_wall_clock
         sampler_before = self.sampler.peak_mib
         tool_calls = 0
         generated = 0
@@ -236,6 +290,25 @@ class Runner:
         followups = list(task.dialogue or [])
         try:
             while True:
+                # One stop rule, checked before every new request: a spent
+                # generation budget must never turn into another call just
+                # because the previous reply happened to carry a tool call.
+                if generated >= self.cfg.max_total_tokens:
+                    transcript.extra.setdefault("notes", []).append(
+                        f"бюджет генерации исчерпан ({self.cfg.max_total_tokens})"
+                    )
+                    break
+                # A request started after the deadline would only be killed by
+                # its own socket timeout, so the task stops here instead and is
+                # reported unverified rather than scored on a partial answer.
+                left = task_deadline - time.monotonic()
+                if left <= 0:
+                    note = f"предел времени на задание {total_wall_clock:g} с исчерпан"
+                    transcript.extra.setdefault("notes", []).append(note)
+                    transcript.error = note
+                    transcript.extra["infra_error"] = True
+                    break
+                request_budget = min(float(self.cfg.request_wall_clock or left), left)
                 reply = self.provider.chat(
                     messages,
                     # Once the call budget is spent, send no tools: a tool-less
@@ -247,7 +320,7 @@ class Runner:
                     temperature=self.cfg.temperature,
                     top_p=self.cfg.top_p,
                     seed=derived_seed(self.cfg.seed, task.id, str(len(transcript.turns))),
-                    wall_clock=self.cfg.request_wall_clock or None,
+                    wall_clock=request_budget,
                 )
                 transcript.turns.append(core.Turn(messages=_copy_messages(messages), reply=reply))
                 generated += reply.generated_tokens or 0
@@ -255,21 +328,20 @@ class Runner:
                 if reply.tool_calls and driver is None:
                     # Nothing can execute the calls: stop on the reply as it is.
                     break
-                if not reply.tool_calls and followups:
-                    # Scripted dialogue: hand the next user message to the model
-                    # and keep every earlier constraint in the history.
-                    messages.append({"role": "assistant", "content": reply.text or ""})
-                    messages.append({"role": "user", "content": followups.pop(0)})
-                    if generated > self.cfg.max_total_tokens:
-                        transcript.extra.setdefault("notes", []).append(
-                            f"бюджет генерации исчерпан ({self.cfg.max_total_tokens} токенов)"
-                        )
-                        break
-                    continue
                 if not reply.tool_calls:
+                    if followups:
+                        # Scripted dialogue: hand the next user message to the
+                        # model and keep every earlier constraint in the history.
+                        messages.append({"role": "assistant", "content": reply.text or ""})
+                        messages.append({"role": "user", "content": followups.pop(0)})
+                        continue
                     break
                 room = call_budget - tool_calls
                 if room <= 0:
+                    if budget_spent:
+                        # A tool-less request already went out and still came
+                        # back with calls: one more would loop forever.
+                        break
                     transcript.extra.setdefault("notes", []).append(
                         f"бюджет вызовов инструментов исчерпан ({call_budget})"
                     )
@@ -308,28 +380,37 @@ class Runner:
                         outcome = core.ToolOutcome(text=f"invalid tool arguments: {parse_error}", error=True)
                     else:
                         outcome = driver.execute(str(call.get("name", "")), arguments)
+                    # The endpoint key reaches the model's own tools through the
+                    # environment (``echo $DAILYBENCH_API_KEY``, ``cat
+                    # $PI_CODING_AGENT_DIR/models.json``). The transcript is a
+                    # run artefact, so it is scrubbed here before both the log
+                    # and the next request carry the result.
+                    result_text = agent.redact(outcome.text, self.cfg.api_key)
                     transcript.tool_log.append(
                         {
                             "turn": len(transcript.turns) - 1,
                             "name": str(call.get("name", "")),
                             "arguments": arguments,
-                            "result": outcome.text,
+                            "result": result_text,
                             "error": outcome.error,
                             "illegal": outcome.illegal,
                         }
                     )
-                    results.append({"tool_call_id": call.get("id", ""), "text": outcome.text})
+                    results.append({"tool_call_id": call.get("id", ""), "text": result_text})
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": call.get("id", ""),
                             "name": call.get("name", ""),
-                            "content": outcome.text,
+                            "content": result_text,
                         }
                     )
                 transcript.turns[-1].tool_results = results
                 tool_calls += len(reply.tool_calls)
                 if tool_calls >= call_budget:
+                    transcript.extra.setdefault("notes", []).append(
+                        f"бюджет вызовов инструментов исчерпан ({call_budget})"
+                    )
                     budget_spent = True
                     messages.append(
                         {
@@ -341,13 +422,15 @@ class Runner:
                         }
                     )
 
-                if generated > self.cfg.max_total_tokens:
+                if generated >= self.cfg.max_total_tokens:
                     transcript.extra.setdefault("notes", []).append(
-                        f"бюджет генерации исчерпан ({self.cfg.max_total_tokens} токенов)"
+                        f"бюджет генерации исчерпан ({self.cfg.max_total_tokens})"
                     )
                     break
         except ProviderError as exc:
             transcript.error = str(exc)
+            if getattr(exc, "infra", True):
+                transcript.extra["infra_error"] = True
         except Exception as exc:  # pragma: no cover - defensive
             transcript.error = f"{type(exc).__name__}: {exc}"
 
@@ -405,7 +488,7 @@ class Runner:
             transcript.duration_s = time.perf_counter() - started
             return
 
-        transcript.extra.update(run.as_extra())
+        transcript.extra.update(run.as_extra(self.cfg.api_key))
         transcript.extra["agent"]["exit_ok"] = run.ok
         # The suite digest hashes the *scenario* prompt; the agent gets that plus
         # the grading contract, so the bytes actually sent are recorded here.
@@ -430,7 +513,9 @@ class Runner:
     def _score(self, task: core.TaskInstance, transcript: core.Transcript) -> core.Score:
         module = core.REGISTRY.get(task.category)
         if module is None:
-            return core.Score(task_id=task.id, category=task.category, error="category not registered")
+            return core.Score(
+                task_id=task.id, category=task.category, error="category not registered", max_points=task.max_points
+            )
         try:
             score = module.evaluate(task, transcript)
         except Exception as exc:
@@ -443,6 +528,11 @@ class Runner:
             )
             score.add("evaluator", False, task.max_points,
                       f"оценка не выполнена: {type(exc).__name__}: {exc}")
+        # Single point where the harness owns the denominator: an evaluator
+        # cannot widen ``possible`` by adding a penalty check, and a profile's
+        # re-split budget is enforced here rather than in every module.
+        score.max_points = task.max_points
+        score.fit_points()
         if transcript.error:
             score.error = transcript.error
             score.notes.append(f"прогон прерван: {transcript.error}")
@@ -530,22 +620,36 @@ class RunResult:
         def dump(payload: Any) -> str:
             return json.dumps(payload, ensure_ascii=False, indent=2, default=core.json_default)
 
-        def write(path: Path, text: str) -> None:
-            # Атомарная замена: ребут или SIGKILL посреди записи оставлял рваный
-            # файл, и resume падал на json.loads — а прогон это часы GPU.
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(text, encoding="utf-8")
-            os.replace(tmp, path)
+        if not self.suite_digest:
+            from .suite import build_suite, suite_digest
 
-        write(out / "config.json", self.cfg.to_json())
-        write(out / "suite.json", dump(self.suite_digest))
-        write(out / "provider.json", dump(self.provider_info))
-        write(out / "hardware.json", dump(self.hardware))
-        if self.speed:
-            write(out / "speed.json", dump(self.speed))
-        write(out / "scores.json", dump([score.as_dict() for score in self.scores]))
-        write(out / "tasks.json", dump([run.as_dict() for run in self.runs]))
+            self.suite_digest = suite_digest(build_suite(self.cfg), self.cfg.profile)
+        identity = run_identity(self.cfg, str(self.suite_digest.get("sha256") or ""))
+
+        config = json.loads(self.cfg.to_json())
+        config["run_id"] = identity
+        config["identity"] = identity
+        suite = dict(self.suite_digest)
+        suite["identity"] = identity
+        entries = []
         for run in self.runs:
-            path = out / "transcripts" / f"{run.task.id.replace('/', '_')}.json"
-            write(path, dump(run.as_dict()))
+            entry = run.as_dict()
+            entry["identity"] = identity
+            entries.append(entry)
+
+        files: dict[str, str] = {
+            "config.json": dump(config),
+            "suite.json": dump(suite),
+            "provider.json": dump(self.provider_info),
+            "hardware.json": dump(self.hardware),
+        }
+        if self.speed:
+            files["speed.json"] = dump(self.speed)
+        files["scores.json"] = dump([score.as_dict() for score in self.scores])
+        # tasks.json goes after scores.json: an interruption between them is
+        # exactly the mixed checkpoint the generation manifest has to survive.
+        files["tasks.json"] = dump(entries)
+        for entry, run in zip(entries, self.runs):
+            files[f"transcripts/{run.task.id.replace('/', '_')}.json"] = dump(entry)
+        generation.commit(out, files, run_id=identity, identity=identity)
         return out

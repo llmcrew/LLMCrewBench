@@ -54,9 +54,29 @@ TOPICS: dict[str, str] = {
     "L-27": "Столкновение двух планет",
     "L-28": "Цепная реакция обломков",
     "L-29": "Станция уходит, Земля позади",
+    "L-30": "Архив древних карт",
+    "L-31": "Коралловый риф без людей",
+    "L-32": "Заброшенный карьер",
+    "L-33": "Читальный зал после закрытия",
+    "L-34": "Мастерская часовщика",
+    "L-35": "Путь перелётных птиц через водно-болотные угодья",
+    "L-36": "Палеонтологический раскоп",
+    "L-37": "Рынок на рассвете",
+    "L-38": "Детская площадка в масштабе насекомого",
+    "L-39": "Радиотелескоп на пустынном плато",
 }
 
 IDS = tuple(TOPICS)
+
+#: Baseline still asks the first twenty-nine themes; the archive, reef, quarry,
+#: reading room, clock workshop, migration, dig, market, insect-scale playground
+#: and radio telescope only enter the stretch suite.
+IDS_BASELINE = tuple(f"L-{index}" for index in range(1, 30))
+
+IDS_BY_PROFILE: dict[str, tuple[str, ...]] = {
+    "pilot": IDS_BASELINE,
+    "stretch-v1": IDS,
+}
 
 TITLE = "Free-form art"
 
@@ -141,8 +161,10 @@ def build(task_id: str, rng: random.Random) -> core.TaskInstance:
 
 
 def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
-    """One work per topic; the briefs do not depend on the seed."""
-    tasks = [build(task_id, rng) for task_id in IDS]
+    """The profile's themes; the briefs do not depend on the seed."""
+    profile = core.profile_of(cfg)
+    ids = IDS_BY_PROFILE.get(profile, IDS_BASELINE)
+    tasks = [build(task_id, rng) for task_id in ids]
     for task in tasks:
         task.meta["seed_sensitive"] = False
     return tasks
@@ -151,8 +173,9 @@ def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
 core.register(
     key="L",
     title=TITLE,
-    points=art.POINTS_PER_CHECK * len(IDS),
+    points=art.POINTS_PER_CHECK * len(IDS_BASELINE),
     generate=generate,
     evaluate=art.evaluate,
-    expected_ids=IDS,
+    expected_ids=IDS_BASELINE,
+    expected_ids_by_profile={"stretch-v1": IDS},
 )

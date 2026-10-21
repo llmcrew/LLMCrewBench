@@ -543,3 +543,423 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
         want_rows = _normalise_rows([(month, value) for month, value in want])
         score.add(name, got == want_rows, _POINTS_PER_CHECK, f"получено {got}, ожидалось {want_rows}")
     return score
+
+
+# --------------------------------------------------------------------------- #
+# Scenario C-6 (stretch) — order journal at a cut-off
+# --------------------------------------------------------------------------- #
+
+C6_DATABASES = 5
+C6_CUTOFF = "2026-05-31 23:59:59"
+C6_ANSWER_FILE = "answer.sql"
+C6_CATEGORIES = ("audio", "books", "garden", "kitchen", "outdoor", "tools")
+
+C6_SCHEMA = """
+CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL);
+CREATE TABLE orders (
+    id INTEGER PRIMARY KEY,
+    customer_id INTEGER NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    created_at TIMESTAMP NOT NULL
+);
+CREATE TABLE order_events (
+    event_id INTEGER PRIMARY KEY,
+    order_id INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    recorded_at TIMESTAMP NOT NULL
+);
+"""
+
+_REFERENCE_C6_SQLITE = """WITH admissible AS (
+    SELECT order_id, revision, kind, MAX(amount_cents) AS amount_cents
+    FROM order_events
+    WHERE recorded_at <= '2026-05-31 23:59:59'
+    GROUP BY order_id, revision, kind
+),
+final AS (
+    SELECT order_id, revision, kind,
+           ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY revision DESC) AS rn
+    FROM admissible
+),
+refunds AS (
+    SELECT a.order_id, SUM(a.amount_cents) AS total
+    FROM admissible AS a
+    JOIN final AS f ON f.order_id = a.order_id AND f.rn = 1
+    WHERE a.kind = 'refunded' AND a.revision <= f.revision
+    GROUP BY a.order_id
+),
+state AS (
+    SELECT f.order_id, f.kind, o.amount_cents AS amount, o.customer_id,
+           COALESCE(r.total, 0) AS refunded
+    FROM final AS f
+    JOIN orders AS o ON o.id = f.order_id
+    LEFT JOIN refunds AS r ON r.order_id = f.order_id
+    WHERE f.rn = 1
+)
+SELECT c.category AS category,
+       SUM(CASE WHEN s.kind = 'cancelled' THEN 0 ELSE 1 END) AS active_orders,
+       SUM(CASE WHEN s.kind = 'cancelled' THEN 0 ELSE MAX(s.amount - s.refunded, 0) END) AS net_cents,
+       SUM(CASE WHEN s.kind = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_orders
+FROM state AS s
+JOIN customers AS c ON c.id = s.customer_id
+GROUP BY c.category
+ORDER BY net_cents DESC, c.category ASC
+LIMIT 2;"""
+
+_REFERENCE_C6_POSTGRES = _REFERENCE_C6_SQLITE.replace(
+    "MAX(s.amount - s.refunded, 0)", "GREATEST(s.amount - s.refunded, 0)"
+)
+
+_PROMPT_C6 = """Напиши один __DIALECT__ SELECT по журналу изменений заказа.
+
+Срез: cutoff = '2026-05-31 23:59:59'.
+
+События order_events — ревизии заказа. Для каждого заказа допустимы только
+события с recorded_at <= cutoff. Состояние заказа определяет ТОЛЬКО его
+последняя допустимая ревизия (максимальный revision среди допустимых):
+
+* kind = 'placed'    — заказ активен, net = orders.amount_cents;
+* kind = 'refunded'  — заказ активен, net = max(orders.amount_cents -
+                       сумма возвратов, 0);
+* kind = 'cancelled' — заказ отменён, net = 0, возвраты не вычитаются.
+
+Возвратами считаются допустимые события kind = 'refunded' с revision не
+больше последней ревизии заказа. Повторная доставка события (та же пара
+order_id + revision, возможно с другим event_id) учитывается ровно один раз:
+ни состояние, ни возврат второй раз не меняются.
+
+Заказ без допустимых событий в результат не попадает.
+
+Сгруппируй по customers.category. Для каждой категории выведи:
+
+category | active_orders | net_cents | cancelled_orders
+
+active_orders — число активных заказов (placed или refunded),
+net_cents — сумма net по ним, cancelled_orders — число отменённых.
+
+Отсортируй по net_cents по убыванию, при равенстве — category по
+возрастанию. Оставь первые 2 строки.
+
+Схема:
+
+```sql
+customers(
+    id INTEGER PRIMARY KEY,
+    name TEXT,
+    category TEXT
+);
+
+orders(
+    id INTEGER PRIMARY KEY,
+    customer_id INTEGER,
+    amount_cents INTEGER,
+    created_at TIMESTAMP
+);
+
+order_events(
+    event_id INTEGER PRIMARY KEY,
+    order_id INTEGER,
+    revision INTEGER,
+    kind TEXT,
+    amount_cents INTEGER,
+    recorded_at TIMESTAMP
+);
+```
+
+Верни только SQL без Markdown.
+"""
+
+
+def _c6_stamp(rng: random.Random, after: bool = False) -> str:
+    if after:
+        day = rng.randrange(1, 21)
+        return f"2026-06-{day:02d} {rng.randrange(0, 24):02d}:{rng.randrange(0, 60):02d}:00"
+    month = rng.randrange(1, 6)
+    day = rng.randrange(1, 29)
+    return f"2026-{month:02d}-{day:02d} {rng.randrange(0, 24):02d}:{rng.randrange(0, 60):02d}:00"
+
+
+def _c6_split(total: int, parts: int, rng: random.Random) -> list[int]:
+    """``parts`` positive multiples of 100 that add up to ``total``."""
+    chunks = [100] * parts
+    left = total - 100 * parts
+    for index in range(parts):
+        take = rng.randrange(0, left // 100 + 1)
+        chunks[index] += take * 100
+        left -= take * 100
+        if left == 0:
+            break
+    if left:
+        chunks[-1] += left
+    return chunks
+
+
+def _database_c6(rng: random.Random) -> dict[str, list[tuple]]:
+    """One generated base: controlled category nets, ties in the top two."""
+    categories = list(rng.sample(C6_CATEGORIES, rng.randrange(3, 5)))
+    assignment = list(categories) + [
+        rng.choice(categories) for _ in range(rng.randrange(2, 5))
+    ]
+    rng.shuffle(assignment)
+    customers = [
+        (index + 1, _NAMES[index % len(_NAMES)], category)
+        for index, category in enumerate(assignment)
+    ]
+    by_category: dict[str, list[int]] = {category: [] for category in categories}
+    for customer_id, _, category in customers:
+        by_category[category].append(customer_id)
+
+    # The two leading categories are tied on purpose; the third is strictly
+    # below them, so a top-2 without the tie-break is wrong.
+    base = rng.randrange(200, 501) * 100
+    targets = [base, base]
+    for _ in range(len(categories) - 2):
+        base = base - rng.randrange(10, 51) * 100
+        targets.append(max(base, 1000))
+
+    orders: list[tuple] = []
+    events: list[tuple] = []
+    order_id = 0
+    event_id = 0
+
+    def add_order(customer_id: int, amount: int, created_at: str) -> int:
+        nonlocal order_id
+        order_id += 1
+        orders.append((order_id, customer_id, amount, created_at))
+        return order_id
+
+    def add_event(oid: int, revision: int, kind: str, amount: int, stamp: str, copies: int = 1) -> None:
+        nonlocal event_id
+        for _ in range(copies):
+            event_id += 1
+            events.append((event_id, oid, revision, kind, amount, stamp))
+
+    for category, target in zip(categories, targets):
+        customer_id = rng.choice(by_category[category])
+        refunded = target >= 9000 and rng.random() < 0.6
+        over = rng.random() < 0.25
+        slots = rng.randrange(2, 5)
+        active_total = target - (4000 if refunded else 0)
+        for amount in _c6_split(max(active_total, slots * 100), slots, rng):
+            oid = add_order(customer_id, amount, "2026-01-15 10:00:00")
+            add_event(oid, 1, "placed", 0, _c6_stamp(rng), copies=2 if rng.random() < 0.3 else 1)
+        if refunded:
+            oid = add_order(customer_id, 5000, "2026-02-10 10:00:00")
+            add_event(oid, 1, "placed", 0, _c6_stamp(rng))
+            add_event(oid, 2, "refunded", 1000, _c6_stamp(rng), copies=2)
+        # An order whose late cancellation arrives after the cut-off: the state
+        # at the cut-off is still "placed".
+        oid = add_order(customer_id, 2000, "2026-03-01 10:00:00")
+        add_event(oid, 1, "placed", 0, _c6_stamp(rng))
+        add_event(oid, 2, "cancelled", 0, _c6_stamp(rng, after=True))
+        # A cancelled order counts once and adds no revenue.
+        oid = add_order(customer_id, rng.randrange(10, 60) * 100, "2026-02-01 10:00:00")
+        add_event(oid, 1, "placed", 0, _c6_stamp(rng))
+        add_event(oid, 2, "cancelled", 0, _c6_stamp(rng), copies=2 if rng.random() < 0.5 else 1)
+        if over:
+            oid = add_order(customer_id, 800, "2026-04-01 10:00:00")
+            add_event(oid, 1, "placed", 0, _c6_stamp(rng))
+            add_event(oid, 2, "refunded", 1000, _c6_stamp(rng))
+
+    # Orders that only exist after the cut-off never reach the result.
+    for _ in range(rng.randrange(2, 5)):
+        customer_id = rng.choice(customers)[0]
+        oid = add_order(customer_id, rng.randrange(10, 90) * 100, "2026-06-05 10:00:00")
+        add_event(oid, 1, "placed", 0, _c6_stamp(rng, after=True))
+    # An order with no events at all is ignored as well.
+    add_order(rng.choice(customers)[0], 12300, "2026-05-01 10:00:00")
+
+    return {"customers": customers, "orders": orders, "events": events}
+
+
+def _oracle_c6(database: dict[str, list[tuple]]) -> list[tuple[str, int, int, int]]:
+    """Independent Python model: no SQL, no shared helper with the reference."""
+    order_rows = {oid: (customer_id, amount) for oid, customer_id, amount, _ in database["orders"]}
+    category_of = {customer_id: category for customer_id, _, category in database["customers"]}
+
+    last: dict[int, tuple[int, str]] = {}
+    refunds: dict[int, dict[int, int]] = {}
+    for _, oid, revision, kind, amount, recorded_at in database["events"]:
+        if recorded_at > C6_CUTOFF or oid not in order_rows:
+            continue
+        current = last.get(oid)
+        if current is None or revision > current[0]:
+            last[oid] = (revision, kind)
+        if kind == "refunded":
+            refunds.setdefault(oid, {})[revision] = amount
+
+    grouped: dict[str, list[int]] = {}
+    for oid, (revision, kind) in last.items():
+        customer_id, order_amount = order_rows[oid]
+        category = category_of[customer_id]
+        counters = grouped.setdefault(category, [0, 0, 0])
+        if kind == "cancelled":
+            counters[2] += 1
+            continue
+        refunded = sum(
+            amount for rev, amount in refunds.get(oid, {}).items() if rev <= revision
+        )
+        counters[0] += 1
+        counters[1] += max(order_amount - refunded, 0)
+
+    rows = [
+        (category, counters[0], counters[1], counters[2])
+        for category, counters in grouped.items()
+    ]
+    rows.sort(key=lambda row: (-row[2], row[0]))
+    return rows[:2]
+
+
+def _c6_seed_sql(database: dict[str, list[tuple]]) -> str:
+    def quote(value: object) -> str:
+        if value is None:
+            return "NULL"
+        if isinstance(value, (int, float)):
+            return str(value)
+        return "'" + str(value).replace("'", "''") + "'"
+
+    lines = [C6_SCHEMA]
+    for table, rows in (
+        ("customers", database["customers"]),
+        ("orders", database["orders"]),
+        ("order_events", database["events"]),
+    ):
+        for row in rows:
+            lines.append(f"INSERT INTO {table} VALUES ({', '.join(quote(v) for v in row)});")
+    return "\n".join(lines) + "\n"
+
+
+def _workspace_c6(database: dict[str, list[tuple]]) -> dict[str, str]:
+    return {
+        "schema.sql": C6_SCHEMA,
+        "seed.sql": _c6_seed_sql(database),
+        C6_ANSWER_FILE: "SELECT 1;\n",
+        "README.md": (
+            "# C-6\n\nThe benchmark runs the statement in "
+            f"`{C6_ANSWER_FILE}` against generated journals.\n"
+            "`schema.sql` is the schema; `seed.sql` loads the first database."
+        ),
+    }
+
+
+def _sqlite_rows_c6(database: dict[str, list[tuple]], statement: str, timeout_s: float = 20.0) -> list[tuple]:
+    with tempfile.TemporaryDirectory(prefix="dailybench-c6-") as folder:
+        path = Path(folder) / "db.sqlite"
+        connection = sqlite3.connect(path)
+        try:
+            connection.executescript(C6_SCHEMA)
+            connection.executemany("INSERT INTO customers VALUES (?, ?, ?)", database["customers"])
+            connection.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", database["orders"])
+            connection.executemany("INSERT INTO order_events VALUES (?, ?, ?, ?, ?, ?)", database["events"])
+            connection.commit()
+            connection.execute("PRAGMA query_only = ON")
+
+            deadline = time.monotonic() + timeout_s
+            connection.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 1000)
+            return list(connection.execute(statement).fetchall())
+        finally:
+            connection.close()
+
+
+def generate_c6(rng: random.Random, cfg: Any) -> core.TaskInstance:
+    backend = getattr(cfg, "sql_backend", "sqlite") or "sqlite"
+    dialect = "PostgreSQL" if backend == "postgres" else "SQLite"
+    databases = [_database_c6(rng) for _ in range(C6_DATABASES)]
+    expected = [_oracle_c6(database) for database in databases]
+    reference = _REFERENCE_C6_POSTGRES if backend == "postgres" else _REFERENCE_C6_SQLITE
+
+    return core.TaskInstance(
+        id="C-6",
+        category="C",
+        title="SQL order journal",
+        prompt=_PROMPT_C6.replace("__DIALECT__", dialect),
+        max_points=4.0,
+        workspace=_workspace_c6(databases[0]),
+        oracle={
+            "reference": reference,
+            "expected": [[list(row) for row in rows] for rows in expected],
+            "databases": databases,
+            "backend": backend,
+            "dialect": dialect,
+            "checks": [f"db{i + 1}" for i in range(C6_DATABASES)],
+            "target_file": C6_ANSWER_FILE,
+            "answer_file": C6_ANSWER_FILE,
+        },
+        meta={"scenario": "C-6", "backend": backend, "databases": C6_DATABASES},
+    )
+
+
+def evaluate_c6(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
+    score = core.Score(task_id=task.id, category="C")
+    oracle = task.oracle
+    names = oracle["checks"]
+    from .. import agent as _agent
+
+    raw = _agent.answer_text(task, tr, tr.final_text)
+    statement, error = _statement_or_error(raw if raw.strip() else tr.final_text)
+    if statement is None:
+        for name in names:
+            score.add(name, False, _POINTS_PER_CHECK, error)
+        score.notes.append(f"SQL не принят к исполнению: {error}")
+        return score
+
+    backend = oracle.get("backend", "sqlite")
+    expected = [tuple(tuple(row) for row in rows) for rows in oracle["expected"]]
+
+    if backend == "postgres":
+        postgres = PostgresBackend()
+        if not postgres.start():
+            score.error = "postgres backend unavailable"
+            score.notes.append("Docker/PostgreSQL недоступен — сценарий C-6 не мог быть выполнен")
+            for name in names:
+                score.add(name, False, _POINTS_PER_CHECK, "postgres backend unavailable")
+            return score
+        try:
+            for index, (name, database, want) in enumerate(zip(names, oracle["databases"], expected)):
+                database_name = f"bench{index + 1}"
+                statements = ["DROP TABLE IF EXISTS order_events; DROP TABLE IF EXISTS orders; DROP TABLE IF EXISTS customers;"]
+                statements.append(
+                    "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL);"
+                )
+                statements.append(
+                    "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL,"
+                    " amount_cents BIGINT NOT NULL, created_at TIMESTAMP NOT NULL);"
+                )
+                statements.append(
+                    "CREATE TABLE order_events (event_id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL,"
+                    " revision INTEGER NOT NULL, kind TEXT NOT NULL, amount_cents BIGINT NOT NULL,"
+                    " recorded_at TIMESTAMP NOT NULL);"
+                )
+                for table in ("customers", "orders", "order_events"):
+                    for row in database[table]:
+                        values = ", ".join("NULL" if value is None else f"'{value}'" for value in row)
+                        statements.append(f"INSERT INTO {table} VALUES ({values});")
+                if not postgres._psql(database_name, "\n".join(statements), timeout=120).get("ok"):
+                    score.add(name, False, _POINTS_PER_CHECK, "не удалось загрузить данные в PostgreSQL")
+                    continue
+                result = postgres.query(database_name, statement)
+                if not result.get("ok"):
+                    score.add(name, False, _POINTS_PER_CHECK, (result.get("stderr") or "ошибка выполнения").strip()[:300])
+                    continue
+                got = _normalise_rows(result.get("rows") or [])
+                want_rows = _normalise_rows([tuple(row) for row in want])
+                score.add(name, got == want_rows, _POINTS_PER_CHECK, f"получено {got}, ожидалось {want_rows}")
+        finally:
+            postgres.stop()
+        return score
+
+    for name, database, want in zip(names, oracle["databases"], expected):
+        try:
+            rows = _sqlite_rows_c6(database, statement)
+        except sqlite3.Error as exc:
+            score.add(name, False, _POINTS_PER_CHECK, f"ошибка SQLite: {exc}")
+            continue
+        except Exception as exc:  # pragma: no cover - defensive
+            score.add(name, False, _POINTS_PER_CHECK, f"ошибка выполнения: {exc}")
+            continue
+        got = _normalise_rows(rows)
+        want_rows = _normalise_rows([tuple(row) for row in want])
+        score.add(name, got == want_rows, _POINTS_PER_CHECK, f"получено {got}, ожидалось {want_rows}")
+    return score

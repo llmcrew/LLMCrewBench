@@ -17,7 +17,9 @@ from .core import (
     ADMISSION_CATEGORIES,
     CATEGORY_POINTS,
     CATEGORY_TITLES,
+    DEFAULT_PROFILE,
     FULL_TOTAL,
+    PROFILES,
     SHORT_TOTAL,
     Check,
     ModelReply,
@@ -25,6 +27,7 @@ from .core import (
     TaskInstance,
     Transcript,
     Turn,
+    profile_of,
     registered_categories,
 )
 
@@ -32,8 +35,10 @@ __all__ = [
     "ADMISSION_CATEGORIES",
     "CATEGORY_POINTS",
     "CATEGORY_TITLES",
+    "DEFAULT_PROFILE",
     "DEFAULT_SEED",
     "FULL_TOTAL",
+    "PROFILES",
     "SHORT_TOTAL",
     "Check",
     "ModelReply",
@@ -42,6 +47,7 @@ __all__ = [
     "TaskInstance",
     "Transcript",
     "Turn",
+    "profile_of",
     "registered_categories",
 ]
 
