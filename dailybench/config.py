@@ -136,6 +136,12 @@ class RunConfig:
     # --- provenance -------------------------------------------------------- #
     quant: str = ""
     runtime: str = ""
+    image_digest: str = ""
+    """Digest of the sandbox runner image; part of the run identity.
+
+    A rebuilt image is a different executor, so resume must not fold its tasks
+    into a run measured under another one.
+    """
     weights_sha256: str = ""
     weights_path: str = ""
     n_ctx: int = 32768

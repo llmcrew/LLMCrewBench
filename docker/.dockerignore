@@ -1,0 +1,14 @@
+**/__pycache__
+**/*.pyc
+**/.venv
+**/.git
+**/.pytest_cache
+**/.coverage
+**/runs
+**/reports
+**/*.png
+**/*.jpg
+**/*.mp4
+**/*.webm
+tests
+docs

@@ -1,0 +1,102 @@
+# Isolation baseline for LLMCrewBench execution (spec §6.2–§6.4).
+#
+# All services are rootless-compatible: read-only rootfs, no capabilities,
+# no new privileges, 64 MiB tmpfs mounts on /tmp and /dev/shm, pids_limit 256, cgroups v2
+# limits.  Images are referenced by digest in production via the environment
+# variables; the local tags below only exist for development builds through
+# scripts/sandbox_run.py.
+#
+# `/store` is one generation subdirectory (${STORE_DIR}/${STORE_SUBDIR}), not
+# the whole runs/ tree: code under test cannot rewrite an earlier run.
+# The judge is the only service with a network: on the default bridge it can
+# reach every host port and the daemon's DNS resolver, so "egress only to the
+# endpoint" is a convention, not an enforced boundary.
+#
+# `docker compose -f docker/compose.yaml config -q` must stay clean.
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+    - seccomp=${SECCOMP_PROFILE:-./seccomp.json}
+  pids_limit: 256
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,size=64m,mode=1777
+    - /dev/shm:rw,nosuid,nodev,noexec,size=64m,mode=1777
+  restart: "no"
+  init: true
+
+services:
+  runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim@sha256:2259debdc6af85626058a15a7bf44ad6a68b8c98c9ae82a02cf5cdb92f096d47}
+        SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-1700000000}
+    image: ${RUNNER_IMAGE:-dailybench/runner-python:local}
+    <<: *hardening
+    user: "1000:1000"
+    network_mode: none
+    cpus: "2"
+    mem_limit: 2g
+    memswap_limit: 2g
+    blkio_config:
+      device_read_bps:
+        - path: ${IO_DEVICE:-/dev/vda}
+          rate: "64mb"
+      device_write_bps:
+        - path: ${IO_DEVICE:-/dev/vda}
+          rate: "64mb"
+    volumes:
+      - ${TASK_DIR:-..}:/workspace:ro
+      - ${STORE_DIR:-../runs}/${STORE_SUBDIR:-generation}:/store:rw
+    working_dir: /workspace
+    stop_grace_period: 5s
+    command: ["python", "-c", "print('runner ready')"]
+
+  capture:
+    build:
+      context: .
+      dockerfile: Dockerfile.capture
+      args:
+        DEBIAN_IMAGE: ${DEBIAN_IMAGE:-debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8}
+        SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-1700000000}
+    image: ${CAPTURE_IMAGE:-dailybench/capture:local}
+    <<: *hardening
+    user: "1000:1000"
+    network_mode: none
+    cpus: "4"
+    mem_limit: 4g
+    memswap_limit: 4g
+    volumes:
+      - ${TASK_DIR:-..}:/workspace:ro
+      - ${STORE_DIR:-../runs}/${STORE_SUBDIR:-generation}:/store:rw
+    working_dir: /workspace
+    stop_grace_period: 10s
+
+  judge:
+    build:
+      context: .
+      dockerfile: Dockerfile.judge
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim@sha256:2259debdc6af85626058a15a7bf44ad6a68b8c98c9ae82a02cf5cdb92f096d47}
+        SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-1700000000}
+    image: ${JUDGE_IMAGE:-dailybench/judge:local}
+    <<: *hardening
+    user: "1000:1000"
+    # Default bridge: every host port and the daemon's DNS resolver are
+    # reachable.  Keep the endpoint on the host as host.docker.internal.
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    cpus: "1"
+    mem_limit: 1g
+    memswap_limit: 1g
+    volumes:
+      - ${TASK_DIR:-..}:/app:ro
+      - ${STORE_DIR:-../runs}/${STORE_SUBDIR:-generation}:/store:ro
+    working_dir: /app
+    stop_grace_period: 5s
+    command: ["python", "-m", "dailybench", "--help"]

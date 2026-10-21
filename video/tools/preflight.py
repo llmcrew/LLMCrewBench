@@ -13,7 +13,11 @@
 Ошибка печатается до Studio/render и даёт ненулевой код: битое медиа не должно
 выясняться кадром 300 в Studio или через час рендера.
 
-  python3 tools/preflight.py [--no-decode]
+  python3 tools/preflight.py [--no-decode] [--no-clips]
+
+``--no-clips`` проверяет манифест без самих клипов: в чистом клоне
+``public/clips/`` нет (каталог вне git), а согласованность showcase.json,
+scenes.json и производного clips.json проверяема и там.
 """
 from __future__ import annotations
 
@@ -137,7 +141,8 @@ def check_clip(exe: Path, model: str, scene: str, status: str, errors: list[str]
         errors.append(f"{label}: последний кадр: {last}")
 
 
-def validate(rows: list, scenes: list[str], errors: list[str], warnings: list[str]) -> None:
+def validate(rows: list, scenes: list[str], errors: list[str], warnings: list[str],
+             *, clips: bool = True) -> None:
     scene_ids = [s["id"] for s in scenes]
     if [r.get("scene") for r in rows] != scene_ids:
         errors.append("showcase.json: набор/порядок сцен не совпадает с scenes.json")
@@ -161,24 +166,25 @@ def validate(rows: list, scenes: list[str], errors: list[str], warnings: list[st
             clip = media_status.clip_path(OUT, model, scene)
             if run.get("clip") != f"clips/{model}__{scene}.mp4":
                 errors.append(f"{model}/{scene}: путь клипа {run.get('clip')!r}")
-            if status == "media_missing":
-                if clip.is_file():
-                    errors.append(f"{model}/{scene}: статус media_missing, но клип есть")
-            elif status in media_status.STATUSES and not clip.is_file():
-                errors.append(f"{model}/{scene}: нет файла клипа (статус {status})")
-            if status == "ok" and marker.is_file():
-                errors.append(f"{model}/{scene}: статус ok, но маркер плашки ещё лежит")
-            if status in media_status.PLACEHOLDER_STATUSES:
-                if not marker.is_file():
-                    errors.append(f"{model}/{scene}: нет маркера для статуса {status}")
-                else:
-                    reason = marker.read_text(encoding="utf-8").strip()
-                    # Улика после двоеточия статус не меняет.
-                    if reason.split(":", 1)[0].strip() != status:
-                        if reason == media_status.LEGACY_MARKER:
-                            warnings.append(f"{model}/{scene}: legacy-маркер без причины, статус из данных")
-                        else:
-                            errors.append(f"{model}/{scene}: маркер {reason!r} не равен статусу {status!r}")
+            if clips:
+                if status == "media_missing":
+                    if clip.is_file():
+                        errors.append(f"{model}/{scene}: статус media_missing, но клип есть")
+                elif status in media_status.STATUSES and not clip.is_file():
+                    errors.append(f"{model}/{scene}: нет файла клипа (статус {status})")
+                if status == "ok" and marker.is_file():
+                    errors.append(f"{model}/{scene}: статус ok, но маркер плашки ещё лежит")
+                if status in media_status.PLACEHOLDER_STATUSES:
+                    if not marker.is_file():
+                        errors.append(f"{model}/{scene}: нет маркера для статуса {status}")
+                    else:
+                        reason = marker.read_text(encoding="utf-8").strip()
+                        # Улика после двоеточия статус не меняет.
+                        if reason.split(":", 1)[0].strip() != status:
+                            if reason == media_status.LEGACY_MARKER:
+                                warnings.append(f"{model}/{scene}: legacy-маркер без причины, статус из данных")
+                            else:
+                                errors.append(f"{model}/{scene}: маркер {reason!r} не равен статусу {status!r}")
             expected = media_status.task_status(model, scene, RUNS)
             if expected is not None:
                 if status == "not_run" and expected != "not_run":
@@ -195,7 +201,8 @@ def validate(rows: list, scenes: list[str], errors: list[str], warnings: list[st
 
 
 def main() -> int:
-    decode = "--no-decode" not in sys.argv[1:]
+    clips = "--no-clips" not in sys.argv[1:]
+    decode = "--no-decode" not in sys.argv[1:] and clips
     errors: list[str] = []
     warnings: list[str] = []
     try:
@@ -204,10 +211,12 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         print(f"preflight: не читаются данные: {exc}", file=sys.stderr)
         return 2
-    validate(rows, scenes, errors, warnings)
+    validate(rows, scenes, errors, warnings, clips=clips)
     # Осиротевшие файлы: клип без строки манифеста или маркер без пары.
     manifest_pairs = {(r.get("model"), row.get("scene")) for row in rows for r in row.get("runs") or []}
-    if not OUT.is_dir():
+    if not clips:
+        files = []
+    elif not OUT.is_dir():
         errors.append(f"нет каталога клипов {OUT}")
         files = []
     else:
@@ -244,8 +253,9 @@ def main() -> int:
                 print(f"preflight: ОШИБКА: {line}", file=sys.stderr)
             print(f"preflight: {len(errors)} ошибок декодирования", file=sys.stderr)
             return 1
-    print(f"preflight: ok — {len(rows)} сцен, {len(rows) * len(MODELS)} клипов, "
-          f"{'декодирование проверено' if decode else 'без декодирования'}")
+    mode = "декодирование проверено" if decode else (
+        "клипы не проверялись" if not clips else "без декодирования")
+    print(f"preflight: ok — {len(rows)} сцен, {len(rows) * len(MODELS)} клипов, {mode}")
     return 0
 
 

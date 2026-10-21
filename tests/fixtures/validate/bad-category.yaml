@@ -1,0 +1,7 @@
+schema: dailybench/task/2
+id: A-1
+category: Z
+block: deterministic
+family: det/math
+points: 1
+prompt: Реши задачу

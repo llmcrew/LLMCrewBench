@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import time
 from hashlib import sha256
 from pathlib import Path
@@ -26,6 +27,17 @@ from typing import Any
 SCHEMA = "dailybench/generation/1"
 STORE = ".generations"
 MANIFEST = "manifest.json"
+ENVIRONMENT = "environment.json"
+
+#: Provenance of the executor. Stored in the manifest next to the run identity
+#: so a reader can tell a resumed run whether it is still on the same image.
+PROVENANCE_SCHEMA = "dailybench/environment/1"
+DEFAULT_IMAGE = "dailybench/runner-python:local"
+SOURCE_DATE_EPOCH_DEFAULT = 1700000000
+
+
+class ProvenanceError(RuntimeError):
+    """The run was continued on a different executor than it started on."""
 
 #: ``path`` → (mtime_ns, size, inode, digest) of files that already hashed to
 #: their manifest entry. Re-hashing every transcript on every ``read_json`` grew
@@ -45,6 +57,224 @@ def _fsync_dir(path: Path) -> None:
         os.fsync(handle)
     finally:
         os.close(handle)
+
+
+# ---------------------------------------------------------------------------
+# provenance
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def environment_digest(record: dict[str, Any]) -> str:
+    """SHA-256 of one environment record (stable across key order)."""
+    return sha256(_canonical(record).encode("utf-8")).hexdigest()
+
+
+def _docker_call(argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ)
+    env.setdefault("DOCKER_CLI_HINTS", "false")
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
+
+
+def image_identity(image: str, *, docker: str | None = None) -> tuple[str, str]:
+    """``(repo_digest, image_id)`` from ``docker image inspect``; either may be empty."""
+    docker = docker or shutil.which("docker")
+    if not docker:
+        raise ProvenanceError("docker CLI not found in PATH")
+    proc = _docker_call(
+        [docker, "image", "inspect", image, "--format", '{{join .RepoDigests ","}}|{{.Id}}'],
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        raise ProvenanceError(f"image {image!r} is not available: {proc.stderr.strip()}")
+    digests, _, image_id = proc.stdout.strip().partition("|")
+    return (digests.split(",")[0] if digests else ""), image_id
+
+
+def sbom(image: str, *, docker: str | None = None, timeout: float = 120) -> list[str]:
+    """Installed packages of the image as ``package\\tversion`` lines.
+
+    Best effort: an image without ``dpkg`` yields an empty list instead of an
+    error, and the caller records the environment as unverified.
+    """
+    docker = docker or shutil.which("docker")
+    if not docker:
+        return []
+    try:
+        proc = _docker_call(
+            [
+                docker,
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--entrypoint",
+                "",
+                image,
+                "dpkg-query",
+                "-W",
+                "-f=${Package}\t${Version}\n",
+            ],
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return sorted(line.strip() for line in proc.stdout.splitlines() if line.strip())
+
+
+def _runtimes(docker: str) -> set[str]:
+    try:
+        proc = _docker_call([docker, "info", "--format", "{{json .Runtimes}}"], timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if proc.returncode != 0:
+        return set()
+    try:
+        data = json.loads(proc.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        return set()
+    return set(data) if isinstance(data, dict) else set()
+
+
+def environment(
+    image: str | None = None,
+    runtime: str | None = None,
+    *,
+    container_ran: bool = False,
+) -> dict[str, Any]:
+    """Executor provenance for the manifest and the report's «Среда» section.
+
+    A missing Docker CLI is not a failure: the record says ``unverified`` and a
+    resume on such a host continues instead of refusing. The image and runtime
+    default to the supervisor's local tag and can be overridden with
+    ``DAILYBENCH_SANDBOX_IMAGE`` / ``DAILYBENCH_SANDBOX_RUNTIME``.
+
+    ``status`` is ``verified`` only once the runtime is registered in Docker and
+    the image has an immutable identity. ``executor_status`` is separate: naming
+    an image does not mean a container was used, so without ``container_ran``
+    the record says ``host_run`` with a reason, and a missing Docker says
+    ``unverified`` instead of pretending the host run matched the image.
+    """
+    image = image or os.environ.get("DAILYBENCH_SANDBOX_IMAGE") or DEFAULT_IMAGE
+    runtime = runtime or os.environ.get("DAILYBENCH_SANDBOX_RUNTIME") or "runc"
+    raw_epoch = os.environ.get("SOURCE_DATE_EPOCH")
+    try:
+        epoch = int(raw_epoch) if raw_epoch is not None else SOURCE_DATE_EPOCH_DEFAULT
+    except ValueError:
+        raise ProvenanceError(f"SOURCE_DATE_EPOCH={raw_epoch!r} не целое число") from None
+    record: dict[str, Any] = {
+        "schema": PROVENANCE_SCHEMA,
+        "image": image,
+        "runtime": runtime,
+        "runtime_verified": False,
+        "source_date_epoch": epoch,
+        "image_digest": "",
+        "image_id": "",
+        "sbom": [],
+        "status": "unverified",
+        "reason": "",
+        "executor_status": "container_run" if container_ran else "host_run",
+        "executor_reason": ""
+        if container_ran
+        else "образ указан, но контейнер не запускался — прогон шёл на хосте",
+    }
+    docker = shutil.which("docker")
+    if not docker:
+        record["reason"] = "docker CLI не найден"
+        record["executor_status"] = "unverified"
+        record["executor_reason"] = "docker CLI не найден — исполнитель не подтверждён"
+        return record
+    problems: list[str] = []
+    runtimes = _runtimes(docker)
+    record["runtime_verified"] = runtime in runtimes
+    if not record["runtime_verified"]:
+        known = ", ".join(sorted(runtimes)) or "нет данных"
+        problems.append(f"runtime {runtime!r} не зарегистрирован в docker ({known})")
+    try:
+        digest, image_id = image_identity(image, docker=docker)
+    except (OSError, subprocess.SubprocessError, ProvenanceError) as exc:
+        problems.append(f"docker недоступен: {exc}")
+    else:
+        record["image_id"] = image_id
+        # A locally built tag has no repo digest; the image id is an equally
+        # immutable reference and keeps the resume guard working.
+        record["image_digest"] = digest or image_id
+        record["sbom"] = sbom(image, docker=docker)
+        if not (digest or image_id):
+            problems.append("у образа нет ни digest, ни id")
+    if problems:
+        record["reason"] = "; ".join(problems)
+    else:
+        record["status"] = "verified"
+    return record
+
+
+_ENVIRONMENT_KEYS = (
+    "schema",
+    "image",
+    "runtime",
+    "runtime_verified",
+    "source_date_epoch",
+    "image_digest",
+    "image_id",
+    "sbom",
+    "status",
+    "reason",
+    "executor_status",
+    "executor_reason",
+)
+
+
+def _environment_record(value: dict[str, Any] | None) -> dict[str, Any]:
+    """The environment record out of a saved config, or the record itself.
+
+    Resume reads the old ``config.json``, while the tests and the CLI also pass
+    a bare environment record; the rest of a config (model, paths, calibration)
+    is guarded by the identity, so it must not enter this digest.
+    """
+    if not value:
+        return {}
+    nested = value.get("environment")
+    if isinstance(nested, dict):
+        return nested
+    return {key: value[key] for key in _ENVIRONMENT_KEYS if key in value}
+
+
+def verify_environment(recorded: dict[str, Any] | None, current: dict[str, Any] | None) -> None:
+    """Refuse a resume whose executor differs from the one the run started on.
+
+    The whole record is compared by digest, so the image, the runtime, the
+    build epoch and the recorded packages all count — not just the image.
+    ``unverified`` on either side continues: the point is to catch a foreign
+    executor, not to make Docker mandatory.
+    """
+    expected_record = _environment_record(recorded)
+    current_record = _environment_record(current)
+    if not expected_record:
+        return
+    if str(expected_record.get("status") or "") == "unverified":
+        return
+    if not current_record or str(current_record.get("status") or "") == "unverified":
+        return
+    expected = environment_digest(expected_record)
+    actual = environment_digest(current_record)
+    if expected == actual:
+        return
+    changed = sorted(
+        key
+        for key in set(expected_record) | set(current_record)
+        if _canonical(expected_record.get(key)) != _canonical(current_record.get(key))
+    )
+    detail = f" ({', '.join(changed)})" if changed else ""
+    raise ProvenanceError(
+        f"окружение песочницы сменилось{detail}: прогон начат на {expected[:19]}…, "
+        f"сейчас {actual[:19]}… — resume смешал бы два окружения "
+        "(соберите тот же digest или запустите новый прогон с новым --name)"
+    )
 
 
 def _manifest(directory: Path) -> dict[str, Any] | None:
@@ -98,6 +328,16 @@ def _verified(directory: Path, name: str, manifest: dict[str, Any] | None = None
         if str(config.get("identity") or "") != expected:
             return None
     elif config.get("identity"):
+        return None
+    # The recorded executor must be the one the config claims: a manifest
+    # swapped from another environment would otherwise pass every hash.
+    recorded = data.get("environment") or {}
+    if recorded:
+        if _canonical(config.get("environment") or {}) != _canonical(recorded):
+            return None
+        if data.get("environment_sha256") and data["environment_sha256"] != environment_digest(recorded):
+            return None
+    elif config.get("environment"):
         return None
     return folder
 
@@ -156,6 +396,7 @@ def commit(
     *,
     run_id: str,
     identity: str,
+    environment: dict[str, Any] | None = None,
     carry: bool = True,
 ) -> str:
     """Write ``files`` as one new generation and publish it atomically.
@@ -175,6 +416,10 @@ def commit(
     stage.mkdir()
 
     previous = current(directory) if carry else None
+    if environment is None:
+        # A rescore rewrites scores but runs in the same executor: inherit the
+        # provenance of the checkpoint it rewrites instead of dropping it.
+        environment = (_manifest(directory) or {}).get("environment") or {}
     if previous is not None:
         for name in (_manifest(directory) or {}).get("files") or {}:
             if name in files:
@@ -207,6 +452,8 @@ def commit(
         "generation": generation,
         "run_id": run_id,
         "identity": identity,
+        "environment": environment,
+        "environment_sha256": environment_digest(environment),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "files": hashes,
     }

@@ -1,7 +1,7 @@
 PY ?= .venv/bin/python
 UV ?= uv
 
-.PHONY: help setup browser agent serve test cov selfcheck list generate run bench report publish doctor preflight visual shots clean
+.PHONY: help setup browser agent serve test ci docker-smoke cov selfcheck list generate run bench report publish doctor preflight visual shots clean
 
 help:
 	@echo "setup      создать .venv (uv) и поставить pytest/pytest-cov"
@@ -9,6 +9,8 @@ help:
 	@echo "agent      поставить pi — агентный рантайм категорий C/K/L"
 	@echo "            (--no-agent у run/bench оставляет C/K/L на чат-пути)"
 	@echo "test       pytest по tests/"
+	@echo "ci         то же, что в CI: compileall + pytest (без docker и отчётов)"
+	@echo "docker-smoke  проверить контракт песочницы (tests/test_sandbox.py, нужен docker)"
 	@echo "cov        pytest с покрытием dailybench/"
 	@echo "selfcheck  эталон/мусор без GPU — доказательство, что генераторы и evaluator'ы согласованы"
 	@echo "list       показать задания сьюта (--only A,B для подмножества)"
@@ -38,6 +40,13 @@ agent:
 
 test:
 	$(PY) -m pytest tests
+
+ci:
+	$(PY) -m compileall -q dailybench scripts tests video/tools
+	$(PY) -m pytest tests
+
+docker-smoke:
+	$(PY) -m pytest tests/test_sandbox.py
 
 cov:
 	$(PY) -m pytest tests --cov=dailybench --cov-report=term-missing

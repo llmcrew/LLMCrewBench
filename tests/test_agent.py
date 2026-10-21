@@ -443,7 +443,7 @@ def test_a_term_ignoring_descendant_that_changed_cwd_is_killed(monkeypatch, tmp_
     )
     assert not result.ok and "не уложился" in (result.error or "")
     time.sleep(0.3)
-    for name in ("608.1", "608.2"):
+    for name in ("time\\.sleep\\(608\\.1\\)", "sleep 608\\.2"):
         survivors = subprocess.run(["pgrep", "-f", name], capture_output=True, text=True).stdout.strip()
         assert not survivors, f"{name} пережил таймаут (pid {survivors})"
 
@@ -692,7 +692,7 @@ class _UnusedProvider:
 
 def _shell_task() -> core.TaskInstance:
     return core.TaskInstance(
-        id="A-тест", category="A", title="t", prompt="p", max_points=1.0,
+        id="A-test", category="A", title="t", prompt="p", max_points=1.0,
         oracle={"reference": "x"},
     )
 

@@ -44,6 +44,8 @@ PILOT_IDS = ("H-4",)
 ALL_IDS = BASELINE_IDS + PILOT_IDS + ("H-5",)
 
 IDS = BASELINE_IDS
+PRIVATE_IDS = frozenset({"H-2"})
+"""Private layer: the one-word status dialogue."""
 _CHECK = 1.0
 _POINTS = 2.0
 #: H-4/H-5 issue four unit checks each; the budget is the issue itself.
@@ -722,6 +724,7 @@ def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
     tasks = [_BUILDERS[task_id](rng) for task_id in ids]
     for task in tasks:
         _assert_naive_trap(task, task.oracle["naive"], task.oracle["reference"])
+        task.private = task.id in PRIVATE_IDS
     return tasks
 
 

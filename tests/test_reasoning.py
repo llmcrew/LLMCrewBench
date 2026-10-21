@@ -225,13 +225,14 @@ def test_r16_is_pilot_only_and_registered_by_profile() -> None:
     stretch = reasoning.generate(
         random.Random(20260915), RunConfig(seed=20260915, profile="stretch-v1")
     )
-    assert [task.id for task in stretch] == list(reasoning.IDS) + ["R-16"]
+    assert [task.id for task in stretch] == list(reasoning.STRETCH_IDS)
 
     module = core.REGISTRY["B"]
     assert module.expected_ids == reasoning.IDS
     assert module.expected_ids_for() == reasoning.IDS
     assert module.expected_ids_for("pilot") == ("R-16",)
-    assert module.expected_ids_for("stretch-v1") == reasoning.IDS + ("R-16",)
+    assert module.expected_ids_for("stretch-v1") == reasoning.STRETCH_IDS == reasoning.IDS + (
+        "R-16", "R-17", "R-17-KK")
 
 
 def test_r16_reference_scores_full_and_every_mutant_fails() -> None:

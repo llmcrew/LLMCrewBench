@@ -1,0 +1,37 @@
+# syntax=docker/dockerfile:1
+#
+# Browser capture image (spec §6.2/§6.3).
+#
+# Pinned by digest; rootless-compatible UID 1000; no capabilities required.
+# Chromium runs with the network namespace disabled: pages are served by the
+# local file/http layer inside the container, frames go to the mounted store.
+ARG DEBIAN_IMAGE=debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+FROM ${DEBIAN_IMAGE}
+
+ARG SOURCE_DATE_EPOCH=1700000000
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        chromium \
+        fonts-dejavu-core \
+        python3 \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+RUN groupadd --gid 1000 sandbox \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /usr/sbin/nologin sandbox \
+    && install -d -o 1000 -g 1000 -m 0755 /workspace /out
+
+WORKDIR /workspace
+USER 1000:1000
+
+# --no-sandbox is deliberately *not* used: under runsc the user namespace is
+# available.  /dev/shm is a 64 MiB tmpfs but chromium still wants more, so
+# dev-shm usage is disabled.
+CMD ["chromium", "--headless=new", "--disable-dev-shm-usage", \
+     "--disable-gpu", "--no-first-run", "--hide-scrollbars", \
+     "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=9222", \
+     "about:blank"]

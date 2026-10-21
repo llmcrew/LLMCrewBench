@@ -45,6 +45,9 @@ PILOT_IDS = ("T-8",)
 """Pilot profile: the transaction scenario alone, not yet part of the ranking."""
 ALL_IDS = IDS + PILOT_IDS + ("T-9",)
 
+PRIVATE_IDS = frozenset({"T-1", "T-5"})
+"""Private layer: a baseline discovery and a documentation scenario."""
+
 TOOL_NAMES = (
     "search_code",
     "read_file",
@@ -1194,6 +1197,7 @@ def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
         cap = min(budget, _HARD_CALL_LIMITS.get(task.id, budget))
         assert golden <= cap, f"{task.id}: эталонная последовательность {golden} > бюджета {cap}"
         task.oracle["call_budget"] = cap
+        task.private = task.id in PRIVATE_IDS
     return tasks
 
 

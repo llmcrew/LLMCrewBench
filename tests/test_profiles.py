@@ -46,10 +46,13 @@ PILOT_IDS = [
     *[f"L-{index}" for index in range(1, 30)],
 ]
 
-#: Stretch: every baseline scenario plus the whole admitted pilot wave.
+#: Stretch: every baseline scenario plus the whole admitted pilot wave and the
+#: language/edge-case stratum added by the corpus wave.
 STRETCH_IDS = [
     *[f"IF-{index}" for index in range(1, 7)],
+    "IF-7", "IF-7-KK", "IF-8",
     *[f"R-{index}" for index in range(1, 17)],
+    "R-17", "R-17-KK",
     *[f"C-{index}" for index in range(1, 7)],
     *[f"T-{index}" for index in range(1, 10)],
     *[f"LC-{index}" for index in range(1, 8)],
@@ -88,7 +91,7 @@ def test_pilot_and_stretch_expect_the_declared_ids():
     """A module override is profile-specific, and unregistered profiles fall back."""
     module = core.REGISTRY["A"]
     assert module.expected_ids_for() == module.expected_ids
-    assert module.expected_ids_for("stretch-v1") == (*module.expected_ids, "IF-6")
+    assert module.expected_ids_for("stretch-v1") == (*module.expected_ids, "IF-6", "IF-7", "IF-7-KK", "IF-8")
     assert module.expected_ids_for("pilot") == ("IF-6",)
     assert core.REGISTRY["F"].expected_ids_for("pilot") == ("F-2",)
     assert core.REGISTRY["F"].expected_ids_for("stretch-v1") == ("F", "F-2")

@@ -200,7 +200,7 @@ def write_selfcheck_report(path: Path | str, report: SelfCheckReport) -> Path:
     return target
 
 
-def save_suite(cfg: RunConfig, out_dir: Path | str) -> dict[str, Path]:
+def save_suite(cfg: RunConfig, out_dir: Path | str, *, include_private: bool = False) -> dict[str, Path]:
     """Write the generated suite: public prompts, grading material, digest."""
     from .suite import grading_material, public_prompts
 
@@ -213,7 +213,7 @@ def save_suite(cfg: RunConfig, out_dir: Path | str) -> dict[str, Path]:
         "digest": out / "suite.json",
     }
     written["prompts"].write_text(
-        json.dumps(public_prompts(tasks), ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(public_prompts(tasks, include_private=include_private), ensure_ascii=False, indent=2), encoding="utf-8"
     )
     written["oracles"].write_text(
         json.dumps(grading_material(tasks), ensure_ascii=False, indent=2, default=core.json_default),

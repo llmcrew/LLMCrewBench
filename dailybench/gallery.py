@@ -29,7 +29,8 @@ ASSET_DIR = "_vendor"
 
 #: Task ids become file names, so they must not carry a path. The registry uses
 #: ``K-1``/``IF-2``; anything else is refused instead of being written with a
-#: silent ``pages/../`` escape (R17).
+#: silent ``pages/../`` escape (R17). ``schema`` validates against this same
+#: expression, so a suite that validates always produces a page name.
 _ID_SCHEMA = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*$")
 
 

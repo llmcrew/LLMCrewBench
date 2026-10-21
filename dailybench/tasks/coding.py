@@ -22,6 +22,9 @@ STRETCH_IDS = BASELINE_IDS + ("C-4", "C-5", "C-6")
 
 IDS = BASELINE_IDS
 
+PRIVATE_IDS = frozenset({"C-1", "C-2"})
+"""Private layer: the two baseline scenarios whose prompt never ships."""
+
 _SCENARIOS = {
     "C-1": (coding_python.generate, coding_python.evaluate),
     "C-2": (coding_go.generate, coding_go.evaluate),
@@ -40,7 +43,10 @@ def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
         scenarios = STRETCH_IDS
     else:
         scenarios = BASELINE_IDS
-    return [_SCENARIOS[scenario][0](rng, cfg) for scenario in scenarios]
+    tasks = [_SCENARIOS[scenario][0](rng, cfg) for scenario in scenarios]
+    for task in tasks:
+        task.private = task.id in PRIVATE_IDS
+    return tasks
 
 
 def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:

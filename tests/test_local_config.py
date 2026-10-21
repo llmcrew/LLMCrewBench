@@ -53,7 +53,9 @@ ALLOWED_PATH_HOLDERS = {"configs/reference.json", "dailybench/reference.py", "te
 def test_absolute_paths_live_only_in_the_reference_table():
     offenders: list[str] = []
     for path in sorted(ROOT.rglob("*.py")) + [SHIPPED]:
-        if any(part in {".venv", "__pycache__"} for part in path.parts):
+        if any(part in {".venv", "__pycache__", "build", "dist"} for part in path.parts):
+            continue
+        if any(part.endswith(".egg-info") for part in path.parts):
             continue
         relative = str(path.relative_to(ROOT))
         if relative in ALLOWED_PATH_HOLDERS:

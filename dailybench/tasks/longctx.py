@@ -772,6 +772,8 @@ def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
     if profile == "stretch-v1":
         tasks.append(_lc6(rng, cfg))
         tasks.append(_lc7(rng, cfg))
+    for task in tasks:
+        task.private = task.id in PRIVATE_IDS
     return tasks
 
 
@@ -880,6 +882,9 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 BASELINE_IDS = ("LC-1", "LC-2", "LC-3", "LC-4", "LC-5")
 PILOT_IDS = ("LC-6",)
 ALL_IDS = BASELINE_IDS + ("LC-6", "LC-7")
+
+PRIVATE_IDS = frozenset({"LC-1", "LC-4"})
+"""Private layer: a lookup chain and an owner recovery scenario."""
 
 
 core.register(
