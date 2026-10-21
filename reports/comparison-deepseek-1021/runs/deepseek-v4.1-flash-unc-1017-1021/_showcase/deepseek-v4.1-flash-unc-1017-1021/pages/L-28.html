@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Цепная реакция обломков — chain reaction of debris</title>
+<style>
+  :root{
+    --ink:#07080a;
+    --ink2:#0d1013;
+    --bone:#e9e3d6;
+    --ash:#8b9199;
+    --cold:#79cfdf;
+    --hot:#ff5f24;
+    --amber:#ffb058;
+    --tele:246px;
+    --pad:18px;
+    --mono: ui-monospace, "SF Mono", "Menlo", "DejaVu Sans Mono", "Consolas", monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:var(--ink);color:var(--bone);font-family:var(--mono);overflow:hidden}
+  body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;cursor:crosshair}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #bg{z-index:0}
+  #trail{z-index:1}
+  #fx{z-index:2}
+  #grain{z-index:3;pointer-events:none;opacity:.5}
+  #noise{position:fixed;inset:0;z-index:4;pointer-events:none;opacity:.035;
+    background-image:radial-gradient(circle at 50% 45%, rgba(255,255,255,.10), transparent 62%)}
+
+  .chrome{position:fixed;inset:0;z-index:6;display:grid;
+    grid-template-columns:1fr var(--tele);grid-template-rows:auto 1fr auto;
+    padding:var(--pad);gap:0 16px;pointer-events:none}
+  .chrome::before{content:"";position:fixed;left:calc(100% - var(--tele) - 4px);top:0;bottom:0;width:1px;
+    background:linear-gradient(to bottom, rgba(121,207,223,.30), rgba(121,207,223,.06) 40%, rgba(121,207,223,.18));}
+
+  header{grid-column:1;grid-row:1;display:flex;justify-content:space-between;align-items:flex-start;gap:24px;
+    padding-bottom:10px;border-bottom:1px solid rgba(121,207,223,.16);margin-bottom:14px}
+  .brand{max-width:52ch}
+  .kicker{font-size:9px;letter-spacing:.36em;text-transform:uppercase;color:var(--cold);opacity:.72;margin-bottom:6px}
+  h1{font-size:clamp(13px,1.32vw,19px);letter-spacing:.16em;font-weight:500;line-height:1.25;text-transform:uppercase}
+  h1 span{display:block;font-size:.62em;letter-spacing:.34em;color:var(--ash);margin-top:5px;font-weight:400}
+
+  .gauges{display:flex;gap:20px;text-align:right}
+  .g{min-width:58px}
+  .g b{display:block;font-size:9px;letter-spacing:.22em;color:var(--cold);opacity:.6;font-weight:400;margin-bottom:5px}
+  .g i{display:block;font-style:normal;font-size:13px;letter-spacing:.1em;color:var(--bone);opacity:.85;
+    font-variant-numeric:tabular-nums}
+  .g.hot i{color:var(--hot)}
+  .g .bar{height:3px;background:rgba(121,207,223,.14);margin-top:6px;position:relative;overflow:hidden}
+  .g .bar u{position:absolute;inset:0 100% 0 0;background:var(--hot);text-decoration:none;transition:right .25s linear}
+
+  .stage{grid-column:1;grid-row:2;position:relative}
+  #tl{position:absolute;left:0;right:0;bottom:-2px;width:100%;height:44px;display:block;opacity:.9}
+
+  footer{grid-column:1;grid-row:3;display:flex;justify-content:space-between;align-items:flex-end;gap:20px;
+    padding-top:12px;border-top:1px solid rgba(121,207,223,.16);margin-top:56px}
+  .label{max-width:60ch}
+  .label .t{font-size:11px;letter-spacing:.2em;text-transform:uppercase;opacity:.9;transition:opacity .8s}
+  .label .s{font-size:9px;letter-spacing:.26em;text-transform:uppercase;color:var(--ash);margin-top:3px}
+  .label .m{font-size:9px;letter-spacing:.14em;color:var(--ash);opacity:.7;margin-top:7px}
+  .label .q{font-size:9px;letter-spacing:.06em;color:var(--cold);opacity:.55;margin-top:6px;max-width:44ch}
+  .keys{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;pointer-events:auto}
+  button{font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--cold);
+    background:transparent;border:1px solid rgba(121,207,223,.3);padding:7px 10px;cursor:pointer;
+    transition:background .18s,color .18s,border-color .18s}
+  button:hover{background:rgba(121,207,223,.12);color:var(--bone);border-color:rgba(121,207,223,.6)}
+  button:focus-visible{outline:1px solid var(--hot);outline-offset:2px}
+  button.on{color:var(--hot);border-color:rgba(255,95,36,.55)}
+
+  .tele{grid-column:2;grid-row:1 / 4;display:flex;flex-direction:column;min-height:0;pointer-events:auto;
+    padding-top:2px}
+  .tele h2{font-size:9px;letter-spacing:.3em;text-transform:uppercase;color:var(--cold);opacity:.75;
+    padding-bottom:8px;border-bottom:1px solid rgba(121,207,223,.16)}
+  .cols{display:grid;grid-template-columns:34px 1fr 26px 22px;gap:6px;font-size:8px;letter-spacing:.18em;
+    color:var(--ash);padding:7px 0;border-bottom:1px solid rgba(121,207,223,.1);text-transform:uppercase;opacity:.72}
+  .cols span:nth-child(2){text-align:left}
+  .cols span:nth-child(n+3){text-align:right}
+  ol{list-style:none;flex:1;overflow:hidden;min-height:0;padding-top:2px;mask-image:linear-gradient(to bottom,#000 74%,transparent)}
+  li{display:grid;grid-template-columns:34px 1fr 26px 22px;gap:6px;font-size:9px;line-height:1.85;
+    font-variant-numeric:tabular-nums;color:var(--ash);opacity:.9;animation:rowIn .3s ease-out}
+  @keyframes rowIn{from{opacity:0;transform:translateX(-5px);background:rgba(255,95,36,.16)}to{opacity:.9}}
+  li b{font-weight:400;color:var(--bone);opacity:.6}
+  li .pw{position:relative;height:5px;margin-top:6px;background:rgba(121,207,223,.12)}
+  li .pw u{position:absolute;inset:0 auto 0 0;background:var(--hot);opacity:.85;text-decoration:none}
+  li .n{text-align:right;color:var(--amber)}
+  li .d{text-align:right;color:var(--cold);opacity:.55}
+  .tele .foot{margin-top:auto;padding-top:10px;border-top:1px solid rgba(121,207,223,.16);
+    font-size:8px;letter-spacing:.18em;color:var(--ash);line-height:2;text-transform:uppercase;opacity:.62}
+  .tele .foot em{font-style:normal;color:var(--cold)}
+
+  #cta{position:fixed;left:0;right:var(--tele);bottom:118px;z-index:7;display:flex;justify-content:center;
+    pointer-events:none;opacity:0;transform:translateY(6px);transition:opacity .7s,transform .7s}
+  #cta.show{opacity:1;transform:none}
+  #cta button{pointer-events:auto;background:rgba(7,8,10,.75);padding:9px 16px;letter-spacing:.24em}
+
+  .hidetele .chrome{grid-template-columns:1fr}
+  .hidetele .tele{display:none}
+  .hidetele .chrome::before{display:none}
+  .hidetele #cta{right:0}
+
+  @media (max-width:900px){
+    :root{--tele:0px}
+    .tele{display:none}
+    .chrome::before{display:none}
+    .chrome{grid-template-columns:1fr}
+    .gauges{gap:12px}
+    h1 span{letter-spacing:.2em}
+    #cta{right:0}
+    .keys{display:none}
+    #tl{height:30px}
+  }
+  @media (prefers-reduced-motion:reduce){ li{animation:none} }
+</style>
+</head>
+<body>
+<canvas id="bg"></canvas>
+<canvas id="trail"></canvas>
+<canvas id="fx"></canvas>
+<canvas id="grain"></canvas>
+<div id="noise"></div>
+
+<div class="chrome">
+  <header>
+    <div class="brand">
+      <div class="kicker">стенд КРО-1 · деструктивная последовательность</div>
+      <h1>Цепная реакция обломков<span>chain reaction of debris</span></h1>
+    </div>
+    <div class="gauges">
+      <div class="g hot"><b>фаза</b><i id="g_phase">взвод</i></div>
+      <div class="g"><b>поколение</b><i id="g_gen">00</i><div class="bar"><u id="g_genbar"></u></div></div>
+      <div class="g"><b>осколки</b><i id="g_live">000</i></div>
+      <div class="g"><b>очаги</b><i id="g_act">00</i></div>
+    </div>
+  </header>
+
+  <section class="stage">
+    <canvas id="tl"></canvas>
+  </section>
+
+  <footer>
+    <div class="label">
+      <div class="t">Цепная реакция обломков</div>
+      <div class="s">Chain reaction of debris · 2026</div>
+      <div class="m">генеративная кинетика · canvas 2d · единственный внешний импульс — левый край кадра</div>
+      <div class="q">каждое попадание порождает следующее; энергия дробится и гаснет по поколениям, пока всё не осядет пеплом.</div>
+    </div>
+    <div class="keys">
+      <button id="b_replay" type="button">↻ перезапуск</button>
+      <button id="b_sound" type="button">звук: вкл</button>
+      <button id="b_tele" type="button">телеметрия</button>
+    </div>
+  </footer>
+
+  <aside class="tele">
+    <h2>журнал событий</h2>
+    <div class="cols"><span>#</span><span>t+</span><span>P</span><span>n</span></div>
+    <ol id="log"></ol>
+    <div class="foot">
+      <div>поколений: <em id="f_gen">0</em> / 8</div>
+      <div>очагов: <em id="f_act">0</em> / 48</div>
+      <div>осадок: <em id="f_pile">0</em> обломков</div>
+    </div>
+  </aside>
+</div>
+
+<div id="cta"><button id="b_again" type="button">↻ повторить опыт</button></div>
+
+<script>
+(() => {
+'use strict';
+
+/* ─────────────────────────── размеры / полотно ─────────────────────────── */
+const bgC = document.getElementById('bg'), trC = document.getElementById('trail'),
+      fxC = document.getElementById('fx'), grC = document.getElementById('grain');
+const bg = bgC.getContext('2d'), tr = trC.getContext('2d'), fx = fxC.getContext('2d'),
+      gr = grC.getContext('2d'), tl = document.getElementById('tl').getContext('2d');
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+let W = 0, H = 0, DPRs = DPR;
+const F = {x:0, y:0, w:0, h:0};
+
+function fieldRect(){
+  const tele = document.documentElement.classList.contains('hidetele') ? 0 :
+               (window.innerWidth < 900 ? 0 : 246);
+  const padL = 44, padR = 44, padT = 92, padB = 128;
+  F.x = padL; F.y = padT;
+  F.w = Math.max(180, window.innerWidth - tele - padL - padR);
+  F.h = Math.max(200, window.innerHeight - padT - padB);
+}
+
+function sizeAll(){
+  W = window.innerWidth; H = window.innerHeight;
+  for (const c of [bgC, trC, fxC, grC]) {
+    c.width = Math.floor(W * DPR); c.height = Math.floor(H * DPR);
+    c.style.width = W + 'px'; c.style.height = H + 'px';
+  }
+  for (const c of [bg, tr, fx, gr]) c.setTransform(DPR, 0, 0, DPR, 0, 0);
+  fieldRect();
+  const r = tl.canvas.getBoundingClientRect();
+  tl.canvas.width = Math.max(2, Math.floor(r.width * DPR));
+  tl.canvas.height = Math.max(2, Math.floor(r.height * DPR));
+  tl.setTransform(DPR, 0, 0, DPR, 0, 0);
+  TLW = r.width; TLH = r.height;
+  tr.clearRect(0, 0, W, H);
+  paintBackground();
+  layoutSites();
+}
+
+/* ─────────────────────────── случайность ─────────────────────────── */
+function mulberry32(a){ return function(){ a |= 0; a = a + 0x6D2B79F5 | 0;
+  let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+  return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+let R = mulberry32(20260214);
+const rnd = (a = 1, b = 0) => R() * (a - b) + b;
+const pick = arr => arr[(R() * arr.length) | 0];
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+
+/* ─────────────────────────── палитра ─────────────────────────── */
+const COL = {
+  bone:[233,227,214], ash:[139,145,153], cold:[121,207,223], hot:[255,95,36], amber:[255,176,88], white:[255,246,224]
+};
+const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+function tempCol(t, a){
+  // t: 1 горячо → 0 пепел
+  let c;
+  if (t > 0.72) c = mix(COL.white, COL.amber, (1 - t) / 0.28);
+  else if (t > 0.42) c = mix(COL.amber, COL.hot, (0.72 - t) / 0.30);
+  else c = mix(COL.hot, COL.ash, (0.42 - t) / 0.42);
+  return rgba(c, a);
+}
+function mix(a, b, k){
+  k = clamp(k, 0, 1);
+  return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+}
+
+/* ─────────────────────────── спрайты свечения ─────────────────────────── */
+const GLOW = {};
+function makeGlow(name, col){
+  const s = 96, c = document.createElement('canvas'); c.width = c.height = s;
+  const g = c.getContext('2d');
+  const rad = g.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+  rad.addColorStop(0,   rgba(col, 0.95));
+  rad.addColorStop(0.18, rgba(col, 0.42));
+  rad.addColorStop(0.48, rgba(col, 0.13));
+  rad.addColorStop(1,   rgba(col, 0));
+  g.fillStyle = rad; g.fillRect(0, 0, s, s);
+  GLOW[name] = c;
+}
+makeGlow('white', COL.white); makeGlow('amber', COL.amber);
+makeGlow('hot', COL.hot); makeGlow('cold', COL.cold); makeGlow('ash', COL.ash);
+
+/* ─────────────────────────── фон (кэш) ─────────────────────────── */
+function paintBackground(){
+  bg.setTransform(1, 0, 0, 1, 0, 0);
+  bg.clearRect(0, 0, bgC.width, bgC.height);
+  bg.setTransform(DPRs, 0, 0, DPRs, 0, 0);
+
+  const g = bg.createLinearGradient(0, 0, W * 0.85, H);
+  g.addColorStop(0, '#0a0c0f'); g.addColorStop(0.45, '#080a0c'); g.addColorStop(1, '#050607');
+  bg.fillStyle = g; bg.fillRect(0, 0, W, H);
+
+  const vg = bg.createRadialGradient(W * 0.42, H * 0.46, Math.min(W, H) * 0.12,
+                                     W * 0.42, H * 0.46, Math.max(W, H) * 0.82);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.78)');
+  bg.fillStyle = vg; bg.fillRect(0, 0, W, H);
+
+  // мелкая сетка
+  bg.lineWidth = 1;
+  const step = 34;
+  bg.strokeStyle = 'rgba(121,207,223,0.045)';
+  bg.beginPath();
+  for (let x = (F.x % step); x < W; x += step){ bg.moveTo(x + .5, 0); bg.lineTo(x + .5, H); }
+  for (let y = (F.y % step); y < H; y += step){ bg.moveTo(0, y + .5); bg.lineTo(W, y + .5); }
+  bg.stroke();
+
+  // мажорная сетка
+  bg.strokeStyle = 'rgba(121,207,223,0.10)';
+  bg.beginPath();
+  for (let x = F.x; x < F.x + F.w; x += step * 5){ bg.moveTo(x + .5, F.y); bg.lineTo(x + .5, F.y + F.h); }
+  for (let y = F.y; y < F.y + F.h; y += step * 5){ bg.moveTo(F.x, y + .5); bg.lineTo(F.x + F.w, y + .5); }
+  bg.stroke();
+
+  // поле: уголки
+  bg.strokeStyle = 'rgba(121,207,223,0.34)'; bg.lineWidth = 1;
+  const k = 16;
+  const corners = [[F.x, F.y, 1, 1], [F.x + F.w, F.y, -1, 1], [F.x, F.y + F.h, 1, -1], [F.x + F.w, F.y + F.h, -1, -1]];
+  for (const [cx, cy, sx, sy] of corners){
+    bg.beginPath();
+    bg.moveTo(cx + sx * k, cy); bg.lineTo(cx, cy); bg.lineTo(cx, cy + sy * k); bg.stroke();
+  }
+
+  // сдерживающий радиус вокруг очага
+  const ox = F.x + 0.14 * F.w, oy = F.y + 0.50 * F.h;
+  const rad = Math.min(F.h * 0.55, F.w * 0.42);
+  bg.setLineDash([2, 7]);
+  bg.strokeStyle = 'rgba(121,207,223,0.13)';
+  for (const rr of [rad, rad * 0.66, rad * 0.33]){
+    bg.beginPath(); bg.arc(ox, oy, rr, 0, Math.PI * 2); bg.stroke();
+  }
+  bg.setLineDash([]);
+  bg.strokeStyle = 'rgba(121,207,223,0.22)';
+  bg.beginPath(); bg.moveTo(ox - rad - 8, oy); bg.lineTo(ox + rad + 8, oy);
+  bg.moveTo(ox, oy - rad - 8); bg.lineTo(ox, oy + rad + 8); bg.stroke();
+
+  // техническая штриховка по правому нижнему углу поля
+  bg.strokeStyle = 'rgba(121,207,223,0.07)';
+  const hx = F.x + F.w - 150, hy = F.y + F.h - 84;
+  bg.beginPath();
+  for (let i = 0; i < 16; i++){ bg.moveTo(hx + i * 9, hy + 70); bg.lineTo(hx + i * 9 + 70, hy); }
+  bg.stroke();
+
+  // текстовые техметки
+  bg.fillStyle = 'rgba(121,207,223,0.28)';
+  bg.font = '8px ui-monospace, Menlo, monospace';
+  bg.fillText('R₀ = ' + Math.round(rad) + ' px', ox + rad * 0.55, oy - rad * 0.55 - 5);
+  bg.fillText('ось 1 : 1', F.x + 4, F.y + F.h + 14);
+  bg.fillText('стык 4 · левый край', F.x, F.y - 12);
+}
+
+/* ─────────────────────────── рельеф очагов ─────────────────────────── */
+// [nx, ny, size, role]  (0=seed 1=hub 2=leaf 3=stray)
+const LAYOUT = [
+  [0.140,0.500,38,0],[0.176,0.435,19,1],[0.180,0.566,18,1],[0.104,0.446,15,1],[0.110,0.582,14,1],[0.201,0.501,16,1],
+  [0.243,0.382,13,2],[0.298,0.312,12,2],[0.362,0.262,12,2],[0.438,0.212,11,2],[0.518,0.172,11,2],
+  [0.606,0.144,10,2],[0.702,0.122,10,2],[0.812,0.112,9,2],[0.918,0.134,9,3],
+  [0.272,0.499,12,2],[0.341,0.466,12,2],[0.412,0.512,11,2],[0.489,0.462,11,2],[0.566,0.505,10,2],
+  [0.651,0.452,10,2],[0.741,0.494,10,2],[0.836,0.441,9,2],[0.912,0.502,9,3],
+  [0.252,0.622,12,2],[0.312,0.698,11,2],[0.382,0.762,11,2],[0.462,0.812,10,2],[0.552,0.848,10,2],
+  [0.652,0.871,9,2],[0.762,0.882,9,2],[0.868,0.848,9,2],
+  [0.294,0.570,11,2],[0.371,0.601,11,2],[0.452,0.632,10,2],[0.532,0.662,10,2],[0.618,0.684,9,2],
+  [0.712,0.722,9,2],[0.802,0.682,9,2],
+  [0.582,0.302,10,2],[0.680,0.283,10,2],[0.788,0.262,9,3],[0.632,0.582,10,2],[0.882,0.622,9,3],
+  [0.930,0.302,8,3],[0.418,0.352,10,2],[0.548,0.382,10,2],[0.968,0.712,8,3],
+  [0.658,0.212,9,3],[0.352,0.884,8,3],[0.960,0.598,8,3]
+];
+const RING0 = 0.55; // доля от радиуса
+
+let sites = [], frags = [], sparks = [], rings = [], flashes = [], dust = [];
+let seedSite = null, stage = null;
+
+function makeShard(size){
+  const pts = [], n = 7, ax = rnd(1.7, 1.25), ay = rnd(0.42, 0.24);
+  for (let i = 0; i < n; i++){
+    const a = (i / n) * Math.PI * 2 + rnd(0.16, -0.16);
+    const r = size * rnd(1, 0.55);
+    pts.push([Math.cos(a) * r * ax, Math.sin(a) * r * ay]);
+  }
+  return pts;
+}
+
+function layoutSites(){
+  for (const s of sites){
+    s.x = F.x + s.nx * F.w;
+    s.y = F.y + s.ny * F.h;
+    s.pts = makeShard(s.size);
+  }
+}
+
+/* ─────────────────────────── состояние опыта ─────────────────────────── */
+const GEN_MAX = 8, ACT_MAX = 48;
+let t0 = 0, clock = 0, phase = 'взвод', quiet = 0, activity = 0;
+let activations = 0, maxGen = 0, pile = 0, nextGate = 0, pending = [], settledAt = 0;
+let emitQueue = [], runId = 0, timeline = [], lastSample = 0, soundOn = false, audio = null;
+let TLW = 300, TLH = 44;
+
+function reset(seed){
+  runId++;
+  R = mulberry32(seed);
+  document.getElementById('log').innerHTML = '';
+  sites = LAYOUT.map(([nx, ny, size, role], i) => ({
+    id: 'S' + String(i + 1).padStart(3, '0'), nx, ny, size, role,
+    state: 'dormant', gen: 0, ang: rnd(Math.PI * 2), pts: [], x: 0, y: 0,
+    born: 0, glow: 0, flick: rnd(1, 0.3)
+  }));
+  layoutSites();
+  seedSite = sites[0];
+  frags = []; sparks = []; rings = []; flashes = []; pending = []; emitQueue = [];
+  activations = 0; maxGen = 0; pile = 0; quiet = 0; activity = 0;
+  t0 = performance.now(); clock = 0; nextGate = 1.35; phase = 'взвод'; settledAt = 0;
+  timeline = []; lastSample = 0;
+  dust = Array.from({length: 150}, () => ({
+    x: rnd(W), y: rnd(H), r: rnd(1.5, 0.4), vy: rnd(9, 2), vx: rnd(6, -6), a: rnd(0.22, 0.04), ph: rnd(6.28)
+  }));
+  tr.clearRect(0, 0, W, H);
+  document.getElementById('cta').classList.remove('show');
+  document.getElementById('g_gen').textContent = '00';
+  document.getElementById('g_genbar').style.right = '100%';
+  document.getElementById('f_gen').textContent = '0';
+  document.getElementById('f_act').textContent = '0';
+  document.getElementById('f_pile').textContent = '0';
+}
+
+/* ─────────────────────────── звук ─────────────────────────── */
+function initAudio(){
+  if (audio) return;
+  try {
+    audio = new (window.AudioContext || window.webkitAudioContext)();
+  } catch(e){ audio = null; }
+}
+function blip(gen, power){
+  if (!soundOn || !audio || audio.state !== 'running') return;
+  const n = audio.currentTime;
+  const o = audio.createOscillator(), g = audio.createGain();
+  o.type = 'triangle';
+  o.frequency.setValueAtTime(680 - gen * 46, n);
+  o.frequency.exponentialRampToValueAtTime(190 + gen * 20, n + 0.11);
+  g.gain.setValueAtTime(0.0001, n);
+  g.gain.exponentialRampToValueAtTime(clamp(0.075 * power, 0.012, 0.09), n + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.0001, n + 0.12);
+  o.connect(g).connect(audio.destination); o.start(n); o.stop(n + 0.14);
+}
+
+/* ─────────────────────────── возгорание ─────────────────────────── */
+function nearestDormant(from, count, spread){
+  const list = sites.filter(s => s.state === 'dormant' && s !== from)
+    .map(s => ({s, d: Math.hypot(s.x - from.x, s.y - from.y)}))
+    .sort((a, b) => a.d - b.d);
+  const out = [];
+  const pool = list.slice(0, Math.max(count, Math.min(list.length, count + spread)));
+  while (out.length < count && pool.length){
+    out.push(pool.splice((R() * pool.length) | 0, 1)[0].s);
+  }
+  return out;
+}
+
+function arm(site, gen){
+  if (site.state !== 'dormant') return false;
+  site.state = 'armed'; site.gen = gen; site.armAt = clock;
+  pending.push(site);
+  return true;
+}
+
+function ignite(site, gen){
+  if (site.state === 'live' || site.state === 'dead') return;
+  site.state = 'live'; site.gen = gen; site.born = clock;
+  activations++; activity += 1.4; maxGen = Math.max(maxGen, gen);
+  quiet = 0;
+
+  const power = clamp(1.15 - gen * 0.085, 0.28, 1.15);
+  flashes.push({x: site.x, y: site.y, t: 0, life: 0.55, s: site.size, power});
+  rings.push({x: site.x, y: site.y, t: 0, life: 0.95 + gen * 0.05, r0: site.size * 0.7, grow: 66 + site.size * 2.2, power});
+  rings.push({x: site.x, y: site.y, t: 0, life: 0.7, r0: site.size * 0.3, grow: 42, power: power * 0.6, cold: true});
+  for (let i = 0; i < 14 + (site.size | 0); i++){
+    const a = rnd(Math.PI * 2), sp = rnd(230, 40) * power;
+    sparks.push({x: site.x, y: site.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, t: 0, life: rnd(0.65, 0.2)});
+  }
+  blip(gen, power);
+  logEvent(site, gen, power);
+
+  const n = site.role === 0 ? 11 : site.role === 1 ? 6 : site.role === 3 ? 4 : 4 + (R() < 0.5 ? 1 : 0);
+  const powerN = Math.max(2, Math.round(n * (0.45 + power * 0.62)));
+  for (let i = 0; i < powerN; i++) emitQueue.push({site, gen, at: clock + 0.08 + i * 0.016});
+  setTimeout(() => { if (site.state === 'live') site.state = 'dead'; }, 2400);
+}
+
+function launch(from, gen){
+  if (activations >= ACT_MAX) { emitStray(from, gen); return; }
+  const charge = R() < clamp(0.93 - gen * 0.022, 0.55, 0.93);
+  let target = null;
+  if (charge){
+    const cand = nearestDormant(from, 1, 6);
+    target = cand[0] || null;
+  }
+  const baseA = target ? Math.atan2(target.y - from.y, target.x - from.x) : rnd(Math.PI * 2);
+  const spread = 0.075 + Math.min(0.2, gen * 0.028);
+  const a = baseA + rnd(spread, -spread);
+  const dist = target ? Math.hypot(target.x - from.x, target.y - from.y) : 200;
+  const sp = clamp(dist * rnd(1.5, 1.1), 130, 430) * clamp(1.06 - gen * 0.03, 0.7, 1.06);
+  const dirx = from.x > F.x + F.w * 0.82 ? -1 : 1;
+  const vx = Math.cos(a) * sp - Math.abs(Math.cos(a)) * sp * 0.0 + dirx * 26;
+  const vy = Math.sin(a) * sp;
+  frags.push({
+    x: from.x + Math.cos(a) * from.size * 0.7,
+    y: from.y + Math.sin(a) * from.size * 0.7,
+    vx, vy, gen, t: 0, life: rnd(4.2, 2.6),
+    len: clamp(rnd(15, 5) * (1.2 - gen * 0.05), 3.5, 16),
+    wid: clamp(rnd(2.2, 0.9) - gen * 0.08, 0.5, 2.2),
+    spin: rnd(7, -7), rot: a, charge, seed: rnd(1000)
+  });
+  pile++;
+  document.getElementById('f_pile').textContent = pile;
+}
+function emitStray(from, gen){
+  for (let i = 0; i < 2; i++){
+    const a = rnd(Math.PI * 2), sp = rnd(210, 90);
+    frags.push({x: from.x, y: from.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, gen,
+      t: 0, life: rnd(3.4, 2), len: rnd(10, 4), wid: 1, spin: rnd(6, -6), rot: a, charge: false, seed: rnd(1000)});
+  }
+}
+
+/* ─────────────────────────── журнал ─────────────────────────── */
+function logEvent(site, gen, power){
+  const ol = document.getElementById('log');
+  const li = document.createElement('li');
+  const nf = 1 + ((R() * 5) | 0);
+  if (gen >= maxGen - 1 && gen >= 2) li.style.color = 'var(--bone)';
+  li.innerHTML = `<b>${site.id}</b><span>${clock.toFixed(2)}s</span>` +
+    `<span class="pw"><u style="width:${Math.round(power * 100)}%"></u></span>` +
+    `<span class="n">${nf}</span>`;
+  ol.prepend(li);
+  while (ol.children.length > 46) ol.lastChild.remove();
+  document.getElementById('f_gen').textContent = maxGen;
+  document.getElementById('f_act').textContent = activations;
+}
+
+/* ─────────────────────────── шаг симуляции ─────────────────────────── */
+function step(dt){
+  clock += dt;
+  quiet += dt;
+
+  if (phase === 'взвод' && clock > 1.15 && seedSite.state === 'dormant') ignite(seedSite, 0);
+
+  if (clock >= nextGate && pending.length){
+    nextGate = clock + 0.14 + R() * 0.36;
+    const s = pending.shift();
+    ignite(s, s.gen);
+  }
+  pending = pending.filter(s => {
+    if (s.state !== 'armed') return false;
+    if (clock - s.armAt > 1.4){ ignite(s, s.gen); return false; }
+    return true;
+  });
+
+  if (emitQueue.length && clock >= emitQueue[0].at){
+    const e = emitQueue.shift();
+    launch(e.site, e.gen);
+  }
+
+  const speed = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0.62 : 1;
+  const d = dt * speed;
+
+  for (let i = frags.length - 1; i >= 0; i--){
+    const f = frags[i];
+    f.t += d; f.life -= d;
+    for (let s = 0; s < 2; s++){
+      const h = d * 0.5;
+      const curl = Math.sin(f.x * 0.006 + f.seed + f.t * 1.6) * 26 +
+                   Math.cos(f.y * 0.005 - f.seed) * 18;
+      f.vx += Math.cos(f.rot + 1.57) * curl * h;
+      f.vy += Math.sin(f.rot + 1.57) * curl * h * 0.4 + 9 * h;
+      const drag = Math.pow(0.988, h * 60);
+      f.vx *= drag; f.vy *= drag;
+      f.x += f.vx * h; f.y += f.vy * h;
+      f.rot += f.spin * h;
+      if (f.charge && activations < ACT_MAX){
+        for (const s2 of sites){
+          if (s2.state !== 'dormant') continue;
+          const dx = s2.x - f.x, dy = s2.y - f.y;
+          if (dx * dx + dy * dy < (s2.size * RING0 + 11) ** 2){
+            const p = clamp(0.97 - f.gen * 0.06, 0.34, 0.97);
+            f.charge = false;
+            if (R() < p){ arm(s2, f.gen + 1); }
+            else {
+              for (let k = 0; k < 6; k++){
+                const aa = rnd(Math.PI * 2), sp = rnd(120, 30);
+                sparks.push({x: f.x, y: f.y, vx: Math.cos(aa) * sp, vy: Math.sin(aa) * sp, t: 0, life: rnd(0.4, 0.12)});
+              }
+            }
+            f.life = Math.min(f.life, 1.1);
+            break;
+          }
+        }
+      }
+    }
+    if (f.life <= 0 || f.x < -60 || f.x > W + 60 || f.y < -60 || f.y > H + 60) frags.splice(i, 1);
+  }
+
+  for (let i = sparks.length - 1; i >= 0; i--){
+    const s = sparks[i]; s.t += d; s.life -= d;
+    s.vy += 44 * d; s.vx *= Math.pow(0.94, d * 60); s.vy *= Math.pow(0.94, d * 60);
+    s.x += s.vx * d; s.y += s.vy * d;
+    if (s.life <= 0) sparks.splice(i, 1);
+  }
+  for (let i = rings.length - 1; i >= 0; i--){ rings[i].t += d; if (rings[i].t >= rings[i].life) rings.splice(i, 1); }
+  for (let i = flashes.length - 1; i >= 0; i--){ flashes[i].t += d; if (flashes[i].t >= flashes[i].life) flashes.splice(i, 1); }
+  for (const s of sites) if (s.state === 'live' || s.state === 'armed') s.glow = Math.min(1, s.glow + d * 3);
+  for (const s of sites) if (s.state === 'dead') s.glow = Math.max(0, s.glow - d * 0.1);
+
+  for (const p of dust){
+    p.y -= p.vy * d; p.x += (p.vx + Math.sin(clock * 0.4 + p.ph) * 4) * d;
+    if (p.y < -6){ p.y = H + 6; p.x = rnd(W); }
+    if (p.x < -6) p.x = W + 6; if (p.x > W + 6) p.x = -6;
+  }
+
+  activity = Math.max(0, activity - dt * 0.9);
+
+  // фазы
+  const hasLive = frags.length > 0 || pending.length > 0 || emitQueue.length > 0;
+  if (clock < 1.15) phase = 'взвод';
+  else if (hasLive && quiet < 3.2) phase = activations < 6 ? 'разгон' : 'каскад';
+  else if (quiet < 7) phase = 'затухание';
+  else phase = 'осадок';
+
+  if (phase === 'осадок'){
+    settledAt += dt;
+    document.getElementById('cta').classList.add('show');
+    if (settledAt > 15) reset((Math.random() * 1e9) | 0);
+  } else {
+    settledAt = 0;
+    document.getElementById('cta').classList.remove('show');
+  }
+
+  if (clock - lastSample > 0.09){
+    lastSample = clock;
+    timeline.push({n: frags.length, g: activations, a: Math.min(1, activity)});
+    if (timeline.length > Math.ceil(TLW / 3) + 4) timeline.shift();
+  }
+}
+
+/* ─────────────────────────── отрисовка ─────────────────────────── */
+function drawSite(s){
+  const live = s.state === 'live' || s.state === 'armed';
+  const armPulse = s.state === 'armed' ? 0.5 + 0.5 * Math.sin((clock - s.armAt) * 26) : 0;
+  const temp = live ? 1 : 0;
+  fx.save();
+  fx.translate(s.x, s.y); fx.rotate(s.ang);
+
+  const stroke = live ? tempCol(1 - (clock - s.born) * 0.12, 0.9) :
+                 s.state === 'armed' ? rgba(COL.amber, 0.35 + armPulse * 0.6) :
+                 s.state === 'dead' ? rgba(COL.ash, 0.2) : rgba(COL.bone, 0.34);
+  fx.lineJoin = 'round';
+
+  // тело
+  fx.beginPath();
+  for (let i = 0; i < s.pts.length; i++){
+    const p = s.pts[i];
+    i ? fx.lineTo(p[0], p[1]) : fx.moveTo(p[0], p[1]);
+  }
+  fx.closePath();
+  fx.fillStyle = live ? rgba(COL.hot, 0.14) : s.state === 'dead' ? rgba(COL.ash, 0.04) : rgba(COL.bone, 0.035 + armPulse * 0.1);
+  fx.fill();
+  fx.lineWidth = s.state === 'dead' ? 0.7 : 1;
+  fx.strokeStyle = stroke; fx.stroke();
+
+  // внутренняя штриховка
+  if (s.state === 'dormant' || s.state === 'armed'){
+    fx.strokeStyle = s.state === 'armed' ? rgba(COL.amber, 0.4) : rgba(COL.bone, 0.12);
+    fx.lineWidth = 0.6;
+    fx.beginPath();
+    for (let i = -2; i <= 2; i++){ fx.moveTo(-s.size * 1.2, i * 2.6); fx.lineTo(s.size * 1.2, i * 2.6); }
+    fx.stroke();
+  }
+  if (s.state === 'dead'){
+    fx.fillStyle = rgba(COL.ash, 0.07);
+    for (let i = 0; i < 4; i++){
+      const a = s.ang + i * 1.6;
+      fx.beginPath(); fx.arc(Math.cos(a) * s.size * 0.5, Math.sin(a) * s.size * 0.4, s.size * 0.24, 0, 6.3); fx.fill();
+    }
+  }
+  fx.restore();
+
+  // перекрестие маркера
+  fx.strokeStyle = live ? rgba(COL.white, 0.5) : rgba(COL.cold, 0.34);
+  fx.lineWidth = 0.7;
+  const c = s.size * 0.55 + 4;
+  fx.beginPath();
+  fx.moveTo(s.x - c, s.y); fx.lineTo(s.x - c + 3, s.y);
+  fx.moveTo(s.x + c - 3, s.y); fx.lineTo(s.x + c, s.y);
+  fx.moveTo(s.x, s.y - c); fx.lineTo(s.x, s.y - c + 3);
+  fx.moveTo(s.x, s.y + c - 3); fx.lineTo(s.x, s.y + c);
+  fx.stroke();
+
+  // подпись
+  fx.fillStyle = live ? rgba(COL.amber, 0.75) : rgba(COL.cold, 0.3);
+  fx.font = '7px ui-monospace, Menlo, monospace';
+  fx.fillText(s.id, s.x + c + 3, s.y + 2);
+
+  // остаточный жар
+  if (s.state === 'dead' && s.glow > 0.01){
+    const f = 0.6 + 0.4 * Math.sin(clock * 5 * s.flick + s.nx * 20);
+    fx.globalCompositeOperation = 'lighter';
+    fx.globalAlpha = 0.25 * s.glow * f;
+    const g = GLOW.hot, sz = s.size * 1.9;
+    fx.drawImage(g, s.x - sz / 2, s.y - sz / 2, sz, sz);
+    fx.globalAlpha = 1; fx.globalCompositeOperation = 'source-over';
+  }
+}
+
+function drawFragments(d){
+  tr.globalCompositeOperation = 'lighter';
+  for (const f of frags){
+    const temp = clamp(f.life / 4.2, 0, 1);
+    const a = clamp(f.life * 1.5, 0, 1);
+    const ang = Math.atan2(f.vy, f.vx);
+    // шлейф-двойник
+    for (let k = 2; k >= 1; k--){
+      const bx = f.x - f.vx * 0.014 * k, by = f.y - f.vy * 0.014 * k;
+      tr.save(); tr.translate(bx, by); tr.rotate(ang);
+      tr.fillStyle = tempCol(temp * (1 - k * 0.22), 0.22 * a);
+      tr.fillRect(-f.len * 0.5 * (1 - k * 0.2), -f.wid * 0.4, f.len * (1 - k * 0.2), f.wid * 0.8);
+      tr.restore();
+    }
+    tr.save(); tr.translate(f.x, f.y); tr.rotate(f.rot * 0.25 + ang * 0.75);
+    // клин
+    tr.beginPath();
+    tr.moveTo(f.len * 0.55, 0);
+    tr.lineTo(-f.len * 0.2, f.wid * 0.5);
+    tr.lineTo(-f.len * 0.55, f.wid * 0.32);
+    tr.lineTo(-f.len * 0.45, -f.wid * 0.4);
+    tr.lineTo(-f.len * 0.1, -f.wid * 0.5);
+    tr.closePath();
+    tr.fillStyle = tempCol(temp, 0.95 * a);
+    tr.fill();
+    tr.restore();
+    // ядро
+    tr.globalAlpha = 0.55 * a * temp;
+    const gsz = f.len * 2.6 + 6;
+    tr.drawImage(temp > 0.66 ? GLOW.white : GLOW.amber, f.x - gsz / 2, f.y - gsz / 2, gsz, gsz);
+    tr.globalAlpha = 1;
+  }
+  for (const s of sparks){
+    const a = clamp(s.life * 2.2, 0, 1);
+    tr.fillStyle = tempCol(clamp(s.life * 1.6, 0, 1), a);
+    tr.fillRect(s.x, s.y, 1.6, 1.6);
+  }
+  tr.globalCompositeOperation = 'source-over';
+}
+
+function drawFX(){
+  // пыль
+  for (const p of dust){
+    fx.fillStyle = rgba(COL.ash, p.a * 0.5);
+    fx.fillRect(p.x, p.y, p.r, p.r);
+  }
+  for (const r of rings){
+    const k = r.t / r.life, e = easeOut(k);
+    const rad = r.r0 + r.grow * e;
+    fx.strokeStyle = r.cold ? rgba(COL.cold, (1 - k) * 0.22 * r.power)
+                            : rgba(COL.hot, (1 - k) * 0.55 * r.power);
+    fx.lineWidth = r.cold ? 0.7 : 1.4 * (1 - k * 0.7);
+    fx.beginPath(); fx.arc(r.x, r.y, rad, 0, 6.3); fx.stroke();
+    if (!r.cold){
+      fx.strokeStyle = rgba(COL.white, (1 - k) * 0.35 * r.power);
+      fx.lineWidth = 0.6;
+      fx.beginPath();
+      for (let i = 0; i < 8; i++){
+        const a = i * 0.785 + r.x * 0.01;
+        const r1 = rad * 0.72, r2 = rad * 0.95;
+        fx.moveTo(r.x + Math.cos(a) * r1, r.y + Math.sin(a) * r1);
+        fx.lineTo(r.x + Math.cos(a) * r2, r.y + Math.sin(a) * r2);
+      }
+      fx.stroke();
+    }
+  }
+  fx.globalCompositeOperation = 'lighter';
+  for (const f of flashes){
+    const k = f.t / f.life, sz = f.s * (2.6 + k * 2.4);
+    fx.globalAlpha = (1 - k) * 0.9 * f.power;
+    fx.drawImage(k < 0.3 ? GLOW.white : GLOW.hot, f.x - sz / 2, f.y - sz / 2, sz, sz);
+    fx.globalAlpha = 1;
+  }
+  // затравка снаряда
+  if (clock < 1.15){
+    const k = clamp(clock / 1.1, 0, 1), e = easeOut(k);
+    const sx = F.x - 30, sy = seedSite.y;
+    const tx = seedSite.x, ty = seedSite.y;
+    const px = sx + (tx - sx) * e, py = sy + (ty - sy) * e;
+    fx.strokeStyle = rgba(COL.white, 0.32 * (1 - k * 0.4));
+    fx.lineWidth = 0.8;
+    fx.beginPath(); fx.moveTo(sx, sy); fx.lineTo(px, py); fx.stroke();
+    fx.strokeStyle = rgba(COL.hot, 0.2);
+    fx.beginPath(); fx.moveTo(sx, sy - 1.5); fx.lineTo(px, py - 1.5); fx.stroke();
+    const gsz = 30 + 40 * (1 - e);
+    fx.globalAlpha = 0.9;
+    fx.drawImage(GLOW.white, px - gsz / 2, py - gsz / 2, gsz, gsz);
+    fx.globalAlpha = 1;
+  }
+  // прицел у курсора
+  if (pointer.inside && phase !== 'осадок'){
+    const nx = nearestDormant(pointer, 1, 3)[0];
+    if (nx){
+      fx.strokeStyle = rgba(COL.cold, 0.35);
+      fx.lineWidth = 0.7; fx.setLineDash([2, 4]);
+      fx.beginPath(); fx.moveTo(pointer.x, pointer.y); fx.lineTo(nx.x, nx.y); fx.stroke();
+      fx.setLineDash([]);
+      fx.strokeStyle = rgba(COL.cold, 0.5);
+      fx.beginPath(); fx.arc(pointer.x, pointer.y, 9, 0, 6.3); fx.stroke();
+      fx.beginPath(); fx.moveTo(pointer.x - 13, pointer.y); fx.lineTo(pointer.x - 5, pointer.y);
+      fx.moveTo(pointer.x + 5, pointer.y); fx.lineTo(pointer.x + 13, pointer.y);
+      fx.moveTo(pointer.x, pointer.y - 13); fx.lineTo(pointer.x, pointer.y - 5);
+      fx.moveTo(pointer.x, pointer.y + 5); fx.lineTo(pointer.x, pointer.y + 13); fx.stroke();
+    }
+  }
+  fx.globalCompositeOperation = 'source-over';
+}
+
+let grainPat = null;
+function buildGrain(){
+  const c = document.createElement('canvas'); c.width = c.height = 180;
+  const g = c.getContext('2d'), im = g.createImageData(180, 180);
+  for (let i = 0; i < im.data.length; i += 4){
+    const v = 128 + (Math.random() * 90 - 45);
+    im.data[i] = im.data[i+1] = im.data[i+2] = v; im.data[i+3] = 26;
+  }
+  g.putImageData(im, 0, 0);
+  grainPat = gr.createPattern(c, 'repeat');
+}
+
+function drawGrain(){
+  if (!grainPat) return;
+  gr.globalCompositeOperation = 'overlay';
+  gr.fillStyle = grainPat;
+  gr.translate((Math.random() * 180) | 0, (Math.random() * 180) | 0);
+  gr.fillRect(-180, -180, W + 360, H + 360);
+  gr.setTransform(DPRs, 0, 0, DPRs, 0, 0);
+  gr.globalCompositeOperation = 'source-over';
+}
+
+function drawTimeline(){
+  tl.clearRect(0, 0, TLW, TLH);
+  const baseY = TLH - 10;
+  tl.strokeStyle = 'rgba(121,207,223,0.22)'; tl.lineWidth = 1;
+  tl.beginPath(); tl.moveTo(0, baseY + 0.5); tl.lineTo(TLW, baseY + 0.5); tl.stroke();
+  for (let x = 0; x < TLW; x += 22){
+    tl.strokeStyle = 'rgba(121,207,223,0.14)';
+    tl.beginPath(); tl.moveTo(x + 0.5, baseY); tl.lineTo(x + 0.5, baseY + 4); tl.stroke();
+    tl.fillStyle = 'rgba(121,207,223,0.2)';
+    tl.font = '7px ui-monospace, Menlo, monospace';
+    tl.fillText(((x / 22) * 0.5).toFixed(1), x + 2, TLH - 1);
+  }
+  const n = timeline.length;
+  for (let i = 0; i < n; i++){
+    const s = timeline[i];
+    const x = TLW - (n - i) * 3;
+    const h = clamp(s.n * 1.5, 1, 26);
+    const hot = s.a;
+    tl.fillStyle = hot > 0.02 ? rgba(COL.hot, 0.28 + hot * 0.6) : rgba(COL.ash, 0.22);
+    tl.fillRect(x, baseY - h, 2, h);
+    if (s.g > timeline[i - 1]?.g) {
+      tl.fillStyle = rgba(COL.white, 0.9);
+      tl.fillRect(x, baseY - h - 2, 2, 2);
+    }
+  }
+  tl.fillStyle = 'rgba(121,207,223,0.34)';
+  tl.font = '8px ui-monospace, Menlo, monospace';
+  tl.fillText('t / с', TLW - 26, 9);
+}
+
+/* ─────────────────────────── гаджеты ─────────────────────────── */
+let lastGauge = 0;
+function updateGauges(){
+  const now = performance.now();
+  if (now - lastGauge < 100) return;
+  lastGauge = now;
+  document.getElementById('g_phase').textContent = phase;
+  document.getElementById('g_phase').style.color = phase === 'осадок' ? 'var(--ash)' :
+    phase === 'затухание' ? 'var(--amber)' : 'var(--hot)';
+  document.getElementById('g_gen').textContent = String(maxGen).padStart(2, '0');
+  document.getElementById('g_genbar').style.right = (100 - (maxGen / GEN_MAX) * 100) + '%';
+  document.getElementById('g_live').textContent = String(frags.length).padStart(3, '0');
+  document.getElementById('g_act').textContent = String(activations).padStart(2, '0');
+}
+
+/* ─────────────────────────── цикл ─────────────────────────── */
+let prev = performance.now(), acc = 0;
+function frame(now){
+  const dt = Math.min(0.05, (now - prev) / 1000); prev = now;
+  acc += dt;
+  const fixed = 1 / 60;
+  let guard = 0;
+  while (acc >= fixed && guard++ < 5){ step(fixed); acc -= fixed; }
+
+  // затухание шлейфа
+  tr.globalCompositeOperation = 'destination-out';
+  tr.fillStyle = 'rgba(0,0,0,' + (0.06 + clamp(frags.length / 900, 0, 0.05)) + ')';
+  tr.fillRect(0, 0, W, H);
+  tr.globalCompositeOperation = 'source-over';
+
+  drawFragments();
+  fx.clearRect(0, 0, W, H);
+  for (const s of sites) drawSite(s);
+  drawFX();
+  drawGrain();
+  drawTimeline();
+  updateGauges();
+  requestAnimationFrame(frame);
+}
+
+/* ─────────────────────────── ввод ─────────────────────────── */
+const pointer = {x:0, y:0, inside:false};
+addEventListener('pointermove', e => {
+  pointer.x = e.clientX; pointer.y = e.clientY;
+  pointer.inside = e.clientX < F.x + F.w + 20 && e.clientX > F.x - 20 && e.clientY > F.y - 20 && e.clientY < F.y + F.h + 20;
+});
+addEventListener('pointerleave', () => pointer.inside = false);
+
+document.body.addEventListener('pointerdown', e => {
+  if (!soundOn) return;
+  initAudio(); if (audio?.state === 'suspended') audio.resume();
+});
+document.body.addEventListener('pointerdown', e => {
+  if (e.target.closest('button')) return;
+  if (phase === 'осадок'){ reset((Math.random() * 1e9) | 0); return; }
+  const target = nearestDormant(pointer, 1, 5)[0];
+  if (target) arm(target, clamp(maxGen + 1, 1, GEN_MAX));
+});
+
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'r'){ reset((Math.random() * 1e9) | 0); }
+  if (k === 's'){ toggleSound(); }
+  if (k === 'h'){ document.documentElement.classList.toggle('hidetele'); setTimeout(sizeAll, 30); }
+  if (k === ' '){ e.preventDefault(); reset((Math.random() * 1e9) | 0); }
+});
+
+function resetNow(){ reset((Math.random() * 1e9) | 0); }
+document.getElementById('b_replay').onclick = resetNow;
+document.getElementById('b_again').onclick = resetNow;
+document.getElementById('b_tele').onclick = e => {
+  document.documentElement.classList.toggle('hidetele');
+  e.currentTarget.textContent = document.documentElement.classList.contains('hidetele') ? 'телеметрия: скр.' : 'телеметрия';
+  setTimeout(sizeAll, 30);
+};
+function toggleSound(){
+  soundOn = !soundOn;
+  const b = document.getElementById('b_sound');
+  b.textContent = 'звук: ' + (soundOn ? 'вкл' : 'выкл');
+  b.classList.toggle('on', soundOn);
+  if (soundOn){ initAudio(); if (audio?.state === 'suspended') audio.resume(); }
+  else if (audio?.state === 'running') audio.suspend();
+}
+document.getElementById('b_sound').onclick = toggleSound;
+
+/* ─────────────────────────── старт ─────────────────────────── */
+addEventListener('resize', () => { clearTimeout(window.__rt); window.__rt = setTimeout(sizeAll, 120); });
+buildGrain();
+sizeAll();
+reset(20260214);
+requestAnimationFrame(t => { prev = t; frame(t); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Бесконечный туннель</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #03040a; }
+  body { font-family: ui-sans-serif, system-ui, "Helvetica Neue", Arial, sans-serif; }
+  #gl { display: block; width: 100vw; height: 100vh; }
+
+  .ui {
+    position: fixed; inset: 0; pointer-events: none;
+    color: #eaf6ff; text-shadow: 0 1px 24px rgba(90,200,255,.55);
+  }
+  .title {
+    position: absolute; top: clamp(18px, 4vh, 46px); left: clamp(18px, 4vw, 56px);
+    letter-spacing: .42em; text-transform: uppercase;
+    font-size: clamp(11px, 1.25vw, 16px); font-weight: 600;
+    opacity: 0; animation: fade 2.6s ease .6s forwards;
+  }
+  .title b { font-weight: 800; }
+  .sub {
+    margin-top: 10px; letter-spacing: .16em; font-weight: 300;
+    font-size: clamp(10px, 1vw, 13px); opacity: .55; text-transform: uppercase;
+  }
+  .meta {
+    position: absolute; bottom: clamp(16px, 3.4vh, 40px); left: clamp(18px, 4vw, 56px);
+    font-size: clamp(9px, .85vw, 11px); letter-spacing: .28em; text-transform: uppercase;
+    opacity: 0; animation: fade 2.6s ease 1.3s forwards; color: #bfe6ff;
+  }
+  .meta span { opacity: .45; }
+  .hint {
+    position: absolute; bottom: clamp(16px, 3.4vh, 40px); right: clamp(18px, 4vw, 56px);
+    font-size: clamp(9px, .85vw, 11px); letter-spacing: .28em; text-transform: uppercase;
+    opacity: 0; animation: fade 2.6s ease 2s forwards; color: #ffd9f2; text-align: right;
+  }
+  @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: .85; transform: none; } }
+
+  .frame {
+    position: absolute; inset: clamp(10px, 1.6vw, 22px);
+    border: 1px solid rgba(150,215,255,.14);
+    opacity: 0; animation: fade 3s ease 1s forwards;
+  }
+  .corner { position: absolute; width: 14px; height: 14px; border: 1px solid rgba(180,230,255,.5); }
+  .c1 { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+  .c2 { top: -1px; right: -1px; border-left: 0; border-bottom: 0; }
+  .c3 { bottom: -1px; left: -1px; border-right: 0; border-top: 0; }
+  .c4 { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+
+  #fallback {
+    position: fixed; inset: 0; display: none; place-items: center;
+    color: #cfeaff; font-size: 14px; letter-spacing: .2em; text-align: center; padding: 2em;
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div class="ui">
+  <div class="title"><b>Бесконечный</b> туннель</div>
+  <div class="sub">реймарчинг · живопись светом · sdf</div>
+  <div class="meta">глубина <span id="depth">0000</span> м &nbsp;/&nbsp; скорость 0.83 c</div>
+  <div class="hint">двигай курсором<br>чтобы наклонить камеру</div>
+  <div class="frame">
+    <span class="corner c1"></span><span class="corner c2"></span>
+    <span class="corner c3"></span><span class="corner c4"></span>
+  </div>
+</div>
+
+<div id="fallback">WebGL недоступен — включите аппаратное ускорение.</div>
+
+<script>
+(function () {
+  const canvas = document.getElementById('gl');
+  const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, powerPreference: 'high-performance' })
+          || canvas.getContext('webgl');
+  if (!gl) { document.getElementById('fallback').style.display = 'grid'; return; }
+
+  const isGL2 = (typeof WebGL2RenderingContext !== 'undefined') && (gl instanceof WebGL2RenderingContext);
+
+  const vert = isGL2 ? `#version 300 es
+  in vec2 aPos; out vec2 vUv;
+  void main(){ vUv = aPos; gl_Position = vec4(aPos, 0.0, 1.0); }`
+  : `attribute vec2 aPos; varying vec2 vUv;
+  void main(){ vUv = aPos; gl_Position = vec4(aPos, 0.0, 1.0); }`;
+
+  const frag = (isGL2 ? `#version 300 es
+  #define GL2 1
+  precision highp float;
+  out vec4 fragColor;
+  ` : `precision highp float;
+  `) + `
+  uniform vec2  uRes;
+  uniform float uTime;
+  uniform vec2  uMouse;
+
+  #ifndef GL2
+  #define fragColor gl_FragColor
+  #endif
+
+  mat2 rot(float a){ float s=sin(a), c=cos(a); return mat2(c,-s,s,c); }
+
+  // --- ось туннеля: наклонный, "дышащий" змеистый путь -----------------------
+  vec2 axisAt(float z){
+    return vec2(
+      sin(z*0.052)*1.85 + sin(z*0.019 + 1.3)*1.10,
+      cos(z*0.044)*1.40 + sin(z*0.031 + 0.4)*0.85
+    );
+  }
+  // радиус с рёбрами гофра — из этого получаются бегущие кольца
+  float radiusAt(float z){
+    return 2.70 + 0.30*sin(z*0.62) + 0.13*sin(z*1.63 + 1.0);
+  }
+  float twistAt(float z){ return z*0.043 + 0.35*sin(z*0.021); }
+
+  // внутренняя поверхность трубы: |расстояние до оси - радиус| - толщина
+  float map(vec3 p){
+    vec2 q = p.xy - axisAt(p.z);
+    q = rot(twistAt(p.z)) * q;
+    return abs(length(q) - radiusAt(p.z)) - 0.075;
+  }
+
+  // нормаль
+  vec3 normalAt(vec3 p){
+    vec2 e = vec2(0.0016, 0.0);
+    return normalize(vec3(
+      map(p+e.xyy) - map(p-e.xyy),
+      map(p+e.yxy) - map(p-e.yxy),
+      map(p+e.yyx) - map(p-e.yyx)
+    ));
+  }
+
+  float hash(vec2 p){
+    p = fract(p*vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x*p.y);
+  }
+  float hash13(vec3 p){ return fract(sin(dot(p, vec3(12.9898,78.233,37.719)))*43758.5453); }
+
+  // пылинки в объёме — от них к камере летят искры (ощущение скорости)
+  float dustAt(vec3 p, float seed){
+    vec3 g = p*1.7 + seed;
+    vec3 c = floor(g);
+    vec3 j = vec3(hash13(c), hash13(c+1.71), hash13(c+3.37)) - 0.5;
+    vec3 f = fract(g) - 0.5 - j*0.85;
+    float m = step(0.68, hash13(c+7.1));
+    return m * exp(-dot(f,f)*70.0);
+  }
+
+  // палитра вдоль глубины
+  void palette(float z, out vec3 a, out vec3 b){
+    float t = 0.5 + 0.5*sin(z*0.11 + uTime*0.22);
+    vec3 cyan    = vec3(0.10, 0.86, 1.00);
+    vec3 magenta = vec3(1.00, 0.16, 0.66);
+    vec3 amber   = vec3(1.00, 0.62, 0.14);
+    a = mix(cyan, magenta, t);
+    b = mix(a, amber, 0.35 + 0.35*sin(z*0.27 + 2.0));
+  }
+
+  vec3 paint(vec3 p, vec3 n){
+    vec2 q = p.xy - axisAt(p.z);
+    q = rot(twistAt(p.z)) * q;
+    float ang = atan(q.y, q.x);
+    float r   = length(q);
+
+    vec3 ca, cb;
+    palette(p.z, ca, cb);
+
+    // продольные неоновые жилы
+    float veins = pow(abs(sin(ang*5.0 + sin(p.z*0.15)*1.5)), 12.0);
+    // редкие крупные панели вдоль оси
+    float panels = smoothstep(0.90, 1.0, abs(sin(p.z*0.22)));
+    // бегущие кольца-импульсы
+    float rings = pow(abs(sin(p.z*0.62)), 30.0) * (0.55 + 0.45*sin(p.z*3.1 - uTime*3.4));
+
+    vec3 col = cb * 0.035;
+    col += cb * veins * 1.35;                       // продольные жилы — цвет cb
+    col += ca * rings * 1.25;                       // кольца — цвет ca
+    col += ca * panels * 0.28;
+
+    // тонкая шероховатость металла
+    col *= 0.82 + 0.34*hash(floor(vec2(ang*22.0, p.z*9.0)));
+
+    float diff = clamp(dot(n, normalize(vec3(0.55, 0.75, -0.45))), 0.0, 1.0);
+    col *= 0.22 + 0.62*diff;                        // глубокая тень в основе
+    return col;
+  }
+
+  void main(){
+    vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / uRes.y;
+
+    float t  = uTime;
+    float cz = t * 3.05;                 // путь вперёд
+    vec3  ro = vec3(axisAt(cz) + vec2(sin(t*0.31)*0.42, cos(t*0.24)*0.30), cz);
+
+    // касательная к оси + лёгкий увод камеры курсором
+    vec2 dAxis = axisAt(cz + 0.5) - axisAt(cz - 0.5);
+    vec3 fwd = normalize(vec3(dAxis + uMouse*1.6, 1.0));
+    vec3 rgt = normalize(cross(fwd, vec3(0.0, 1.0, 0.0)));
+    vec3 upv = cross(rgt, fwd);
+
+    float roll = 0.42*sin(t*0.12) + 0.22*sin(t*0.037);
+    vec2 suv = rot(roll) * uv;
+
+    vec3 rd = normalize(fwd*1.35 + rgt*suv.x + upv*suv.y);
+
+    // --- марш вдоль луча -----------------------------------------------------
+    float dist = 0.0;
+    float hit  = 0.0;
+    vec3  glow = vec3(0.0);
+
+    for (int i = 0; i < 150; i++){
+      vec3 p = ro + rd*dist;
+      float d = map(p);
+
+      // объёмное свечение вблизи стен
+      vec2 q = p.xy - axisAt(p.z);
+      q = rot(twistAt(p.z)) * q;
+      float ang = atan(q.y, q.x);
+      vec3 gc; { float s = 0.5 + 0.5*sin(p.z*0.17 + t*0.5);
+                 gc = mix(vec3(0.12,0.72,1.0), vec3(1.0,0.20,0.72), s); }
+      float band = pow(abs(sin(ang*5.0)), 4.0) + 0.14;
+      float att  = exp(-dist*0.05);
+      glow += gc * band * exp(-abs(d)*5.0) * 0.026 * att;
+
+      // летящие искры
+      float du = dustAt(p, 0.0);
+      if (du > 0.002){
+        vec3 dc = mix(vec3(0.55,0.92,1.0), vec3(1.0,0.72,0.95), hash13(floor(p*1.7)));
+        glow += dc * du * 0.55 * att;
+      }
+
+      if (d < 0.0018*dist + 0.0012){ hit = 1.0; break; }
+      dist += max(d*0.72, 0.006);
+      if (dist > 95.0) break;
+    }
+
+    vec3 col = vec3(0.010, 0.016, 0.040);
+    if (hit > 0.5){
+      vec3 p = ro + rd*dist;
+      vec3 n = normalAt(p);
+      col = paint(p, n);
+      float fog = exp(-dist*0.085);
+      col = col*fog + glow*(1.0 - fog*0.35);
+    } else {
+      col = vec3(0.004, 0.007, 0.020) + glow;
+    }
+
+    // мягкое свечение к центру — ощущение бездонности
+    float vig = smoothstep(1.6, 0.15, length(uv*vec2(0.85,1.0)));
+    col *= 0.55 + 0.75*vig;
+
+    // экспозиция и тонмаппинг с сохранением насыщенности
+    col *= 1.45;
+    float Lw = dot(col, vec3(0.299, 0.587, 0.114));
+    col *= (Lw / (1.0 + Lw)) / max(Lw, 1e-4);
+    col = pow(col, vec3(0.4545));
+    float Lg = dot(col, vec3(0.299, 0.587, 0.114));
+    col = clamp(mix(vec3(Lg), col, 1.5), 0.0, 1.0);
+
+    // хроматическая аберрация по краям
+    float rr = length(uv);
+    col.r *= 1.0 + 0.10*rr;
+    col.b *= 1.0 + 0.14*rr;
+
+    // зерно
+    float g = hash(gl_FragCoord.xy + fract(uTime)*57.0);
+    col += (g - 0.5) * 0.045;
+
+    fragColor = vec4(col, 1.0);
+  }
+  `;
+
+  function compile(type, src){
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s), src);
+    return s;
+  }
+
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, vert));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, frag));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, 'aPos');
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+  const uRes = gl.getUniformLocation(prog, 'uRes');
+  const uTime = gl.getUniformLocation(prog, 'uTime');
+  const uMouse = gl.getUniformLocation(prog, 'uMouse');
+
+  let mx = 0, my = 0, tx = 0, ty = 0;
+  addEventListener('pointermove', e => {
+    tx = (e.clientX / innerWidth - 0.5) * 0.9;
+    ty = -(e.clientY / innerHeight - 0.5) * 0.9;
+  });
+
+  function resize(){
+    const dpr = Math.min(devicePixelRatio || 1, 1.6);
+    canvas.width  = Math.floor(innerWidth  * dpr);
+    canvas.height = Math.floor(innerHeight * dpr);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  const depthEl = document.getElementById('depth');
+  const start = performance.now();
+
+  function frame(now){
+    uMouse && gl.uniform2f(uMouse, mx, my);
+    mx += (tx - mx) * 0.05;
+    my += (ty - my) * 0.05;
+    const t = (now - start) / 1000;
+    gl.uniform1f(uTime, t);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (depthEl) depthEl.textContent = String(Math.floor(t * 305) % 10000).padStart(4, '0');
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

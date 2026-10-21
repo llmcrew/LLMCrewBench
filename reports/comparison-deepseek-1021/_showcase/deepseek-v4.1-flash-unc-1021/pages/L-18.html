@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Неоновая лапшичная под дождём</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #05060a; overflow: hidden;
+    font-family: "Hiragino Sans", "Yu Gothic", "Noto Sans CJK JP", "Helvetica Neue", sans-serif;
+  }
+  #stage { display: block; width: 100vw; height: 100vh; }
+  /* very subtle film grain / scanline overlay, purely CSS, no external assets */
+  #grain {
+    position: fixed; inset: 0; pointer-events: none; mix-blend-mode: overlay;
+    opacity: .10;
+    background-image: repeating-linear-gradient(0deg, #fff 0 1px, transparent 1px 3px);
+  }
+  #vig {
+    position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(120% 90% at 50% 45%, transparent 40%, rgba(0,0,0,.55) 100%);
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="grain"></div>
+<div id="vig"></div>
+<script>
+(function () {
+  "use strict";
+
+  const cv = document.getElementById("stage");
+  const ctx = cv.getContext("2d");
+
+  // ------------------------------------------------------------------
+  // offscreen "world" layer (everything above the wet asphalt line)
+  // ------------------------------------------------------------------
+  const world = document.createElement("canvas");
+  const wctx = world.getContext("2d");
+
+  let W = 0, H = 0, DPR = 1, horizon = 0;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 1.6);
+    W = Math.max(320, Math.floor(window.innerWidth));
+    H = Math.max(240, Math.floor(window.innerHeight));
+    cv.width = Math.floor(W * DPR);
+    cv.height = Math.floor(H * DPR);
+    cv.style.width = W + "px";
+    cv.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    world.width = Math.floor(W * DPR);
+    world.height = Math.floor(H * DPR);
+    wctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    horizon = Math.round(H * 0.60);
+    seedField();
+  }
+
+  // deterministic RNG so composition is stable across resizes
+  let seed = 1337;
+  function rand() {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+  }
+
+  // ------------------------------------------------------------------
+  // palette
+  // ------------------------------------------------------------------
+  const P = {
+    pink: "#ff2f92",
+    pinkSoft: "#ff7ab8",
+    cyan: "#25f0ff",
+    cyanSoft: "#9df6ff",
+    amber: "#ffb24a",
+    amberWarm: "#ffd9a0",
+    ink: "#070910",
+    roof: "#12131c",
+    wood: "#3a1f22",
+    woodLit: "#7a3b33"
+  };
+
+  const FONT = '"Hiragino Sans","Yu Gothic","Noto Sans CJK JP","PingFang SC",sans-serif';
+
+  // ------------------------------------------------------------------
+  // helpers
+  // ------------------------------------------------------------------
+  function neonText(g, txt, x, y, size, color, opts) {
+    opts = opts || {};
+    const rot = opts.rot || 0;
+    const blur = opts.blur || 18;
+    const flick = opts.flick === undefined ? 1 : opts.flick;
+    g.save();
+    g.translate(x, y);
+    g.rotate(rot);
+    g.font = "700 " + size + "px " + FONT;
+    g.textAlign = opts.align || "center";
+    g.textBaseline = "middle";
+    g.globalCompositeOperation = "lighter";
+    for (let i = 0; i < 3; i++) {
+      g.shadowColor = color;
+      g.shadowBlur = blur * (1 + i * 0.7);
+      g.fillStyle = color;
+      g.globalAlpha = (opts.aura === undefined ? 0.5 : opts.aura) * flick;
+      g.fillText(txt, 0, 0);
+    }
+    g.shadowBlur = blur * 0.6;
+    g.globalAlpha = flick;
+    g.fillStyle = opts.core || "#ffffff";
+    g.fillText(txt, 0, 0);
+    g.restore();
+  }
+
+  function glowRect(g, x, y, w, h, color, blur) {
+    g.save();
+    g.globalCompositeOperation = "lighter";
+    g.shadowColor = color;
+    g.shadowBlur = blur || 16;
+    g.fillStyle = color;
+    g.globalAlpha = 0.75;
+    g.fillRect(x, y, w, h);
+    g.restore();
+  }
+
+  function tube(g, x1, y1, x2, y2, color, width, blur) {
+    g.save();
+    g.globalCompositeOperation = "lighter";
+    g.lineCap = "round";
+    g.shadowColor = color;
+    g.shadowBlur = blur;
+    g.strokeStyle = color;
+    g.lineWidth = width;
+    g.globalAlpha = 0.9;
+    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+    g.globalAlpha = 1;
+    g.strokeStyle = "#fff";
+    g.lineWidth = Math.max(1, width * 0.35);
+    g.shadowBlur = blur * 0.5;
+    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+    g.restore();
+  }
+
+  // ------------------------------------------------------------------
+  // static field data (buildings, windows, rain, steam)
+  // ------------------------------------------------------------------
+  let buildings = [], windows = [], rain = [], steam = [], splashes = [], bokeh = [];
+
+  function seedField() {
+    seed = 90210;
+    buildings = [];
+    const n = 7;
+    let x = -40;
+    for (let i = 0; i < n; i++) {
+      const bw = W * (0.10 + rand() * 0.10);
+      const bh = H * (0.18 + rand() * 0.26);
+      buildings.push({ x, w: bw, h: bh, top: horizon - bh });
+      x += bw + W * 0.012 * (0.3 + rand());
+    }
+    windows = [];
+    for (const b of buildings) {
+      for (let wy = b.top + 18; wy < horizon - 26; wy += 26) {
+        for (let wx = b.x + 10; wx < b.x + b.w - 12; wx += 22) {
+          if (rand() < 0.42) {
+            windows.push({
+              x: wx, y: wy, w: 9, h: 12,
+              on: rand() < 0.55,
+              warm: rand() < 0.6,
+              ph: rand() * 100
+            });
+          }
+        }
+      }
+    }
+
+    rain = [];
+    const drops = Math.round((W * H) / 5200);
+    for (let i = 0; i < drops; i++) {
+      rain.push({
+        x: rand() * W,
+        y: rand() * H,
+        len: 12 + rand() * 34,
+        sp: 620 + rand() * 900,
+        a: 0.10 + rand() * 0.35,
+        w: rand() < 0.2 ? 1.6 : 1
+      });
+    }
+
+    steam = [];
+    for (let i = 0; i < 26; i++) {
+      steam.push({
+        x: rand(), y: rand(),
+        r: 14 + rand() * 40,
+        sp: 0.06 + rand() * 0.10,
+        ph: rand() * 10,
+        a: 0.05 + rand() * 0.10
+      });
+    }
+
+    splashes = [];
+    bokeh = [];
+    for (let i = 0; i < 22; i++) {
+      bokeh.push({
+        x: rand() * W,
+        y: horizon + rand() * (H - horizon),
+        r: 6 + rand() * 26,
+        a: 0.04 + rand() * 0.10,
+        c: [P.pink, P.cyan, P.amber][Math.floor(rand() * 3)],
+        ph: rand() * 10
+      });
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // paint the world layer
+  // ------------------------------------------------------------------
+  function paintWorld(t) {
+    const g = wctx;
+    g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    g.clearRect(0, 0, W, H);
+
+    // --- sky ---
+    const sky = g.createLinearGradient(0, 0, 0, horizon);
+    sky.addColorStop(0, "#0a0d1c");
+    sky.addColorStop(0.45, "#141235");
+    sky.addColorStop(0.78, "#2a1440");
+    sky.addColorStop(1, "#3d1a44");
+    g.fillStyle = sky;
+    g.fillRect(0, 0, W, horizon);
+
+    // soft cloudy glow behind the alley
+    const rg = g.createRadialGradient(W * 0.5, horizon, 10, W * 0.5, horizon, W * 0.7);
+    rg.addColorStop(0, "rgba(255,60,140,.20)");
+    rg.addColorStop(0.5, "rgba(90,40,160,.10)");
+    rg.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = rg;
+    g.fillRect(0, 0, W, horizon);
+
+    // --- distant buildings ---
+    for (const b of buildings) {
+      const bg = g.createLinearGradient(0, b.top, 0, horizon);
+      bg.addColorStop(0, "#0c0e1a");
+      bg.addColorStop(1, "#05060c");
+      g.fillStyle = bg;
+      g.fillRect(b.x, b.top, b.w, b.h);
+      // roofline highlight
+      g.fillStyle = "rgba(120,140,255,.10)";
+      g.fillRect(b.x, b.top, b.w, 2);
+    }
+
+    // windows (twinkle slowly)
+    g.save();
+    g.globalCompositeOperation = "lighter";
+    for (const wdw of windows) {
+      if (!wdw.on) continue;
+      const tw = 0.6 + 0.4 * Math.sin(t * 0.8 + wdw.ph);
+      const col = wdw.warm ? "255,190,120" : "150,220,255";
+      g.fillStyle = "rgba(" + col + "," + (0.28 * tw) + ")";
+      g.shadowColor = "rgba(" + col + ",.8)";
+      g.shadowBlur = 8;
+      g.fillRect(wdw.x, wdw.y, wdw.w, wdw.h);
+    }
+    g.restore();
+
+    // --- mist band at horizon ---
+    const mist = g.createLinearGradient(0, horizon - H * 0.16, 0, horizon);
+    mist.addColorStop(0, "rgba(60,40,90,0)");
+    mist.addColorStop(1, "rgba(120,70,130,.28)");
+    g.fillStyle = mist;
+    g.fillRect(0, horizon - H * 0.16, W, H * 0.16);
+
+    drawStall(g, t);
+    drawSigns(g, t);
+  }
+
+  // ------------------------------------------------------------------
+  // the noodle stall itself
+  // ------------------------------------------------------------------
+  function drawStall(g, t) {
+    const bw = Math.min(W * 0.60, 900);
+    const sxp = W * 0.5;
+    const left = sxp - bw / 2;
+    const right = sxp + bw / 2;
+    const topY = horizon - Math.min(H * 0.46, 430);
+    const bodyH = horizon - topY;
+    const baseY = horizon;
+
+    // ---- warm interior glow spilling out ----
+    g.save();
+    g.globalCompositeOperation = "lighter";
+    const ig = g.createRadialGradient(sxp, baseY - bodyH * 0.45, 10, sxp, baseY - bodyH * 0.35, bw * 0.85);
+    ig.addColorStop(0, "rgba(255,180,90,.55)");
+    ig.addColorStop(0.35, "rgba(255,120,70,.28)");
+    ig.addColorStop(1, "rgba(255,60,120,0)");
+    g.fillStyle = ig;
+    g.fillRect(left - bw * 0.3, topY - 40, bw * 1.6, bodyH + 120);
+    g.restore();
+
+    // ---- stall body (dark timber) ----
+    const woodGrad = g.createLinearGradient(0, topY, 0, baseY);
+    woodGrad.addColorStop(0, "#241318");
+    woodGrad.addColorStop(1, "#140a0d");
+    g.fillStyle = woodGrad;
+    g.fillRect(left, topY, bw, bodyH);
+
+    // vertical timber battens
+    g.strokeStyle = "rgba(120,70,50,.35)";
+    g.lineWidth = 2;
+    for (let x = left + 26; x < right; x += 34) {
+      g.beginPath(); g.moveTo(x, topY); g.lineTo(x, baseY); g.stroke();
+    }
+
+    // ---- open lit counter window ----
+    const winY = topY + bodyH * 0.42;
+    const winH = bodyH * 0.40;
+    const winX = left + bw * 0.12;
+    const winW = bw * 0.76;
+
+    g.save();
+    const wg = g.createLinearGradient(0, winY, 0, winY + winH);
+    wg.addColorStop(0, "rgba(255,205,130,.95)");
+    wg.addColorStop(0.6, "rgba(255,150,80,.85)");
+    wg.addColorStop(1, "rgba(210,90,60,.75)");
+    g.fillStyle = wg;
+    g.fillRect(winX, winY, winW, winH);
+    g.restore();
+
+    // counter shelf inside + bowls
+    g.fillStyle = "rgba(90,40,30,.85)";
+    g.fillRect(winX, winY + winH * 0.62, winW, winH * 0.12);
+
+    // bowls on the counter
+    const bowls = 4;
+    for (let i = 0; i < bowls; i++) {
+      const bx = winX + winW * (0.14 + i * 0.24);
+      const by = winY + winH * 0.62;
+      g.save();
+      g.fillStyle = "#e8dcc8";
+      g.beginPath();
+      g.ellipse(bx, by, 16, 8, 0, 0, Math.PI, true);
+      g.fill();
+      g.strokeStyle = "#b04030";
+      g.lineWidth = 3;
+      g.beginPath();
+      g.ellipse(bx, by - 4, 17, 9, 0, Math.PI, 2 * Math.PI);
+      g.stroke();
+      // noodle steam handled separately
+      g.restore();
+    }
+
+    // cook silhouette (dark, backlit)
+    g.save();
+    g.fillStyle = "rgba(40,18,20,.92)";
+    const px = winX + winW * 0.80;
+    const py = winY + winH * 0.30;
+    g.beginPath();
+    g.arc(px, py, winH * 0.14, 0, Math.PI * 2);
+    g.fill();
+    g.beginPath();
+    g.moveTo(px - winH * 0.22, winY + winH * 0.62);
+    g.quadraticCurveTo(px, py + winH * 0.05, px + winH * 0.22, winY + winH * 0.62);
+    g.fill();
+    // headband
+    g.fillStyle = "rgba(255,120,80,.9)";
+    g.fillRect(px - winH * 0.15, py - winH * 0.17, winH * 0.30, winH * 0.05);
+    g.restore();
+
+    // window frame
+    g.strokeStyle = "rgba(20,10,12,.9)";
+    g.lineWidth = 8;
+    g.strokeRect(winX, winY, winW, winH);
+    g.strokeStyle = "rgba(255,170,100,.35)";
+    g.lineWidth = 2;
+    g.strokeRect(winX + 5, winY + 5, winW - 10, winH - 10);
+
+    // ---- noren curtain with kanji ----
+    const norY = winY - bodyH * 0.30;
+    const norH = bodyH * 0.26;
+    const strips = 5;
+    const sw = winW / strips;
+    for (let i = 0; i < strips; i++) {
+      const x = winX + i * sw;
+      const cg = g.createLinearGradient(0, norY, 0, norY + norH);
+      cg.addColorStop(0, i % 2 ? "#7a1024" : "#8f1330");
+      cg.addColorStop(1, "#3d0a16");
+      g.fillStyle = cg;
+      g.fillRect(x + 2, norY, sw - 4, norH);
+      neonText(g, ["ラ", "ー", "メ", "ン", "!"][i], x + sw / 2, norY + norH * 0.52,
+        Math.min(sw * 0.62, norH * 0.6), P.pinkSoft, { blur: 12, aura: 0.35, core: "#ffe9f4" });
+    }
+    // curtain rod
+    tube(g, winX - 14, norY - 6, winX + winW + 14, norY - 6, P.pink, 3, 18);
+
+    // ---- awning / roof ----
+    g.save();
+    g.fillStyle = "#0e0b10";
+    g.beginPath();
+    g.moveTo(left - 26, topY + bodyH * 0.10);
+    g.quadraticCurveTo(sxp, topY - 46, right + 26, topY + bodyH * 0.10);
+    g.lineTo(right + 6, topY + bodyH * 0.20);
+    g.quadraticCurveTo(sxp, topY - 14, left - 6, topY + bodyH * 0.20);
+    g.closePath();
+    g.fill();
+    g.restore();
+    // neon edge on the roofline
+    const flick = 0.75 + 0.25 * Math.abs(Math.sin(t * 3.1) * Math.sin(t * 7.7));
+    g.save();
+    g.globalCompositeOperation = "lighter";
+    g.shadowColor = P.cyan;
+    g.shadowBlur = 22;
+    g.strokeStyle = "rgba(37,240,255," + flick + ")";
+    g.lineWidth = 3;
+    g.beginPath();
+    g.moveTo(left - 26, topY + bodyH * 0.10);
+    g.quadraticCurveTo(sxp, topY - 46, right + 26, topY + bodyH * 0.10);
+    g.stroke();
+    g.restore();
+
+    // ---- hanging lanterns ----
+    for (let i = 0; i < 3; i++) {
+      const lx = left + bw * (0.16 + i * 0.34);
+      drawLantern(g, lx, topY - 6, 16 + i * 2, t + i);
+    }
+
+    // ---- stools in front ----
+    for (let i = 0; i < 3; i++) {
+      const stx = winX + winW * (0.20 + i * 0.30);
+      g.fillStyle = "#1a0f12";
+      g.fillRect(stx - 14, baseY - 34, 28, 8);
+      g.fillRect(stx - 11, baseY - 26, 4, 26);
+      g.fillRect(stx + 7, baseY - 26, 4, 26);
+      g.fillStyle = "rgba(255,150,90,.18)";
+      g.fillRect(stx - 14, baseY - 34, 28, 3);
+    }
+  }
+
+  function drawLantern(g, x, y, r, t) {
+    const pulse = 0.85 + 0.15 * Math.sin(t * 2.0);
+    g.save();
+    g.globalCompositeOperation = "lighter";
+    const lg = g.createRadialGradient(x, y + r, 2, x, y + r, r * 4);
+    lg.addColorStop(0, "rgba(255,120,60,.55)");
+    lg.addColorStop(1, "rgba(255,60,40,0)");
+    g.fillStyle = lg;
+    g.beginPath(); g.arc(x, y + r, r * 4, 0, Math.PI * 2); g.fill();
+    g.restore();
+
+    g.save();
+    g.strokeStyle = "rgba(20,10,10,.9)";
+    g.lineWidth = 2;
+    g.beginPath(); g.moveTo(x, y - 18); g.lineTo(x, y); g.stroke();
+    const bg = g.createLinearGradient(x - r, 0, x + r, 0);
+    bg.addColorStop(0, "#c0301e");
+    bg.addColorStop(0.5, "#ff6a3d");
+    bg.addColorStop(1, "#a02010");
+    g.fillStyle = bg;
+    g.beginPath(); g.ellipse(x, y + r, r, r * 1.25, 0, 0, Math.PI * 2); g.fill();
+    // ribs
+    g.strokeStyle = "rgba(120,20,10,.6)";
+    g.lineWidth = 1;
+    for (let k = -2; k <= 2; k++) {
+      g.beginPath();
+      g.ellipse(x, y + r, r, r * 1.25, 0, 0, Math.PI * 2);
+      g.stroke();
+      break;
+    }
+    g.fillStyle = "#2a1010";
+    g.fillRect(x - r * 0.4, y - 3, r * 0.8, 5);
+    g.fillRect(x - r * 0.4, y + r * 2.1, r * 0.8, 5);
+    g.restore();
+
+    // kanji on lantern
+    neonText(g, "麺", x, y + r, r * 0.95, P.amberWarm, { blur: 8, aura: 0.3, core: "#fff3e0" });
+    void pulse;
+  }
+
+  // ------------------------------------------------------------------
+  // neon signs on the side buildings
+  // ------------------------------------------------------------------
+  function drawSigns(g, t) {
+    const flick = 0.7 + 0.3 * Math.abs(Math.sin(t * 2.3) * Math.sin(t * 9.1) * Math.sin(t * 0.7 + 1));
+    const flick2 = 0.85 + 0.15 * Math.abs(Math.sin(t * 1.7 + 2));
+
+    // ---- vertical pink sign, left ----
+    const vx = W * 0.09;
+    const vy = horizon - Math.min(H * 0.52, 470);
+    const vw = Math.max(34, W * 0.035);
+    const vh = Math.min(H * 0.40, 340);
+    g.save();
+    g.fillStyle = "rgba(10,6,12,.85)";
+    g.fillRect(vx, vy, vw, vh);
+    g.restore();
+    glowRect(g, vx - 3, vy - 3, vw + 6, vh + 6, "rgba(255,47,146,.10)", 0);
+    // border tubes
+    tube(g, vx, vy, vx, vy + vh, P.pink, 2.5, 16 * flick + 6);
+    tube(g, vx + vw, vy, vx + vw, vy + vh, P.pink, 2.5, 16 * flick + 6);
+    const chars = "ラーメン";
+    const cs = Math.min(vw * 0.78, vh / chars.length * 0.8);
+    for (let i = 0; i < chars.length; i++) {
+      neonText(g, chars[i], vx + vw / 2, vy + vh * (0.11 + i * 0.195), cs, P.pink,
+        { blur: 16, aura: 0.42 * flick + 0.1, core: "#fff0f8" });
+    }
+
+    // ---- vertical cyan sign, right ----
+    const cx = W * 0.875;
+    const cy = horizon - Math.min(H * 0.58, 520);
+    const cw = Math.max(30, W * 0.030);
+    const ch = Math.min(H * 0.34, 300);
+    g.fillStyle = "rgba(6,10,14,.85)";
+    g.fillRect(cx, cy, cw, ch);
+    tube(g, cx, cy, cx, cy + ch, P.cyan, 2.5, 14 * flick2 + 6);
+    tube(g, cx + cw, cy, cx + cw, cy + ch, P.cyan, 2.5, 14 * flick2 + 6);
+    const cc = "自家製麺";
+    const csz = Math.min(cw * 0.72, ch / cc.length * 0.8);
+    for (let i = 0; i < cc.length; i++) {
+      neonText(g, cc[i], cx + cw / 2, cy + ch * (0.1 + i * 0.20), csz, P.cyan,
+        { blur: 14, aura: 0.35 * flick2 + 0.1, core: "#eafeff" });
+    }
+
+    // ---- horizontal amber sign over the stall ----
+    const hw = Math.min(W * 0.42, 620);
+    const hx = W * 0.5 - hw / 2;
+    const hy = horizon - Math.min(H * 0.50, 470) - 30;
+    const flick3 = 0.8 + 0.2 * Math.abs(Math.sin(t * 5.3));
+    g.save();
+    g.globalCompositeOperation = "lighter";
+    g.shadowColor = P.amber;
+    g.shadowBlur = 26 * flick3;
+    g.strokeStyle = "rgba(255,178,74," + (0.8 * flick3) + ")";
+    g.lineWidth = 4;
+    g.strokeRect(hx, hy, hw, hy + 58 - hy);
+    g.restore();
+    neonText(g, "N O O D L E S", W * 0.5, hy + 29, Math.min(34, hw * 0.075), P.amber,
+      { blur: 18 * flick3, aura: 0.5 * flick3, core: "#fff6e6" });
+  }
+
+  // ------------------------------------------------------------------
+  // puddle reflection (wavy vertical mirror of the world layer)
+  // ------------------------------------------------------------------
+  const REFL = 0.62;
+  function drawReflection(t) {
+    const slice = 3;
+    const srcTop = horizon;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (let y = horizon; y < H; y += slice) {
+      const d = y - horizon;
+      const sy = srcTop - d / REFL;
+      if (sy < 0) continue;
+      const sh = slice / REFL;
+      const wob = Math.sin(d * 0.045 + t * 1.6) * (1.5 + d * 0.045)
+                + Math.sin(d * 0.11 - t * 2.3) * (0.6 + d * 0.02);
+      const fade = Math.max(0, 1 - d / (H - horizon));
+      ctx.globalAlpha = 0.55 * (0.35 + 0.65 * fade) * (0.8 + 0.2 * Math.sin(d * 0.2 - t * 3));
+      ctx.drawImage(world,
+        0, sy * DPR, world.width, sh * DPR,
+        wob, y, W, slice + 1);
+    }
+    ctx.restore();
+
+    // blue-ish wet tint over the reflection
+    const tg = ctx.createLinearGradient(0, horizon, 0, H);
+    tg.addColorStop(0, "rgba(20,30,80,.15)");
+    tg.addColorStop(1, "rgba(5,8,20,.35)");
+    ctx.fillStyle = tg;
+    ctx.fillRect(0, horizon, W, H - horizon);
+  }
+
+  // ------------------------------------------------------------------
+  // rain, splashes, steam, bokeh
+  // ------------------------------------------------------------------
+  function drawRain(t, dt) {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.lineCap = "round";
+    for (const r of rain) {
+      r.y += r.sp * dt;
+      r.x -= r.sp * dt * 0.12; // wind slant
+      if (r.y > H) { r.y = -r.len; r.x = rand() * (W + 80); }
+      if (r.x < -30) r.x += W + 60;
+      const nx = r.x - r.len * 0.10;
+      const ny = r.y - r.len;
+      const grd = ctx.createLinearGradient(nx, ny, r.x, r.y);
+      grd.addColorStop(0, "rgba(180,220,255,0)");
+      grd.addColorStop(1, "rgba(200,235,255," + r.a + ")");
+      ctx.strokeStyle = grd;
+      ctx.lineWidth = r.w;
+      ctx.beginPath(); ctx.moveTo(nx, ny); ctx.lineTo(r.x, r.y); ctx.stroke();
+      // occasional splash on the ground
+      if (r.y > horizon && rand() < 0.02) {
+        splashes.push({ x: r.x, y: horizon + (r.y - horizon) * 0.9, r: 1, max: 8 + rand() * 14, a: 0.5 });
+      }
+    }
+    ctx.restore();
+
+    // ground ripple rings
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = splashes.length - 1; i >= 0; i--) {
+      const s = splashes[i];
+      s.r += 34 * dt;
+      s.a *= 0.94;
+      if (s.r > s.max || s.a < 0.02) { splashes.splice(i, 1); continue; }
+      ctx.strokeStyle = "rgba(170,215,255," + (s.a * 0.4) + ")";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(s.x, s.y, s.r, s.r * 0.32, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawSteam(t) {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    const bw = Math.min(W * 0.60, 900);
+    const baseX = W * 0.5;
+    const baseY = horizon - Math.min(H * 0.46, 430) + Math.min(H * 0.46, 430) * 0.42 + 40;
+    for (const s of steam) {
+      s.y -= s.sp * 0.012;
+      s.x += Math.sin(t * 0.7 + s.ph) * 0.0012;
+      if (s.y < -0.2) { s.y = 0.9; s.x = rand(); }
+      const px = baseX + (s.x - 0.5) * bw * 0.7;
+      const py = baseY - s.y * 260;
+      const rad = s.r * (0.6 + s.y * 1.6);
+      const gg = ctx.createRadialGradient(px, py, 1, px, py, rad);
+      const alpha = s.a * (0.4 + 0.6 * (1 - Math.abs(s.y - 0.4) * 2));
+      gg.addColorStop(0, "rgba(255,225,200," + Math.max(0, alpha) + ")");
+      gg.addColorStop(1, "rgba(255,225,200,0)");
+      ctx.fillStyle = gg;
+      ctx.beginPath(); ctx.arc(px, py, rad, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawBokeh(t) {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (const b of bokeh) {
+      const a = b.a * (0.6 + 0.4 * Math.sin(t * 1.3 + b.ph));
+      const gg = ctx.createRadialGradient(b.x, b.y, 1, b.x, b.y, b.r);
+      gg.addColorStop(0, hexA(b.c, a));
+      gg.addColorStop(1, hexA(b.c, 0));
+      ctx.fillStyle = gg;
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function hexA(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + a + ")";
+  }
+
+  // ------------------------------------------------------------------
+  // main loop
+  // ------------------------------------------------------------------
+  let last = performance.now();
+  let t0 = performance.now();
+
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    const t = (now - t0) / 1000;
+
+    paintWorld(t);
+
+    // background (wet asphalt)
+    const bg = ctx.createLinearGradient(0, horizon, 0, H);
+    bg.addColorStop(0, "#0b0e1c");
+    bg.addColorStop(0.5, "#0a0a16");
+    bg.addColorStop(1, "#050509");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, horizon, W, H - horizon);
+
+    drawReflection(t);
+
+    // the world itself (above the asphalt line)
+    ctx.drawImage(world, 0, 0, world.width, horizon * DPR, 0, 0, W, horizon);
+
+    // puddle sheen line
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    const sh = ctx.createLinearGradient(0, horizon - 8, 0, horizon + 8);
+    sh.addColorStop(0, "rgba(255,120,180,.0)");
+    sh.addColorStop(0.5, "rgba(255,150,200,.35)");
+    sh.addColorStop(1, "rgba(120,220,255,.0)");
+    ctx.fillStyle = sh;
+    ctx.fillRect(0, horizon - 8, W, 16);
+    ctx.restore();
+
+    drawSteam(t);
+    drawBokeh(t);
+    drawRain(t, dt);
+
+    // foreground rain veil
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.fillStyle = "rgba(90,120,180,.05)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+
+    requestAnimationFrame(frame);
+  }
+
+  window.addEventListener("resize", resize, { passive: true });
+  resize();
+  // render one frame synchronously so the file "works" immediately
+  paintWorld(0);
+  requestAnimationFrame(frame);
+
+  // keyboard: pause / resume
+  let paused = false, pl = performance.now();
+  window.addEventListener("keydown", function (e) {
+    if (e.code === "Space") {
+      e.preventDefault();
+      paused = !paused;
+      if (!paused) { last = performance.now(); requestAnimationFrame(frame); }
+    }
+  });
+  void paused; void pl;
+})();
+</script>
+</body>
+</html>

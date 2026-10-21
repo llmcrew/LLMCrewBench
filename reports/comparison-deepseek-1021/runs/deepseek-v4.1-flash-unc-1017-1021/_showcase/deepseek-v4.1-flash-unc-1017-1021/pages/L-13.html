@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Лавовая лампа — жидкий свет</title>
+<style>
+  :root{
+    --ink:#041316;
+    --deep:#07232a;
+    --cream:#f4e7d2;
+    --cream-dim:rgba(244,231,210,.58);
+    --hot:#ff7a3d;
+    --rose:#ff467e;
+    --line:rgba(244,231,210,.22);
+    --sans:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    --mono:"SFMono-Regular",ui-monospace,Menlo,Consolas,monospace;
+    --serif:"Bodoni 72","Didot","Times New Roman",Georgia,serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:var(--ink);
+    color:var(--cream);
+    overflow:hidden;
+    font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;
+    cursor:crosshair;
+  }
+  .stage{position:fixed;inset:0;overflow:hidden}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .veil{
+    position:absolute;inset:0;pointer-events:none;
+    background:
+      radial-gradient(120% 85% at 50% 45%, transparent 38%, rgba(1,7,9,.55) 100%);
+    mix-blend-mode:multiply;
+  }
+  .frame{
+    position:absolute;inset:clamp(12px,2.2vh,24px);pointer-events:none;
+    border:1px solid var(--line);
+  }
+  .frame::before,.frame::after{
+    content:"";position:absolute;width:7px;height:7px;border:1px solid var(--cream);
+    opacity:.65;
+  }
+  .frame::before{left:-1px;top:-1px;border-right:0;border-bottom:0}
+  .frame::after{right:-1px;bottom:-1px;border-left:0;border-top:0}
+
+  header{
+    position:absolute;left:0;right:0;top:0;
+    padding:clamp(24px,5.4vh,56px) clamp(24px,4.6vw,72px);
+    display:flex;justify-content:space-between;align-items:flex-start;gap:24px;
+    pointer-events:none;
+    font-family:var(--mono);
+    font-size:clamp(8px,1.02vw,10.5px);
+    letter-spacing:.26em;text-transform:uppercase;
+    color:var(--cream-dim);
+  }
+  .sig{display:flex;align-items:center;gap:9px;color:var(--cream)}
+  .dot{
+    width:5px;height:5px;border-radius:50%;background:var(--hot);
+    box-shadow:0 0 9px 2px rgba(255,122,61,.65);
+    animation:pulse 2.6s ease-in-out infinite;
+  }
+  @keyframes pulse{0%,100%{opacity:.45;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
+  .meta{text-align:right;line-height:1.9}
+
+  .hero{
+    position:absolute;left:clamp(24px,4.6vw,72px);bottom:clamp(64px,11vh,120px);
+    width:min(47vw,660px);pointer-events:none;
+    z-index:3;
+  }
+  .eyebrow{
+    font-family:var(--mono);font-size:clamp(8px,1.02vw,10.5px);
+    letter-spacing:.3em;text-transform:uppercase;color:var(--cream-dim);
+    display:flex;align-items:center;gap:12px;margin-bottom:clamp(10px,2.2vh,22px);
+    opacity:0;animation:rise 1.2s .15s cubic-bezier(.2,.7,.2,1) forwards;
+  }
+  .eyebrow::before{content:"";width:clamp(24px,3.4vw,52px);height:1px;background:var(--line)}
+  h1{
+    margin:0;font-family:var(--serif);font-weight:400;
+    font-size:clamp(58px,15.6vw,214px);line-height:.79;
+    letter-spacing:-.035em;
+    text-shadow:0 0 48px rgba(255,120,50,.17);
+    opacity:0;animation:rise 1.5s .27s cubic-bezier(.2,.7,.2,1) forwards;
+  }
+  h1 span{display:block}
+  h1 .outline{
+    color:transparent;-webkit-text-stroke:1.1px rgba(244,231,210,.72);
+    padding-left:.1em;text-shadow:none;
+  }
+  .caption{
+    margin:clamp(16px,2.6vh,28px) 0 0;
+    font-size:clamp(11px,1.08vw,14px);line-height:1.62;font-weight:400;
+    color:var(--cream-dim);max-width:31em;
+    opacity:0;animation:rise 1.4s .5s cubic-bezier(.2,.7,.2,1) forwards;
+  }
+  .caption b{color:var(--cream);font-weight:500}
+  @keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+
+  .side{
+    position:absolute;right:clamp(24px,4.6vw,72px);top:50%;
+    transform:translateY(-50%) rotate(180deg);
+    writing-mode:vertical-rl;
+    font-family:var(--mono);font-size:clamp(8px,.95vw,10px);
+    letter-spacing:.34em;text-transform:uppercase;color:rgba(244,231,210,.44);
+    pointer-events:none;
+  }
+
+  footer{
+    position:absolute;left:0;right:0;bottom:0;
+    padding:clamp(20px,3.6vh,38px) clamp(24px,4.6vw,72px);
+    display:flex;justify-content:space-between;align-items:flex-end;gap:24px;
+    font-family:var(--mono);font-size:clamp(8px,.95vw,10px);
+    letter-spacing:.2em;text-transform:uppercase;color:var(--cream-dim);
+    pointer-events:none;
+  }
+  footer .temp b{color:var(--hot);font-weight:400}
+  footer .hint{opacity:.55;text-align:right}
+  footer .hint kbd{
+    font-family:inherit;border:1px solid var(--line);padding:2px 5px;border-radius:2px;
+    margin-right:6px;font-size:.9em;
+  }
+
+  .fallback{
+    position:absolute;inset:0;display:none;place-content:center;text-align:center;
+    padding:40px;font-family:var(--mono);font-size:12px;line-height:2;letter-spacing:.12em;
+    background:radial-gradient(60% 60% at 50% 40%,#122b30,#041315);
+  }
+
+  @media (max-aspect-ratio: 1/1){
+    .hero{top:clamp(78px,13vh,130px);bottom:auto;width:min(86vw,520px)}
+    h1{font-size:clamp(56px,20vw,130px)}
+    .caption{max-width:24em}
+    .side{display:none}
+    header .meta{display:none}
+    footer .hint{display:none}
+  }
+  @media (prefers-reduced-motion: reduce){
+    .dot{animation:none}
+    .eyebrow,h1,.caption{animation-duration:.01s;animation-delay:0s}
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+  <canvas id="c"></canvas>
+  <div class="veil"></div>
+  <div class="frame"></div>
+
+  <header>
+    <div class="sig"><span class="dot"></span>Наблюдение в реальном времени</div>
+    <div class="meta">Термофильный объект № 07<br>Воск · вода · свет</div>
+  </header>
+
+  <div class="hero">
+    <div class="eyebrow">Лавовая лампа</div>
+    <h1><span>ЛАВА</span><span class="outline">ЛАМПА</span></h1>
+    <p class="caption">Тяжёлое становится невесомым, если дать ему тепло.<br>
+      <b>Смотри, как воск всплывает, тянется и снова оседает.</b></p>
+  </div>
+
+  <div class="side">Свет идёт снизу вверх · 1963</div>
+
+  <footer>
+    <div class="temp">Температура среды <b id="temp">40.2</b> °C</div>
+    <div class="hint"><kbd>мышь</kbd>наклон · <kbd>удерживай</kbd>добавить жару</div>
+  </footer>
+
+  <div class="fallback" id="fallback">Для этой работы нужен WebGL.<br>Попробуйте другой браузер.</div>
+</div>
+
+<script id="vs" type="x-shader/x-vertex">
+#version 300 es
+precision highp float;
+const vec2 verts[3] = vec2[3](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));
+void main(){ gl_Position = vec4(verts[gl_VertexID], 0.0, 1.0); }
+</script>
+
+<script id="fs" type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+
+uniform vec2  uRes;
+uniform float uTime;
+uniform vec2  uPointer;
+uniform vec2  uLampPx;
+uniform float uScale;
+uniform float uHeat;
+uniform float uSeed;
+
+out vec4 outColor;
+
+#define PI 3.14159265359
+
+/* ---------- noise ---------- */
+float hash11(float p){ p = fract(p * .1031); p *= p + 33.33; p *= p + p; return fract(p); }
+float hash21(vec2 p){ vec3 q = fract(vec3(p.xyx) * .1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
+vec2  hash22(vec2 p){ vec3 q = fract(vec3(p.xyx) * vec3(.1031,.1030,.0973)); q += dot(q, q.yzx + 33.33); return fract((q.xx + q.yz) * q.zy); }
+float vnoise(vec2 p){
+  vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+  float a = hash21(i), b = hash21(i+vec2(1,0)), c = hash21(i+vec2(0,1)), d = hash21(i+vec2(1,1));
+  return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+}
+float fbm(vec2 p){
+  float s = 0.0, a = .5;
+  for(int i=0;i<4;i++){ s += a*vnoise(p); p = p*2.03 + 17.1; a *= .5; }
+  return s;
+}
+
+/* ---------- lamp geometry ---------- */
+float vesselR(float y){
+  float t = clamp((y + 0.64) / 1.44, 0.0, 1.0);
+  return 0.098 + 0.122 * pow(sin(PI * t), 0.82);
+}
+float baseR(float y){
+  float u = clamp((-0.625 - y) / 0.285, 0.0, 1.0);
+  return 0.135 + 0.196 * pow(u, 1.65);
+}
+float capR(float y){
+  float u = clamp((y - 0.785) / 0.215, 0.0, 1.0);
+  return 0.101 + 0.072 * pow(sin(PI * u), 0.62) - 0.069 * smoothstep(0.55, 1.0, u);
+}
+float sdRoundBox(vec2 p, vec2 b, float r){
+  vec2 q = abs(p) - b + r;
+  return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+}
+
+/* ---------- wax metaballs ---------- */
+float waxField(vec2 q, float t){
+  float f = 0.0;
+
+  /* settled pool at the bottom */
+  f += 2.15 / (pow(q.x / 0.155, 2.0) + pow((q.y + 0.565) / 0.105, 2.0) + 0.22);
+
+  /* wax clinging under the cap */
+  f += 1.05 / (pow(q.x / 0.085, 2.0) + pow((q.y - 0.715) / 0.085, 2.0) + 0.20);
+
+  for(int i=0;i<15;i++){
+    float fi = float(i);
+    float s1 = hash11(fi * 3.113 + 1.7);
+    float s2 = hash11(fi * 7.771 + 4.2);
+    float s3 = hash11(fi * 5.317 + 9.4);
+    float sp = 0.023 + 0.021 * s3;
+    float ph = fract(t * sp + s1 * 11.0 + uSeed * 0.13);
+    float u  = 0.5 - 0.5 * cos(ph * PI * 2.0);
+    u = pow(u, 1.18);
+    float y  = mix(-0.545, 0.705, u);
+    float rr = vesselR(y);
+    float sway = sin(t * 0.33 + fi * 2.4) * 0.55 + sin(t * 0.11 + fi) * 0.45;
+    float x  = sway * rr * 0.47 * (0.30 + 0.70 * sin(PI * clamp(u, 0.0, 1.0)));
+    float rad = (0.032 + 0.058 * hash11(fi * 1.77 + 3.1)) * (0.42 + 0.80 * (1.0 - u));
+    float stretch = 1.0 + 2.3 * pow(sin(PI * clamp(u, 0.0, 1.0)), 1.2);
+    float rx = rad / sqrt(stretch);
+    float ry = rad * sqrt(stretch);
+    vec2 d = q - vec2(x, y);
+    f += 1.0 / (d.x * d.x / (rx * rx) + d.y * d.y / (ry * ry) + 0.085);
+  }
+  return f;
+}
+
+/* ---------- wax shading ---------- */
+vec3 waxShade(vec2 q, float f, float t){
+  float e = 0.0045;
+  vec2 g = vec2(
+    waxField(q + vec2(e, 0.0), t) - waxField(q - vec2(e, 0.0), t),
+    waxField(q + vec2(0.0, e), t) - waxField(q - vec2(0.0, e), t)
+  );
+  vec2 n2 = normalize(-g + vec2(1e-6));
+  vec3 n  = normalize(vec3(n2 * 0.92, 0.58));
+
+  vec3 L = normalize(vec3(-0.62, 0.46, 0.70));
+  vec3 V = vec3(0.0, 0.0, 1.0);
+  float dif = clamp(dot(n, L), 0.0, 1.0);
+  float rim = pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 2.2);
+  float spec = pow(clamp(dot(n, normalize(L + V)), 0.0, 1.0), 46.0);
+  float thick = smoothstep(1.15, 4.6, f);
+
+  float h = smoothstep(-0.58, 0.74, q.y);
+  vec3 hot   = vec3(1.00, 0.79, 0.38);
+  vec3 ember = vec3(1.00, 0.34, 0.10);
+  vec3 rose  = vec3(0.94, 0.13, 0.36);
+  vec3 col = mix(hot, ember, smoothstep(0.02, 0.46, h));
+  col = mix(col, rose, smoothstep(0.62, 1.0, h));
+
+  col *= 0.62 + 0.72 * dif;
+  col = mix(col, hot * 1.12, thick * 0.42);
+  col += vec3(1.0, 0.60, 0.32) * rim * 0.30;
+  col += vec3(1.0, 0.88, 0.66) * spec * 1.1;
+
+  /* dark thin meniscus */
+  float edge = smoothstep(0.0, 0.10, f - 1.0);
+  col = mix(vec3(0.32, 0.055, 0.035), col, edge * 0.88 + 0.12);
+  return col;
+}
+
+/* ---------- background room ---------- */
+vec3 room(vec2 uv, vec2 q, float t){
+  vec3 top = vec3(0.010, 0.026, 0.031);
+  vec3 bot = vec3(0.030, 0.062, 0.066);
+  vec3 c = mix(bot, top, smoothstep(0.05, 1.0, uv.y));
+
+  /* warm halo from the object */
+  float d = length((uv - uLampPx / uRes) * vec2(uRes.x / uRes.y * 0.72, 1.0));
+  float flick = 0.90 + 0.10 * sin(t * 3.1) * sin(t * 1.7 + 1.0);
+  c += vec3(1.0, 0.33, 0.13) * exp(-d * 3.1) * 0.26 * flick;
+  c += vec3(1.0, 0.52, 0.22) * exp(-d * 7.0) * 0.15 * flick;
+
+  /* slow acoustic rings */
+  float rr = length(q * vec2(0.72, 1.0));
+  float ring = smoothstep(0.004, 0.0, abs(fract(rr * 4.6 - t * 0.015) - 0.5) - 0.475);
+  c += vec3(0.42, 0.60, 0.58) * ring * 0.035 * smoothstep(0.45, 1.8, rr);
+
+  /* cool sheen in the upper corner */
+  c += vec3(0.06, 0.14, 0.15) * smoothstep(0.7, 1.6, uv.y) * smoothstep(-0.2, 0.9, uv.x);
+  return c;
+}
+
+/* ---------- dust ---------- */
+vec3 dust(vec2 uv, float t){
+  vec3 acc = vec3(0.0);
+  for(int i=0;i<34;i++){
+    float fi = float(i);
+    vec2 h = hash22(vec2(fi * 1.31 + 2.0, 7.7));
+    float sp = 0.006 + 0.018 * h.y;
+    float x = fract(h.x + 0.04 * sin(t * 0.17 + fi)) * 2.0 - 1.0;
+    float y = fract(h.y - t * sp + fi * 0.017);
+    vec2 p = vec2(x * 0.9, y * 1.05 - 0.03);
+    float sz = 0.0012 + 0.0028 * hash11(fi * 2.3);
+    float d = length((uv - 0.5 - p * vec2(0.72, 0.9)) * vec2(uRes.x / uRes.y, 1.0));
+    float glow = smoothstep(sz * 2.4, 0.0, d);
+    float tw = 0.35 + 0.65 * (0.5 + 0.5 * sin(t * 1.4 + fi * 2.1));
+    acc += mix(vec3(1.0,0.72,0.45), vec3(0.72,0.95,0.95), h.x) * glow * tw * 0.5;
+  }
+  /* a few soft bokeh */
+  for(int i=0;i<7;i++){
+    float fi = float(i) + 40.0;
+    vec2 h = hash22(vec2(fi * 2.1, 3.3));
+    float x = fract(h.x + 0.02 * sin(t * 0.1 + fi)) * 2.0 - 1.0;
+    float y = fract(h.y - t * 0.009 + fi * 0.05);
+    float d = length((uv - 0.5 - vec2(x * 0.85, y * 0.95 - 0.02)) * vec2(uRes.x / uRes.y, 1.0));
+    acc += vec3(1.0,0.55,0.30) * smoothstep(0.026, 0.008, d) * 0.045;
+  }
+  return acc;
+}
+
+/* ---------- floor ---------- */
+vec3 floorShade(vec3 col, vec2 q, float t, float px){
+  float shelf = -1.035;
+  if(q.y < shelf + 0.10){
+    /* glossy dark surface */
+    float depth = max(0.0, shelf - q.y);
+    vec3 surf = vec3(0.012, 0.030, 0.033) + vec3(0.07, 0.05, 0.035) * exp(-abs(q.x) * 3.5);
+    col = mix(col, surf, smoothstep(0.10, 0.0, q.y - shelf));
+
+    vec2 rq = vec2(q.x, 2.0 * shelf - q.y);
+    float rr = vesselR(clamp(rq.y, -0.64, 0.80));
+    float inGlass = smoothstep(0.02, 0.0, abs(rq.x) - rr) * step(rq.y, 0.80) * step(-0.64, rq.y);
+    float f1 = waxField(rq, t);
+    float f2 = waxField(rq + vec2(0.0, 0.032), t);
+    float f = max(f1, f2);
+    float wax = smoothstep(1.0, 1.35, f);
+    float h = smoothstep(-0.58, 0.74, rq.y);
+    vec3 rc = mix(vec3(1.0,0.55,0.22), vec3(1.0,0.22,0.40), h);
+    col += (rc * wax * 0.26 + vec3(0.55,0.82,0.85) * inGlass * 0.05) * exp(-depth * 1.9);
+
+    /* shelf lip and contact shadow */
+    float lip = smoothstep(0.010, 0.0, abs(q.y - shelf));
+    col += vec3(1.0, 0.74, 0.48) * lip * 0.32;
+    col *= 1.0 - 0.55 * exp(-pow((q.x) / 0.43, 2.0)) * smoothstep(0.09, 0.0, abs(q.y - shelf));
+    col *= 1.0 - 0.22 * exp(-depth * 2.2);
+  }
+  return col;
+}
+
+/* ---------- base & cap ---------- */
+vec3 metal(vec2 q, float y0, float y1, float rad, float t, bool isCap){
+  float u = clamp((q.y - y0) / (y1 - y0), 0.0, 1.0);
+  float nx = q.x / max(rad, 0.001);
+  float lit = smoothstep(-0.9, 0.25, -nx);      /* key light from the left */
+  float core = 1.0 - abs(nx);
+
+  vec3 dark  = vec3(0.028, 0.041, 0.045);
+  vec3 steel = vec3(0.30, 0.30, 0.28);
+  vec3 warm  = vec3(0.62, 0.41, 0.28);
+  vec3 col = mix(dark, steel, lit * (isCap ? 0.75 : 0.60));
+  col += warm * pow(core, 1.6) * (isCap ? 0.10 : 0.16);
+
+  /* vertical brushed grooves */
+  float groove = 0.5 + 0.5 * sin(nx * (isCap ? 46.0 : 60.0) + sin(q.y * 13.0) * 1.2);
+  col *= 0.86 + 0.24 * groove;
+
+  /* specular streak */
+  float spec = 0.0;
+  spec += pow(smoothstep(0.30, 0.0, abs(nx + 0.62)), 2.0);
+  spec += 0.45 * pow(smoothstep(0.16, 0.0, abs(nx + 0.24)), 2.0);
+  col += vec3(1.0, 0.92, 0.78) * spec * 0.55;
+
+  /* warm bounce from the glowing glass */
+  float nearGlass = isCap ? smoothstep(0.35, 0.0, u) : smoothstep(0.6, 1.0, u);
+  col += vec3(1.0, 0.36, 0.12) * nearGlass * 0.34;
+
+  /* top/bottom rolled edges */
+  float rim = smoothstep(0.035, 0.0, u) + smoothstep(0.035, 0.0, 1.0 - u);
+  col += vec3(0.75, 0.62, 0.45) * rim * 0.16;
+  return col;
+}
+
+/* ---------- one full frame of the object ---------- */
+vec3 lampScene(vec2 q, vec3 bg, float t, float px){
+  vec3 col = bg;
+
+  float vy = clamp(q.y, -0.64, 0.80);
+  float r  = vesselR(vy);
+  float ar = abs(q.x);
+
+  /* outer halo around the glass */
+  float halo = exp(-max(0.0, ar - r) * 22.0) * exp(-pow((q.y - 0.05) / 0.62, 2.0));
+  col += vec3(1.0, 0.34, 0.12) * halo * 0.20;
+
+  /* ---- base ---- */
+  float bd = max(ar - baseR(q.y), max(-1.005 - q.y, q.y + 0.618));
+  float bM = smoothstep(px * 1.4, -px * 1.4, bd);
+  if(bM > 0.001){
+    vec3 mc = metal(q, -1.005, -0.618, baseR(q.y), t, false);
+    /* light spilling from the vessel onto the base shoulder */
+    mc += vec3(1.0, 0.42, 0.14) * smoothstep(0.10, 0.0, -0.618 - q.y) * 0.35;
+    /* plinth foot */
+    float pud = sdRoundBox(q - vec2(0.0, -0.995), vec2(0.337, 0.028), 0.012);
+    float pM = smoothstep(px * 1.4, -px * 1.4, pud);
+    vec3 pc = mix(vec3(0.020,0.031,0.034), vec3(0.16,0.15,0.14), smoothstep(-0.337,0.337,q.x)*0.8);
+    pc *= 0.8 + 0.2 * smoothstep(0.0,0.012,-0.98 - q.y);
+    col = mix(col, mix(mc, pc, pM), bM);
+
+    float bLit = smoothstep(0.0, 0.06, dFdx(baseR(q.y)) * 0.0 + (baseR(q.y) - ar));
+    col += vec3(1.0,0.70,0.42) * smoothstep(0.006, 0.0, baseR(q.y) - ar) * 0.18;
+  }
+
+  /* ---- cap ---- */
+  float cd = max(ar - capR(q.y), max(0.780 - q.y, q.y - 1.002));
+  float cM = smoothstep(px * 1.4, -px * 1.4, cd);
+  if(cM > 0.001){
+    vec3 mc = metal(q, 0.780, 1.002, capR(q.y), t, true);
+    col = mix(col, mc, cM);
+  }
+
+  /* ---- glass interior ---- */
+  float insideY = smoothstep(-0.648, -0.632, q.y) * smoothstep(0.806, 0.790, q.y);
+  float insideX = smoothstep(0.0025, -0.0025, ar - r);
+  float inG = insideX * insideY;
+
+  if(inG > 0.001){
+    /* refract the room behind, warp with the glass curvature */
+    float warp = (q.x / max(r, 0.01)) * 0.014;
+    vec3 refr = bg;
+    float heatWave = sin(q.y * 34.0 - t * 2.4 + q.x * 40.0) * 0.0015;
+    refr = room(vec2(0.5) + (q - (uLampPx - uRes * 0.5) / uScale + vec2(warp, heatWave)) * 0.02, q, t);
+
+    /* amber liquid body */
+    float glowLow = exp(-max(0.0, q.y + 0.64) * 2.6);
+    vec3 liquid = vec3(0.15, 0.045, 0.022) * (0.45 + 0.9 * glowLow);
+    liquid += vec3(0.30, 0.10, 0.03) * exp(-pow((q.x) / 0.11, 2.0)) * (0.25 + glowLow);
+    liquid += vec3(0.55, 0.22, 0.06) * glowLow * 0.20;
+
+    vec3 interior = mix(refr * 0.42, liquid, 0.78);
+
+    /* caustic threads in the fluid */
+    float caus = fbm(vec2(q.x * 11.0, q.y * 4.0 - t * 0.18));
+    interior += vec3(1.0, 0.52, 0.18) * pow(caus, 3.0) * 0.10;
+
+    /* wax */
+    float f = waxField(q, t);
+    if(f > 1.0){
+      float wa = smoothstep(1.0, 1.13, f);
+      vec3 wc = waxShade(q, f, t);
+      interior = mix(interior, wc, wa);
+    } else {
+      interior += vec3(1.0, 0.40, 0.12) * pow(f, 3.0) * 0.16;
+    }
+    col = mix(col, interior, inG);
+
+    /* ---- glass optics ---- */
+    float edge = (r - ar) / r;
+    float fres = pow(1.0 - edge, 3.0);
+
+    /* vertical reflection streak, softly broken */
+    float streak = 0.0;
+    streak += exp(-pow((q.x + r * 0.58) / 0.010, 2.0)) * (0.55 + 0.45 * vnoise(vec2(q.y * 12.0, t * 0.25)));
+    streak += 0.55 * exp(-pow((q.x + r * 0.60) / 0.026, 2.0));
+    streak += 0.65 * exp(-pow((q.x - r * 0.74) / 0.0065, 2.0));
+    float fadeTop = smoothstep(0.78, 0.30, q.y) * smoothstep(-0.66, -0.40, q.y);
+    col += vec3(0.88, 0.96, 1.0) * streak * 0.52 * inG;
+
+    /* rim, inner shadow and meniscus */
+    float rim = exp(-pow((r - ar) / 0.0055, 2.0));
+    col += vec3(0.72, 0.88, 0.90) * rim * 0.55;
+    col += vec3(1.0, 0.55, 0.30) * fres * 0.05;
+
+    float topM = exp(-pow((q.y - 0.786) / 0.010, 2.0));
+    float botM = exp(-pow((q.y + 0.628) / 0.012, 2.0));
+    col += vec3(1.0, 0.82, 0.60) * (topM * 0.45 + botM * 0.35) * inG;
+
+    /* outline */
+    float outline = smoothstep(0.004, 0.0, abs(ar - r)) * insideY;
+    col += vec3(0.85, 0.95, 0.92) * outline * 0.30;
+
+    /* shoulder glow where glass meets metal */
+    col += vec3(1.0, 0.42, 0.16) * exp(-pow((q.y + 0.632) / 0.02, 2.0)) * 0.20 * inG;
+    col += vec3(1.0, 0.55, 0.22) * exp(-pow((q.y - 0.792) / 0.018, 2.0)) * 0.14 * inG;
+  }
+
+  return col;
+}
+
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec2 q  = (gl_FragCoord.xy - uLampPx) / uScale;
+  float px = 1.0 / uScale;
+  float t = uTime;
+
+  /* subtle breath into the room */
+  vec2 uvj = uv + uPointer * vec2(0.008, 0.005);
+
+  vec3 col = room(uvj, q, t);
+
+  /* shadow cast on the back wall */
+  float sh = exp(-pow(q.x / 0.44, 2.0)) * smoothstep(0.62, -0.20, q.y);
+  col *= 1.0 - 0.22 * sh;
+
+  col = lampScene(q, col, t, px);
+  col = floorShade(col, q, t, px);
+
+  col += dust(uvj + uPointer * 0.02, t);
+
+  /* grade: cool shadows, warm light */
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(col, col * vec3(0.82, 1.02, 1.08), smoothstep(0.35, 0.0, lum) * 0.55);
+  col += vec3(0.02, 0.045, 0.05) * 0.22;
+
+  /* vignette */
+  vec2 v = uv - 0.5;
+  col *= 1.0 - dot(v, v) * 0.72;
+
+  /* film grain */
+  float g = hash21(gl_FragCoord.xy + fract(t) * 913.0) - 0.5;
+  col += g * (0.055 - 0.03 * smoothstep(0.0, 0.8, lum));
+
+  /* tone */
+  col = max(col, 0.0);
+  col = col / (col + vec3(0.82)) * 1.95;
+  outColor = vec4(pow(col, vec3(0.94)), 1.0);
+}
+</script>
+
+<script>
+(async () => {
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, powerPreference: 'high-performance' });
+  if (!gl) { document.getElementById('fallback').style.display = 'grid'; return; }
+
+  const compile = (type, src) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src.trim());
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  };
+  let prog;
+  try {
+    prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, document.getElementById('vs').textContent));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, document.getElementById('fs').textContent));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  } catch (err) {
+    console.error(err);
+    document.getElementById('fallback').style.display = 'grid';
+    document.getElementById('fallback').textContent = 'Ошибка шейдера: ' + err.message;
+    return;
+  }
+  gl.useProgram(prog);
+
+  const U = {};
+  for (const n of ['uRes','uTime','uPointer','uLampPx','uScale','uHeat','uSeed'])
+    U[n] = gl.getUniformLocation(prog, n);
+
+  const state = {
+    w: 0, h: 0, dpr: 1,
+    px: 0, py: 0, tx: 0, ty: 0,
+    heat: 0, heatTarget: 0,
+    seed: Math.random() * 100,
+    time: 0, last: performance.now(),
+    lampPx: [0, 0], scale: 1
+  };
+
+  function resize() {
+    state.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.round(innerWidth * state.dpr);
+    const h = Math.round(innerHeight * state.dpr);
+    if (w === state.w && h === state.h) return;
+    state.w = canvas.width = w;
+    state.h = canvas.height = h;
+    gl.viewport(0, 0, w, h);
+
+    const aspect = w / h;
+    if (aspect >= 1.0) {
+      state.scale = h * 0.385;
+      state.lampPx = [w * (aspect > 1.25 ? 0.665 : 0.62), h * 0.495];
+    } else {
+      state.scale = Math.min(h * 0.30, w * 0.92 / 0.78);
+      state.lampPx = [w * 0.5, h * 0.615];
+    }
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  addEventListener('pointermove', (e) => {
+    state.tx = (e.clientX / innerWidth) * 2 - 1;
+    state.ty = (e.clientY / innerHeight) * 2 - 1;
+  });
+  addEventListener('pointerdown', () => { state.heatTarget = 1; });
+  addEventListener('pointerup', () => { state.heatTarget = 0; });
+  addEventListener('pointerleave', () => { state.heatTarget = 0; });
+
+  const tempEl = document.getElementById('temp');
+  let tempAcc = 0;
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const dt = Math.min(0.05, (now - state.last) / 1000);
+    state.last = now;
+    state.time += dt * (0.8 + state.heat * 1.8);
+    state.heat += (state.heatTarget - state.heat) * Math.min(1, dt * 1.7);
+    state.px += (state.tx - state.px) * Math.min(1, dt * 2.4);
+    state.py += (state.ty - state.py) * Math.min(1, dt * 1.6);
+
+    if (state.w && state.h) {
+      const cx = state.lampPx[0] + state.px * state.scale * 0.035 - state.py * state.scale * 0.01;
+      gl.uniform2f(U.uRes, state.w, state.h);
+      gl.uniform1f(U.uTime, state.time);
+      gl.uniform2f(U.uPointer, state.px * 0.5, -state.py * 0.5);
+      gl.uniform2f(U.uLampPx, cx, state.lampPx[1]);
+      gl.uniform1f(U.uScale, state.scale);
+      gl.uniform1f(U.uHeat, state.heat);
+      gl.uniform1f(U.uSeed, state.seed);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
+    tempAcc += dt;
+    if (tempAcc > 0.6) {
+      tempAcc = 0;
+      const t = 39.6 + state.heat * 4.1 + Math.sin(now * 0.0007) * 0.35;
+      tempEl.textContent = t.toFixed(1).replace('.', ',');
+    }
+  }
+  requestAnimationFrame(frame);
+
+  window.__seek = (v) => { state.time = v; gl.uniform1f(U.uTime, v); };
+})();
+</script>
+</body>
+</html>

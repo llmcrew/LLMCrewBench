@@ -13,7 +13,7 @@ import hashlib
 import json
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -624,7 +624,9 @@ class RunResult:
         if not self.suite_digest:
             from .suite import build_suite, suite_digest
 
-            self.suite_digest = suite_digest(build_suite(self.cfg), self.cfg.profile)
+            # The digest is the whole profile, independent of the --only slice.
+            cfg = replace(self.cfg, only=()) if self.cfg.only else self.cfg
+            self.suite_digest = suite_digest(build_suite(cfg), self.cfg.profile)
         identity = run_identity(self.cfg, str(self.suite_digest.get("sha256") or ""))
 
         config = json.loads(self.cfg.to_json())

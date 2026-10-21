@@ -1101,6 +1101,13 @@ def _assets_readme(task: core.TaskInstance) -> str:
         "",
         f"Результат проверяется по файлу `{target}` на диске.",
     ]
+    if task.category in ("K", "L"):
+        lines += [
+            "",
+            "Скриншот страницы: `Google Chrome --headless=new --no-sandbox "
+            "--user-data-dir=$(mktemp -d) --screenshot=...` — свой профиль на "
+            "вызов, иначе параллельные браузеры делят singleton и зависают.",
+        ]
     return "\n".join(lines) + "\n"
 
 

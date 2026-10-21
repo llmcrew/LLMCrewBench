@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Земля позади</title>
+<style>
+  :root{
+    --ink:#0a0d12;
+    --cold:#7eaec9;
+    --faint:#5b7284;
+    --dim:#3d4f5e;
+    --warm:#ffb469;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;background:#03050a;overflow:hidden}
+  body{
+    font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+    color:var(--faint);
+    -webkit-font-smoothing:antialiased;
+    cursor:crosshair;
+  }
+  #stage{position:fixed;inset:0;display:block;width:100%;height:100%}
+
+  /* ---------- typographic overlay ---------- */
+  .ui{
+    position:fixed;inset:0;pointer-events:none;
+    z-index:3;
+    transition:opacity .9s ease;
+  }
+  body.bare .ui{opacity:0}
+
+  .topbar{
+    position:absolute;top:clamp(18px,3.4vw,44px);left:clamp(18px,3.4vw,52px);
+    display:flex;align-items:flex-start;gap:14px;
+    font-size:clamp(8px,.72vw,10.5px);
+    letter-spacing:.34em;text-transform:uppercase;
+    color:var(--dim);
+  }
+  .topbar .tick{
+    width:22px;height:1px;background:var(--dim);
+    margin-top:.62em;
+  }
+  .topbar .a{color:var(--faint)}
+  .topbar .b{color:#26333d}
+
+  .meters{
+    position:absolute;left:clamp(18px,3.4vw,52px);bottom:clamp(18px,3.4vw,46px);
+    display:grid;gap:7px;
+    font-size:clamp(8px,.68vw,10px);
+    letter-spacing:.19em;color:#33444f;
+    font-variant-numeric:tabular-nums;
+  }
+  .meters .row{display:flex;align-items:baseline;gap:10px}
+  .meters .k{color:#22303a;min-width:7.2em}
+  .meters .v{color:#6c8493}
+  .meters .v.hot{color:var(--warm);opacity:.85}
+  .meters .rule{height:1px;background:linear-gradient(90deg,#1b262e,transparent);width:min(36vw,250px);margin-bottom:3px}
+
+  .title{
+    position:absolute;right:clamp(18px,3.6vw,56px);bottom:clamp(18px,3.4vw,48px);
+    text-align:right;
+  }
+  .title .no{
+    font-size:clamp(7.5px,.62vw,9.5px);letter-spacing:.44em;color:#2c3b46;
+    margin-bottom:.9em;
+  }
+  .title h1{
+    font-family:"Iowan Old Style",Didot,"Times New Roman",serif;
+    font-weight:400;
+    font-size:clamp(19px,2.5vw,38px);
+    line-height:1.08;letter-spacing:.055em;
+    color:#93b4c7;
+    text-shadow:0 0 26px rgba(90,150,190,.18);
+  }
+  .title .sub{
+    margin-top:1.05em;
+    font-size:clamp(7.5px,.6vw,9px);letter-spacing:.3em;color:#2b3944;
+    text-transform:uppercase;
+  }
+  .title .line{
+    height:1px;width:100%;margin-top:1.4em;
+    background:linear-gradient(270deg,#2d3d49,transparent);
+  }
+
+  .hint{
+    position:absolute;left:50%;bottom:clamp(16px,3vw,26px);transform:translateX(-50%);
+    font-size:clamp(7px,.55vw,8.5px);letter-spacing:.32em;color:#1f2b34;
+    text-transform:uppercase;text-align:center;white-space:nowrap;
+  }
+  @media (max-width:720px){
+    .meters{grid-template-columns:1fr}
+    .hint{display:none}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div class="ui">
+  <div class="topbar">
+    <span class="tick"></span>
+    <span class="a">Экспедиционный комплекс «Север‑7»</span>
+    <span class="b">/ отход · кормовой обзор · кам. 3</span>
+  </div>
+
+  <div class="meters">
+    <div class="rule"></div>
+    <div class="row"><span class="k">ДАЛЬНОСТЬ ДО БАЗЫ</span><span class="v" id="range">24 319 км</span></div>
+    <div class="row"><span class="k">ПРИРАЩЕНИЕ</span><span class="v" id="dv">+0,842 км/с</span></div>
+    <div class="row"><span class="k">СУТКИ ПОЛЁТА</span><span class="v" id="met">000:00:00</span></div>
+    <div class="row"><span class="k">СВЯЗЬ</span><span class="v hot" id="link">задержка 81 с</span></div>
+  </div>
+
+  <div class="title">
+    <div class="no">Лист 07 — расставание</div>
+    <h1>Земля позади</h1>
+    <div class="line"></div>
+    <div class="sub">станция уходит · 1600 × 900</div>
+  </div>
+
+  <div class="hint">клик — скрыть разметку</div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const cv  = document.getElementById("stage");
+  const ctx = cv.getContext("2d", { alpha: false });
+
+  const DW = 1600, DH = 900;          // design space
+  let W = 0, H = 0, dpr = 1, S = 1, OX = 0, OY = 0;
+  let t = 0, last = 0, raf = 0;
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------------- deterministic rng ---------------- */
+  function mulberry32(a){
+    return function(){
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      let x = Math.imul(a ^ a >>> 15, 1 | a);
+      x = x + Math.imul(x ^ x >>> 7, 61 | x) ^ x;
+      return ((x ^ x >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  const rnd = mulberry32(0xC0FFEE);
+
+  /* ---------------- palette ---------------- */
+  const C = {
+    void0:"#020306", void1:"#050a11", void2:"#08131d",
+    limb:"#a8d6ee", air:"#4f93b8", airSoft:"#2c5f80",
+    hull:"#05080d", hull2:"#080d13", hull3:"#0b131b",
+    rim:"#9fcfeb", rimSoft:"#5791b0",
+    warm:"#ffb46a", warmSoft:"#ff8a3d"
+  };
+
+  /* ---------------- camera / projection ---------------- */
+  // vanishing point: the direction of travel, just past the Earth
+  const VPX = 1292, VPY = 296;
+  const EARTH = { x: 1306, y: 322, z: 0.86, r: 54 };
+
+  const P = (x, y, z) => {
+    const s = 1 / (1 + z * 2.35);
+    return [VPX + (x - VPX) * s, VPY + (y - VPY) * s];
+  };
+  const kOf = z => 1 / (1 + z * 2.35);
+
+  /* ---------------- stars ---------------- */
+  const stars = [];
+  function seedStars(){
+    stars.length = 0;
+    const n = 620;
+    for (let i = 0; i < n; i++){
+      const far = i < n * 0.55;
+      stars.push({
+        a: rnd() * Math.PI * 2,
+        d: far ? 90 + Math.pow(rnd(), 0.6) * 1900 : 40 + Math.pow(rnd(), 0.75) * 1450,
+        z: rnd(),
+        w: far ? 0.35 + rnd() * 0.5 : 0.6 + rnd() * 1.5,
+        al: far ? 0.06 + rnd() * 0.2 : 0.18 + rnd() * 0.62,
+        spd: far ? 5 + rnd() * 14 : 15 + rnd() * 46,
+        tw: rnd() * 6.28,
+        hue: rnd()
+      });
+    }
+  }
+
+  function drawStars(dt){
+    const cx = VPX, cy = VPY;
+    ctx.lineCap = "round";
+    for (const s of stars){
+      s.d += s.spd * dt * (0.35 + s.d / 620);
+      if (s.d > 2100){ s.a = rnd() * 6.28; s.d = 34 + rnd() * 70; s.al = 0.12 + rnd() * 0.6; }
+      const ca = Math.cos(s.a), sa = Math.sin(s.a);
+
+      // motion vector scaled by distance => long exposure feel
+      const len = Math.min(s.d * 0.115, 190) * (0.55 + s.w * 0.5);
+      const x1 = cx + ca * s.d,          y1 = cy + sa * s.d;
+      const x2 = cx + ca * (s.d - len),  y2 = cy + sa * (s.d - len);
+
+      const shimmer = 0.72 + 0.28 * Math.sin(t * 0.9 + s.tw);
+      let al = s.al * shimmer * Math.min(1, s.d / 240);
+      if (al <= 0.004) continue;
+
+      const g = ctx.createLinearGradient(x2, y2, x1, y1);
+      const col = s.hue > 0.82 ? "190,215,255" : s.hue < 0.14 ? "255,222,190" : "214,235,248";
+      g.addColorStop(0, `rgba(${col},0)`);
+      g.addColorStop(0.65, `rgba(${col},${al * 0.5})`);
+      g.addColorStop(1, `rgba(${col},${al})`);
+      ctx.strokeStyle = g;
+      ctx.lineWidth = s.w * (0.7 + s.d / 2200);
+      ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x1, y1); ctx.stroke();
+    }
+  }
+
+  /* ---------------- nebular wash ---------------- */
+  function drawDeepSpace(){
+    let g = ctx.createRadialGradient(EARTH.x, EARTH.y, 20, EARTH.x, EARTH.y, 1180);
+    g.addColorStop(0, "rgba(38,88,124,0.20)");
+    g.addColorStop(0.22, "rgba(20,52,80,0.11)");
+    g.addColorStop(0.55, "rgba(9,22,36,0.05)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, DW, DH);
+
+    // dim milky band, low left → upper right
+    ctx.save();
+    ctx.translate(980, 420); ctx.rotate(-0.34);
+    g = ctx.createLinearGradient(0, -190, 0, 210);
+    g.addColorStop(0, "rgba(70,110,150,0)");
+    g.addColorStop(0.42, "rgba(74,116,156,0.055)");
+    g.addColorStop(0.56, "rgba(96,140,178,0.07)");
+    g.addColorStop(1, "rgba(40,70,100,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(-1300, -190, 2600, 400);
+    ctx.restore();
+  }
+
+  /* ---------------- earth ---------------- */
+  const continents = [];
+  (function seedLand(){
+    const r2 = mulberry32(77);
+    for (let i = 0; i < 26; i++){
+      continents.push({
+        a: r2() * 6.283, r: Math.pow(r2(), 0.62) * 0.94,
+        w: 0.1 + r2() * 0.36, h: 0.07 + r2() * 0.3, rot: r2() * 3.14, al: 0.12 + r2() * 0.3
+      });
+    }
+  })();
+
+  function drawEarth(){
+    // slow, almost imperceptible recession
+    const rec  = 0.955 + 0.048 * Math.sin(t * 0.0135 - 1.2);
+    const fade = 0.9 + 0.1 * Math.sin(t * 0.0135 - 1.2);
+    const R = EARTH.r * rec;
+    const x = EARTH.x, y = EARTH.y;
+
+    ctx.save();
+    ctx.globalAlpha = fade;
+
+    // outer atmosphere bloom
+    let g = ctx.createRadialGradient(x, y, R * 0.86, x, y, R * 4.4);
+    g.addColorStop(0, "rgba(126,192,232,0.24)");
+    g.addColorStop(0.26, "rgba(90,158,205,0.12)");
+    g.addColorStop(0.62, "rgba(52,110,158,0.04)");
+    g.addColorStop(1, "rgba(30,70,110,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, R * 4.4, 0, 6.2832); ctx.fill();
+
+    // body
+    g = ctx.createRadialGradient(x, y, R * 0.1, x, y, R);
+    g.addColorStop(0, "#0a1520");
+    g.addColorStop(0.62, "#08111b");
+    g.addColorStop(1, "#040a11");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, R, 0, 6.2832); ctx.fill();
+
+    ctx.save();
+    ctx.beginPath(); ctx.arc(x, y, R, 0, 6.2832); ctx.clip();
+
+    // night side city lights (scattered, sparse)
+    for (let i = 0; i < 90; i++){
+      const s1 = i * 12.9898 + 4.1414;
+      const rr = Math.pow(((Math.sin(s1) * 43758.5453) % 1 + 1) % 1, 0.55) * 0.97;
+      const aa = ((Math.sin(i * 7.233) * 24634.63) % 6.2832 + 6.2832) % 6.2832;
+      const px = x + Math.cos(aa) * rr * R, py = y + Math.sin(aa) * rr * R;
+      const bright = rr > 0.45 ? 0.5 : 0.26;
+      ctx.fillStyle = `rgba(255,196,124,${bright * (0.5 + 0.5 * Math.sin(t * 0.7 + i))})`;
+      ctx.fillRect(px, py, 0.85, 0.85);
+    }
+
+    // lit hemisphere: light comes from upper right, so crescent on the lower‑right limb
+    const lx = x + R * 0.86, ly = y + R * 0.5;
+    g = ctx.createRadialGradient(lx, ly, R * 0.06, lx, ly, R * 1.55);
+    g.addColorStop(0, "rgba(196,232,250,0.95)");
+    g.addColorStop(0.18, "rgba(150,204,236,0.86)");
+    g.addColorStop(0.34, "rgba(88,150,192,0.55)");
+    g.addColorStop(0.55, "rgba(40,90,130,0.22)");
+    g.addColorStop(0.8, "rgba(14,40,62,0.05)");
+    g.addColorStop(1, "rgba(6,18,30,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(x - R, y - R, R * 2, R * 2);
+
+    // continents / cloud smears, only visible on the lit side
+    ctx.globalCompositeOperation = "source-atop";
+    for (const c of continents){
+      const px = x + Math.cos(c.a) * c.r * R * 0.92;
+      const py = y + Math.sin(c.a) * c.r * R * 0.92;
+      const distToLight = Math.hypot(px - lx, py - ly) / (R * 1.9);
+      ctx.save();
+      ctx.translate(px, py); ctx.rotate(c.rot);
+      ctx.fillStyle = `rgba(232,246,255,${c.al * Math.max(0, 1 - distToLight) * 0.9})`;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, c.w * R, c.h * R, 0, 0, 6.2832);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.globalCompositeOperation = "source-over";
+
+    // terminator shading to deepen the night side
+    g = ctx.createLinearGradient(x - R, y - R, x + R, y + R);
+    g.addColorStop(0, "rgba(2,6,11,0.72)");
+    g.addColorStop(0.52, "rgba(2,6,11,0.22)");
+    g.addColorStop(1, "rgba(2,6,11,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(x - R, y - R, R * 2, R * 2);
+    ctx.restore();
+
+    // crisp atmospheric rim
+    ctx.lineWidth = 1.15;
+    ctx.strokeStyle = "rgba(190,232,255,0.85)";
+    ctx.beginPath(); ctx.arc(x, y, R - 0.3, 0, 6.2832); ctx.stroke();
+    ctx.lineWidth = 3.4;
+    ctx.strokeStyle = "rgba(126,196,238,0.22)";
+    ctx.beginPath(); ctx.arc(x, y, R + 1.1, 0, 6.2832); ctx.stroke();
+
+    ctx.restore();
+  }
+
+  /* ---------------- station ---------------- */
+  // local helpers in design space with perspective
+  const V = (x, y, z) => P(x, y, z);
+  const line = (x1,y1,z1, x2,y2,z2) => {
+    const a = V(x1,y1,z1), b = V(x2,y2,z2);
+    ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
+  };
+
+  function truss(){
+    // spine of the boom, walking away toward the vanishing point
+    const N = 11;
+    const spineAt = i => {
+      const u = i / (N - 1);
+      return {
+        x: -120 + (960 + 120) * u,
+        y: 1060 + (318 - 1060) * u,
+        z: 0.02 + 0.86 * u
+      };
+    };
+    // two chords, offset perpendicular to the boom in screen space
+    const chord = (i, side) => {
+      const s = spineAt(i);
+      const k = kOf(s.z);
+      const px = -(318 - 1060), py = (960 + 120);           // perpendicular
+      const m = Math.hypot(px, py);
+      const off = 74 * k;
+      return [s.x + (px / m) * off * side, s.y + (py / m) * off * side, s.z];
+    };
+
+    // chord runs
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    for (const side of [-1, 1]){
+      ctx.beginPath();
+      for (let i = 0; i < N; i++){
+        const p = chord(i, side);
+        const q = V(p[0], p[1], p[2]);
+        i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]);
+      }
+      ctx.strokeStyle = C.hull; ctx.lineWidth = 13; ctx.stroke();
+      ctx.strokeStyle = C.hull2; ctx.lineWidth = 7; ctx.stroke();
+      // rim light on the upper chord
+      if (side === -1){
+        ctx.strokeStyle = "rgba(140,192,222,0.5)"; ctx.lineWidth = 1.15; ctx.stroke();
+        ctx.strokeStyle = "rgba(90,150,190,0.16)"; ctx.lineWidth = 3.4; ctx.stroke();
+      } else {
+        ctx.strokeStyle = "rgba(70,110,138,0.28)"; ctx.lineWidth = 1; ctx.stroke();
+      }
+    }
+
+    // lattice: bays, diagonals, cross beams
+    ctx.lineCap = "butt";
+    for (let i = 0; i < N - 1; i++){
+      const a1 = chord(i, -1), a2 = chord(i, 1);
+      const b1 = chord(i + 1, -1), b2 = chord(i + 1, 1);
+      const k = kOf(a1[2]);
+
+      // vertical
+      ctx.beginPath(); line(a1[0],a1[1],a1[2], a2[0],a2[1],a2[2]);
+      ctx.strokeStyle = "rgba(9,15,22,0.95)"; ctx.lineWidth = 7 * k + 1.4; ctx.stroke();
+      ctx.strokeStyle = "rgba(120,170,200,0.3)"; ctx.lineWidth = 0.9; ctx.stroke();
+
+      // diagonals
+      ctx.beginPath();
+      line(a1[0],a1[1],a1[2], b2[0],b2[1],b2[2]);
+      line(a2[0],a2[1],a2[2], b1[0],b1[1],b1[2]);
+      ctx.strokeStyle = "rgba(6,10,15,0.92)"; ctx.lineWidth = 4.6 * k + 1; ctx.stroke();
+      ctx.strokeStyle = "rgba(126,176,206,0.22)"; ctx.lineWidth = 0.8; ctx.stroke();
+
+      // gusset nodes
+      const g1 = V(a1[0],a1[1],a1[2]);
+      ctx.fillStyle = "rgba(16,25,34,1)";
+      ctx.beginPath(); ctx.arc(g1[0], g1[1], 2.6 * k + 0.7, 0, 6.2832); ctx.fill();
+    }
+
+    // a few cross arms jutting up (they read as depth)
+    const arms = [[0.26, 1], [0.47, -1], [0.66, 1]];
+    for (const [u, dir] of arms){
+      const i = Math.round(u * (N - 1));
+      const s = spineAt(i);
+      const k = kOf(s.z);
+      const a = chord(i, dir);
+      const bx = a[0] + 96 * k * 0.55 * dir * 0.2 + 26 * k * dir;
+      const by = a[1] - 118 * k;
+      const b = V(bx, by, s.z + 0.004);
+      const o = V(a[0], a[1], a[2]);
+      ctx.beginPath(); ctx.moveTo(o[0], o[1]); ctx.lineTo(b[0], b[1]);
+      ctx.strokeStyle = "#070b11"; ctx.lineWidth = 6.5 * k + 1; ctx.stroke();
+      ctx.strokeStyle = "rgba(150,200,228,0.42)"; ctx.lineWidth = 0.9; ctx.stroke();
+      ctx.fillStyle = "#0a1017";
+      ctx.beginPath(); ctx.arc(b[0], b[1], 3.2 * k + 0.8, 0, 6.2832); ctx.fill();
+    }
+  }
+
+  function solarWing(x, y, z, side, len, wid){
+    // panel plane seen nearly edge‑on, receding left
+    const k = kOf(z);
+    const p0 = V(x, y, z), p1 = V(x, y, z + 0.02);
+    const dirx = side, diry = -0.16;
+    const ex = x + dirx * len, ey = y + diry * len;
+    const p2 = V(ex, ey, z + 0.05), p3 = V(ex, ey - wid * k, z + 0.05);
+    const p4 = V(x, y - wid * k, z + 0.02);
+
+    ctx.beginPath();
+    ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]);
+    ctx.lineTo(p2[0], p2[1]); ctx.lineTo(p3[0], p3[1]);
+    ctx.lineTo(p4[0], p4[1]); ctx.closePath();
+    ctx.fillStyle = "rgba(6,10,16,0.97)"; ctx.fill();
+    ctx.strokeStyle = "rgba(96,144,176,0.4)"; ctx.lineWidth = 0.8; ctx.stroke();
+
+    // cell grid, faint
+    ctx.save(); ctx.clip();
+    ctx.strokeStyle = "rgba(74,116,148,0.17)"; ctx.lineWidth = 0.55;
+    for (let i = 1; i < 16; i++){
+      const u = i / 16;
+      const a = V(x + dirx * len * u, y + diry * len * u, z + 0.05);
+      const b = V(x + dirx * len * u, y + diry * len * u - wid * k, z + 0.05);
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    }
+    for (let j = 1; j < 4; j++){
+      const v = j / 4;
+      const a = V(x, y - wid * k * v, z + 0.02);
+      const b = V(ex, ey - wid * k * v, z + 0.05);
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    }
+    ctx.restore();
+
+    // sunward rim
+    ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]);
+    ctx.strokeStyle = "rgba(160,208,236,0.5)"; ctx.lineWidth = 1.1; ctx.stroke();
+  }
+
+  function module(){
+    // habitation cylinder with the one lit window; light spills onto the hull
+    const x = 512, y = 596, z = 0.30;
+    const k = kOf(z);
+    const c = V(x, y, z);
+    const rw = 46 * k, rh = 30 * k, L = 196 * k;
+    const ang = -0.31;
+
+    ctx.save();
+    ctx.translate(c[0], c[1]); ctx.rotate(ang);
+
+    // shadow stub connecting to the truss
+    ctx.fillStyle = "#05080d";
+    ctx.fillRect(-rw * 2.1, rh * 0.35, rw * 2.6, rh * 0.55);
+
+    // body
+    let g = ctx.createLinearGradient(0, -rh, 0, rh);
+    g.addColorStop(0, "#0d1620");
+    g.addColorStop(0.42, "#070c12");
+    g.addColorStop(1, "#03060a");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(-L * 0.52, -rh);
+    ctx.lineTo(L * 0.5, -rh * 0.92);
+    ctx.quadraticCurveTo(L * 0.62, 0, L * 0.5, rh * 0.92);
+    ctx.lineTo(-L * 0.52, rh);
+    ctx.quadraticCurveTo(-L * 0.6, 0, -L * 0.52, -rh);
+    ctx.fill();
+
+    // upper rim light
+    ctx.beginPath();
+    ctx.moveTo(-L * 0.52, -rh + 0.6); ctx.lineTo(L * 0.5, -rh * 0.92);
+    ctx.strokeStyle = "rgba(178,220,246,0.62)"; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.strokeStyle = "rgba(120,175,210,0.16)"; ctx.lineWidth = 5; ctx.stroke();
+
+    // hull bands
+    ctx.strokeStyle = "rgba(120,168,200,0.13)"; ctx.lineWidth = 1;
+    for (const u of [-0.36, -0.12, 0.16, 0.38]){
+      ctx.beginPath();
+      ctx.moveTo(L * u, -rh * 0.97); ctx.lineTo(L * u, rh * 0.97); ctx.stroke();
+    }
+
+    // ---------- the window ----------
+    const wx = -L * 0.1, wy = -rh * 0.05;
+    const ww = 30 * k * 1.02, wh = 20 * k;
+
+    // spill on hull
+    g = ctx.createRadialGradient(wx, wy, 1, wx, wy, ww * 4.6);
+    g.addColorStop(0, "rgba(255,158,84,0.30)");
+    g.addColorStop(0.4, "rgba(255,140,66,0.10)");
+    g.addColorStop(1, "rgba(255,120,50,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(wx, wy, ww * 4.6, 0, 6.2832); ctx.fill();
+
+    // frame
+    ctx.fillStyle = "#0b131b";
+    roundRect(wx - ww / 2 - 2, wy - wh / 2 - 2, ww + 4, wh + 4, 2.4); ctx.fill();
+    // glass
+    g = ctx.createLinearGradient(wx, wy - wh / 2, wx, wy + wh / 2);
+    g.addColorStop(0, "#ffcf98");
+    g.addColorStop(0.55, "#ffab5f");
+    g.addColorStop(1, "#d9722f");
+    ctx.fillStyle = g;
+    roundRect(wx - ww / 2, wy - wh / 2, ww, wh, 1.8); ctx.fill();
+
+    // occupant, seen from behind, looking out
+    const flick = 0.94 + 0.06 * Math.sin(t * 3.1) + 0.03 * Math.sin(t * 11.7);
+    ctx.globalAlpha = flick;
+    ctx.fillStyle = "rgba(34,20,12,0.82)";
+    const hx = wx + ww * 0.12, hy = wy + wh * 0.16;
+    ctx.beginPath(); ctx.arc(hx, hy - wh * 0.2, wh * 0.27, 0, 6.2832); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(hx - wh * 0.46, wy + wh * 0.52);
+    ctx.quadraticCurveTo(hx - wh * 0.44, hy + wh * 0.02, hx, hy + wh * 0.02);
+    ctx.quadraticCurveTo(hx + wh * 0.44, hy + wh * 0.02, hx + wh * 0.46, wy + wh * 0.52);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // mullion + glow bloom
+    ctx.strokeStyle = "rgba(60,34,18,0.85)"; ctx.lineWidth = 1.1;
+    ctx.beginPath(); ctx.moveTo(wx + ww * 0.34, wy - wh / 2); ctx.lineTo(wx + ww * 0.34, wy + wh / 2); ctx.stroke();
+
+    ctx.globalCompositeOperation = "lighter";
+    g = ctx.createRadialGradient(wx, wy, 0, wx, wy, ww * 2.1);
+    g.addColorStop(0, "rgba(255,184,112,0.30)");
+    g.addColorStop(0.5, "rgba(255,150,80,0.09)");
+    g.addColorStop(1, "rgba(255,130,60,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(wx, wy, ww * 2.1, 0, 6.2832); ctx.fill();
+    ctx.globalCompositeOperation = "source-over";
+
+    // docking collar at the near end
+    ctx.strokeStyle = "rgba(150,196,224,0.3)"; ctx.lineWidth = 1.1;
+    ctx.beginPath(); ctx.ellipse(-L * 0.52, 0, rw * 0.16, rh, 0, 0, 6.2832); ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function dish(){
+    const x = 386, y = 430, z = 0.47;
+    const k = kOf(z);
+    const c = V(x, y, z);
+    ctx.save();
+    ctx.translate(c[0], c[1]); ctx.rotate(-0.42); ctx.scale(1, 0.52);
+    ctx.beginPath(); ctx.arc(0, 0, 40 * k, 0, 6.2832);
+    ctx.fillStyle = "rgba(5,8,13,0.97)"; ctx.fill();
+    ctx.strokeStyle = "rgba(158,204,232,0.44)"; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.restore();
+    // feed horn
+    const f1 = V(x, y, z), f2 = V(x + 6, y - 44, z - 0.02);
+    ctx.beginPath(); ctx.moveTo(f1[0], f1[1]); ctx.lineTo(f2[0], f2[1]);
+    ctx.strokeStyle = "rgba(126,172,202,0.42)"; ctx.lineWidth = 1.1; ctx.stroke();
+    ctx.fillStyle = "#0a1118";
+    ctx.beginPath(); ctx.arc(f2[0], f2[1], 2.6, 0, 6.2832); ctx.fill();
+  }
+
+  function foreground(){
+    // massive hull plate in the near corner: our own station is already halfway gone
+    const a = V(-260, 1190, -0.12), b = V(300, 1030, -0.06);
+    const c = V(690, 660, 0.02);
+
+    ctx.beginPath();
+    ctx.moveTo(a[0], a[1]);
+    ctx.bezierCurveTo(a[0] + 210, a[1] - 40, 120, 1020, b[0], b[1]);
+    ctx.bezierCurveTo(470, 900, 600, 760, c[0], c[1]);
+    ctx.lineTo(c[0] - 10, 1000);
+    ctx.lineTo(a[0] - 40, 1300);
+    ctx.closePath();
+
+    const g = ctx.createLinearGradient(a[0], a[1], c[0], c[1]);
+    g.addColorStop(0, "#04070b");
+    g.addColorStop(0.7, "#05090e");
+    g.addColorStop(1, "#070c12");
+    ctx.fillStyle = g; ctx.fill();
+    ctx.strokeStyle = "rgba(146,194,224,0.55)"; ctx.lineWidth = 1.35; ctx.stroke();
+
+    // panel seams + rivets, converging toward the vanishing point
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(a[0], a[1]);
+    ctx.bezierCurveTo(a[0] + 210, a[1] - 40, 120, 1020, b[0], b[1]);
+    ctx.bezierCurveTo(470, 900, 600, 760, c[0], c[1]);
+    ctx.lineTo(c[0] - 10, 1000);
+    ctx.lineTo(a[0] - 40, 1300);
+    ctx.closePath();
+    ctx.clip();
+
+    ctx.strokeStyle = "rgba(112,158,190,0.14)"; ctx.lineWidth = 1;
+    for (let i = 0; i < 9; i++){
+      const u = i / 8;
+      const p = [a[0] + (c[0] - a[0]) * u, a[1] + (c[1] - a[1]) * u + 26 * Math.sin(u * 3.1)];
+      const q = V(p[0] - 60 * u, p[1] + 420, -0.1);
+      ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke();
+    }
+    for (let i = 0; i < 7; i++){
+      const u = i / 6;
+      const y0 = 700 + u * 90;
+      ctx.beginPath();
+      ctx.moveTo(V(-260, y0, -0.12)[0], V(-260, y0, -0.12)[1]);
+      ctx.lineTo(V(700, y0 - 130, 0.03)[0], V(700, y0 - 130, 0.03)[1]);
+      ctx.strokeStyle = "rgba(112,158,190,0.08)";
+      ctx.stroke();
+    }
+    // rivets
+    for (let i = 0; i < 60; i++){
+      const u = i / 59;
+      const p = V(-240 + u * 880, 1140 - u * 470, -0.1 + u * 0.11);
+      ctx.fillStyle = `rgba(160,200,228,${0.05 + 0.12 * (1 - u)})`;
+      ctx.beginPath(); ctx.arc(p[0], p[1], 1.1, 0, 6.2832); ctx.fill();
+    }
+    ctx.restore();
+
+    // handrail, catching the light hard
+    const r0 = V(-190, 1085, -0.09), r1 = V(520, 812, -0.01);
+    ctx.beginPath();
+    ctx.moveTo(r0[0], r0[1]);
+    ctx.quadraticCurveTo((r0[0] + r1[0]) / 2, (r0[1] + r1[1]) / 2 - 16, r1[0], r1[1]);
+    ctx.strokeStyle = "#02050a"; ctx.lineWidth = 6; ctx.stroke();
+    ctx.strokeStyle = "rgba(186,226,250,0.7)"; ctx.lineWidth = 1.1; ctx.stroke();
+    for (const u of [0.3, 0.62]){
+      const p = [r0[0] + (r1[0] - r0[0]) * u, r0[1] + (r1[1] - r0[1]) * u - 10];
+      ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(p[0] + 1, p[1] + 42);
+      ctx.strokeStyle = "#03070c"; ctx.lineWidth = 4; ctx.stroke();
+      ctx.strokeStyle = "rgba(150,196,226,0.3)"; ctx.lineWidth = 0.8; ctx.stroke();
+    }
+
+    // a stub of antenna mast at the far corner of the plate
+    const m0 = V(650, 700, 0.03), m1 = V(1010, 470, 0.02);
+    ctx.beginPath(); ctx.moveTo(m0[0], m0[1]); ctx.lineTo(m1[0], m1[1]);
+    ctx.strokeStyle = "#03060b"; ctx.lineWidth = 3.4; ctx.stroke();
+    ctx.strokeStyle = "rgba(170,212,240,0.42)"; ctx.lineWidth = 0.8; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(m1[0], m1[1]); ctx.lineTo(m1[0] + 30, m1[1] - 4);
+    ctx.strokeStyle = "rgba(150,196,226,0.28)"; ctx.lineWidth = 0.8; ctx.stroke();
+  }
+
+  function roundRect(x, y, w, h, r){
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  /* ---------------- grain, bloom, vignette ---------------- */
+  const grainTile = document.createElement("canvas");
+  grainTile.width = grainTile.height = 140;
+  (function buildGrain(){
+    const g = grainTile.getContext("2d");
+    const img = g.createImageData(140, 140);
+    const r = mulberry32(9182);
+    for (let i = 0; i < img.data.length; i += 4){
+      const v = 128 + (r() - 0.5) * 255;
+      img.data[i] = img.data[i+1] = img.data[i+2] = v;
+      img.data[i+3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+  })();
+
+  function post(){
+    // bloom haze around the window and Earth (cheap, additive)
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    let g = ctx.createRadialGradient(EARTH.x, EARTH.y, 10, EARTH.x, EARTH.y, 400);
+    g.addColorStop(0, "rgba(96,164,212,0.09)");
+    g.addColorStop(1, "rgba(40,90,140,0)");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, DW, DH);
+    ctx.restore();
+
+    // vignette
+    const vg = ctx.createRadialGradient(DW * 0.56, DH * 0.47, DH * 0.2, DW * 0.56, DH * 0.47, DH * 1.06);
+    vg.addColorStop(0, "rgba(0,0,0,0)");
+    vg.addColorStop(0.62, "rgba(0,0,0,0.26)");
+    vg.addColorStop(1, "rgba(0,0,0,0.86)");
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, DW, DH);
+
+    // grain
+    ctx.save();
+    ctx.globalAlpha = 0.045;
+    ctx.globalCompositeOperation = "overlay";
+    const off = reduce ? 0 : Math.floor(rnd() * 140);
+    const pat = ctx.createPattern(grainTile, "repeat");
+    ctx.translate(-off, -off);
+    ctx.fillStyle = pat;
+    ctx.fillRect(0, 0, DW + 140, DH + 140);
+    ctx.restore();
+
+    // faint horizontal cold scan banding
+    ctx.save();
+    ctx.globalAlpha = 0.05;
+    ctx.fillStyle = "#7fb4d6";
+    for (let y = 0; y < DH; y += 4) ctx.fillRect(0, y, DW, 0.5);
+    ctx.restore();
+  }
+
+  /* ---------------- frame ---------------- */
+  function resize(){
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = innerWidth; H = innerHeight;
+    cv.width  = Math.floor(W * dpr);
+    cv.height = Math.floor(H * dpr);
+    cv.style.width = W + "px"; cv.style.height = H + "px";
+    S  = Math.max(W / DW, H / DH);
+    OX = (W - DW * S) / 2;
+    OY = (H - DH * S) / 2;
+  }
+
+  function render(dt){
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = C.void0;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.save();
+    ctx.translate(OX, OY);
+    ctx.scale(S, S);
+
+    const bg = ctx.createLinearGradient(0, 0, DW, DH);
+    bg.addColorStop(0, "#02040a");
+    bg.addColorStop(0.55, "#04080f");
+    bg.addColorStop(1, "#071019");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, DW, DH);
+
+    drawDeepSpace();
+    drawEarth();
+    drawStars(dt);
+
+    // the station drifts slightly, out of phase with everything else
+    const bob = reduce ? 0 : Math.sin(t * 0.19) * 2.6;
+    const bob2 = reduce ? 0 : Math.cos(t * 0.147) * 1.9;
+    const tilt = reduce ? 0 : Math.sin(t * 0.11) * 0.0016;
+
+    ctx.save();
+    ctx.translate(DW / 2 + bob, DH / 2 + bob2);
+    ctx.rotate(tilt);
+    ctx.translate(-DW / 2, -DH / 2);
+
+    ctx.lineJoin = "round";
+    // far elements first
+    solarWing(640, 470, 0.55, 1, 330, 88);
+    truss();
+    solarWing(372, 520, 0.22, -1, 420, 116);
+    dish();
+    module();
+    foreground();
+    ctx.restore();
+
+    post();
+    ctx.restore();
+  }
+
+  /* overload: stars/dt driven by real time */
+  let prev = performance.now();
+  function loop(now){
+    const dt = Math.min((now - prev) / 1000, 0.05);
+    prev = now;
+    if (!reduce) t += dt;
+    render(reduce ? 0 : dt);
+
+    // telemetry, updated a few times a second
+    const sec = Math.floor(t);
+    if (sec !== loop._s){
+      loop._s = sec;
+      const km = 24319 + t * 6.4;
+      document.getElementById("range").textContent =
+        Math.floor(km).toLocaleString("ru-RU").replace(/\u00A0/g, " ") + " км";
+      const d = Math.floor(t);
+      document.getElementById("met").textContent =
+        "000:" + String(Math.floor(d / 60) % 60).padStart(2, "0") + ":" + String(d % 60).padStart(2, "0");
+      document.getElementById("link").textContent = "задержка " + (81 + Math.floor(t / 9)) + " с";
+      document.getElementById("dv").textContent = "+0,842 км/с";
+    }
+    raf = requestAnimationFrame(loop);
+  }
+
+  /* ---------------- go ---------------- */
+  seedStars();
+  resize();
+  addEventListener("resize", () => { resize(); });
+  addEventListener("click", () => document.body.classList.toggle("bare"));
+
+  // first frames get a short exposure ramp so stars "arrive"
+  prev = performance.now();
+  raf = requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

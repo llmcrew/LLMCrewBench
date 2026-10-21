@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NEON GRID — Synthetic Horizon</title>
+<style>
+  :root{
+    --ink:#e9f7ff;
+    --cyan:#6ff6ff;
+    --pink:#ff3d9a;
+    --dim:rgba(210,238,255,.48);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:#04010c;overflow:hidden}
+  body{
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    color:var(--ink);
+    cursor:crosshair;
+    -webkit-tap-highlight-color:transparent;
+  }
+  #stage{position:fixed;inset:0;display:block;width:100%;height:100%;background:#04010c}
+  #grain{position:fixed;inset:0;pointer-events:none;opacity:.5;mix-blend-mode:soft-light;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.86' numOctaves='3' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='.5'/></svg>");
+    background-size:180px 180px}
+  .hud{position:fixed;inset:0;pointer-events:none;z-index:4;overflow:hidden}
+  .frame{position:absolute;inset:18px;border:1px solid rgba(130,225,255,.13)}
+  .frame::before,.frame::after{content:"";position:absolute;width:11px;height:11px;border:1px solid rgba(140,250,255,.5)}
+  .frame::before{left:-1px;top:-1px;border-right:0;border-bottom:0}
+  .frame::after{right:-1px;bottom:-1px;border-left:0;border-top:0}
+  .cross{position:absolute;width:9px;height:9px;opacity:.5}
+  .cross::before,.cross::after{content:"";position:absolute;background:rgba(140,250,255,.6)}
+  .cross::before{left:4px;top:0;width:1px;height:9px}
+  .cross::after{top:4px;left:0;height:1px;width:9px}
+  .cross.tr{right:9px;top:9px}.cross.bl{left:9px;bottom:9px}
+  .brand{position:absolute;left:44px;top:42px;display:flex;gap:14px;align-items:flex-start}
+  .mark{width:26px;height:26px;margin-top:2px;flex:0 0 auto;position:relative}
+  .mark svg{display:block;width:100%;height:100%;filter:drop-shadow(0 0 5px rgba(100,245,255,.8))}
+  .wordmark{font-size:13px;letter-spacing:.52em;font-weight:600;color:#effcff;
+    text-shadow:0 0 12px rgba(95,240,255,.65);line-height:1.2;white-space:nowrap}
+  .kicker{margin-top:8px;font-size:8.5px;letter-spacing:.34em;color:var(--dim);white-space:nowrap}
+  .kicker b{font-weight:400;color:var(--pink);text-shadow:0 0 10px rgba(255,61,154,.8)}
+  .rail{position:absolute;right:46px;top:46px;display:flex;flex-direction:column;align-items:flex-end;gap:7px;
+    font-size:8px;letter-spacing:.28em;color:rgba(204,234,255,.42);text-align:right}
+  .rail .live{color:var(--cyan);display:flex;align-items:center;gap:7px;text-shadow:0 0 9px rgba(90,240,255,.7)}
+  .dot{width:4px;height:4px;border-radius:50%;background:var(--pink);box-shadow:0 0 8px 1px var(--pink);animation:blink 2.4s steps(1) infinite}
+  @keyframes blink{0%,72%{opacity:1}73%,100%{opacity:.2}}
+  .foot{position:absolute;left:44px;right:46px;bottom:38px;display:flex;justify-content:space-between;align-items:flex-end;gap:24px}
+  .coords{font-size:8px;letter-spacing:.26em;color:rgba(200,232,255,.4);line-height:1.9}
+  .coords em{font-style:normal;color:rgba(130,250,255,.7)}
+  .caption{text-align:right;font-size:8px;letter-spacing:.28em;color:rgba(200,232,255,.4);line-height:1.9;white-space:nowrap}
+  .caption strong{display:block;color:rgba(255,120,180,.85);font-weight:400;letter-spacing:.34em;text-shadow:0 0 10px rgba(255,61,154,.45)}
+  .hint{position:absolute;left:50%;bottom:41px;transform:translateX(-50%);font-size:7.5px;letter-spacing:.3em;
+    color:rgba(190,230,255,.34);white-space:nowrap;transition:opacity 1.4s ease}
+  .hint.hide{opacity:0}
+  .veil{position:fixed;inset:0;background:#04010c;z-index:9;pointer-events:none;transition:opacity 1.6s ease}
+  .veil.off{opacity:0}
+  .vert{position:absolute;left:9px;top:50%;transform:rotate(180deg) translateY(50%);writing-mode:vertical-rl;
+    font-size:7px;letter-spacing:.42em;color:rgba(180,225,255,.23);white-space:nowrap}
+  @media (max-width:760px){
+    .frame{inset:10px}.brand{left:24px;top:26px}.rail{right:24px;top:28px}
+    .foot{left:24px;right:24px;bottom:24px}.hint{display:none}.vert{display:none}
+    .cross.tr{right:5px;top:5px}.cross.bl{left:5px;bottom:5px}
+    .wordmark{font-size:11px;letter-spacing:.4em}.coords{display:none}.caption{text-align:left}
+    .foot{justify-content:flex-start}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="Неоновая сетка: киберпанк-каньон с гигантским полосатым солнцем"></canvas>
+<div id="grain"></div>
+
+<div class="hud" aria-hidden="true">
+  <div class="frame"></div>
+  <div class="cross tr"></div><div class="cross bl"></div>
+  <div class="vert">VECTOR FIELD / LAT 00.00 — SYNTHETIC HORIZON</div>
+
+  <div class="brand">
+    <span class="mark"><svg viewBox="0 0 26 26" fill="none" stroke="#8ffaff" stroke-width="1">
+      <path d="M2 8h22M2 18h22M8 2v22M18 2v22" opacity=".55"/>
+      <circle cx="13" cy="13" r="4.2"/><circle cx="13" cy="13" r="1.2" fill="#ff3d9a" stroke="none"/>
+    </svg></span>
+    <div>
+      <div class="wordmark">NEON&nbsp;GRID</div>
+      <div class="kicker">SYNTHETIC HORIZON <b>/01</b></div>
+    </div>
+  </div>
+
+  <div class="rail">
+    <div class="live"><span class="dot"></span>RENDERING</div>
+    <div>SECTOR 07 — 1984</div>
+    <div>FIELD DENSITY 1.00</div>
+  </div>
+
+  <div class="foot">
+    <div class="coords">ORIGIN <em>00.00 / 00.00</em><br>HORIZON <em>+00°05′</em><br>GRIDLOCK <em>STABLE</em></div>
+    <div class="hint" id="hint">MOVE TO LOOK &nbsp;·&nbsp; CLICK TO PULSE</div>
+    <div class="caption"><strong>NO SIGNAL BEYOND</strong>WIREFRAME TERRITORY<br>ANALOG DUSK, 35MM</div>
+  </div>
+</div>
+<div class="veil" id="veil"></div>
+
+<script>
+(() => {
+  "use strict";
+  const canvas = document.getElementById('stage');
+  const gl = canvas.getContext('webgl2', {
+    antialias: false, alpha: false, depth: false, stencil: false,
+    powerPreference: 'high-performance', preserveDrawingBuffer: true
+  });
+  const veil = document.getElementById('veil');
+  const hint = document.getElementById('hint');
+
+  if (!gl) {
+    document.body.innerHTML = '<div style="position:fixed;inset:0;display:grid;place-items:center;color:#9ff;font:12px monospace;letter-spacing:.2em">WEBGL2 REQUIRED</div>';
+    return;
+  }
+
+  const floatOK = !!gl.getExtension('EXT_color_buffer_float');
+  const HDR = floatOK ? gl.RGBA16F : gl.RGBA8;
+
+  const VS = `#version 300 es
+  precision highp float;
+  void main(){
+    vec2 p = vec2(-1., -1.);
+    if(gl_VertexID == 1) p = vec2(3., -1.);
+    if(gl_VertexID == 2) p = vec2(-1., 3.);
+    gl_Position = vec4(p, 0., 1.);
+  }`;
+
+  const SCENE = `#version 300 es
+  precision highp float;
+  out vec4 outColor;
+  uniform vec2 uRes;
+  uniform float uTime;
+  uniform vec2 uMouse;
+  uniform float uPulseR;
+  uniform float uPulseAmp;
+
+  const float PI = 3.141592653589793;
+  const float SUN_R = 0.121;
+  const float SUN_Y = 0.088;
+
+  float hash11(float p){
+    p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p);
+  }
+  float hash21(vec2 p){
+    p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y);
+  }
+  float noise1(float x){
+    float i = floor(x), f = fract(x);
+    float u = f * f * (3.0 - 2.0 * f);
+    return mix(hash11(i), hash11(i + 1.0), u);
+  }
+  float fbm1(float x){
+    float s = 0.0, a = 0.5;
+    for(int i = 0; i < 4; i++){ s += a * noise1(x); x = x * 2.07 + 11.3; a *= 0.5; }
+    return s;
+  }
+  float lineAA(float q, float w){
+    float d = abs(fract(q) - 0.5);
+    float aa = max(fwidth(q) * w, 1e-5);
+    return 1.0 - smoothstep(0.0, aa, d);
+  }
+
+  float ridge(float az, float layer){
+    float a = abs(az);
+    float wall = smoothstep(0.035, 0.46, a);
+    float n = fbm1(az * 3.1 + layer * 19.7);
+    float sharp = 1.0 - abs(2.0 * noise1(az * 7.7 + layer * 7.3) - 1.0);
+    float spires = pow(sharp, 5.0) * smoothstep(0.16, 0.5, a);
+    float h = wall * (0.085 + 0.30 * n + 0.09 * noise1(az * 15.0 - layer * 3.0));
+    h += spires * (0.16 + 0.10 * layer);
+    h *= 0.68 + 0.17 * layer;
+    return h + 0.004;
+  }
+
+  vec3 skyBase(float az, float el){
+    vec3 top = vec3(0.009, 0.006, 0.045);
+    vec3 mid = vec3(0.075, 0.016, 0.165);
+    vec3 hor = vec3(0.34, 0.045, 0.235);
+    vec3 c = mix(mid, top, smoothstep(0.06, 0.85, el));
+    c = mix(hor, c, smoothstep(0.0, 0.20, el));
+    c += vec3(0.32, 0.07, 0.10) * exp(-abs(el - 0.01) * 16.0) * exp(-abs(az) * 0.55);
+    return c;
+  }
+
+  vec3 stars(float az, float el){
+    if(el < 0.045) return vec3(0.0);
+    vec2 sc = vec2(az * 100.0, el * 100.0);
+    vec2 id = floor(sc);
+    vec2 f = fract(sc) - 0.5;
+    float r = hash21(id);
+    vec3 c = vec3(0.0);
+    if(r > 0.855){
+      vec2 off = (vec2(hash21(id + 11.3), hash21(id + 27.9)) - 0.5) * 0.62;
+      float s = smoothstep(0.075, 0.0, length(f - off));
+      float tw = 0.42 + 0.58 * sin(uTime * (0.5 + r * 2.2) + r * 90.0);
+      c += s * tw * mix(vec3(0.45, 0.8, 1.0), vec3(1.0, 0.62, 0.85), hash21(id + 3.7));
+      c *= 0.55 + 0.9 * smoothstep(0.05, 0.35, el);
+    }
+    return c * 0.85;
+  }
+
+  vec3 domeGrid(float az, float el){
+    vec2 p = vec2(az, el - SUN_Y);
+    float rad = length(p);
+    float ang = atan(p.y, p.x);
+    float spokes = lineAA(ang / (2.0 * PI) * 26.0, 1.3);
+    float arcs = lineAA(rad * 5.2, 1.0);
+    float fade = smoothstep(0.65, 0.16, rad) * smoothstep(0.0, 0.035, el);
+    vec3 c = vec3(0.13, 0.72, 0.95) * (spokes * 0.055 + arcs * 0.045) * fade;
+    c += vec3(1.0, 0.25, 0.6) * lineAA(rad * 13.0, 1.0) * 0.04 * smoothstep(0.32, 0.02, rad);
+    return c;
+  }
+
+  vec3 sun(float az, float el){
+    float dx = az + 0.004 * sin(uTime * 0.13);
+    float dy = el - SUN_Y;
+    float d = length(vec2(dx, dy));
+    if(d > 0.46) return vec3(0.0);
+
+    float glowWide = exp(-d * 4.3);
+    float glowTight = exp(-d * 13.0);
+    vec3 c = vec3(1.0, 0.14, 0.48) * glowWide * 0.30;
+    c += vec3(1.0, 0.42, 0.20) * glowTight * 0.32;
+
+    float n = clamp((SUN_Y - el + SUN_R) / (2.0 * SUN_R), 0.0, 1.0);
+    float period = 0.083;
+    float f = fract(n / period);
+    float gapW = mix(0.60, 0.06, pow(n, 0.8));
+    float gap = smoothstep(gapW * 0.5, gapW * 0.5 - 0.055, abs(f - 0.5));
+    float disk = 1.0 - smoothstep(SUN_R - 0.0014, SUN_R + 0.0014, d);
+    float body = disk * (1.0 - gap);
+
+    vec3 low = vec3(1.0, 0.16, 0.52);
+    vec3 mid = vec3(1.0, 0.38, 0.31);
+    vec3 high = vec3(1.0, 0.80, 0.42);
+    vec3 sc = mix(low, mid, smoothstep(0.0, 0.52, n));
+    sc = mix(sc, high, smoothstep(0.45, 1.0, n));
+    sc *= 0.92 + 0.20 * sin(el * 620.0) * 0.0 + 0.12 * pow(n, 2.0);
+    c = mix(c, sc, body);
+
+    float rim = smoothstep(SUN_R + 0.0032, SUN_R - 0.0012, d) - smoothstep(SUN_R - 0.0012, SUN_R - 0.0034, d);
+    c += vec3(1.0, 0.92, 0.75) * rim * 0.85;
+    float halo = 1.0 - smoothstep(SUN_R + 0.0026, SUN_R + 0.0050, d);
+    halo *= smoothstep(SUN_R - 0.001, SUN_R + 0.002, d);
+    c += vec3(0.45, 0.95, 1.0) * halo * 0.55;
+
+    float pulse = exp(-pow((d - uPulseR * 0.12) * 5.0, 2.0)) * uPulseAmp;
+    c += vec3(0.6, 1.0, 1.0) * pulse * 0.35;
+    return c;
+  }
+
+  vec3 envColor(float az, float el, bool reflect){
+    vec3 col = skyBase(az, el);
+    col += stars(az, el);
+    col += domeGrid(az, el);
+    col += sun(az, el);
+
+    vec3 horizon = vec3(0.28, 0.05, 0.22);
+    for(int L = 0; L < 3; L++){
+      float l = float(L);
+      float h = ridge(az, l);
+      if(el < h){
+        float depth = clamp((h - el) / max(h, 0.2), 0.0, 1.0);
+        float haze = mix(0.72, 0.30, l / 2.0);
+        haze *= reflect ? 0.82 : 1.0;
+
+        vec3 fill = mix(vec3(0.030, 0.021, 0.075), vec3(0.008, 0.006, 0.030), smoothstep(0.0, 0.24, el));
+        fill = mix(fill, horizon, 0.30 * (1.0 - depth));
+        vec3 neon;
+        if(L == 0) neon = vec3(0.16, 0.78, 1.0);
+        else if(L == 1) neon = vec3(0.55, 0.38, 1.0);
+        else neon = vec3(1.0, 0.19, 0.62);
+
+        float vq = az * 52.0 + l * 0.31;
+        float vline = lineAA(vq, 1.35);
+        float hq = (h - el) * 40.0 + l * 7.0;
+        float hline = lineAA(hq, 1.1);
+        float mesh = max(vline * 0.85, hline * 0.42);
+        mesh *= smoothstep(0.0, 0.04, h - el) * (1.0 - 0.45 * (1.0 - depth));
+
+        float rim = smoothstep(0.0045, 0.0, h - el);
+        float sideLight = exp(-abs(az) * 2.2) * smoothstep(0.0, 0.25, el);
+
+        vec3 mc = fill;
+        mc += neon * mesh * 0.85;
+        mc += neon * exp(-(h - el) * 95.0) * 0.45;
+        mc += vec3(1.0, 0.30, 0.35) * sideLight * 0.20;
+        mc += neon * rim * 0.9;
+        mc += vec3(1.0, 0.55, 0.28) * exp(-abs(az) * 7.0) * exp(-el * 6.0) * 0.25;
+
+        float fadeBase = smoothstep(0.0, 0.035, el + 0.004);
+        col = mix(col, mc, haze * fadeBase);
+      }
+    }
+    return col;
+  }
+
+  vec3 floorLayer(vec3 ro, vec3 rd, float t, float az, float el){
+    vec3 p = ro + rd * t;
+    float rp = length(p.xz - ro.xz);
+    vec3 col = vec3(0.008, 0.006, 0.022);
+
+    float fres = pow(1.0 - clamp(-rd.y, 0.0, 1.0), 3.0);
+    float rip = sin(p.z * 1.35 + uTime * 1.7) * (0.006 + 0.010 * smoothstep(6.0, 45.0, t));
+    rip += sin(p.x * 2.3 - uTime * 1.1) * 0.004;
+    vec3 refl = envColor(az + rip, -el + rip * 0.6, true);
+    refl *= 0.90;
+    float reflMix = clamp(0.24 + 0.62 * fres, 0.0, 0.86);
+    col = mix(col, refl, reflMix);
+
+    vec2 q = vec2(p.x * 0.88, (p.z + uTime * 2.4) * 1.05);
+    float g1 = lineAA(q.x, 1.5);
+    float g2 = lineAA(q.y, 1.5);
+    float grid = max(g1, g2);
+    q *= 0.25;
+    float gM = max(lineAA(q.x, 1.25), lineAA(q.y, 1.25)) * 0.65;
+    grid = max(grid, gM);
+
+    vec3 cyan = vec3(0.14, 0.92, 1.0);
+    vec3 pink = vec3(1.0, 0.17, 0.58);
+    float hot = exp(-abs(p.x) * 0.32) * 0.8;
+    vec3 gcol = mix(cyan, pink, hot);
+
+    float fog = exp(-t * 0.030);
+    float nearFade = smoothstep(1.2, 5.0, t);
+    col += gcol * grid * 1.45 * fog * nearFade;
+
+    float lane = exp(-abs(p.x) * 1.1);
+    col += pink * lane * exp(-pow((t - 30.0) / 22.0, 2.0)) * 0.7;
+    col += pink * exp(-abs(p.x) * 0.55) * exp(-t * 0.055) * 0.30;
+    col += cyan * exp(-abs(p.x) * 0.35) * exp(-abs(p.z + 2.0) * 0.06) * 0.06;
+
+    float travel = exp(-pow((fract((q.y * 0.25) - uTime * 0.11) - 0.5) * 11.0, 2.0));
+    col += gcol * grid * travel * 0.8 * fog;
+
+    float ring = exp(-pow((rp - uPulseR) / 1.6, 2.0)) * uPulseAmp;
+    col += vec3(0.6, 1.0, 1.0) * ring * (grid * 1.6 + 0.10) * fog;
+
+    col *= 0.55 + 0.45 * fog;
+    return col;
+  }
+
+  void main(){
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
+    float aspect = uRes.x / uRes.y;
+    vec3 rd = normalize(vec3(uv.x * 1.04, uv.y * 1.04, -0.9));
+
+    float yaw = -uMouse.x * 0.045 + sin(uTime * 0.11) * 0.008;
+    float pitch = 0.086 + uMouse.y * 0.028 + sin(uTime * 0.17) * 0.0035;
+    float cy = cos(yaw), sy = sin(yaw);
+    rd = vec3(rd.x * cy + rd.z * sy, rd.y, -rd.x * sy + rd.z * cy);
+    float cp = cos(pitch), sp = sin(pitch);
+    rd = vec3(rd.x, rd.y * cp - rd.z * sp, rd.y * sp + rd.z * cp);
+    rd = normalize(rd);
+
+    vec3 ro = vec3(-uMouse.x * 0.42 + sin(uTime * 0.23) * 0.06,
+                   1.62 + sin(uTime * 0.51) * 0.028,
+                   6.0);
+
+    float az = atan(rd.x, -rd.z);
+    float el = asin(clamp(rd.y, -1.0, 1.0));
+
+    vec3 col;
+    if(rd.y < -0.00015){
+      float t = -ro.y / rd.y;
+      col = floorLayer(ro, rd, t, az, el);
+      float fog = 1.0 - exp(-t * 0.016);
+      col = mix(col, skyBase(az, 0.0) * 0.85, fog * 0.9);
+    } else {
+      col = envColor(az, el, false);
+    }
+
+    col += vec3(0.008, 0.004, 0.020);
+    outColor = vec4(max(col, 0.0), 1.0);
+  }`;
+
+  const BRIGHT = `#version 300 es
+  precision highp float;
+  out vec4 o;
+  uniform sampler2D uTex;
+  uniform vec2 uRes;
+  uniform float uThresh;
+  void main(){
+    vec2 uv = gl_FragCoord.xy / uRes;
+    vec3 c = texture(uTex, uv).rgb;
+    float l = dot(c, vec3(0.299, 0.587, 0.114));
+    float k = smoothstep(uThresh, uThresh + 0.42, l);
+    o = vec4(c * k, 1.0);
+  }`;
+
+  const BLUR = `#version 300 es
+  precision highp float;
+  out vec4 o;
+  uniform sampler2D uTex;
+  uniform vec2 uRes;
+  uniform vec2 uDir;
+  void main(){
+    vec2 uv = gl_FragCoord.xy / uRes;
+    vec2 px = uDir / uRes;
+    vec3 s = texture(uTex, uv).rgb * 0.227027;
+    s += texture(uTex, uv + px * 1.3846).rgb * 0.316216;
+    s += texture(uTex, uv - px * 1.3846).rgb * 0.316216;
+    s += texture(uTex, uv + px * 3.2308).rgb * 0.070270;
+    s += texture(uTex, uv - px * 3.2308).rgb * 0.070270;
+    o = vec4(s, 1.0);
+  }`;
+
+  const COMP = `#version 300 es
+  precision highp float;
+  out vec4 o;
+  uniform sampler2D uScene;
+  uniform sampler2D uBloom;
+  uniform vec2 uRes;
+  uniform float uTime;
+  uniform float uPulseAmp;
+
+  vec3 aces(vec3 x){
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+  }
+  float hash(vec2 p){
+    p = fract(p * vec2(443.897, 441.423)); p += dot(p, p + 19.19); return fract(p.x * p.y);
+  }
+  void main(){
+    vec2 uv = gl_FragCoord.xy / uRes;
+    vec2 d = uv - 0.5;
+    float r2 = dot(d, d);
+    float ca = (0.0012 + r2 * 0.0075) * (1.0 + uPulseAmp * 0.9);
+
+    vec3 c;
+    c.r = texture(uScene, uv + d * ca).r;
+    c.g = texture(uScene, uv).g;
+    c.b = texture(uScene, uv - d * ca).b;
+
+    vec3 bloom = texture(uBloom, uv).rgb;
+    c += bloom * vec3(1.0, 0.72, 0.92) * 0.95;
+
+    float vig = smoothstep(1.05, 0.28, r2 * 1.6);
+    c *= mix(0.55, 1.0, vig);
+    c = aces(c * 1.06);
+
+    c = mix(c, c * c * (3.0 - 2.0 * c), 0.16);
+    float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = mix(vec3(lum), c, 1.08);
+    c.rb *= vec3(1.015, 1.035);
+
+    float scan = sin(gl_FragCoord.y * 1.55) * 0.5 + 0.5;
+    c *= 0.972 + 0.028 * scan;
+    c *= 0.985 + 0.015 * sin(gl_FragCoord.y * 0.22 + uTime * 0.7);
+
+    float g = hash(gl_FragCoord.xy + fract(uTime * 13.71) * 431.0) - 0.5;
+    c += g * 0.028;
+    o = vec4(max(c, 0.0), 1.0);
+  }`;
+
+  function compile(type, src){
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  function program(fs){
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if(!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    return p;
+  }
+
+  let sceneP, brightP, blurP, compP;
+  try{
+    sceneP = program(SCENE); brightP = program(BRIGHT); blurP = program(BLUR); compP = program(COMP);
+  }catch(e){
+    console.error(e);
+    return;
+  }
+
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+
+  function target(w, h, hdr){
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, hdr ? HDR : gl.RGBA8, w, h, 0, gl.RGBA, hdr && floatOK ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    if(gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE && hdr){
+      gl.deleteTexture(tex); gl.deleteFramebuffer(fb);
+      return target(w, h, false);
+    }
+    return { tex, fb, w, h };
+  }
+
+  let W = 0, H = 0, bw = 0, bh = 0;
+  let sceneT, bA, bB;
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.6);
+
+  function resize(){
+    const cw = Math.max(320, window.innerWidth);
+    const ch = Math.max(240, window.innerHeight);
+    let scale = dpr;
+    if(cw * ch * dpr * dpr > 2.9e6) scale = Math.sqrt(2.9e6 / (cw * ch));
+    W = Math.max(320, Math.round(cw * scale));
+    H = Math.max(240, Math.round(ch * scale));
+    canvas.width = W; canvas.height = H;
+    bA && (gl.deleteTexture(bA.tex), gl.deleteFramebuffer(bA.fb));
+    bB && (gl.deleteTexture(bB.tex), gl.deleteFramebuffer(bB.fb));
+    sceneT && (gl.deleteTexture(sceneT.tex), gl.deleteFramebuffer(sceneT.fb));
+    bw = Math.max(64, W >> 2); bh = Math.max(64, H >> 2);
+    sceneT = target(W, H, true);
+    bA = target(bw, bh, true);
+    bB = target(bw, bh, true);
+  }
+
+  resize();
+  addEventListener('resize', () => { resize(); }, { passive: true });
+
+  function bindTex(unit, tex, loc){
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(loc, unit);
+  }
+
+  const mouse = { x: 0, y: 0, tx: 0, ty: 0 };
+  function pointer(e){
+    mouse.tx = (e.clientX / innerWidth) * 2 - 1;
+    mouse.ty = -((e.clientY / innerHeight) * 2 - 1);
+  }
+  addEventListener('pointermove', pointer, { passive: true });
+  addEventListener('pointerdown', e => { pointer(e); pulse(); }, { passive: true });
+
+  let pulseR = 0, pulseAmp = 0, nextPulse = 0;
+  function pulse(){
+    pulseR = 0.5; pulseAmp = 1.0;
+    if(nextPulse) clearTimeout(nextPulse);
+    nextPulse = setTimeout(() => hint.classList.add('hide'), 2500);
+  }
+  setTimeout(() => hint.classList.add('hide'), 8000);
+
+  let time = 0, last = performance.now();
+
+  function frame(now){
+    let dt = Math.min((now - last) / 1000, 0.05);
+    last = now;
+    time += dt;
+
+    pulseR += dt * 17.0;
+    pulseAmp *= Math.pow(0.22, dt);
+    mouse.x += (mouse.tx - mouse.x) * Math.min(1.0, dt * 2.6);
+    mouse.y += (mouse.ty - mouse.y) * Math.min(1.0, dt * 2.6);
+
+    // scene
+    gl.bindFramebuffer(gl.FRAMEBUFFER, sceneT.fb);
+    gl.viewport(0, 0, W, H);
+    gl.useProgram(sceneP);
+    gl.uniform2f(gl.getUniformLocation(sceneP, 'uRes'), W, H);
+    gl.uniform1f(gl.getUniformLocation(sceneP, 'uTime'), time);
+    gl.uniform2f(gl.getUniformLocation(sceneP, 'uMouse'), mouse.x, mouse.y);
+    gl.uniform1f(gl.getUniformLocation(sceneP, 'uPulseR'), pulseR);
+    gl.uniform1f(gl.getUniformLocation(sceneP, 'uPulseAmp'), pulseAmp);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // bright
+    gl.bindFramebuffer(gl.FRAMEBUFFER, bA.fb);
+    gl.viewport(0, 0, bw, bh);
+    gl.useProgram(brightP);
+    gl.uniform2f(gl.getUniformLocation(brightP, 'uRes'), bw, bh);
+    gl.uniform1f(gl.getUniformLocation(brightP, 'uThresh'), 0.52);
+    bindTex(0, sceneT.tex, gl.getUniformLocation(brightP, 'uTex'));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // blur h
+    gl.bindFramebuffer(gl.FRAMEBUFFER, bB.fb);
+    gl.useProgram(blurP);
+    gl.uniform2f(gl.getUniformLocation(blurP, 'uRes'), bw, bh);
+    gl.uniform2f(gl.getUniformLocation(blurP, 'uDir'), 1.6, 0.0);
+    bindTex(0, bA.tex, gl.getUniformLocation(blurP, 'uTex'));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // blur v
+    gl.bindFramebuffer(gl.FRAMEBUFFER, bA.fb);
+    gl.uniform2f(gl.getUniformLocation(blurP, 'uDir'), 0.0, 1.6);
+    bindTex(0, bB.tex, gl.getUniformLocation(blurP, 'uTex'));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // composite
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, W, H);
+    gl.useProgram(compP);
+    gl.uniform2f(gl.getUniformLocation(compP, 'uRes'), W, H);
+    gl.uniform1f(gl.getUniformLocation(compP, 'uTime'), time);
+    gl.uniform1f(gl.getUniformLocation(compP, 'uPulseAmp'), pulseAmp);
+    bindTex(0, sceneT.tex, gl.getUniformLocation(compP, 'uScene'));
+    bindTex(1, bA.tex, gl.getUniformLocation(compP, 'uBloom'));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(t => {
+    frame(t);
+    requestAnimationFrame(() => veil.classList.add('off'));
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ночь на хребте</title>
+<style>
+  :root{
+    --ink:#04070d;
+    --pale:#e7f0f2;
+    --mist:#8fb3bd;
+    --ember:#ffb26f;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;background:var(--ink);overflow:hidden}
+  body{
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    color:var(--pale);
+    cursor:crosshair;
+    -webkit-font-smoothing:antialiased;
+  }
+  #stage{position:fixed;inset:0}
+  canvas{display:block;width:100%;height:100%}
+  .ui{position:fixed;inset:0;pointer-events:none;z-index:2}
+  .coords{
+    position:absolute;top:26px;left:30px;
+    font-size:9px;letter-spacing:.24em;text-transform:uppercase;
+    color:rgba(199,224,231,.52);
+    font-variant-numeric:tabular-nums;
+  }
+  .coords::before{
+    content:"";display:inline-block;width:22px;height:1px;
+    background:rgba(160,205,214,.5);vertical-align:middle;
+    margin-right:10px;transform:translateY(-1px);
+  }
+  .title{
+    position:absolute;left:30px;bottom:28px;
+    display:flex;align-items:flex-end;gap:14px;
+  }
+  .title .rule{
+    width:1px;height:52px;background:linear-gradient(to bottom,rgba(190,225,230,0),rgba(190,225,230,.5));
+    margin-bottom:3px;
+  }
+  h1{
+    font-family:Georgia,"Times New Roman",serif;
+    font-weight:400;font-style:italic;
+    font-size:clamp(22px,2.5vw,36px);
+    letter-spacing:.015em;line-height:1;
+    color:#e9f1f1;
+    text-shadow:0 1px 22px rgba(0,0,0,.7);
+  }
+  .sub{
+    margin-top:9px;
+    font-size:8.5px;letter-spacing:.32em;text-transform:uppercase;
+    color:rgba(143,179,189,.8);
+  }
+  .hint{
+    position:absolute;right:30px;bottom:31px;
+    font-size:8.5px;letter-spacing:.2em;text-transform:uppercase;
+    color:rgba(143,179,189,.45);
+    text-align:right;line-height:2;
+  }
+  .hint b{color:rgba(227,163,110,.72);font-weight:400}
+  .frame{position:fixed;inset:13px;border:1px solid rgba(173,207,214,.12);pointer-events:none;z-index:3}
+  .fade{position:fixed;inset:0;background:#02050a;z-index:4;pointer-events:none;animation:in 2.6s cubic-bezier(.2,.7,.2,1) forwards}
+  @keyframes in{to{opacity:0}}
+  @media (max-width:640px){
+    .coords{top:22px;left:22px}
+    .title{left:22px;bottom:24px}
+    .hint{display:none}
+    .frame{inset:9px}
+    h1{font-size:24px}
+  }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas></div>
+<div class="ui">
+  <div class="coords">43°12′ N — 42°26′ E</div>
+  <div class="title">
+    <span class="rule"></span>
+    <div>
+      <h1>Ночь на хребте</h1>
+      <div class="sub">тишина на высоте 2&thinsp;400 м</div>
+    </div>
+  </div>
+  <div class="hint">движение мыши — сместить небо<br><b>клик</b> — выпустить метеор</div>
+</div>
+<div class="frame"></div>
+<div class="fade"></div>
+
+<script>
+(() => {
+  "use strict";
+
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d", { alpha: false });
+
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const smooth = t => t * t * (3 - 2 * t);
+
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+
+  // ---------- dimensions ----------
+  let W = 0, H = 0, DPR = 1, horizon = 0, minDim = 1;
+  let skyCanvas, sceneCanvas, moonCanvas, grainTile;
+  let skyImg, reflImg;
+  let mountainLayers = [];
+  let stars = [], twinklers = [], pines = [];
+  let meteorList = [];
+  let nextMeteor = 6;
+  let pointer = { x: 0, y: 0, tx: 0, ty: 0 };
+  let start = performance.now();
+  let reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---------- ridge generation ----------
+  function makeNoise(seed) {
+    const r = mulberry32(seed);
+    const table = new Float32Array(512);
+    for (let i = 0; i < 512; i++) table[i] = r();
+    return x => {
+      const i = Math.floor(x), f = x - i;
+      const a = table[i & 511], b = table[(i + 1) & 511];
+      return a + (b - a) * smooth(f);
+    };
+  }
+
+  function ridge(seed, baseY, amp, peaks, scale) {
+    const nz = makeNoise(seed);
+    const pts = [];
+    const step = Math.max(2, W / 480);
+    for (let x = 0; x <= W + step; x += step) {
+      let env = 0.16;
+      for (const p of peaks) {
+        const d = (x - p.x * W) / (p.w * W);
+        env = Math.max(env, p.h * Math.exp(-d * d * 1.7));
+      }
+      let n = 0, a = 1, tot = 0, f = scale;
+      for (let o = 0; o < 5; o++) {
+        n += a * (1 - Math.abs(nz(x * f + seed * 3.1 + o * 21) * 2 - 1));
+        tot += a; a *= 0.5; f *= 2.15;
+      }
+      n /= tot;
+      pts.push({ x, y: baseY - amp * env * (0.28 + 0.82 * n) });
+    }
+    return pts;
+  }
+
+  function ridgePath(pts, baseY) {
+    ctx.beginPath();
+    ctx.moveTo(-4, baseY + 4);
+    ctx.lineTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.lineTo(W + 4, baseY + 4);
+    ctx.closePath();
+  }
+
+  function drawMountains(target) {
+    const s = Math.max(0.65, minDim / 900);
+    const defs = [
+      { seed: 91, base: horizon + 0.022 * H, amp: 0.335 * H, scale: 0.0024,
+        peaks: [{x:.31,w:.20,h:1},{x:.57,w:.13,h:.62},{x:.79,w:.16,h:.55}],
+        top:"#1b3a52", bot:"#0d2233", rim:"#a9cbd8", rimA:.34, snow:.62, haze:.20 },
+      { seed: 173, base: horizon + 0.012 * H, amp: 0.255 * H, scale: 0.0031,
+        peaks: [{x:.20,w:.17,h:.92},{x:.45,w:.12,h:.78},{x:.68,w:.19,h:.7}],
+        top:"#142f45", bot:"#0a1c2b", rim:"#89b3c4", rimA:.26, snow:.34, haze:.30 },
+      { seed: 254, base: horizon + 0.004 * H, amp: 0.185 * H, scale: 0.0040,
+        peaks: [{x:.36,w:.20,h:1},{x:.64,w:.14,h:.74},{x:.86,w:.13,h:.5}],
+        top:"#0d263a", bot:"#071725", rim:"#6f9daf", rimA:.2, snow:.14, haze:.34 }
+    ];
+    for (const L of defs) {
+      const pts = ridge(L.seed, L.base, L.amp, L.peaks, L.scale);
+      const g = target.createLinearGradient(0, L.base - L.amp, 0, L.base + 0.03 * H);
+      g.addColorStop(0, L.top);
+      g.addColorStop(1, L.bot);
+      target.save();
+      ridgePath(pts, L.base);
+      target.fillStyle = g;
+      target.fill();
+
+      // atmospheric veil
+      target.globalCompositeOperation = "screen";
+      target.fillStyle = `rgba(58,112,132,${L.haze * 0.35})`;
+      target.fill();
+      target.globalCompositeOperation = "source-over";
+
+      target.clip();
+      // rim light
+      for (let i = 1; i < pts.length; i++) {
+        const p = pts[i], q = pts[i - 1];
+        const alt = clamp((L.base - p.y) / (L.amp * 1.02), 0, 1);
+        const a = L.rimA * Math.pow(alt, 1.7);
+        if (a < 0.012) continue;
+        target.strokeStyle = L.rim;
+        target.globalAlpha = a;
+        target.lineWidth = (1.1 + alt * 1.3) * s;
+        target.beginPath(); target.moveTo(q.x, q.y); target.lineTo(p.x, p.y); target.stroke();
+      }
+      // moonlit snow
+      const r = mulberry32(L.seed * 7);
+      const maxA = L.amp * 0.9;
+      target.globalAlpha = 1;
+      for (let i = 0; i < 700; i++) {
+        const p = pts[(r() * pts.length) | 0];
+        const alt = (L.base - p.y) / maxA;
+        if (r() > alt * alt * 1.15 || alt < 0.32) continue;
+        const len = (5 + r() * 22) * s * (0.4 + alt);
+        target.fillStyle = `rgba(206,230,238,${L.snow * (0.05 + r() * 0.2) * alt})`;
+        target.beginPath();
+        target.moveTo(p.x, p.y);
+        target.lineTo(p.x + (1.5 + r() * 5) * s, p.y + len);
+        target.lineTo(p.x - (1 + r() * 3) * s, p.y + len * (0.4 + r() * 0.5));
+        target.closePath();
+        target.fill();
+      }
+      // facets / gullies
+      target.lineWidth = 0.7 * s;
+      for (let i = 0; i < 260; i++) {
+        const p = pts[(r() * pts.length) | 0];
+        const alt = (L.base - p.y) / maxA;
+        if (alt < 0.45) continue;
+        target.strokeStyle = `rgba(12,32,44,${0.16 + r() * 0.2})`;
+        target.beginPath();
+        target.moveTo(p.x, p.y + 2);
+        target.lineTo(p.x + (r() - 0.5) * 9 * s, p.y + (10 + r() * 30) * s);
+        target.stroke();
+      }
+      target.restore();
+    }
+  }
+
+  // ---------- sky ----------
+  function buildStars() {
+    const r = mulberry32(777);
+    stars = []; twinklers = [];
+    const bandA = { x: 0.06, y: 0.98 }, bandB = { x: 0.98, y: -0.04 };
+    const bandPoint = t => {
+      const x = lerp(bandA.x, bandB.x, t) * W;
+      const y = lerp(bandA.y, bandB.y, t) * H;
+      const nx = -(bandB.y - bandA.y), ny = bandB.x - bandA.x;
+      const off = (r() + r() + r() - 1.5) * 0.26 * (Math.min(W, H) / 0.9);
+      return { x: x + nx * off, y: y + ny * off };
+    };
+
+    for (let i = 0; i < 1500; i++) {
+      let x, y;
+      if (r() < 0.62) { const p = bandPoint(r()); x = p.x; y = p.y; }
+      else { x = r() * W; y = Math.pow(r(), 0.78) * horizon; }
+      if (y < 0 || y > horizon) continue;
+      const m = Math.pow(r(), 3.1);
+      stars.push({
+        x, y,
+        size: 0.35 + m * 1.7,
+        a: 0.12 + m * 0.85,
+        hue: r() < 0.22 ? "190,220,235" : r() < 0.3 ? "245,224,195" : "232,240,248",
+        ph: r() * TAU,
+        sp: 0.5 + r() * 1.8,
+        tw: m > 0.18
+      });
+    }
+    // brightest few
+    for (let i = 0; i < 46; i++) {
+      const p = r() < 0.5 ? bandPoint(r()) : { x: r() * W, y: r() * horizon * 0.8 };
+      const m = 0.6 + r() * 0.4;
+      const st = { x: p.x, y: p.y, size: 1.2 + m * 1.6, a: 0.66 + m * 0.3,
+                   hue: r() < 0.4 ? "198,224,244" : "250,244,226", ph: r() * TAU,
+                   sp: 0.35 + r() * 1.2, tw: true, flare: true };
+      stars.push(st);
+      twinklers.push(st);
+    }
+    for (const st of stars) if (st.tw) twinklers.push(st);
+  }
+
+  function buildSky() {
+    const c = document.createElement("canvas");
+    c.width = Math.ceil(W * DPR); c.height = Math.ceil(H * DPR);
+    const g = c.getContext("2d");
+    g.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    const grad = g.createLinearGradient(0, 0, 0, horizon);
+    grad.addColorStop(0, "#02040c");
+    grad.addColorStop(0.34, "#051020");
+    grad.addColorStop(0.68, "#0a2233");
+    grad.addColorStop(0.9, "#0f3341");
+    grad.addColorStop(1, "#15414a");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, W, horizon + 2);
+
+    // soft horizon bloom
+    let rg = g.createRadialGradient(W * 0.42, horizon, 10, W * 0.42, horizon, W * 0.62);
+    rg.addColorStop(0, "rgba(73,138,148,.28)");
+    rg.addColorStop(0.45, "rgba(38,82,101,.11)");
+    rg.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = rg; g.fillRect(0, 0, W, horizon + 2);
+
+    // milky way — dusty luminous band
+    const r = mulberry32(2024);
+    const A = { x: -0.06 * W, y: 1.02 * H }, B = { x: 1.02 * W, y: -0.02 * H };
+    const dx = B.x - A.x, dy = B.y - A.y;
+    const lenB = Math.hypot(dx, dy);
+    const nx = -dy / lenB, ny = dx / lenB;
+    g.globalCompositeOperation = "screen";
+    for (let i = 0; i < 460; i++) {
+      const t = r(), p = { x: A.x + dx * t, y: A.y + dy * t };
+      const off = (r() + r() + r() - 1.5) * (Math.min(W, H) * 0.20);
+      const x = p.x + nx * off, y = p.y + ny * off;
+      const rad = (14 + Math.pow(r(), 1.7) * 150) * (minDim / 900);
+      const pal = r();
+      const col = pal < 0.34 ? "44,88,146" : pal < 0.62 ? "86,76,140" : pal < 0.84 ? "44,120,124" : "140,150,170";
+      const rg2 = g.createRadialGradient(x, y, 0, x, y, rad);
+      rg2.addColorStop(0, `rgba(${col},${0.03 + r() * 0.055})`);
+      rg2.addColorStop(1, `rgba(${col},0)`);
+      g.fillStyle = rg2;
+      g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+    }
+    g.globalCompositeOperation = "source-over";
+    // dark dust lanes
+    for (let i = 0; i < 150; i++) {
+      const t = r(), p = { x: A.x + dx * t, y: A.y + dy * t };
+      const off = (r() + r() + r() - 1.5) * (Math.min(W, H) * 0.10);
+      const x = p.x + nx * off, y = p.y + ny * off;
+      const rad = (10 + r() * 90) * (minDim / 900);
+      const rg3 = g.createRadialGradient(x, y, 0, x, y, rad);
+      rg3.addColorStop(0, `rgba(3,8,16,${0.12 + r() * 0.2})`);
+      rg3.addColorStop(1, "rgba(3,8,16,0)");
+      g.fillStyle = rg3; g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+    }
+
+    // stars
+    for (const st of stars) {
+      g.globalAlpha = st.a;
+      g.fillStyle = `rgb(${st.hue})`;
+      g.beginPath(); g.arc(st.x, st.y, st.size * 0.62, 0, TAU); g.fill();
+      if (st.size > 1.1) {
+        g.globalAlpha = st.a * 0.16;
+        g.beginPath(); g.arc(st.x, st.y, st.size * 3.2, 0, TAU); g.fill();
+      }
+      if (st.flare) {
+        const fl = st.size * 9;
+        const lg = g.createLinearGradient(st.x - fl, st.y, st.x + fl, st.y);
+        lg.addColorStop(0, "rgba(210,232,245,0)");
+        lg.addColorStop(0.5, `rgba(240,248,252,${0.34 * st.a})`);
+        lg.addColorStop(1, "rgba(210,232,245,0)");
+        g.globalAlpha = 1; g.fillStyle = lg;
+        g.fillRect(st.x - fl, st.y - 0.35, fl * 2, 0.7);
+        const lg2 = g.createLinearGradient(st.x, st.y - fl, st.x, st.y + fl);
+        lg2.addColorStop(0, "rgba(210,232,245,0)");
+        lg2.addColorStop(0.5, `rgba(240,248,252,${0.22 * st.a})`);
+        lg2.addColorStop(1, "rgba(210,232,245,0)");
+        g.fillStyle = lg2;
+        g.fillRect(st.x - 0.35, st.y - fl, 0.7, fl * 2);
+      }
+    }
+    g.globalAlpha = 1;
+
+    // moon
+    const s = Math.max(0.72, minDim / 900);
+    const mx = W * 0.785, my = H * 0.175, mr = 15 * s;
+    const halo = g.createRadialGradient(mx, my, mr * 0.6, mx, my, mr * 11);
+    halo.addColorStop(0, "rgba(255,246,218,.28)");
+    halo.addColorStop(0.18, "rgba(230,228,210,.10)");
+    halo.addColorStop(0.55, "rgba(170,200,215,.04)");
+    halo.addColorStop(1, "rgba(170,200,215,0)");
+    g.fillStyle = halo;
+    g.fillRect(mx - mr * 11, my - mr * 11, mr * 22, mr * 22);
+
+    const mc = document.createElement("canvas");
+    mc.width = Math.ceil(mr * 2.6 * DPR); mc.height = Math.ceil(mr * 2.6 * DPR);
+    const mg = mc.getContext("2d");
+    mg.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const ccx = mr * 1.3, ccy = mr * 1.3;
+    mg.fillStyle = "#fbf3da";
+    mg.beginPath(); mg.arc(ccx, ccy, mr, 0, TAU); mg.fill();
+    mg.globalCompositeOperation = "destination-out";
+    mg.beginPath(); mg.arc(ccx + mr * 0.62, ccy - mr * 0.38, mr * 0.98, 0, TAU); mg.fill();
+    mg.globalCompositeOperation = "source-over";
+    // maria
+    mg.globalCompositeOperation = "source-atop";
+    mg.fillStyle = "rgba(150,150,140,.18)";
+    for (let i = 0; i < 6; i++) {
+      mg.beginPath();
+      mg.arc(ccx - mr * 0.35 + r() * mr * 0.7, ccy + (r() - 0.2) * mr, mr * (0.1 + r() * 0.16), 0, TAU);
+      mg.fill();
+    }
+    g.globalAlpha = 0.95;
+    g.drawImage(mc, mx - ccx, my - ccy, mr * 2.6, mr * 2.6);
+    g.globalAlpha = 1;
+
+    // haze over horizon
+    const hz = g.createLinearGradient(0, horizon - H * 0.13, 0, horizon + 2);
+    hz.addColorStop(0, "rgba(22,63,76,0)");
+    hz.addColorStop(1, "rgba(30,78,88,.55)");
+    g.fillStyle = hz; g.fillRect(0, horizon - H * 0.13, W, H * 0.13 + 2);
+
+    // fine grain
+    const img = g.getImageData(0, 0, c.width, c.height);
+    const d = img.data;
+    const rn = mulberry32(5);
+    for (let i = 0; i < d.length; i += 4) {
+      const n = (rn() - 0.5) * 12;
+      d[i] += n; d[i + 1] += n; d[i + 2] += n;
+    }
+    g.putImageData(img, 0, 0);
+
+    skyImg = c;
+  }
+
+  // ---------- foreground ----------
+  function buildPines() {
+    const r = mulberry32(404);
+    pines = [];
+    const add = (x, base, h, spread) => pines.push({ x, base, h, spread, seed: r() * 1000 });
+    for (let i = 0; i < 7; i++) {
+      const x = r() * W * 0.24;
+      add(x, H * (0.9 + r() * 0.08), H * (0.12 + r() * 0.14), (0.9 + r() * 0.6));
+    }
+    for (let i = 0; i < 5; i++) {
+      const x = W - r() * W * 0.17;
+      add(x, H * (0.88 + r() * 0.08), H * (0.1 + r() * 0.16), (0.9 + r() * 0.5));
+    }
+    add(W * 0.135, H * 1.0, H * 0.27, 1.35);
+    add(W * 0.06, H * 0.995, H * 0.2, 1.1);
+  }
+
+  function drawPine(target, p) {
+    const r = mulberry32(p.seed);
+    const s = Math.max(0.6, minDim / 900);
+    target.fillStyle = "#02070c";
+    target.fillRect(p.x - 1.4 * s, p.base - p.h * 0.3, 2.8 * s, p.h * 0.32);
+    const tiers = 11;
+    for (let i = 0; i < tiers; i++) {
+      const t = i / (tiers - 1);
+      const y = p.base - p.h * (0.1 + t * 0.86);
+      const w = p.h * 0.26 * (1 - t * 0.92) * p.spread + 2 * s;
+      target.beginPath();
+      target.moveTo(p.x, y - p.h * 0.13);
+      target.lineTo(p.x + w * (0.8 + r() * 0.35), y + p.h * 0.01);
+      target.lineTo(p.x + w * 0.2, y + p.h * 0.012);
+      target.lineTo(p.x, y + p.h * 0.05);
+      target.lineTo(p.x - w * 0.2, y + p.h * 0.012);
+      target.lineTo(p.x - w * (0.8 + r() * 0.35), y + p.h * 0.01);
+      target.closePath();
+      target.fill();
+    }
+  }
+
+  function buildReflection() {
+    const sc = document.createElement("canvas");
+    sc.width = Math.ceil(W * DPR); sc.height = Math.ceil(H * DPR);
+    const g = sc.getContext("2d");
+    g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    g.drawImage(skyImg, 0, 0, W, H);
+    drawMountains(g);
+
+    const rc = document.createElement("canvas");
+    rc.width = Math.ceil(W * DPR); rc.height = Math.ceil(H * DPR);
+    const rg = rc.getContext("2d");
+    rg.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const sampleH = horizon;
+    for (let y = horizon; y < H; y++) {
+      const dpt = (y - horizon) / (H - horizon);
+      const sy = horizon - (y - horizon) * (0.72 + dpt * 0.35);
+      if (sy < 0) break;
+      const wob = Math.sin(y * 0.11) * 1.2 + Math.sin(y * 0.037 + 2) * 2.4;
+      rg.globalAlpha = 0.82 * (1 - dpt * 0.55);
+      rg.drawImage(sc, 0, sy * DPR, W * DPR, 1.2 * DPR, wob, y, W, 1.6);
+    }
+    rg.globalAlpha = 1;
+    rg.fillStyle = "rgba(5,16,23,.48)";
+    rg.fillRect(0, horizon, W, H - horizon);
+    const hz = rg.createLinearGradient(0, horizon, 0, horizon + H * 0.1);
+    hz.addColorStop(0, "rgba(54,121,133,.34)");
+    hz.addColorStop(1, "rgba(20,59,71,0)");
+    rg.fillStyle = hz; rg.fillRect(0, horizon, W, H * 0.1);
+    reflImg = rc;
+  }
+
+  // ---------- resize ----------
+  function resize() {
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = window.innerWidth; H = window.innerHeight;
+    minDim = Math.min(W, H);
+    horizon = H * 0.605;
+    canvas.width = Math.ceil(W * DPR); canvas.height = Math.ceil(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    buildStars();
+    buildSky();
+    buildPines();
+    buildReflection();
+    makeGrain();
+  }
+
+  function makeGrain() {
+    const c = document.createElement("canvas");
+    c.width = 180; c.height = 180;
+    const g = c.getContext("2d");
+    const img = g.createImageData(180, 180);
+    const r = mulberry32(88);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 110 + r() * 145;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = Math.floor(r() * 90);
+    }
+    g.putImageData(img, 0, 0);
+    grainTile = ctx.createPattern(c, "repeat");
+  }
+
+  // ---------- animation ----------
+  function spawnMeteor(x, y) {
+    const ang = 0.48 + Math.random() * 0.5;
+    const sp = 420 + Math.random() * 380;
+    meteorList.push({
+      x: x ?? W * (0.12 + Math.random() * 0.7),
+      y: y ?? H * (0.04 + Math.random() * 0.24),
+      vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+      life: 1, len: 90 + Math.random() * 120,
+      w: 0.8 + Math.random() * 1.1
+    });
+  }
+
+  function drawAurora(t) {
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    for (let b = 0; b < 3; b++) {
+      const ph = b * 2.1;
+      const baseY = horizon - H * (0.16 + b * 0.055);
+      const height = H * (0.08 + b * 0.018);
+      ctx.beginPath();
+      for (let x = -20; x <= W + 20; x += 18) {
+        const y = baseY + Math.sin(x * 0.0034 + t * 0.09 + ph) * 16
+                       + Math.sin(x * 0.0012 - t * 0.055 + ph * 2) * 28;
+        if (x === -20) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      for (let x = W + 20; x >= -20; x -= 18) {
+        const y = baseY + height + Math.sin(x * 0.0026 + t * 0.12 + ph) * 22
+                       + Math.sin(x * 0.0009 + t * 0.04) * 12;
+        ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      const g = ctx.createLinearGradient(0, baseY - height * 0.4, 0, baseY + height);
+      const col = b === 0 ? "70,190,182" : b === 1 ? "62,140,186" : "92,198,158";
+      g.addColorStop(0, `rgba(${col},0)`);
+      g.addColorStop(0.35, `rgba(${col},${0.035 + b * 0.008})`);
+      g.addColorStop(0.7, `rgba(${col},${0.02 + b * 0.006})`);
+      g.addColorStop(1, `rgba(${col},0)`);
+      ctx.fillStyle = g;
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawTwinkles(t, dx, dy) {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (const st of twinklers) {
+      const k = 0.55 + 0.45 * Math.sin(t * st.sp + st.ph);
+      const a = st.a * (0.22 + k * 0.55);
+      const r = st.size * (0.8 + k * 0.8);
+      const g = ctx.createRadialGradient(st.x + dx, st.y + dy, 0, st.x + dx, st.y + dy, r * 4.2);
+      g.addColorStop(0, `rgba(${st.hue},${a})`);
+      g.addColorStop(0.4, `rgba(${st.hue},${a * 0.22})`);
+      g.addColorStop(1, `rgba(${st.hue},0)`);
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(st.x + dx, st.y + dy, r * 4.2, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawMeteors(dt, dx, dy) {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = meteorList.length - 1; i >= 0; i--) {
+      const m = meteorList[i];
+      m.x += m.vx * dt; m.y += m.vy * dt; m.life -= dt * 0.85;
+      if (m.life <= 0 || m.y > horizon + 30) { meteorList.splice(i, 1); continue; }
+      const nx = m.vx / Math.hypot(m.vx, m.vy), ny = m.vy / Math.hypot(m.vx, m.vy);
+      const tx = m.x - nx * m.len, ty = m.y - ny * m.len;
+      const g = ctx.createLinearGradient(tx + dx, ty + dy, m.x + dx, m.y + dy);
+      g.addColorStop(0, "rgba(180,220,245,0)");
+      g.addColorStop(0.7, `rgba(205,235,250,${0.4 * m.life})`);
+      g.addColorStop(1, `rgba(255,250,232,${0.95 * m.life})`);
+      ctx.strokeStyle = g;
+      ctx.lineWidth = m.w;
+      ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(tx + dx, ty + dy); ctx.lineTo(m.x + dx, m.y + dy); ctx.stroke();
+      const hg = ctx.createRadialGradient(m.x + dx, m.y + dy, 0, m.x + dx, m.y + dy, 12);
+      hg.addColorStop(0, `rgba(255,248,228,${0.6 * m.life})`);
+      hg.addColorStop(1, "rgba(255,248,228,0)");
+      ctx.fillStyle = hg;
+      ctx.beginPath(); ctx.arc(m.x + dx, m.y + dy, 12, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawWater(t) {
+    const top = horizon;
+    const g = ctx.createLinearGradient(0, top, 0, H);
+    g.addColorStop(0, "rgba(7,26,34,.55)");
+    g.addColorStop(0.55, "rgba(5,16,23,.72)");
+    g.addColorStop(1, "rgba(3,9,14,.94)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, top, W, H - top);
+
+    ctx.save();
+    ctx.globalAlpha = 0.92;
+    ctx.drawImage(reflImg, 0, 0, W, H);
+    ctx.restore();
+
+    // moon path
+    const mx = W * 0.785;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = 0; i < 56; i++) {
+      const dpt = i / 55;
+      const y = top + Math.pow(dpt, 1.45) * (H - top) * 0.72;
+      const wob = Math.sin(i * 1.9 + t * 0.7) * (5 + dpt * 26) + Math.sin(i * 0.7 - t * 0.3) * 18;
+      const w = (7 + dpt * 64) * (minDim / 900);
+      const a = (0.14 - dpt * 0.09) * (0.65 + 0.35 * Math.sin(i * 2.3 + t * 1.4));
+      ctx.fillStyle = `rgba(238,230,202,${Math.max(0, a)})`;
+      ctx.beginPath();
+      ctx.ellipse(mx + wob * 0.5, y, w, 0.9 + dpt * 1.2, 0, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // ripples
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    const r = mulberry32(919);
+    for (let i = 0; i < 110; i++) {
+      const dpt = Math.pow(r(), 1.5);
+      const y = top + 5 + dpt * (H - top) * 0.9;
+      const x = r() * W;
+      const len = (18 + r() * 150) * (minDim / 900) * (0.35 + dpt);
+      const a = (0.015 + r() * 0.06) * (0.6 + 0.4 * Math.sin(i + t * 0.8));
+      ctx.strokeStyle = r() > 0.7 ? `rgba(129,178,188,${a * 0.7})` : `rgba(190,222,226,${a})`;
+      ctx.lineWidth = 0.7 + dpt * 0.9;
+      ctx.beginPath();
+      ctx.moveTo(x + Math.sin(t * 0.5 + i) * 3, y);
+      ctx.lineTo(x + len + Math.sin(t * 0.5 + i) * 3, y - 0.4);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawShore(t) {
+    const s = Math.max(0.6, minDim / 900);
+    // foreground bank
+    ctx.fillStyle = "#02070b";
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    ctx.lineTo(0, H * 0.885);
+    for (let x = 0; x <= W; x += W / 40) {
+      const y = H * 0.888
+        + Math.sin(x * 0.009) * 6 * s
+        + Math.sin(x * 0.0031 + 1.4) * 13 * s
+        - Math.max(0, 1 - Math.abs(x - W * 0.81) / (W * 0.24)) * H * 0.055;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(W, H);
+    ctx.closePath();
+    ctx.fill();
+
+    // wet edge
+    ctx.strokeStyle = "rgba(118,165,174,.16)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // rocks
+    const r = mulberry32(612);
+    for (let i = 0; i < 16; i++) {
+      const x = r() < 0.5 ? r() * W * 0.3 : W - r() * W * 0.3;
+      const y = H * 0.895 + r() * H * 0.06;
+      const w = (5 + r() * 18) * s;
+      ctx.fillStyle = r() > 0.5 ? "#030a0f" : "#061119";
+      ctx.beginPath();
+      ctx.moveTo(x - w, y);
+      ctx.lineTo(x - w * 0.3, y - w * 0.7);
+      ctx.lineTo(x + w * 0.4, y - w * 0.5);
+      ctx.lineTo(x + w, y + w * 0.25);
+      ctx.closePath(); ctx.fill();
+    }
+
+    // camp
+    const tx = W * 0.655, ty = H * 0.9, tw = 27 * s, th = 22 * s;
+    const flick = 0.82 + 0.18 * Math.sin(t * 7.3) + 0.06 * Math.sin(t * 17.1);
+    const glow = ctx.createRadialGradient(tx, ty - th * 0.35, 0, tx, ty - th * 0.35, tw * 4.4);
+    glow.addColorStop(0, `rgba(255,164,92,${0.3 * flick})`);
+    glow.addColorStop(0.4, `rgba(255,134,66,${0.1 * flick})`);
+    glow.addColorStop(1, "rgba(255,120,50,0)");
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(tx, ty - th * 0.35, tw * 4.4, 0, TAU); ctx.fill();
+    ctx.restore();
+
+    // tent
+    ctx.fillStyle = "#0a1113";
+    ctx.beginPath();
+    ctx.moveTo(tx, ty);
+    ctx.lineTo(tx - tw, ty);
+    ctx.lineTo(tx - tw * 0.16, ty - th);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "rgba(255,177,110,.32)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // opening
+    ctx.fillStyle = `rgba(255,171,102,${0.72 * flick})`;
+    ctx.beginPath();
+    ctx.moveTo(tx - tw * 0.2, ty - 1);
+    ctx.lineTo(tx - tw * 0.46, ty - 1);
+    ctx.lineTo(tx - tw * 0.2, ty - th * 0.52);
+    ctx.closePath(); ctx.fill();
+    // guyline
+    ctx.strokeStyle = "rgba(190,210,205,.18)";
+    ctx.lineWidth = 0.7;
+    ctx.beginPath(); ctx.moveTo(tx - tw * 0.16, ty - th); ctx.lineTo(tx + tw * 0.5, ty + 1); ctx.stroke();
+
+    // seated figure
+    const fx = tx - tw * 1.8, fy = ty - 1.5;
+    ctx.fillStyle = "#050c10";
+    ctx.beginPath(); ctx.ellipse(fx, fy - 6.5 * s, 3.2 * s, 4.6 * s, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(fx, fy - 12.5 * s, 2.5 * s, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(fx + 2 * s, fy - 1.5 * s, 4.6 * s, 2.3 * s, 0, 0, TAU); ctx.fill();
+    ctx.strokeStyle = "rgba(255,178,116,.35)";
+    ctx.lineWidth = 0.9;
+    ctx.beginPath(); ctx.arc(fx, fy - 12.5 * s, 2.5 * s, -1.1, 0.9); ctx.stroke();
+
+    // smoke
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    for (let i = 0; i < 7; i++) {
+      const p = (t * 0.05 + i * 0.14) % 1;
+      const y = ty - th - p * H * 0.14;
+      const x = tx + Math.sin(p * 5 + t * 0.2) * 11 * s;
+      ctx.fillStyle = `rgba(150,173,172,${0.055 * (1 - p)})`;
+      ctx.beginPath(); ctx.arc(x, y, (3 + p * 18) * s, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawPines(t) {
+    for (const p of pines) drawPine(ctx, p);
+  }
+
+  function drawAtmosphere() {
+    // vignette
+    const g = ctx.createRadialGradient(W * 0.5, H * 0.46, minDim * 0.28, W * 0.5, H * 0.5, Math.max(W, H) * 0.78);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(0.65, "rgba(0,3,8,.18)");
+    g.addColorStop(1, "rgba(0,3,8,.62)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    // grain
+    if (grainTile) {
+      ctx.save();
+      ctx.globalCompositeOperation = "overlay";
+      ctx.globalAlpha = 0.34;
+      ctx.fillStyle = grainTile;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
+
+    // frame shade
+    const g2 = ctx.createLinearGradient(0, 0, 0, H);
+    g2.addColorStop(0, "rgba(1,3,7,.34)");
+    g2.addColorStop(0.18, "rgba(1,3,7,0)");
+    g2.addColorStop(0.8, "rgba(1,3,7,0)");
+    g2.addColorStop(1, "rgba(1,3,7,.4)");
+    ctx.fillStyle = g2;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  function frame(now) {
+    const t = (now - start) / 1000;
+
+    pointer.x = lerp(pointer.x, pointer.tx, 0.035);
+    pointer.y = lerp(pointer.y, pointer.ty, 0.035);
+    const bx = reduced ? 0 : Math.sin(t * 0.07) * 2.4;
+    const by = reduced ? 0 : Math.cos(t * 0.09) * 1.6;
+    const dx = pointer.x * 9 + bx;
+    const dy = pointer.y * 4 + by;
+
+    ctx.fillStyle = "#02050a";
+    ctx.fillRect(0, 0, W, H);
+
+    // sky, slightly oversized for parallax
+    ctx.drawImage(skyImg, dx - 8, dy - 6, W + 16, H + 12);
+
+    if (!reduced) drawAurora(t);
+    drawTwinkles(t, dx, dy);
+    if (!reduced) {
+      nextMeteor -= 1 / 60;
+      if (nextMeteor <= 0) { spawnMeteor(); nextMeteor = 8 + Math.random() * 9; }
+      drawMeteors(1 / 60, dx, dy);
+    }
+
+    // mountains (mild parallax on far range)
+    drawMountains(ctx);
+
+    // lake & reflection
+    drawWater(t);
+
+    // foreground
+    drawShore(t);
+    drawPines(t);
+    drawAtmosphere();
+
+    requestAnimationFrame(frame);
+  }
+
+  addEventListener("resize", () => { clearTimeout(window._rz); window._rz = setTimeout(resize, 140); });
+  addEventListener("pointermove", e => {
+    pointer.tx = (e.clientX / W - 0.5) * 2;
+    pointer.ty = (e.clientY / H - 0.5) * 2;
+  });
+  addEventListener("pointerdown", e => {
+    spawnMeteor(e.clientX - 30, e.clientY - 20);
+  });
+  addEventListener("keydown", e => {
+    if (e.code === "Space") { e.preventDefault(); spawnMeteor(); }
+  });
+
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Неоновая остановка</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: #05010c; overflow: hidden;
+  }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    font-family: system-ui, "Segoe UI", sans-serif;
+  }
+  #stage { position: relative; line-height: 0; }
+  canvas {
+    display: block;
+    width: min(100vw, calc(100vh * 16 / 9));
+    height: min(100vh, calc(100vw * 9 / 16));
+    box-shadow: 0 0 120px rgba(255, 45, 149, .22), 0 0 260px rgba(22, 240, 255, .10);
+    background: #05010c;
+  }
+  .caption {
+    position: absolute; left: 2.2%; bottom: 3.2%;
+    font: 600 clamp(10px, 1.05vw, 16px)/1.35 ui-monospace, Menlo, monospace;
+    letter-spacing: .34em; text-transform: uppercase;
+    color: rgba(180, 235, 255, .72);
+    text-shadow: 0 0 14px rgba(22, 240, 255, .55), 0 0 30px rgba(255, 45, 149, .35);
+    pointer-events: none;
+  }
+  .caption small { display: block; letter-spacing: .18em; color: rgba(255, 150, 210, .6); font-weight: 500; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c"></canvas>
+  <div class="caption">Неоновая остановка<small>03:47 &nbsp;·&nbsp; маршрут 24 в пути</small></div>
+</div>
+<script>
+(() => {
+  "use strict";
+
+  const W = 1600, H = 900;
+  const HORIZON = Math.round(H * 0.60);
+  const canvas = document.getElementById("c");
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width  = Math.floor(W * dpr);
+  canvas.height = Math.floor(H * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+
+  // --- helpers ---------------------------------------------------------------
+  function offCtx(w, h, scale) {
+    const cv = document.createElement("canvas");
+    cv.width = Math.floor(w * scale);
+    cv.height = Math.floor(h * scale);
+    const cx = cv.getContext("2d");
+    cx.scale(scale, scale);
+    return { cv, cx };
+  }
+  const world = offCtx(W, HORIZON + 60, dpr);     // everything above the ground line
+  const bloom = offCtx(W / 2, H / 2, 1);          // half-res bloom buffer
+
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  const rnd = mulberry32(20240617);
+
+  function roundRect(cx, x, y, w, h, r) {
+    r = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
+    cx.beginPath();
+    cx.moveTo(x + r, y);
+    cx.arcTo(x + w, y, x + w, y + h, r);
+    cx.arcTo(x + w, y + h, x, y + h, r);
+    cx.arcTo(x, y + h, x, y, r);
+    cx.arcTo(x, y, x + w, y, r);
+    cx.closePath();
+  }
+  function glowText(cx, text, x, y, color, blur, font, align) {
+    cx.save();
+    cx.font = font;
+    cx.textAlign = align || "left";
+    cx.textBaseline = "alphabetic";
+    cx.shadowColor = color; cx.shadowBlur = blur;
+    cx.fillStyle = color;
+    cx.fillText(text, x, y);
+    cx.shadowBlur = blur * 0.4;
+    cx.fillStyle = "rgba(255,255,255,.9)";
+    cx.fillText(text, x, y);
+    cx.restore();
+  }
+  function tube(cx, x1, y1, x2, y2, color, width, blur) {
+    cx.save();
+    cx.lineCap = "round";
+    cx.strokeStyle = color; cx.shadowColor = color; cx.shadowBlur = blur;
+    cx.lineWidth = width;
+    cx.beginPath(); cx.moveTo(x1, y1); cx.lineTo(x2, y2); cx.stroke();
+    cx.shadowBlur = 0; cx.strokeStyle = "rgba(255,255,255,.92)"; cx.lineWidth = width * 0.4;
+    cx.beginPath(); cx.moveTo(x1, y1); cx.lineTo(x2, y2); cx.stroke();
+    cx.restore();
+  }
+
+  // --- static world ----------------------------------------------------------
+  // Buildings ---------------------------------------------------------------
+  const buildings = [];
+  {
+    let x = -60;
+    while (x < W + 80) {
+      const w = 90 + rnd() * 150;
+      const h = 120 + rnd() * 340;
+      const bs = {
+        x, w, h, base: HORIZON,
+        hue: rnd() < 0.5 ? "cyan" : "magenta",
+        wins: [], signs: []
+      };
+      const cols = Math.max(2, Math.floor(w / 26));
+      const rows = Math.max(3, Math.floor(h / 34));
+      for (let c = 0; c < cols; c++)
+        for (let r = 0; r < rows; r++)
+          if (rnd() < 0.42)
+            bs.wins.push({
+              x: x + 10 + c * ((w - 20) / cols) + rnd() * 3,
+              y: HORIZON - h + 16 + r * (h / rows),
+              w: 7 + rnd() * 8, h: 9 + rnd() * 8,
+              hot: rnd() < 0.16, tint: rnd() < 0.5
+            });
+      buildings.push(bs);
+      x += w + 6 + rnd() * 26;
+    }
+  }
+  // Neon signs on a few buildings
+  const signText = ["24Ч", "BAR", "НЕОН", "КАФЕ", "HOTEL", "★", "777", "СОК"];
+  for (let i = 0; i < buildings.length; i++) {
+    if (rnd() < 0.55) continue;
+    const b = buildings[i];
+    const vertical = rnd() < 0.45;
+    b.signs.push({
+      text: signText[Math.floor(rnd() * signText.length)],
+      vertical,
+      x: b.x + b.w * (0.15 + rnd() * 0.6),
+      y: HORIZON - b.h + 40 + rnd() * Math.max(20, b.h - 120),
+      color: rnd() < 0.5 ? "#ff2d95" : (rnd() < 0.5 ? "#18f0ff" : "#ffb347"),
+      phase: rnd() * 10, size: 16 + rnd() * 12
+    });
+  }
+
+  const lampposts = [
+    { x: W * 0.115, h: 470, tint: "255,205,150", a: 0.30, r: 215 },
+    { x: W * 0.875, h: 500, tint: "190,225,255", a: 0.26, r: 235 }
+  ];
+
+  // Waiting figures (drawn later; defined for layout)
+  const figures = [
+    { x: W * 0.60, h: 128, umb: false, ph: 0.0, tint: "#18f0ff" },
+    { x: W * 0.655, h: 118, umb: true,  ph: 2.1, tint: "#ff2d95" },
+    { x: W * 0.735, h: 124, umb: true,  ph: 4.4, tint: "#ffb347" }
+  ];
+
+  // --- dynamic: bus ----------------------------------------------------------
+  const BUS_PERIOD = 19.0;
+  function busX(t) {
+    const u = (t % BUS_PERIOD) / BUS_PERIOD;
+    const stop = W * 0.335;
+    if (u < 0.42) {                     // approach
+      const p = u / 0.42, e = 1 - Math.pow(1 - p, 3);
+      return -760 + (stop + 760) * e;
+    } else if (u < 0.70) {              // dwell
+      return stop;
+    } else {                            // depart
+      const p = (u - 0.70) / 0.30, e = p * p;
+      return stop + (W + 900 - stop) * e;
+    }
+  }
+  function busDoorsOpen(t) {
+    const u = (t % BUS_PERIOD) / BUS_PERIOD;
+    return u > 0.46 && u < 0.67;
+  }
+
+  // --- draw: background ------------------------------------------------------
+  function drawSky(cx) {
+    const g = cx.createLinearGradient(0, 0, 0, HORIZON);
+    g.addColorStop(0.00, "#04010c");
+    g.addColorStop(0.40, "#120829");
+    g.addColorStop(0.68, "#3d0f57");
+    g.addColorStop(0.88, "#8a1567");
+    g.addColorStop(1.00, "#c22a6e");
+    cx.fillStyle = g; cx.fillRect(0, 0, W, HORIZON);
+
+    // haze near horizon
+    const hz = cx.createLinearGradient(0, HORIZON - 260, 0, HORIZON);
+    hz.addColorStop(0, "rgba(255,45,149,0)");
+    hz.addColorStop(1, "rgba(255,70,170,.30)");
+    cx.fillStyle = hz; cx.fillRect(0, HORIZON - 260, W, 260);
+
+    // stars
+    for (let i = 0; i < 150; i++) {
+      const x = rnd() * W, y = rnd() * HORIZON * 0.55;
+      const a = 0.15 + rnd() * 0.5;
+      cx.fillStyle = `rgba(${180 + rnd() * 60 | 0},${220 + rnd() * 35 | 0},255,${a})`;
+      cx.fillRect(x, y, 1.4, 1.4);
+    }
+  }
+
+  function drawBuildings(cx) {
+    for (const b of buildings) {
+      const g = cx.createLinearGradient(0, HORIZON - b.h, 0, HORIZON);
+      g.addColorStop(0, "#0b0620");
+      g.addColorStop(1, "#1a0b30");
+      cx.fillStyle = g;
+      cx.fillRect(b.x, HORIZON - b.h, b.w, b.h);
+      // rim light
+      const rc = b.hue === "cyan" ? "rgba(24,240,255,.55)" : "rgba(255,45,149,.5)";
+      cx.strokeStyle = rc; cx.lineWidth = 1.4;
+      cx.shadowColor = rc; cx.shadowBlur = 12;
+      cx.strokeRect(b.x + 0.5, HORIZON - b.h + 0.5, b.w - 1, b.h - 1);
+      cx.shadowBlur = 0;
+      // windows
+      for (const w of b.wins) {
+        const c = w.hot
+          ? (w.tint ? "rgba(24,240,255,.95)" : "rgba(255,45,149,.95)")
+          : (w.tint ? "rgba(150,235,255,.42)" : "rgba(255,190,120,.34)");
+        cx.fillStyle = c;
+        if (w.hot) { cx.shadowColor = c; cx.shadowBlur = 10; }
+        cx.fillRect(w.x, w.y, w.w, w.h);
+        cx.shadowBlur = 0;
+      }
+      // rooftop antenna
+      if ((b.x | 0) % 3 === 0) {
+        cx.strokeStyle = "rgba(24,240,255,.35)"; cx.lineWidth = 1;
+        cx.beginPath(); cx.moveTo(b.x + b.w * 0.5, HORIZON - b.h);
+        cx.lineTo(b.x + b.w * 0.5, HORIZON - b.h - 40); cx.stroke();
+        cx.fillStyle = "rgba(255,45,149,.9)"; cx.shadowColor = "#ff2d95"; cx.shadowBlur = 10;
+        cx.beginPath(); cx.arc(b.x + b.w * 0.5, HORIZON - b.h - 42, 3, 0, 7); cx.fill();
+        cx.shadowBlur = 0;
+      }
+    }
+    // signs
+    for (const b of buildings) {
+      for (const s of b.signs) {
+        const flick = 0.72 + 0.28 * Math.sin(performance.now() / 130 + s.phase)
+                    + (Math.sin(performance.now() / 41 + s.phase * 2) > 0.94 ? -0.5 : 0);
+        cx.save();
+        cx.globalAlpha = Math.max(0.12, flick);
+        if (s.vertical) {
+          const chars = s.text.split("");
+          const f = `700 ${s.size}px "Segoe UI", system-ui, sans-serif`;
+          chars.forEach((ch, i) => glowText(cx, ch, s.x, s.y + i * (s.size + 4), s.color, 18, f, "center"));
+        } else {
+          glowText(cx, s.text, s.x, s.y, s.color, 22,
+            `800 ${s.size * 1.15}px "Segoe UI", system-ui, sans-serif`, "center");
+        }
+        cx.restore();
+      }
+    }
+    // lampposts with light cones
+    for (const l of lampposts) {
+      cx.fillStyle = "#0d0a1c";
+      cx.fillRect(l.x - 5, HORIZON - l.h, 10, l.h);
+      const armDir = l.x < W * 0.5 ? 1 : -1;
+      cx.strokeStyle = "#0d0a1c"; cx.lineWidth = 8;
+      cx.beginPath();
+      cx.moveTo(l.x, HORIZON - l.h);
+      cx.quadraticCurveTo(l.x + armDir * 46, HORIZON - l.h - 24, l.x + armDir * 76, HORIZON - l.h + 2);
+      cx.stroke();
+      const lx = l.x + armDir * 78, ly = HORIZON - l.h + 6;
+      cx.save();
+      cx.globalCompositeOperation = "lighter";
+      const cone = cx.createRadialGradient(lx, ly, 2, lx, ly, l.r);
+      cone.addColorStop(0, `rgba(${l.tint},${l.a})`);
+      cone.addColorStop(0.5, `rgba(${l.tint},${l.a * 0.28})`);
+      cone.addColorStop(1, `rgba(${l.tint},0)`);
+      cx.fillStyle = cone;
+      cx.beginPath(); cx.moveTo(lx, ly);
+      cx.lineTo(lx - l.r * 0.95, HORIZON + 10); cx.lineTo(lx + l.r * 0.95, HORIZON + 10);
+      cx.closePath(); cx.fill();
+      cx.fillStyle = `rgb(${l.tint})`; cx.shadowColor = `rgb(${l.tint})`; cx.shadowBlur = 30;
+      cx.beginPath(); cx.arc(lx, ly, 7, 0, 7); cx.fill();
+      cx.restore();
+    }
+  }
+
+  // --- draw: bus -------------------------------------------------------------
+  function drawBus(cx, t) {
+    const x = busX(t);
+    const open = busDoorsOpen(t);
+    const bw = 560, bh = 176, base = HORIZON - 4;
+    const y = base - bh;
+    cx.save();
+
+    // body
+    const g = cx.createLinearGradient(0, y, 0, base);
+    g.addColorStop(0, "#1b1440");
+    g.addColorStop(0.55, "#120b2a");
+    g.addColorStop(1, "#0a0618");
+    cx.fillStyle = g;
+    roundRect(cx, x - bw / 2, y, bw, bh, 26); cx.fill();
+    cx.strokeStyle = "rgba(255,45,149,.75)"; cx.lineWidth = 2.2;
+    cx.shadowColor = "#ff2d95"; cx.shadowBlur = 22;
+    cx.stroke();
+    cx.shadowBlur = 0;
+
+    // neon side stripe
+    tube(cx, x - bw / 2 + 22, y + bh * 0.62, x + bw / 2 - 22, y + bh * 0.62, "#18f0ff", 4, 20);
+
+    // windows
+    const winY = y + 20, winH = 62;
+    const nWin = 7, winW = 58, gap = 8;
+    const totalW = nWin * winW + (nWin - 1) * gap;
+    let wx = x - totalW / 2;
+    for (let i = 0; i < nWin; i++) {
+      const lit = !open || i < 2 || i > 4;
+      cx.fillStyle = lit ? "rgba(255,214,150,.92)" : "rgba(90,120,170,.35)";
+      if (lit) { cx.shadowColor = "rgba(255,196,120,.9)"; cx.shadowBlur = 18; }
+      roundRect(cx, wx, winY, winW, winH, 8); cx.fill();
+      cx.shadowBlur = 0;
+      // passenger silhouettes
+      if (lit && rnd() < 0.75) {
+        cx.fillStyle = "rgba(20,10,30,.85)";
+        cx.beginPath(); cx.arc(wx + winW * 0.5, winY + winH - 20, 9, 0, 7); cx.fill();
+        cx.fillRect(wx + winW * 0.5 - 13, winY + winH - 14, 26, 16);
+      }
+      wx += winW + gap;
+    }
+    // door
+    cx.fillStyle = open ? "rgba(30,180,220,.28)" : "rgba(60,90,140,.30)";
+    roundRect(cx, x + bw / 2 - 84, winY, 62, bh - 46, 8); cx.fill();
+    cx.strokeStyle = "rgba(24,240,255,.8)"; cx.lineWidth = 1.6;
+    cx.shadowColor = "#18f0ff"; cx.shadowBlur = 14;
+    roundRect(cx, x + bw / 2 - 84, winY, 62, bh - 46, 8); cx.stroke();
+    cx.shadowBlur = 0;
+
+    // destination board
+    cx.save();
+    glowText(cx, "24  ЦЕНТР · НЕОН", x - bw * 0.06, y + bh * 0.5 + 6, "#ffb347", 22,
+      "700 26px ui-monospace, Menlo, monospace", "center");
+    cx.restore();
+
+    // headlights + cone
+    cx.save();
+    cx.globalCompositeOperation = "lighter";
+    for (const hx of [x + bw / 2 - 26, x + bw / 2 - 6]) {
+      const cg = cx.createRadialGradient(hx, base - 40, 2, hx, base - 40, 300);
+      cg.addColorStop(0, "rgba(255,255,235,.85)");
+      cg.addColorStop(0.25, "rgba(255,240,190,.28)");
+      cg.addColorStop(1, "rgba(255,220,160,0)");
+      cx.fillStyle = cg;
+      cx.beginPath(); cx.arc(hx, base - 40, 300, 0, 7); cx.fill();
+      cx.fillStyle = "#fffdf3"; cx.shadowColor = "#fff0c8"; cx.shadowBlur = 30;
+      cx.beginPath(); cx.arc(hx, base - 40, 7, 0, 7); cx.fill();
+    }
+    // long beam to the right
+    const bg = cx.createLinearGradient(x + bw / 2, base - 40, x + bw / 2 + 620, base - 90);
+    bg.addColorStop(0, "rgba(255,240,200,.22)");
+    bg.addColorStop(1, "rgba(255,230,180,0)");
+    cx.fillStyle = bg;
+    cx.beginPath();
+    cx.moveTo(x + bw / 2, base - 60);
+    cx.lineTo(x + bw / 2 + 640, base - 150);
+    cx.lineTo(x + bw / 2 + 640, base + 40);
+    cx.lineTo(x + bw / 2, base - 10);
+    cx.closePath(); cx.fill();
+    cx.restore();
+
+    // tail light
+    cx.fillStyle = "#ff2d3a"; cx.shadowColor = "#ff2d3a"; cx.shadowBlur = 26;
+    cx.beginPath(); cx.arc(x - bw / 2 + 14, base - 70, 7, 0, 7); cx.fill();
+    cx.shadowBlur = 0;
+
+    // wheels
+    cx.fillStyle = "#05030c";
+    for (const wxc of [x - bw / 2 + 90, x + bw / 2 - 130]) {
+      cx.beginPath(); cx.arc(wxc, base - 8, 26, 0, 7); cx.fill();
+      cx.strokeStyle = "rgba(24,240,255,.5)"; cx.lineWidth = 3;
+      cx.shadowColor = "#18f0ff"; cx.shadowBlur = 12; cx.stroke(); cx.shadowBlur = 0;
+    }
+    cx.restore();
+  }
+
+  // --- draw: shelter ---------------------------------------------------------
+  function drawShelter(cx, t) {
+    const groundY = HORIZON + 22;
+    const sx = W * 0.66, sw = 560, sh = 300;
+    const left = sx - sw / 2;
+
+    // platform
+    cx.fillStyle = "#100a22";
+    roundRect(cx, left - 40, groundY, sw + 80, 26, 6); cx.fill();
+    cx.strokeStyle = "rgba(24,240,255,.35)"; cx.lineWidth = 1.4;
+    cx.shadowColor = "#18f0ff"; cx.shadowBlur = 12;
+    cx.beginPath(); cx.moveTo(left - 40, groundY); cx.lineTo(left + sw + 40, groundY); cx.stroke();
+    cx.shadowBlur = 0;
+
+    // back glass panel + ad
+    const panelTop = groundY - sh + 30;
+    const pg = cx.createLinearGradient(left, panelTop, left + sw, groundY);
+    pg.addColorStop(0, "rgba(30,60,110,.30)");
+    pg.addColorStop(1, "rgba(60,20,80,.30)");
+    cx.fillStyle = pg;
+    roundRect(cx, left, panelTop, sw, sh - 30, 10); cx.fill();
+    cx.strokeStyle = "rgba(150,220,255,.4)"; cx.lineWidth = 1.6;
+    roundRect(cx, left, panelTop, sw, sh - 30, 10); cx.stroke();
+
+    // poster on the panel
+    const pw = 210, ph = 190, px = left + 40, py = panelTop + 46;
+    const ag = cx.createLinearGradient(px, py, px + pw, py + ph);
+    ag.addColorStop(0, "#ff1f7a");
+    ag.addColorStop(0.5, "#8a2bff");
+    ag.addColorStop(1, "#11e6ff");
+    cx.save();
+    cx.shadowColor = "#ff2d95"; cx.shadowBlur = 34;
+    cx.fillStyle = ag;
+    roundRect(cx, px, py, pw, ph, 8); cx.fill();
+    cx.restore();
+    cx.fillStyle = "rgba(6,2,16,.62)";
+    roundRect(cx, px + 12, py + 12, pw - 24, ph - 24, 6); cx.fill();
+    glowText(cx, "НЕОН", px + pw / 2, py + 78, "#ffe4f4", 24,
+      "800 44px 'Segoe UI', system-ui, sans-serif", "center");
+    glowText(cx, "NIGHT LINE", px + pw / 2, py + 112, "#18f0ff", 18,
+      "600 17px ui-monospace, monospace", "center");
+    glowText(cx, "03:47", px + pw / 2, py + 152, "#ffb347", 20,
+      "700 26px ui-monospace, monospace", "center");
+
+    // route board
+    const rbx = left + 300, rby = panelTop + 50, rbw = 210, rbh = 180;
+    cx.fillStyle = "rgba(6,3,18,.86)";
+    roundRect(cx, rbx, rby, rbw, rbh, 8); cx.fill();
+    cx.strokeStyle = "rgba(255,45,149,.8)"; cx.lineWidth = 1.8;
+    cx.shadowColor = "#ff2d95"; cx.shadowBlur = 18;
+    roundRect(cx, rbx, rby, rbw, rbh, 8); cx.stroke(); cx.shadowBlur = 0;
+    const routes = [["7", "#18f0ff"], ["24", "#ff2d95"], ["112", "#ffb347"], ["9", "#7dffb0"]];
+    routes.forEach((rt, i) => {
+      const ry = rby + 40 + i * 36;
+      glowText(cx, rt[0], rbx + 26, ry, rt[1], 16, "700 26px ui-monospace, monospace", "left");
+      cx.fillStyle = "rgba(220,240,255,.35)";
+      cx.fillRect(rbx + 82, ry - 12, rbw - 112 - rnd() * 40, 5);
+      cx.fillRect(rbx + 82, ry - 2, rbw - 130 - rnd() * 40, 4);
+    });
+    glowText(cx, "АВТОБУС", rbx + rbw / 2, rby - 12, "#bff6ff", 16,
+      "700 20px 'Segoe UI', system-ui, sans-serif", "center");
+
+    // bench
+    const bxx = left + 30, byy = groundY - 76;
+    cx.fillStyle = "#0c0820";
+    roundRect(cx, bxx, byy, 240, 14, 6); cx.fill();
+    cx.strokeStyle = "rgba(24,240,255,.55)"; cx.lineWidth = 1.4;
+    cx.shadowColor = "#18f0ff"; cx.shadowBlur = 12;
+    roundRect(cx, bxx, byy, 240, 14, 6); cx.stroke(); cx.shadowBlur = 0;
+    cx.fillStyle = "#0a0618";
+    cx.fillRect(bxx + 16, byy + 14, 8, 62); cx.fillRect(bxx + 216, byy + 14, 8, 62);
+
+    // posts
+    for (const pxp of [left + 8, left + sw - 20]) {
+      const pg2 = cx.createLinearGradient(pxp, panelTop, pxp + 12, groundY);
+      pg2.addColorStop(0, "#2a2350"); pg2.addColorStop(1, "#100a24");
+      cx.fillStyle = pg2;
+      cx.fillRect(pxp, panelTop - 20, 12, sh + 4);
+    }
+
+    // roof slab
+    const ry = panelTop - 44;
+    cx.fillStyle = "#181034";
+    roundRect(cx, left - 40, ry, sw + 80, 26, 10); cx.fill();
+    cx.strokeStyle = "rgba(255,45,149,.7)"; cx.lineWidth = 1.6;
+    cx.shadowColor = "#ff2d95"; cx.shadowBlur = 20;
+    roundRect(cx, left - 40, ry, sw + 80, 26, 10); cx.stroke(); cx.shadowBlur = 0;
+    // underside glow strip
+    tube(cx, left - 20, ry + 28, left + sw + 20, ry + 28, "#18f0ff", 5, 26);
+
+    // --- stop sign pole
+    const poleX = left - 72;
+    cx.fillStyle = "#0b0720";
+    cx.fillRect(poleX - 5, groundY - 300, 10, 300);
+    cx.save();
+    cx.shadowColor = "#18f0ff"; cx.shadowBlur = 26;
+    cx.fillStyle = "#0a2030";
+    cx.beginPath(); cx.arc(poleX, groundY - 330, 44, 0, 7); cx.fill();
+    cx.strokeStyle = "#18f0ff"; cx.lineWidth = 4; cx.stroke();
+    cx.restore();
+    glowText(cx, "А", poleX, groundY - 318, "#eafcff", 24,
+      "800 46px 'Segoe UI', system-ui, sans-serif", "center");
+    glowText(cx, "ОСТАНОВКА", poleX, groundY - 268, "#ff5cc8", 18,
+      "700 15px ui-monospace, monospace", "center");
+
+    // figures
+    for (const f of figures) drawFigure(cx, f, groundY, t);
+  }
+
+  function drawFigure(cx, f, groundY, t) {
+    const swing = Math.sin(t * 1.6 + f.ph) * 2.2;
+    const x = f.x, h = f.h, top = groundY - h + swing;
+    cx.save();
+    // body
+    cx.fillStyle = "#080513";
+    cx.beginPath();
+    cx.moveTo(x - h * 0.16, groundY);
+    cx.lineTo(x - h * 0.12, top + h * 0.30);
+    cx.lineTo(x + h * 0.12, top + h * 0.30);
+    cx.lineTo(x + h * 0.16, groundY);
+    cx.closePath(); cx.fill();
+    // head
+    cx.beginPath(); cx.arc(x, top + h * 0.20, h * 0.11, 0, 7); cx.fill();
+    // rim light
+    cx.strokeStyle = f.tint; cx.lineWidth = 2;
+    cx.shadowColor = f.tint; cx.shadowBlur = 16;
+    cx.beginPath();
+    cx.moveTo(x - h * 0.16, groundY);
+    cx.lineTo(x - h * 0.12, top + h * 0.30);
+    cx.arc(x, top + h * 0.20, h * 0.11, Math.PI * 0.65, Math.PI * 1.7);
+    cx.stroke();
+    if (f.umb) {
+      const uy = top - h * 0.06, ur = h * 0.42;
+      cx.beginPath();
+      cx.moveTo(x - ur, uy);
+      cx.quadraticCurveTo(x, uy - ur * 0.62, x + ur, uy);
+      cx.closePath();
+      cx.fillStyle = "rgba(10,6,24,.96)"; cx.fill();
+      cx.strokeStyle = f.tint; cx.lineWidth = 2.4;
+      cx.beginPath();
+      cx.moveTo(x - ur, uy);
+      cx.quadraticCurveTo(x, uy - ur * 0.62, x + ur, uy);
+      cx.stroke();
+      cx.beginPath(); cx.moveTo(x, uy); cx.lineTo(x, uy - ur * 0.62);
+      cx.stroke();
+    }
+    cx.restore();
+  }
+
+  // --- draw: rain & fog ------------------------------------------------------
+  const drops = [];
+  for (let i = 0; i < 300; i++)
+    drops.push({ x: rnd() * W, y: rnd() * H, len: 12 + rnd() * 34, sp: 420 + rnd() * 620, a: 0.10 + rnd() * 0.5, w: rnd() < 0.2 ? 1.6 : 0.9 });
+
+  function drawRain(cx, t, dt) {
+    cx.save();
+    cx.globalCompositeOperation = "lighter";
+    cx.lineCap = "round";
+    for (const d of drops) {
+      d.y += d.sp * dt; d.x += d.sp * dt * 0.18;
+      if (d.y > H) { d.y = -d.len; d.x = rnd() * W; }
+      if (d.x > W) d.x -= W;
+      cx.strokeStyle = `rgba(200,235,255,${d.a})`;
+      cx.lineWidth = d.w;
+      cx.beginPath();
+      cx.moveTo(d.x, d.y);
+      cx.lineTo(d.x - d.len * 0.18, d.y - d.len);
+      cx.stroke();
+    }
+    cx.restore();
+  }
+
+  const ripples = [];
+  function drawRipples(cx, t, dt) {
+    if (rnd() < 0.6) ripples.push({ x: rnd() * W, y: HORIZON + 20 + rnd() * (H - HORIZON - 30), r: 2, life: 0 });
+    cx.save();
+    cx.globalCompositeOperation = "lighter";
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const rp = ripples[i];
+      rp.life += dt; rp.r += dt * 60;
+      const a = Math.max(0, 0.30 * (1 - rp.life / 1.3)) * (1 - (rp.y - HORIZON) / (H - HORIZON) * 0.4);
+      cx.strokeStyle = `rgba(190,230,255,${a})`;
+      cx.lineWidth = 1.2;
+      cx.beginPath();
+      cx.ellipse(rp.x, rp.y, rp.r, rp.r * 0.32, 0, 0, 7);
+      cx.stroke();
+      if (rp.life > 1.3) ripples.splice(i, 1);
+    }
+    cx.restore();
+  }
+
+  function drawFog(cx, t) {
+    cx.save();
+    cx.globalCompositeOperation = "lighter";
+    const pts = [
+      [W * 0.2, HORIZON + 40, "#ff2d95", 0.10],
+      [W * 0.75, HORIZON + 30, "#18f0ff", 0.09],
+      [W * 0.5, HORIZON - 40, "#8a5cff", 0.10]
+    ];
+    for (const [x, y, col, a] of pts) {
+      const r = 520 + Math.sin(t * 0.3 + x) * 60;
+      const g = cx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, col.replace(")", `,${a})`).replace("#", "rgba(").length ? hexA(col, a) : col);
+      g.addColorStop(1, hexA(col, 0));
+      cx.fillStyle = g;
+      cx.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    cx.restore();
+  }
+  function hexA(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
+  }
+
+  // --- ground / reflection ---------------------------------------------------
+  function drawGround(cx) {
+    const g = cx.createLinearGradient(0, HORIZON, 0, H);
+    g.addColorStop(0, "#1a0b33");
+    g.addColorStop(0.35, "#100722");
+    g.addColorStop(1, "#05010c");
+    cx.fillStyle = g; cx.fillRect(0, HORIZON, W, H - HORIZON);
+
+    // wet sheen band right at the horizon
+    const sh = cx.createLinearGradient(0, HORIZON - 10, 0, HORIZON + 140);
+    sh.addColorStop(0, "rgba(255,120,200,.28)");
+    sh.addColorStop(1, "rgba(255,120,200,0)");
+    cx.fillStyle = sh; cx.fillRect(0, HORIZON - 10, W, 150);
+
+    // sidewalk seam
+    cx.strokeStyle = "rgba(160,210,255,.18)"; cx.lineWidth = 1;
+    cx.beginPath(); cx.moveTo(0, HORIZON + 6); cx.lineTo(W, HORIZON + 6); cx.stroke();
+  }
+
+  function drawReflection(cx, t) {
+    const reflH = H - HORIZON;
+    const k = HORIZON / reflH;
+    cx.save();
+    cx.beginPath(); cx.rect(0, HORIZON, W, reflH); cx.clip();
+    cx.filter = "blur(2.4px)";
+    const step = 4;
+    for (let dy = 0; dy < reflH; dy += step) {
+      const srcY = HORIZON - (dy) * k;
+      if (srcY < 0) break;
+      const wob = Math.sin(dy * 0.055 + t * 2.1) * (0.6 + dy * 0.012) * 6;
+      const fade = Math.max(0, 1 - dy / reflH);
+      cx.globalAlpha = 0.52 * fade;
+      cx.drawImage(world.cv,
+        0, Math.max(0, srcY - step * k), W, step * k + 2,
+        wob, HORIZON + dy, W, step + 1.5);
+    }
+    cx.filter = "none";
+    // brighten reflection streaks additively
+    cx.globalCompositeOperation = "lighter";
+    cx.globalAlpha = 1;
+    for (const b of buildings) {
+      if (!b.signs.length) continue;
+      for (const s of b.signs) {
+        const dy = (HORIZON - s.y) * (reflH / HORIZON) * 0.9;
+        const ly = HORIZON + Math.max(0, dy);
+        const fx = s.x;
+        const g = cx.createLinearGradient(0, ly, 0, ly + 90);
+        g.addColorStop(0, hexA(s.color, 0.22));
+        g.addColorStop(1, hexA(s.color, 0));
+        cx.fillStyle = g;
+        cx.fillRect(fx - 14, ly, 28, 90);
+      }
+    }
+    cx.restore();
+  }
+
+  // --- grain / vignette ------------------------------------------------------
+  let grainPattern = null;
+  function makeGrain() {
+    const g = offCtx(160, 160, 1);
+    const img = g.cx.createImageData(160, 160);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 90 + Math.random() * 110;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+    g.cx.putImageData(img, 0, 0);
+    grainPattern = ctx.createPattern(g.cv, "repeat");
+  }
+
+  function drawVignette(cx) {
+    const g = cx.createRadialGradient(W / 2, H * 0.5, H * 0.28, W / 2, H * 0.55, H * 0.92);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(1, "rgba(0,0,0,.62)");
+    cx.fillStyle = g; cx.fillRect(0, 0, W, H);
+  }
+
+  // --- main loop -------------------------------------------------------------
+  let last = performance.now();
+  function frame(now) {
+    const t = now / 1000;
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    const ts = now / 1000;
+
+    // ---- render world (above ground line) ----
+    const w = world.cx;
+    w.clearRect(0, 0, W, HORIZON + 60);
+    drawSky(w);
+    drawBuildings(w);
+    drawBus(w, t);
+    drawShelter(w, ts);
+
+    // ---- compose main ----
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#05010c";
+    ctx.fillRect(0, 0, W, H);
+    drawGround(ctx);
+    drawReflection(ctx, t);
+    // world on top (its lower part is the horizon area)
+    ctx.drawImage(world.cv, 0, 0, W, HORIZON + 60, 0, 0, W, HORIZON + 60);
+
+    drawFog(ctx, t);
+    drawRain(ctx, t, dt);
+    drawRipples(ctx, t, dt);
+
+    // ---- bloom ----
+    const bc = bloom.cx;
+    bc.setTransform(1, 0, 0, 1, 0, 0);
+    bc.clearRect(0, 0, W / 2, H / 2);
+    bc.filter = "blur(10px)";
+    bc.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, W / 2, H / 2);
+    bc.filter = "none";
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = 0.40;
+    ctx.drawImage(bloom.cv, 0, 0, W, H);
+    ctx.globalAlpha = 0.20;
+    ctx.drawImage(bloom.cv, 0, 0, W, H);
+    ctx.restore();
+
+    // ---- finishing ----
+    if (grainPattern) {
+      ctx.save();
+      ctx.globalCompositeOperation = "overlay";
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = grainPattern;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
+    drawVignette(ctx);
+
+    requestAnimationFrame(frame);
+  }
+
+  makeGrain();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

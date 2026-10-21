@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ночное небо над горами</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #04060f; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  .hint {
+    position: fixed; left: 18px; bottom: 14px; z-index: 2;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: .12em; text-transform: uppercase;
+    color: rgba(200,215,255,.45); pointer-events: none;
+    text-shadow: 0 1px 4px #000;
+  }
+</style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+<div class="hint">звёздное небо · нажмите, чтобы увидеть метеор</div>
+<script>
+(() => {
+  "use strict";
+
+  const canvas = document.getElementById("sky");
+  const ctx = canvas.getContext("2d");
+
+  let W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+  // Horizon/sky share of the frame
+  const HORIZON = 0.72;
+
+  /* ---------- deterministic PRNG so the scene is stable ---------- */
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /* ---------- scene data (built once per resize) ---------- */
+  let stars = [];       // field stars
+  let milky = [];       // dense dust stars of the galactic band
+  let ranges = [];      // mountain silhouettes
+  let pines = [];       // foreground trees
+  let moon = { x: 0, y: 0, r: 0 };
+
+  function buildScene() {
+    const rnd = mulberry32(20240917);
+
+    // --- field stars: brighter, sparser, mostly upper sky ---
+    stars = [];
+    const fieldCount = Math.round((W * H) / 4200);
+    for (let i = 0; i < fieldCount; i++) {
+      const x = rnd() * W;
+      const y = Math.pow(rnd(), 0.85) * H * HORIZON;
+      const mag = Math.pow(rnd(), 2.6);            // few very bright
+      const r = 0.35 + mag * 1.9;
+      stars.push({
+        x, y, r,
+        base: 0.25 + mag * 0.75,
+        tw: rnd() * Math.PI * 2,
+        tws: 0.4 + rnd() * 1.8,
+        hue: rnd() < 0.85 ? 210 + rnd() * 30 : 30 + rnd() * 25,
+        sat: rnd() < 0.6 ? 0 : 30 + rnd() * 40
+      });
+    }
+
+    // --- milky way band: diagonal, many tiny dim stars + haze ---
+    milky = [];
+    const bandCount = Math.round((W * H) / 900);
+    const ax = -0.08 * W, ay = 0.18 * H;   // band anchor
+    for (let i = 0; i < bandCount; i++) {
+      const t = rnd();                       // along the band
+      const spread = (rnd() + rnd() + rnd() - 1.5) * H * 0.13;
+      // band direction tilted across the sky
+      const bx = ax + t * W * 1.15;
+      const by = ay + t * H * 0.55 + spread;
+      if (by > H * HORIZON) continue;
+      milky.push({
+        x: bx, y: by,
+        r: rnd() * 0.7 + 0.15,
+        a: 0.06 + rnd() * 0.28,
+        hue: 205 + rnd() * 40
+      });
+    }
+
+    // --- mountain ranges: back to front ---
+    const rangeRnd = mulberry32(777);
+    const layers = [
+      { yBase: H * 0.70, amp: H * 0.16, seed: 11, shade: "#0d1a33", snow: 0.55, step: 90 },
+      { yBase: H * 0.79, amp: H * 0.20, seed: 22, shade: "#0a1226", snow: 0.48, step: 70 },
+      { yBase: H * 0.90, amp: H * 0.22, seed: 33, shade: "#060b1a", snow: 0.42, step: 60 }
+    ];
+    ranges = layers.map((cfg) => {
+      const r = mulberry32(cfg.seed * 1013 + 5);
+      return makeRidge(cfg, r);
+    });
+
+    // --- foreground pines ---
+    pines = [];
+    const pr = mulberry32(4242);
+    const py = H * 0.985;
+    let x = -20;
+    while (x < W + 20) {
+      const h = H * (0.06 + pr() * 0.10);
+      pines.push({ x, h, w: h * 0.34, y: py });
+      x += h * (0.36 + pr() * 0.22);
+    }
+
+    // --- moon ---
+    moon = { x: W * 0.80, y: H * 0.17, r: Math.max(26, Math.min(W, H) * 0.045) };
+  }
+
+  function makeRidge(cfg, rnd) {
+    const pts = [];
+    const n = Math.max(24, Math.round(W / cfg.step) + 6);
+    // build a jittered line and raise peaks
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      const x = -0.05 * W + t * 1.1 * W;
+      let y = cfg.yBase;
+      y -= (0.5 + 0.5 * Math.sin(t * Math.PI * (3.5 + cfg.seed % 4))) * cfg.amp * (0.5 + rnd() * 0.7);
+      y -= rnd() * cfg.amp * 0.35;
+      pts.push({ x, y });
+    }
+    // detect local maxima for snow caps
+    const caps = [];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const p = pts[i];
+      if (p.y < pts[i - 1].y && p.y < pts[i + 1].y && p.y < cfg.yBase - cfg.amp * 0.35) {
+        caps.push({ x: p.x, y: p.y, w: cfg.amp * (0.30 + rnd() * 0.35) * 0.9 });
+      }
+    }
+    return { pts, shade: cfg.shade, caps, yBase: cfg.yBase };
+  }
+
+  /* ---------- animation state ---------- */
+  let shooters = [];
+  let t0 = performance.now();
+
+  function spawnShooter() {
+    const dir = Math.random() < 0.7 ? 1 : -1;
+    const sx = dir > 0 ? Math.random() * W * 0.5 : W * (0.5 + Math.random() * 0.5);
+    const sy = Math.random() * H * 0.35 + H * 0.02;
+    const len = H * (0.12 + Math.random() * 0.18);
+    const speed = (W / 900) * (0.9 + Math.random() * 0.9);
+    shooters.push({
+      x: sx, y: sy,
+      vx: dir * speed * 0.9,
+      vy: speed * (0.35 + Math.random() * 0.35),
+      len, life: 0,
+      max: 0.6 + Math.random() * 0.7,
+      hue: 40 + Math.random() * 20
+    });
+  }
+
+  /* ---------- drawing ---------- */
+
+  function drawSky(w, h) {
+    const g = ctx.createLinearGradient(0, 0, 0, h * HORIZON);
+    g.addColorStop(0.00, "#040613");
+    g.addColorStop(0.32, "#0a1633");
+    g.addColorStop(0.62, "#132a4d");
+    g.addColorStop(0.85, "#1d3a5c");
+    g.addColorStop(1.00, "#2a4b66");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h * HORIZON + 2);
+  }
+
+  function drawMilkyHaze() {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    // soft band of light
+    const cx = W * 0.42, cy = H * 0.28;
+    const g = ctx.createLinearGradient(0, cy - H * 0.25, 0, cy + H * 0.25);
+    g.addColorStop(0, "rgba(60,80,140,0)");
+    g.addColorStop(0.5, "rgba(90,120,190,0.10)");
+    g.addColorStop(1, "rgba(60,80,140,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H * HORIZON);
+
+    // faint clouds of dust along the band
+    const rnd = mulberry32(99);
+    for (let i = 0; i < 22; i++) {
+      const t = rnd();
+      const x = -0.08 * W + t * W * 1.15;
+      const y = H * 0.18 + t * H * 0.55 + (rnd() - 0.5) * H * 0.12;
+      const rr = H * (0.05 + rnd() * 0.10);
+      const rg = ctx.createRadialGradient(x, y, 0, x, y, rr);
+      const tint = rnd() < 0.5 ? "120,150,220" : "170,140,200";
+      rg.addColorStop(0, `rgba(${tint},${0.05 + rnd() * 0.06})`);
+      rg.addColorStop(1, `rgba(${tint},0)`);
+      ctx.fillStyle = rg;
+      ctx.beginPath();
+      ctx.arc(x, y, rr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawMilkyStars(time) {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (const s of milky) {
+      const a = s.a * (0.75 + 0.25 * Math.sin(time * 0.7 + s.x * 0.02));
+      ctx.fillStyle = `hsla(${s.hue}, 45%, 82%, ${a})`;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawStars(time) {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (const s of stars) {
+      const twk = 0.65 + 0.35 * Math.sin(time * s.tws + s.tw);
+      const a = Math.min(1, s.base * twk);
+      const col = s.sat > 0
+        ? `hsla(${s.hue}, ${s.sat}%, 80%, ${a})`
+        : `hsla(210, 25%, 92%, ${a})`;
+
+      // glow for the brighter ones
+      if (s.r > 1.05) {
+        const gr = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.r * 6);
+        gr.addColorStop(0, col);
+        gr.addColorStop(0.35, `hsla(${s.hue}, ${s.sat}%, 80%, ${a * 0.25})`);
+        gr.addColorStop(1, "hsla(210,30%,90%,0)");
+        ctx.fillStyle = gr;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r * 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      // cross flare on the brightest
+      if (s.r > 1.7) {
+        ctx.strokeStyle = `hsla(${s.hue},10%,95%,${a * 0.35})`;
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(s.x - s.r * 5, s.y); ctx.lineTo(s.x + s.r * 5, s.y);
+        ctx.moveTo(s.x, s.y - s.r * 5); ctx.lineTo(s.x, s.y + s.r * 5);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawMoon(time) {
+    const { x, y, r } = moon;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+
+    // atmospheric halo
+    const haloR = r * 9;
+    const hg = ctx.createRadialGradient(x, y, r * 0.6, x, y, haloR);
+    hg.addColorStop(0, "rgba(200,215,255,0.22)");
+    hg.addColorStop(0.25, "rgba(150,180,240,0.10)");
+    hg.addColorStop(1, "rgba(120,150,220,0)");
+    ctx.fillStyle = hg;
+    ctx.beginPath(); ctx.arc(x, y, haloR, 0, Math.PI * 2); ctx.fill();
+
+    // disc
+    const dg = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, r * 0.1, x, y, r);
+    dg.addColorStop(0, "#fbfdff");
+    dg.addColorStop(0.7, "#e8eefc");
+    dg.addColorStop(1, "#c8d4f0");
+    ctx.fillStyle = dg;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+
+    // craters
+    ctx.globalCompositeOperation = "source-over";
+    const cr = mulberry32(303);
+    for (let i = 0; i < 16; i++) {
+      const ang = cr() * Math.PI * 2;
+      const dist = cr() * r * 0.75;
+      const cx = x + Math.cos(ang) * dist;
+      const cy = y + Math.sin(ang) * dist;
+      const rr = r * (0.04 + cr() * 0.11);
+      ctx.fillStyle = `rgba(150,165,200,${0.18 + cr() * 0.2})`;
+      ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function ridgePath(pts) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  }
+
+  function drawRanges() {
+    // atmospheric glow above ridges
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    const hg = ctx.createLinearGradient(0, H * 0.60, 0, H * HORIZON);
+    hg.addColorStop(0, "rgba(70,110,170,0)");
+    hg.addColorStop(1, "rgba(70,110,170,0.12)");
+    ctx.fillStyle = hg;
+    ctx.fillRect(0, H * 0.60, W, H * 0.15);
+    ctx.restore();
+
+    for (const rg of ranges) {
+      ridgePath(rg.pts);
+      ctx.lineTo(rg.pts[rg.pts.length - 1].x, H);
+      ctx.lineTo(rg.pts[0].x, H);
+      ctx.closePath();
+      ctx.fillStyle = rg.shade;
+      ctx.fill();
+
+      // snowy peaks
+      ctx.save();
+      ridgePath(rg.pts);
+      ctx.clip();
+      ctx.globalCompositeOperation = "lighter";
+      for (const cap of rg.caps) {
+        const g = ctx.createLinearGradient(cap.x, cap.y - 4, cap.x, cap.y + cap.w);
+        g.addColorStop(0, "rgba(215,228,255,0.72)");
+        g.addColorStop(0.5, "rgba(150,175,230,0.30)");
+        g.addColorStop(1, "rgba(120,150,220,0)");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.moveTo(cap.x - cap.w, cap.y + cap.w * 0.9);
+        ctx.lineTo(cap.x, cap.y - 2);
+        ctx.lineTo(cap.x + cap.w, cap.y + cap.w * 0.9);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+
+  function drawPines() {
+    // ground fill under the trees
+    ctx.fillStyle = "#02040b";
+    ctx.fillRect(0, H * 0.965, W, H);
+
+    const tiers = 4;
+    for (const p of pines) {
+      const { x, y, h, w } = p;
+      ctx.beginPath();
+      ctx.moveTo(x - w, y);                 // bottom-left
+      for (let i = 0; i < tiers; i++) {     // zig-zag up the left side
+        const ty = y - h * (i + 0.5) / tiers;
+        const tw = w * (1 - (i + 0.5) / tiers) * 1.5;
+        ctx.lineTo(x - tw, ty);
+        ctx.lineTo(x - tw * 0.62, ty - h / tiers * 0.12);
+      }
+      ctx.lineTo(x, y - h);                 // tip
+      for (let i = tiers - 1; i >= 0; i--) { // mirror down the right side
+        const ty = y - h * (i + 0.5) / tiers;
+        const tw = w * (1 - (i + 0.5) / tiers) * 1.5;
+        ctx.lineTo(x + tw * 0.62, ty - h / tiers * 0.12);
+        ctx.lineTo(x + tw, ty);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  function drawShooters(dt, time) {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = shooters.length - 1; i >= 0; i--) {
+      const s = shooters[i];
+      s.life += dt;
+      if (s.life > s.max) { shooters.splice(i, 1); continue; }
+      s.x += s.vx * dt * 60;
+      s.y += s.vy * dt * 60;
+
+      const prog = s.life / s.max;
+      const fade = Math.sin(prog * Math.PI);
+      const nx = s.vx, ny = s.vy;
+      const nlen = Math.hypot(nx, ny) || 1;
+      const tx = s.x - (nx / nlen) * s.len;
+      const ty = s.y - (ny / nlen) * s.len;
+
+      const g = ctx.createLinearGradient(s.x, s.y, tx, ty);
+      g.addColorStop(0, `hsla(${s.hue}, 90%, 88%, ${0.95 * fade})`);
+      g.addColorStop(0.4, `hsla(${s.hue}, 80%, 75%, ${0.4 * fade})`);
+      g.addColorStop(1, `hsla(${s.hue}, 70%, 70%, 0)`);
+      ctx.strokeStyle = g;
+      ctx.lineWidth = 2.2;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+
+      // head glow
+      const hg = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, 6);
+      hg.addColorStop(0, `hsla(${s.hue}, 100%, 95%, ${fade})`);
+      hg.addColorStop(1, `hsla(${s.hue}, 90%, 80%, 0)`);
+      ctx.fillStyle = hg;
+      ctx.beginPath(); ctx.arc(s.x, s.y, 6, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawVignette() {
+    const g = ctx.createRadialGradient(W * 0.5, H * 0.45, Math.min(W, H) * 0.25,
+                                       W * 0.5, H * 0.5, Math.max(W, H) * 0.75);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(1, "rgba(0,0,6,0.55)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  /* ---------- resize ---------- */
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    buildScene();
+  }
+
+  /* ---------- loop ---------- */
+  let last = performance.now();
+  let nextShoot = 1200;
+
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    const time = (now - t0) / 1000;
+
+    drawSky(W, H);
+    drawMilkyHaze();
+    drawMilkyStars(time);
+    drawStars(time);
+    drawMoon(time);
+
+    // shooting stars scheduling
+    nextShoot -= dt * 1000;
+    if (nextShoot <= 0) {
+      spawnShooter();
+      nextShoot = 2500 + Math.random() * 5500;
+    }
+    drawShooters(dt, time);
+
+    drawRanges();
+    drawPines();
+    drawVignette();
+
+    requestAnimationFrame(frame);
+  }
+
+  // click / tap -> meteor
+  function onTap(e) {
+    spawnShooter();
+    // a couple extra for a burst
+    if (Math.random() < 0.7) setTimeout(spawnShooter, 180);
+  }
+  window.addEventListener("pointerdown", onTap);
+  window.addEventListener("resize", resize);
+
+  resize();
+  t0 = performance.now();
+  last = t0;
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

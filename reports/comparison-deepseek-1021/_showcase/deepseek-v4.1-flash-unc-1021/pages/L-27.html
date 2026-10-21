@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Столкновение миров</title>
+<style>
+  :root{
+    --ink:#e9eef7;
+    --dim:#8ea3bd;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#01020a}
+  body{
+    font-family:"Helvetica Neue",Helvetica,Arial,"Segoe UI",sans-serif;
+    color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+  }
+  #stage{position:fixed;inset:0;display:block}
+  #c{position:absolute;inset:0;display:block;width:100%;height:100%}
+
+  /* ---------- overlay ---------- */
+  .hud{position:fixed;inset:0;pointer-events:none;
+       display:flex;flex-direction:column;justify-content:space-between;
+       padding:clamp(16px,3.2vmin,40px)}
+  .top{display:flex;justify-content:space-between;align-items:flex-start;
+       gap:12px;font-size:clamp(9px,1.15vmin,12px);
+       letter-spacing:.34em;text-transform:uppercase;color:var(--dim);
+       opacity:.82}
+  .top b{color:#cfe0f5;font-weight:600}
+  .sep{height:1px;flex:1;margin-top:.6em;
+       background:linear-gradient(90deg,rgba(140,170,210,.45),rgba(140,170,210,0))}
+
+  .bottom{display:flex;justify-content:space-between;align-items:flex-end;
+          gap:min(6vw,60px);flex-wrap:wrap}
+  .title{line-height:1}
+  .title .sub{font-size:clamp(9px,1.15vmin,12px);letter-spacing:.42em;
+              text-transform:uppercase;color:#7fb0d8;margin-bottom:.85em}
+  .title h1{font-size:clamp(28px,7.4vmin,86px);font-weight:700;
+            letter-spacing:.02em;
+            background:linear-gradient(96deg,#fff2d0 0%,#ffb066 30%,#8fd8ff 72%,#dfefff 100%);
+            -webkit-background-clip:text;background-clip:text;color:transparent}
+  .title p{margin-top:.9em;max-width:44ch;font-size:clamp(10px,1.5vmin,14px);
+           line-height:1.65;color:#9fb2c9;letter-spacing:.02em}
+  .meta{text-align:right;font-size:clamp(9px,1.15vmin,12px);
+        letter-spacing:.24em;text-transform:uppercase;color:var(--dim);line-height:2.1}
+  .meta span{color:#cfe0f5}
+  .bar{width:clamp(90px,20vmin,190px);height:2px;margin-top:12px;
+       margin-left:auto;background:rgba(255,255,255,.12);position:relative;overflow:hidden;
+       border-radius:2px}
+  .bar i{position:absolute;inset:0 auto 0 0;width:0%;
+         background:linear-gradient(90deg,#ff8a3d,#ffe6b0,#8fd8ff)}
+
+  #vign{position:fixed;inset:0;pointer-events:none;
+        background:radial-gradient(120% 100% at 50% 46%,rgba(0,0,0,0) 38%,rgba(0,0,0,.55) 82%,rgba(0,0,0,.86) 100%)}
+  #grain{position:fixed;inset:-10%;pointer-events:none;opacity:.05;mix-blend-mode:overlay}
+
+  #replay{position:fixed;right:clamp(16px,3.2vmin,40px);bottom:clamp(16px,3.2vmin,40px);
+          z-index:5;appearance:none;border:1px solid rgba(160,190,225,.35);
+          background:rgba(10,16,30,.5);color:#cfe0f5;cursor:pointer;
+          font:inherit;font-size:clamp(9px,1.1vmin,12px);letter-spacing:.28em;
+          text-transform:uppercase;padding:.85em 1.5em;border-radius:999px;
+          backdrop-filter:blur(6px);transition:.25s}
+  #replay:hover{background:rgba(30,48,80,.7);border-color:rgba(190,220,255,.7)}
+  @media (max-width:640px){ .meta{display:none} }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c"></canvas>
+</div>
+
+<div class="hud">
+  <div class="top">
+    <div>Наблюдение&nbsp;&nbsp;<b>OBJ-2317</b> &nbsp;/&nbsp; <b>OBJ-9084</b></div>
+    <div class="sep"></div>
+    <div>Орбитальный телескоп</div>
+  </div>
+
+  <div class="bottom">
+    <div class="title">
+      <div class="sub">Late Heavy Bombardment</div>
+      <h1>Столкновение<br>миров</h1>
+      <p>Ледяная планета на скорости 14,2 км/с врезается в раскалённый мир.
+         Приливная деформация, вспышка, ударная волна и рождение диска обломков.</p>
+    </div>
+    <div class="meta">
+      <div>Сближение <span id="m1">—</span></div>
+      <div>Импакт <span id="m2">—</span></div>
+      <div>Фаза <span id="m3">—</span></div>
+      <div class="bar"><i id="prog"></i></div>
+    </div>
+  </div>
+</div>
+
+<div id="vign"></div>
+<canvas id="grain"></canvas>
+<button id="replay">Replay</button>
+
+<script>
+"use strict";
+/* =========================================================================
+   СТОЛКНОВЕНИЕ ДВУХ ПЛАНЕТ
+   Полностью процедурная сцена: Canvas 2D, без внешних ресурсов.
+   ========================================================================= */
+
+const cvs   = document.getElementById('c');
+const ctx   = cvs.getContext('2d', { alpha:false });
+const grainC= document.getElementById('grain');
+const gctx  = grainC.getContext('2d');
+
+const el = {
+  m1:document.getElementById('m1'),
+  m2:document.getElementById('m2'),
+  m3:document.getElementById('m3'),
+  prog:document.getElementById('prog')
+};
+
+/* ---------- параметры таймлайна ---------- */
+const IMPACT   = 5.2;   // секунда столкновения
+const DURATION = 27.0;  // полный цикл
+
+let W=0,H=0,U=0,DPR=1;
+let stars=[], nebulae=[], dust=[];
+let planets={}, remnant=null;
+let debrisA=[], debrisB=[], sparks=[], rings=[], flashes=[];
+let T=0, last=0, raf=0, hudAcc=0;
+
+/* ---------- детерминированный ГПСЧ (сцена воспроизводима) ---------- */
+let _seed = 20240917;
+function rnd(){ _seed|=0; _seed=_seed+0x6D2B79F5|0;
+  let t=Math.imul(_seed^_seed>>>15,1|_seed);
+  t=t+Math.imul(t^t>>>7,61|t)^t;
+  return ((t^t>>>14)>>>0)/4294967296; }
+const rr=(a,b)=>a+(b-a)*rnd();
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const smooth=t=>{t=clamp(t,0,1);return t*t*(3-2*t);};
+const TAU=Math.PI*2;
+
+/* ---------- предисловие: генерация особенностей поверхности ---------- */
+function surfaceFeats(R,kind){
+  const surf=[], glow=[];
+  const n = kind==='lava' ? 16 : 14;
+  for(let i=0;i<n;i++){
+    surf.push({
+      lat:rr(-1.15,1.15), lon:rr(0,TAU),
+      size:R*rr(.10,.30), a:rr(.35,.8),
+      col: kind==='lava'
+        ? (rnd()<.5?'150,104,66':'88,58,42')
+        : (rnd()<.5?'210,236,255':'120,168,205')
+    });
+  }
+  const m = kind==='lava' ? 34 : 26;
+  for(let i=0;i<m;i++){
+    glow.push({
+      lat:rr(-1.25,1.25), lon:rr(0,TAU),
+      size:R*rr(.035,.13), a:rr(.35,1),
+      col: kind==='lava'
+        ? (rnd()<.55?'255,138,50':(rnd()<.5?'255,206,120':'255,72,32'))
+        : (rnd()<.6?'180,230,255':'235,248,255')
+    });
+  }
+  return {surf,glow};
+}
+
+/* =========================================================================
+   ИНИЦИАЛИЗАЦИЯ СЦЕНЫ
+   ========================================================================= */
+function buildScene(){
+  _seed = 20240917;
+
+  // --- звёздное поле ---
+  stars=[];
+  const nStars = Math.round(clamp(U*1.15, 380, 900));
+  for(let i=0;i<nStars;i++){
+    const a=rr(0,1), r=rr(0,1);
+    const x=W/2 + (rnd()*2-1)*W*0.78;
+    const y=H/2 + (rnd()*2-1)*H*0.78;
+    const mag = Math.pow(rnd(),2.6);
+    stars.push({
+      x,y,
+      r: 0.35 + mag*1.9,
+      a: 0.16 + mag*0.8,
+      tw: rr(.6,2.6), ph: rr(0,TAU),
+      hue: rnd()<.18 ? (rnd()<.5?'190,215,255':'255,225,200') : '235,242,255'
+    });
+  }
+
+  // --- туманности ---
+  nebulae = [
+    {x:.24,y:.30,r:.62, col:'120,80,220', a:.16},
+    {x:.78,y:.66,r:.55, col:'30,120,190', a:.14},
+    {x:.60,y:.18,r:.42, col:'255,110,70', a:.09},
+    {x:.12,y:.80,r:.48, col:'40,190,190', a:.08}
+  ].map(o=>({...o, x:o.x*W, y:o.y*H, r:o.r*U, ph:rr(0,TAU)}));
+
+  // --- планеты ---
+  const rA = U*0.118;             // раскалённый мир
+  const rB = U*0.077;             // ледяной мир
+  const aPos = { x:W*0.5 - U*0.075, y:H*0.5 + U*0.015 };
+
+  planets.A = {
+    kind:'lava',
+    r:rA, x:aPos.x, y:aPos.y, rot:rr(0,TAU), spin:0.16,
+    feats:surfaceFeats(rA,'lava'),
+    pal:[ ['0','#d6a878'],['0.34','#7c5236'],['0.66','#2c1c15'],['1','#080503'] ],
+    atmo:'255,120,45', atmoA:0.42,
+    x0:aPos.x, y0:aPos.y
+  };
+
+  // траектория ледяной планеты: скользящее попадание в верхнюю часть
+  const bStart = { x:W*0.5 + U*0.66, y:H*0.5 - U*0.40 };
+  const bTarget= { x:aPos.x + U*0.010, y:aPos.y - U*0.088 };
+  const dx=bTarget.x-bStart.x, dy=bTarget.y-bStart.y;
+  const dist=Math.hypot(dx,dy);
+  planets.B = {
+    kind:'ice',
+    r:rB, x:bStart.x, y:bStart.y, rot:rr(0,TAU), spin:-0.22,
+    feats:surfaceFeats(rB,'ice'),
+    pal:[ ['0','#ffffff'],['0.28','#c3e7ff'],['0.62','#4d7fa8'],['1','#0a1622'] ],
+    atmo:'150,215,255', atmoA:0.45,
+    start:bStart, dir:{x:dx/dist,y:dy/dist}, dist
+  };
+
+  // --- центральное тело после удара ---
+  const C = { x:aPos.x + U*0.022, y:aPos.y - U*0.020 };
+  remnant = {
+    kind:'molten', r:rA*0.42, heat:1,
+    x:C.x, y:C.y, vx:U*0.012, vy:U*0.004,
+    rot:rr(0,TAU), spin:0.55, feats:surfaceFeats(rA,'lava'),
+    pal:[ ['0','#fff3cf'],['0.24','#ffb055'],['0.55','#8a3d18'],['0.8','#3a1a0e'],['1','#100604'] ],
+    atmo:'255,150,60', atmoA:0.5, alive:false
+  };
+
+  // --- фоновый диск мелкой пыли (галактическое кольцо) ---
+  dust=[];
+  for(let i=0;i<340;i++){
+    const ang=rr(0,TAU), rad=rr(.9,1.7)*U;
+    dust.push({
+      bx:W*0.5 + Math.cos(ang)*rad,
+      by:H*0.5 + Math.sin(ang)*rad*0.34,
+      r:rr(.4,1.3), a:rr(.05,.22), ph:rr(0,TAU)
+    });
+  }
+
+  debrisA=[];debrisB=[];sparks=[];rings=[];flashes=[];
+  T=0;
+}
+
+/* =========================================================================
+   ЧАСТИЦЫ
+   ========================================================================= */
+function spawnDebris(){
+  const dir = planets.B.dir;
+  const GM = 0.020*U*U*U;
+  const cx = remnant.x, cy = remnant.y;
+  const P = {x:cx, y:cy};
+
+  // обломки выводятся на околокруговые орбиты -> устойчивый диск
+  function chunk(list, n, rMin, rMax, colA, colB, hotP){
+    for(let i=0;i<n;i++){
+      const ang = rr(0,TAU);
+      const rad = Math.max(remnant.r*1.22 + rr(0.015,0.24)*U, U*0.055);
+      const vo  = Math.sqrt(GM/rad)*rr(.82,1.24);
+      const vr  = rr(-0.22,0.42)*vo;
+      const ca=Math.cos(ang), sa=Math.sin(ang);
+      const bulk = (-dir.x*ca - dir.y*sa) * U*0.10;
+      list.push({
+        x:cx+ca*rad, y:cy+sa*rad,
+        vx:-sa*vo + ca*(vr+bulk),
+        vy: ca*vo + sa*(vr+bulk),
+        r:rr(rMin,rMax), col:rnd()<.5?colA:colB,
+        hot:rnd()<hotP, life:rr(12,27), age:0
+      });
+    }
+  }
+  chunk(debrisA, 92, 1.6, 5.4,'70,48,34','114,80,53',.40);   // кора раскалённого мира
+  chunk(debrisB, 78, 1.2, 4.2,'205,234,255','124,174,208',.34); // осколки льда
+  // искры / плазма
+  for(let i=0;i<620;i++){
+    const ang=rr(0,TAU), sp=Math.pow(rnd(),.5)*U*1.25 + U*0.15;
+    sparks.push({
+      x:P.x+rr(-1,1)*U*0.02, y:P.y+rr(-1,1)*U*0.02,
+      vx:Math.cos(ang)*sp + (-dir.x)*U*0.32,
+      vy:Math.sin(ang)*sp + (-dir.y)*U*0.32,
+      px:P.x, py:P.y,
+      r:rr(.5,1.9), life:rr(.35,1.9), age:0,
+      col: rnd()<.5?'255,236,180':(rnd()<.5?'255,150,70':'255,96,48')
+    });
+  }
+  // пылевой диск (стабильные орбиты -> кольцо)
+  for(let i=0;i<560;i++){
+    const ang=rr(0,TAU), rad=rr(.14,.42)*U;
+    const d=Math.max(rad,U*0.03);
+    const vo=Math.sqrt(GM/d)*rr(.85,1.06);
+    const x=remnant.x+Math.cos(ang)*rad;
+    const y=remnant.y+Math.sin(ang)*rad;
+    sparks.push({
+      x,y,px:x,py:y,
+      vx:-Math.sin(ang)*vo, vy:Math.cos(ang)*vo,
+      r:rr(.5,1.6), life:rr(10,26), age:0,
+      col: rnd()<.5?'170,210,240':'215,205,190', ring:true
+    });
+  }
+  // ударные волны
+  rings.push({t:0,     sp:U*0.85, w:7, col:'255,240,215', life:2.4, age:0});
+  rings.push({t:0.12,  sp:U*0.62, w:5, col:'180,225,255', life:2.8, age:0});
+  rings.push({t:0.30,  sp:U*0.46, w:3.4, col:'255,170,90', life:3.4, age:0});
+  // вспышки
+  flashes.push({age:0, life:1.1, r0:U*0.02, r1:U*0.75, a:.95});
+  flashes.push({age:0, life:2.0, r0:U*0.01, r1:U*1.35, a:.40});
+}
+
+/* =========================================================================
+   ФИЗИКА
+   ========================================================================= */
+const GM = () => 0.020*U*U*U;
+const SOFT = () => U*0.028;
+
+function integrate(list, dt, drag){
+  const gm=GM(), s2=SOFT()*SOFT();
+  for(let i=list.length-1;i>=0;i--){
+    const p=list[i];
+    p.age+=dt;
+    if(p.age>p.life){ list.splice(i,1); continue; }
+    const dx=remnant.x-p.x, dy=remnant.y-p.y;
+    const d2=dx*dx+dy*dy+s2, d=Math.sqrt(d2);
+    const a=gm/d2;
+    p.vx += dx/d*a*dt; p.vy += dy/d*a*dt;
+    p.vx -= p.vx*drag*dt; p.vy -= p.vy*drag*dt;
+    p.px=p.x; p.py=p.y;
+    p.x += p.vx*dt; p.y += p.vy*dt;
+    // аккреция
+    if(d < remnant.r*0.98){
+      remnant.r = Math.min(remnant.r + p.r*0.010, U*0.152);
+      list.splice(i,1);
+    }
+  }
+}
+
+function updateSparks(dt){
+  const gm=GM(), s2=SOFT()*SOFT();
+  for(let i=sparks.length-1;i>=0;i--){
+    const p=sparks[i];
+    p.age+=dt;
+    if(p.age>p.life){ sparks.splice(i,1); continue; }
+    const dx=remnant.x-p.x, dy=remnant.y-p.y;
+    const d2=dx*dx+dy*dy+s2, d=Math.sqrt(d2);
+    const a=gm/d2;
+    if(p.ring){
+      p.vx += dx/d*a*dt*0.85; p.vy += dy/d*a*dt*0.85;
+    }else{
+      p.vx += dx/d*a*dt*0.5; p.vy += dy/d*a*dt*0.5;
+      p.vx -= p.vx*0.8*dt; p.vy -= p.vy*0.8*dt;
+    }
+    p.px=p.x; p.py=p.y;
+    p.x += p.vx*dt; p.y += p.vy*dt;
+    if(p.ring && d < remnant.r*1.05) sparks.splice(i,1);
+  }
+}
+
+/* =========================================================================
+   ОТРИСОВКА ФОНА
+   ========================================================================= */
+function drawBackground(t){
+  ctx.fillStyle='#01020a';
+  ctx.fillRect(0,0,W,H);
+
+  ctx.globalCompositeOperation='lighter';
+  for(const n of nebulae){
+    const x=n.x + Math.sin(t*0.05+n.ph)*U*0.02;
+    const y=n.y + Math.cos(t*0.04+n.ph)*U*0.02;
+    const g=ctx.createRadialGradient(x,y,0,x,y,n.r*1.5);
+    g.addColorStop(0,`rgba(${n.col},${n.a})`);
+    g.addColorStop(0.45,`rgba(${n.col},${n.a*0.32})`);
+    g.addColorStop(1,`rgba(${n.col},0)`);
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,n.r*1.5,0,TAU); ctx.fill();
+  }
+
+  for(const s of stars){
+    const tw = 0.55 + 0.45*Math.sin(t*s.tw + s.ph);
+    ctx.fillStyle=`rgba(${s.hue},${s.a*tw})`;
+    ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,TAU); ctx.fill();
+  }
+
+  // далёкое галактическое кольцо пыли
+  for(const d of dust){
+    const a=d.a*(0.6+0.4*Math.sin(t*0.4+d.ph));
+    ctx.fillStyle=`rgba(190,205,235,${a})`;
+    ctx.beginPath(); ctx.arc(d.bx,d.by,d.r,0,TAU); ctx.fill();
+  }
+
+  // яркая звезда-ориентир
+  const sx=W*0.86, sy=H*0.14, sr=U*0.006;
+  const sg=ctx.createRadialGradient(sx,sy,0,sx,sy,sr*22);
+  sg.addColorStop(0,'rgba(255,255,255,.95)');
+  sg.addColorStop(.06,'rgba(210,230,255,.55)');
+  sg.addColorStop(.3,'rgba(120,170,255,.14)');
+  sg.addColorStop(1,'rgba(120,170,255,0)');
+  ctx.fillStyle=sg; ctx.beginPath(); ctx.arc(sx,sy,sr*22,0,TAU); ctx.fill();
+
+  ctx.globalCompositeOperation='source-over';
+}
+
+/* =========================================================================
+   ОТРИСОВКА ПЛАНЕТЫ (сферическая проекция деталей)
+   ========================================================================= */
+const LIGHT = {x:-0.44, y:-0.42};
+
+function drawSphereBody(p, stretch, ang, alpha, heat){
+  if(alpha<=0.002) return;
+  const R=p.r, LF=p.light||LIGHT;
+
+  ctx.save();
+  ctx.globalAlpha=alpha;
+
+  // приливная деформация вдоль оси столкновения
+  ctx.translate(p.x,p.y);
+  ctx.rotate(ang); ctx.scale(1+stretch, 1-stretch*0.62); ctx.rotate(-ang);
+
+  // --- тело ---
+  const g=ctx.createRadialGradient(LF.x*R, LF.y*R, R*0.04, 0,0, R*1.14);
+  for(const [st,c] of p.pal) g.addColorStop(parseFloat(st), c);
+  ctx.beginPath(); ctx.arc(0,0,R,0,TAU); ctx.fillStyle=g; ctx.fill();
+
+  // --- детали поверхности ---
+  if(p.feats){
+    ctx.save();
+    ctx.beginPath(); ctx.arc(0,0,R*1.002,0,TAU); ctx.clip();
+
+    for(const f of p.feats.surf){
+      const lon=f.lon+p.rot, cl=Math.cos(f.lat), z=cl*Math.cos(lon);
+      if(z<=0.03) continue;
+      const x=R*cl*Math.sin(lon), y=-R*Math.sin(f.lat);
+      const s=f.size*(0.45+0.65*z);
+      const fg=ctx.createRadialGradient(x,y,0,x,y,s);
+      fg.addColorStop(0,`rgba(${f.col},${f.a*z})`);
+      fg.addColorStop(1,`rgba(${f.col},0)`);
+      ctx.fillStyle=fg; ctx.beginPath(); ctx.arc(x,y,s,0,TAU); ctx.fill();
+    }
+    ctx.restore();
+
+    // эмиссия (лава / трещины льда) — аддитивно
+    ctx.globalCompositeOperation='lighter';
+    const boost = 0.55 + (heat||0)*1.35;
+    for(const f of p.feats.glow){
+      const lon=f.lon+p.rot, cl=Math.cos(f.lat), z=cl*Math.cos(lon);
+      if(z<=0.03) continue;
+      const x=R*cl*Math.sin(lon), y=-R*Math.sin(f.lat);
+      const s=f.size*(0.5+0.6*z);
+      const pulse=0.75+0.25*Math.sin(p.rot*4+f.lon*3);
+      const fg=ctx.createRadialGradient(x,y,0,x,y,s);
+      fg.addColorStop(0,`rgba(${f.col},${clamp(f.a*z*boost*pulse,0,1)})`);
+      fg.addColorStop(1,`rgba(${f.col},0)`);
+      ctx.fillStyle=fg; ctx.beginPath(); ctx.arc(x,y,s,0,TAU); ctx.fill();
+    }
+    ctx.globalCompositeOperation='source-over';
+  }
+
+  // --- терминатор (тень обратной от света стороны) ---
+  const sg=ctx.createRadialGradient(-LF.x*R*0.30, -LF.y*R*0.30, R*0.15, 0,0, R*1.34);
+  sg.addColorStop(0,'rgba(3,4,10,0)');
+  sg.addColorStop(0.62,'rgba(3,4,10,0.28)');
+  sg.addColorStop(1,'rgba(2,3,8,0.90)');
+  ctx.beginPath(); ctx.arc(0,0,R,0,TAU); ctx.fillStyle=sg; ctx.fill();
+
+  // --- раскалённое ядро/атмосферный ореол ---
+  ctx.globalCompositeOperation='lighter';
+  const halo=ctx.createRadialGradient(0,0,R*0.80,0,0,R*1.20);
+  halo.addColorStop(0,`rgba(${p.atmo},0)`);
+  halo.addColorStop(0.42,`rgba(${p.atmo},${p.atmoA*(0.4+(heat||0)*0.6)})`);
+  halo.addColorStop(1,`rgba(${p.atmo},0)`);
+  ctx.fillStyle=halo; ctx.beginPath(); ctx.arc(0,0,R*1.20,0,TAU); ctx.fill();
+
+  if(heat>0.01){
+    const cg=ctx.createRadialGradient(0,0,0,0,0,R*1.5);
+    cg.addColorStop(0,`rgba(255,236,190,${0.55*heat})`);
+    cg.addColorStop(0.5,`rgba(255,150,60,${0.30*heat})`);
+    cg.addColorStop(1,'rgba(255,90,30,0)');
+    ctx.fillStyle=cg; ctx.beginPath(); ctx.arc(0,0,R*1.5,0,TAU); ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+  ctx.restore();
+}
+
+/* =========================================================================
+   КАДР
+   ========================================================================= */
+function drawDebris(list, t){
+  ctx.globalCompositeOperation='lighter';
+  for(const p of list){
+    if(p.hot && p.age<1.7){
+      ctx.fillStyle=`rgba(${p.col},${clamp(1-p.age/1.7,0,1)})`;
+    } else continue;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r*0.9,0,TAU); ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+  for(const p of list){
+    if(p.hot && p.age<1.7) continue;
+    ctx.fillStyle=`rgba(${p.col},.95)`;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,TAU); ctx.fill();
+  }
+}
+
+function drawSparks(t){
+  ctx.globalCompositeOperation='lighter';
+  ctx.lineCap='round';
+  for(const s of sparks){
+    const k = s.ring ? clamp(1 - s.age/s.life,0,1) : Math.pow(clamp(1-s.age/s.life,0,1),0.7);
+    if(k<=0.01) continue;
+    ctx.strokeStyle=`rgba(${s.col},${k*0.85})`;
+    ctx.lineWidth=Math.max(0.5,s.r*k);
+    ctx.beginPath(); ctx.moveTo(s.px,s.py); ctx.lineTo(s.x,s.y); ctx.stroke();
+  }
+  ctx.fillStyle='#fff';
+  ctx.globalCompositeOperation='source-over';
+}
+
+function drawRings(t){
+  ctx.globalCompositeOperation='lighter';
+  for(let i=rings.length-1;i>=0;i--){
+    const r=rings[i];
+    if(r.age<r.t) continue;
+    const tt=r.age-r.t;
+    if(tt>r.life){ rings.splice(i,1); continue; }
+    const k=1-tt/r.life;
+    const rad=tt*r.sp;
+    ctx.strokeStyle=`rgba(${r.col},${k*k*0.75})`;
+    ctx.lineWidth=Math.max(0.6, r.w*k*k);
+    ctx.beginPath(); ctx.arc(remnant.x,remnant.y,rad,0,TAU); ctx.stroke();
+  }
+  ctx.globalCompositeOperation='source-over';
+}
+
+function drawFlashes(t){
+  const P={x:remnant.x,y:remnant.y};
+  ctx.globalCompositeOperation='lighter';
+  for(let i=flashes.length-1;i>=0;i--){
+    const f=flashes[i];
+    if(f.age>f.life){ flashes.splice(i,1); continue; }
+    const k=1-f.age/f.life;
+    const rad=lerp(f.r0,f.r1, 1-Math.pow(k,2.2));
+    const g=ctx.createRadialGradient(P.x,P.y,0,P.x,P.y,Math.max(rad,1));
+    const a=f.a*Math.pow(k,1.4);
+    g.addColorStop(0,`rgba(255,255,252,${a})`);
+    g.addColorStop(0.22,`rgba(255,238,190,${a*0.8})`);
+    g.addColorStop(0.55,`rgba(255,150,60,${a*0.35})`);
+    g.addColorStop(1,'rgba(255,90,30,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(P.x,P.y,rad,0,TAU); ctx.fill();
+
+    // линзовые лучи
+    if(a>0.05){
+      ctx.save();
+      ctx.globalAlpha=a*0.7;
+      for(const ang of [-0.35,1.2]){
+        ctx.save();
+        ctx.translate(P.x,P.y); ctx.rotate(ang);
+        const lg=ctx.createLinearGradient(-rad*2.6,0,rad*2.6,0);
+        lg.addColorStop(0,'rgba(255,230,190,0)');
+        lg.addColorStop(0.5,`rgba(255,245,225,${a*0.9})`);
+        lg.addColorStop(1,'rgba(255,230,190,0)');
+        ctx.fillStyle=lg;
+        ctx.fillRect(-rad*2.6,-Math.max(1,rad*0.02),rad*5.2,Math.max(2,rad*0.04));
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+  }
+  ctx.globalCompositeOperation='source-over';
+}
+
+/* =========================================================================
+   ГЛАВНЫЙ ЦИКЛ
+   ========================================================================= */
+function frame(now){
+  raf=requestAnimationFrame(frame);
+  if(!last) last=now;
+  let dt=(now-last)/1000; last=now;
+  dt=Math.min(dt,1/30);
+  T+=dt;
+
+  if(T>DURATION){ buildScene(); }
+
+  /* --- сцена --- */
+  if(T<IMPACT){
+    // сближение
+    const k=T/IMPACT;
+    const e=Math.pow(clamp(k,0,1),1.65);
+    const B=planets.B;
+    B.x = B.start.x + B.dir.x*B.dist*e;
+    B.y = B.start.y + B.dir.y*B.dist*e;
+    B.rot += B.spin*dt*(1+e*2.4);
+    planets.A.rot += planets.A.spin*dt*(1+e*1.6);
+    // приливное растяжение
+    const gap=Math.max(Math.hypot(B.x-planets.A.x,B.y-planets.A.y)-(planets.A.r+B.r),0);
+    const pull=smooth(1-clamp(gap/(U*0.55),0,1));
+    planets.A.stretch = 0.030+pull*0.14;
+    planets.B.stretch = 0.030+pull*0.22;
+    const ang=Math.atan2(B.y-planets.A.y,B.x-planets.A.x);
+    planets.A.ang=ang;
+    planets.B.ang=ang;
+
+    if(T+dt>=IMPACT){ /* слияние произойдёт в следующем блоке */ }
+  } else {
+    if(!remnant.alive){
+      remnant.alive=true;
+      remnant.x=planets.A.x+U*0.010;
+      remnant.y=planets.A.y-U*0.088;
+      spawnDebris();
+    }
+    // рост ядра (сначала быстрое, затем замедление) и охлаждение
+    const tgt = U*0.118*1.18;
+    remnant.r += (tgt-remnant.r)*(1-Math.exp(-2.1*dt));
+    remnant.heat = Math.max(0, 1-(T-IMPACT)/11);
+    remnant.rot += remnant.spin*dt*(1+remnant.heat*1.6);
+    remnant.x += remnant.vx*dt; remnant.y += remnant.vy*dt;
+
+    integrate(debrisA,dt,0.10);
+    integrate(debrisB,dt,0.10);
+    updateSparks(dt);
+  }
+
+  // ударные волны живут до конца
+  if(T>IMPACT){ for(const r of rings) r.age+=dt; }
+
+  /* --- камера --- */
+  let zoom;
+  if(T<IMPACT) zoom = 0.955 + 0.045*smooth(T/IMPACT);
+  else zoom = 1.0 + 0.085*Math.exp(-(T-IMPACT)/0.34) - 0.035*smooth((T-IMPACT)/12);
+
+  /* --- рендер --- */
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  drawBackground(now/1000);
+
+  ctx.save();
+  ctx.translate(W/2,H/2); ctx.scale(zoom,zoom); ctx.translate(-W/2,-H/2);
+
+  // атмосферный "свет" сцены
+  ctx.globalCompositeOperation='lighter';
+  const amb=T>IMPACT?Math.exp(-(T-IMPACT)/2.2):0;
+  if(amb>0.01){
+    const ag=ctx.createRadialGradient(remnant.x,remnant.y,0,remnant.x,remnant.y,U*0.9);
+    ag.addColorStop(0,`rgba(255,150,70,${0.16*amb})`);
+    ag.addColorStop(1,'rgba(255,120,50,0)');
+    ctx.fillStyle=ag; ctx.beginPath(); ctx.arc(remnant.x,remnant.y,U*0.9,0,TAU); ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  if(T<IMPACT){
+    const B=planets.B;
+    // рисуем дальнюю (верхнюю по глубине) сначала
+    if(B.y<planets.A.y) drawSphereBody(B,B.stretch,B.ang,1,0), drawSphereBody(planets.A,planets.A.stretch,planets.A.ang,1,0);
+    else drawSphereBody(planets.A,planets.A.stretch,planets.A.ang,1,0), drawSphereBody(B,B.stretch,B.ang,1,0);
+  }else{
+    drawRings(T);
+    drawSphereBody(remnant, 0.02+0.05*Math.max(0,1-(T-IMPACT)/4), 0.6, 1, remnant.heat);
+    drawDebris(debrisB,T);
+    drawDebris(debrisA,T);
+    drawSparks(T);
+    drawFlashes(T);
+  }
+
+  ctx.restore();
+
+  /* --- глобальное затухание в начале/конце цикла --- */
+  const fade = 1-smooth(T/1.0) >= 0 ? 0 : 0;
+  const a0 = 1-smooth(T/1.1);
+  const a1 = smooth((T-(DURATION-1.6))/1.6);
+  const fadeA = Math.max(a0,a1);
+  if(fadeA>0.003){
+    ctx.fillStyle=`rgba(1,2,10,${fadeA})`;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  /* --- HUD --- */
+  hudAcc+=dt;
+  if(hudAcc>0.08){
+    hudAcc=0;
+    el.m1.textContent = T<IMPACT ? (1-T/IMPACT).toFixed(1)+' с' : '—';
+    el.m2.textContent = T<IMPACT ? 'через '+(IMPACT-T).toFixed(1)+' с'
+                                 : (T-IMPACT).toFixed(1)+' с';
+    el.m3.textContent = T<IMPACT ? 'Сближение' : (T<IMPACT+3?'Импакт':(T<IMPACT+11?'Диск обломков':'Релаксация'));
+    el.prog.style.width = (100*T/DURATION).toFixed(1)+'%';
+  }
+}
+
+/* =========================================================================
+   ПОДГОНКА РАЗМЕРОВ
+   ========================================================================= */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = Math.max(320, window.innerWidth);
+  H = Math.max(240, window.innerHeight);
+  U = Math.min(W,H);
+  cvs.width = Math.round(W*DPR); cvs.height = Math.round(H*DPR);
+  cvs.style.width=W+'px'; cvs.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  buildScene();
+  drawGrain();
+}
+
+function drawGrain(){
+  const gs=180;
+  grainC.width=gs; grainC.height=gs;
+  grainC.style.width=W*1.2+'px'; grainC.style.height=H*1.2+'px';
+  const im=gctx.createImageData(gs,gs);
+  for(let i=0;i<im.data.length;i+=4){
+    const v=Math.random()*255|0;
+    im.data[i]=im.data[i+1]=im.data[i+2]=v;
+    im.data[i+3]=255;
+  }
+  gctx.putImageData(im,0,0);
+}
+
+let rt=0;
+window.addEventListener('resize',()=>{ clearTimeout(rt); rt=setTimeout(resize,180); });
+document.getElementById('replay').addEventListener('click',()=>{ buildScene(); last=0; });
+
+resize();
+last=0;
+raf=requestAnimationFrame(frame);
+</script>
+</body>
+</html>

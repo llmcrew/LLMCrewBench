@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Водная поверхность</title>
+<style>
+  :root { --ink: #f4ead9; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #05070c; overflow: hidden; }
+  body { font-family: ui-serif, "Iowan Old Style", Georgia, "Times New Roman", serif; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+
+  .frame {
+    position: fixed; inset: 0; pointer-events: none;
+    box-shadow: inset 0 0 22vmin rgba(0,0,0,.75);
+  }
+
+  .caption {
+    position: fixed; left: clamp(18px, 4vw, 56px); bottom: clamp(16px, 4vh, 52px);
+    color: var(--ink); pointer-events: none;
+    text-shadow: 0 2px 18px rgba(0,0,0,.85), 0 1px 2px rgba(0,0,0,.9);
+    mix-blend-mode: screen; opacity: .92;
+  }
+  .caption h1 {
+    font-size: clamp(15px, 2.2vw, 27px);
+    font-weight: 500; letter-spacing: .42em; text-transform: uppercase;
+    line-height: 1.25;
+  }
+  .caption p {
+    margin-top: .55em; font-size: clamp(10px, 1.05vw, 13px);
+    letter-spacing: .3em; text-transform: uppercase; opacity: .6;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  .rule {
+    position: fixed; top: clamp(18px,4vh,54px); right: clamp(18px,4vw,56px);
+    color: var(--ink); font-size: clamp(9px,1vw,12px); letter-spacing: .34em;
+    text-transform: uppercase; opacity: .45; pointer-events: none;
+    font-family: ui-monospace, Menlo, monospace;
+    text-shadow: 0 1px 10px rgba(0,0,0,.9);
+  }
+
+  .fallback {
+    position: fixed; inset: 0; display: none; place-items: center;
+    color: var(--ink); text-align: center; padding: 2rem; line-height: 1.6;
+    background: radial-gradient(120% 90% at 50% 78%, #32243a 0%, #0a0f1a 60%, #04060a 100%);
+    font-size: 15px;
+  }
+</style>
+</head>
+<body>
+<canvas id="sea"></canvas>
+<div class="frame"></div>
+<div class="rule">Mare · ray-marched study</div>
+<div class="caption">
+  <h1>Водная поверхность</h1>
+  <p>наведите — по воде пойдут круги</p>
+</div>
+<div class="fallback" id="fallback">
+  <div><b>Водная поверхность</b><br>Для просмотра нужен WebGL.</div>
+</div>
+
+<script>
+(function () {
+  const canvas = document.getElementById('sea');
+  const gl = canvas.getContext('webgl', { antialias: true, alpha: false, preserveDrawingBuffer: true })
+          || canvas.getContext('experimental-webgl');
+  if (!gl) { document.getElementById('fallback').style.display = 'grid'; return; }
+
+  const VS = `
+    attribute vec2 aPos;
+    void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }
+  `;
+
+  const FS = `
+    precision highp float;
+
+    uniform vec2  uRes;
+    uniform float uTime;
+    uniform vec2  uPointer;      // точка на плоскости, где стоит курсор
+    uniform float uPointerOn;
+    uniform vec4  uRipples[7];   // xy = центр, z = время рождения, w = сила
+
+    const int NR = 7;
+
+    // -------- небо ---------------------------------------------------------
+    vec3 sunDir(){ return normalize(vec3(0.34, 0.105, -1.0)); }
+
+    float hash(vec2 p){
+      p = fract(p * vec2(123.34, 456.21));
+      p += dot(p, p + 45.32);
+      return fract(p.x * p.y);
+    }
+
+    vec3 sky(vec3 d){
+      float y = clamp(d.y, 0.0, 1.0);
+
+      vec3 hor = vec3(1.00, 0.53, 0.24);
+      vec3 mid = vec3(0.30, 0.235, 0.375);
+      vec3 top = vec3(0.022, 0.045, 0.125);
+
+      vec3 col = mix(hor, mid, smoothstep(0.0, 0.13, y));
+      col = mix(col, top, smoothstep(0.02, 0.42, y));
+
+      // тонкая тёплая полоса у горизонта
+      col += vec3(0.55, 0.22, 0.09) * exp(-y * 26.0) * 0.90;
+
+      vec3 s = sunDir();
+      float sd = max(dot(d, s), 0.0);
+      col += vec3(1.0, 0.88, 0.66) * pow(sd, 2600.0) * 9.0;  // диск
+      col += vec3(1.0, 0.65, 0.38) * pow(sd, 90.0) * 0.60;   // ореол
+      col += vec3(0.9, 0.46, 0.27) * pow(sd, 14.0) * 0.09;   // широкое свечение
+
+      // звёзды в верхней части
+      vec2 g = d.xz / max(d.y, 0.08) * 26.0;
+      vec2 cell = floor(g);
+      float h = hash(cell);
+      if (h > 0.955) {
+        vec2 c = (cell + vec2(hash(cell + 3.1), hash(cell + 7.7))) - g;
+        float st = smoothstep(0.55, 0.0, length(c));
+        st *= smoothstep(0.10, 0.55, d.y);
+        float tw = 0.55 + 0.45 * sin(uTime * (1.2 + h * 5.0) + h * 40.0);
+        col += vec3(0.85, 0.90, 1.0) * st * tw * 0.9;
+      }
+      return col;
+    }
+
+    // -------- поверхность воды --------------------------------------------
+    float wave(vec2 p, float t){
+      float h = 0.0;
+      h += sin(p.x * 0.31 + t * 0.80) * 0.115;
+      h += sin(p.y * 0.24 - t * 0.63) * 0.085;
+      h += sin((p.x * 0.52 + p.y * 0.41) + t * 1.15) * 0.055;
+      h += sin((p.x * 1.05 - p.y * 0.83) - t * 1.60) * 0.030;
+      h += sin((p.x * 2.20 + p.y * 1.65) + t * 2.30) * 0.016;
+      h += sin((p.x * 3.60 - p.y * 2.75) - t * 3.05) * 0.0095;
+      return h;
+    }
+
+    float ripples(vec2 p){
+      float h = 0.0;
+      for (int i = 0; i < NR; i++){
+        vec4 r = uRipples[i];
+        float age = uTime - r.z;
+        if (r.w > 0.001 && age > 0.0 && age < 22.0){
+          float d = length(p - r.xy);
+          float env = exp(-age * 0.42) * exp(-d * 0.30) * r.w;
+          h += sin(d * 4.2 - age * 5.2) * env * 0.16;
+        }
+      }
+      if (uPointerOn > 0.5){
+        float d = length(p - uPointer);
+        h += sin(d * 5.5 - uTime * 4.4) * exp(-d * 0.55) * 0.055;
+      }
+      return h;
+    }
+
+    float height(vec2 p){ return wave(p, uTime) + ripples(p); }
+
+    vec3 normalAt(vec2 p){
+      float e = 0.035;
+      float h  = height(p);
+      float hx = height(p + vec2(e, 0.0));
+      float hz = height(p + vec2(0.0, e));
+      return normalize(vec3(-(hx - h) / e, 1.0, -(hz - h) / e));
+    }
+
+    void main(){
+      vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
+      float aspect = uRes.x / uRes.y;
+
+      // лёгкое дыхание камеры
+      float bob = sin(uTime * 0.35) * 0.035;
+
+      vec3 ro = vec3(0.0, 1.55 + bob, 0.0);
+      vec3 fw = normalize(vec3(0.0, -0.050 + bob * 0.12, -1.0));
+      vec3 rt = normalize(cross(fw, vec3(0.0, 1.0, 0.0)));
+      vec3 up = cross(rt, fw);
+
+      float tanHalf = 0.74;
+      vec3 rd = normalize(fw + rt * uv.x * tanHalf * aspect + up * uv.y * tanHalf);
+
+      vec3 col;
+
+      if (rd.y > 0.0005) {
+        // небо
+        col = sky(rd);
+      } else {
+        float t = -ro.y / rd.y;
+        vec3 p = ro + rd * t;
+
+        vec3 n = normalAt(p.xz);
+        vec3 v = -rd;
+        float fres = 0.02 + 0.98 * pow(1.0 - max(dot(v, n), 0.0), 5.0);
+
+        vec3 refl = reflect(rd, n);
+        vec3 reflCol = sky(vec3(refl.x, abs(refl.y), refl.z));
+
+        // цвет водной толщи
+        vec3 deep = vec3(0.009, 0.038, 0.062);
+        vec3 shal = vec3(0.025, 0.095, 0.115);
+        float depth = smoothstep(2.0, 60.0, t);
+        vec3 water = mix(shal, deep, depth);
+
+        // просвет навстречу солнцу
+        vec3 s = sunDir();
+        float toSun = max(dot(v, s), 0.0);
+        water += vec3(0.10, 0.16, 0.12) * toSun * 0.55;
+
+        vec3 r = reflect(rd, n);
+        float spec = pow(max(dot(r, s), 0.0), 700.0);
+        float spec2 = pow(max(dot(r, s), 0.0), 60.0);
+
+        col = mix(water, reflCol, fres);
+        col += vec3(1.0, 0.88, 0.66) * spec * 4.2;
+        col += vec3(1.0, 0.62, 0.34) * spec2 * 0.30;
+
+        // горизонтальная дымка
+        float fog = smoothstep(55.0, 260.0, t);
+        col = mix(col, sky(vec3(rd.x, 0.012, rd.z)), fog * 0.95);
+      }
+
+      // солнце: вода и небо сшиваются тёплым швом
+      col = mix(col, vec3(1.0, 0.55, 0.28), exp(-abs(rd.y) * 70.0) * 0.34);
+
+      // тон-маппинг и градация
+      col = col / (col + vec3(1.22));
+      col = pow(col, vec3(0.4545));
+      col *= vec3(1.03, 0.99, 0.95);
+
+      // виньетка
+      vec2 q = gl_FragCoord.xy / uRes;
+      float vig = smoothstep(1.25, 0.28, length(q - 0.5));
+      col *= mix(0.62, 1.0, vig);
+
+      // зерно
+      float g = hash(gl_FragCoord.xy + fract(uTime) * 137.0);
+      col += (g - 0.5) * 0.028;
+
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `;
+
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const aPos = gl.getAttribLocation(prog, 'aPos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  const U = {
+    res:     gl.getUniformLocation(prog, 'uRes'),
+    time:    gl.getUniformLocation(prog, 'uTime'),
+    pointer: gl.getUniformLocation(prog, 'uPointer'),
+    pOn:     gl.getUniformLocation(prog, 'uPointerOn'),
+    ripples: gl.getUniformLocation(prog, 'uRipples[0]')
+  };
+
+  const ripples = [];
+  for (let i = 0; i < 7; i++) ripples.push(new Float32Array([0, 0, -99, 0]));
+
+  let dpr = Math.min(window.devicePixelRatio || 1, 2);
+  function resize() {
+    const w = Math.floor(innerWidth * dpr), h = Math.floor(innerHeight * dpr);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w; canvas.height = h;
+    }
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  // курсор -> точка на плоскости воды (y = 0)
+  const cam = { y: 1.55, fwY: -0.050, tanHalf: 0.74 };
+  let pointer = [0, 0], pointerOn = 0, lastRipple = 0, rippleIdx = 0;
+
+  function toPlane(cx, cy, t) {
+    const uvx = (cx / innerWidth - 0.5) * (innerWidth / innerHeight);
+    const uvy = (0.5 - cy / innerHeight);
+    const aspect = innerWidth / innerHeight;
+    const bob = Math.sin(t * 0.35) * 0.035;
+    const fw = [0, cam.fwY + bob * 0.12, -1];
+    const fl = Math.hypot(fw[0], fw[1], fw[2]);
+    const f = [fw[0] / fl, fw[1] / fl, fw[2] / fl];
+    const r = [f[2] * 1 - f[1] * 0, 0, 0]; // cross(f,(0,1,0)) -> (-f.z,0,f.x)
+    const rr = [-f[2], 0, f[0]];
+    const rl = Math.hypot(rr[0], rr[1], rr[2]);
+    const R = [rr[0] / rl, rr[1] / rl, rr[2] / rl];
+    const Uu = [R[1] * f[2] - R[2] * f[1], R[2] * f[0] - R[0] * f[2], R[0] * f[1] - R[1] * f[0]];
+    const dx = f[0] + R[0] * uvx * cam.tanHalf * aspect + Uu[0] * uvy * cam.tanHalf;
+    const dy = f[1] + R[1] * uvx * cam.tanHalf * aspect + Uu[1] * uvy * cam.tanHalf;
+    const dz = f[2] + R[2] * uvx * cam.tanHalf * aspect + Uu[2] * uvy * cam.tanHalf;
+    const dl = Math.hypot(dx, dy, dz);
+    const ry = dy / dl;
+    const roY = cam.y + Math.sin(t * 0.35) * 0.035;
+    if (ry > -0.0005) return null;
+    const tt = -roY / ry;
+    return [(dx / dl) * tt, (dz / dl) * tt];
+  }
+
+  addEventListener('pointermove', (e) => {
+    const p = toPlane(e.clientX, e.clientY, now);
+    if (!p) { pointerOn = 0; return; }
+    pointer[0] = p[0]; pointer[1] = p[1];
+    pointerOn = 1;
+    if (now - lastRipple > 0.16) {
+      lastRipple = now;
+      const r = ripples[rippleIdx = (rippleIdx + 1) % ripples.length];
+      r[0] = p[0]; r[1] = p[1]; r[2] = now; r[3] = 1.0;
+    }
+  }, { passive: true });
+
+  addEventListener('pointerdown', (e) => {
+    const p = toPlane(e.clientX, e.clientY, now);
+    if (!p) return;
+    for (let k = 0; k < 4; k++) {
+      const r = ripples[rippleIdx = (rippleIdx + 1) % ripples.length];
+      r[0] = p[0]; r[1] = p[1]; r[2] = now + k * 0.14; r[3] = 1.35;
+    }
+  });
+
+  addEventListener('pointerleave', () => { pointerOn = 0; });
+
+  let now = 0, t0 = performance.now();
+  function frame(ms) {
+    now = (ms - t0) / 1000;
+    resize();
+    gl.uniform2f(U.res, canvas.width, canvas.height);
+    gl.uniform1f(U.time, now);
+    gl.uniform2f(U.pointer, pointer[0], pointer[1]);
+    gl.uniform1f(U.pOn, pointerOn);
+    gl.uniform4fv(U.ripples, flatten(ripples));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    requestAnimationFrame(frame);
+  }
+
+  function flatten(list) {
+    const out = new Float32Array(list.length * 4);
+    for (let i = 0; i < list.length; i++) out.set(list[i], i * 4);
+    return out;
+  }
+
+  // стартовые круги, чтобы вода жила и без курсора
+  for (let i = 0; i < 5; i++) {
+    const r = ripples[i];
+    r[0] = (Math.random() - 0.5) * 8;
+    r[1] = -3 - Math.random() * 14;
+    r[2] = i * 1.6;
+    r[3] = 0.9;
+  }
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
