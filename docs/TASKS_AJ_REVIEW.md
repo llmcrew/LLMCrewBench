@@ -119,7 +119,7 @@ P1 означает исправление до следующего довер�
 
 ### Волна 2 — extended
 
-После pilot в `stretch-v1` добавляются C-5, C-6, T-9, LC-7, H-5, I-4, J-4. Используются те же category modules; Go/SQL-fixture — `coding_go.py`/`coding_sql.py`, router — `coding.py`. Фиксируются profile-specific `expected_ids`, task weights и rubric version, но не меняется baseline. При принятии всех 17 предложений stretch содержит 64 A–J и по-прежнему 100 баллов. Для C-5 отдельно определить точку подтверждённой отмены через barrier/acknowledgement: проверки не зависят от wall-clock порядка конкурирующих событий и не обещают запрет старта до фактического наблюдения cancel worker-ом.
+После pilot в `stretch-v1` добавляются C-5, C-6, T-9, LC-7, H-5, I-4, J-4. Используются те же category modules; Go/SQL-fixture — `coding_go.py`/`coding_sql.py`, router — `coding.py`. Фиксируются profile-specific `expected_ids`, task weights и rubric version, но не меняется baseline. При принятии всех 17 предложений stretch содержит 64 A–J и по-прежнему 100 баллов. Волна корпусной стратификации добавляет к stretch ещё пять заданий: пару ведомостей IF-7/IF-7-KK (форматы дат и чисел ru/kk), RTL/NFC-край IF-8 и пару расписаний R-17/R-17-KK с праздниками KZ; каждая языковая версия — отдельная задача с собственным oracle, все пять приватны и помечены `fresh_after`, stretch доходит до 69 A–J при тех же 100 баллах. Для C-5 отдельно определить точку подтверждённой отмены через barrier/acknowledgement: проверки не зависят от wall-clock порядка конкурирующих событий и не обещают запрет старта до фактического наблюдения cancel worker-ом.
 
 ### Общие критерии готовности каждого нового задания
 

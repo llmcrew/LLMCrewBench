@@ -36,6 +36,10 @@ packages = ["dailybench", "dailybench.tasks"]
   "vendor/plotly/LICENSE",
   "vendor/plotly/PROVENANCE.md",
 ]
+"schema" = [
+  "schema/task.schema.json",
+  "schema/profile.schema.json",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

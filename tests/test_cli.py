@@ -723,3 +723,26 @@ def test_preflight_command_uses_a_written_reference_file(endpoint, tmp_path: Pat
     assert code == 0
     assert report_path.is_file()
     assert "stub-entry" in report_path.read_text(encoding="utf-8")
+
+
+def _patched_list(monkeypatch, capsys, *extra: str) -> str:
+    tasks = build_suite(RunConfig(only=("R-1", "K-1")))
+    tasks[0].private = True
+    tasks[0].prompt = "ПРИВАТНЫЙ ПРОМПТ"
+    monkeypatch.setattr(cli, "build_suite", lambda _cfg: tasks)
+    assert cli.main(["list", "--prompts", *extra]) == 0
+    return capsys.readouterr().out
+
+
+def test_list_prompts_hides_private_text_without_the_flag(monkeypatch, capsys):
+    out = _patched_list(monkeypatch, capsys)
+    assert "ПРИВАТНЫЙ ПРОМПТ" not in out
+    assert "Приватных заданий скрыто: 1" in out
+    assert "приватное" not in out
+
+
+def test_list_prompts_shows_and_marks_private_with_the_flag(monkeypatch, capsys):
+    out = _patched_list(monkeypatch, capsys, "--include-private")
+    assert "ПРИВАТНЫЙ ПРОМПТ" in out
+    assert "· приватное" in out
+    assert "скрыто" not in out

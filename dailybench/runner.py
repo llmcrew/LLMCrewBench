@@ -608,6 +608,7 @@ class RunResult:
     suite_digest: dict[str, Any] = field(default_factory=dict)
     speed: list[dict[str, Any]] = field(default_factory=list)
     hardware: dict[str, Any] = field(default_factory=dict)
+    environment: dict[str, Any] = field(default_factory=dict)
 
     @property
     def scores(self) -> list[core.Score]:
@@ -629,6 +630,7 @@ class RunResult:
         config = json.loads(self.cfg.to_json())
         config["run_id"] = identity
         config["identity"] = identity
+        config["environment"] = self.environment
         suite = dict(self.suite_digest)
         suite["identity"] = identity
         entries = []
@@ -642,6 +644,7 @@ class RunResult:
             "suite.json": dump(suite),
             "provider.json": dump(self.provider_info),
             "hardware.json": dump(self.hardware),
+            "environment.json": dump(self.environment),
         }
         if self.speed:
             files["speed.json"] = dump(self.speed)
@@ -651,5 +654,11 @@ class RunResult:
         files["tasks.json"] = dump(entries)
         for entry, run in zip(entries, self.runs):
             files[f"transcripts/{run.task.id.replace('/', '_')}.json"] = dump(entry)
-        generation.commit(out, files, run_id=identity, identity=identity)
+        generation.commit(
+            out,
+            files,
+            run_id=identity,
+            identity=identity,
+            environment=self.environment,
+        )
         return out

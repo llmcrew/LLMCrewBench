@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1
+#
+# Runner image for Python tasks (spec §6.2/§6.3).
+#
+# The base is pinned by digest: `latest` is forbidden, and a tag-only base is
+# only accepted for an explicit local rebuild.  Build through
+# `scripts/sandbox_run.py build`, which passes PYTHON_IMAGE.
+#
+# Rootless-compatible: the process runs as UID/GID 1000, needs no capabilities,
+# no writable rootfs, and no init privileges.  Everything the candidate may
+# write lives on the tmpfs mounts at /tmp and /dev/shm, or on the per-run write
+# directory mounted at /out.
+ARG PYTHON_IMAGE=python:3.12-slim@sha256:2259debdc6af85626058a15a7bf44ad6a68b8c98c9ae82a02cf5cdb92f096d47
+FROM ${PYTHON_IMAGE}
+
+ARG SOURCE_DATE_EPOCH=1700000000
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONHASHSEED=0 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Stable, unprivileged identity.  `--create-home` is needed because pip and
+# some task fixtures expect $HOME; /workspace and /out are mount points.
+RUN groupadd --gid 1000 sandbox \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /usr/sbin/nologin sandbox \
+    && install -d -o 1000 -g 1000 -m 0755 /workspace /out
+
+WORKDIR /workspace
+USER 1000:1000
+
+# No ENTRYPOINT: the supervisor always supplies the full argv.
+CMD ["python", "--version"]

@@ -13,6 +13,9 @@ probability (R-13), constrained makespan (R-14) and topological tie-breaking
 
 R-16 is a pilot scenario: the final state of a service after a causally
 ordered event log with retries, partial failures and tombstones.
+R-17 is the stretch schedule twin: the same working-day rule with Kazakhstan
+holidays written once in Russian and once in Kazakh, each run with its own
+fixture and oracle.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import ipaddress
 import random
 import re
 from collections import deque
+from datetime import date, timedelta
 from decimal import Decimal
 from fractions import Fraction
 from itertools import permutations, product
@@ -49,8 +53,12 @@ IDS = (
     "R-15",
 )
 PILOT_IDS = ("R-16",)
-ALL_IDS = IDS + PILOT_IDS
+STRETCH_IDS = IDS + PILOT_IDS + ("R-17", "R-17-KK")
+ALL_IDS = STRETCH_IDS
+"""Stretch adds the ru/kk schedule twins; each is its own task and oracle."""
 _POINTS = 1.0
+FRESH_AFTER = "2026-10-01"
+"""The R-17 twins post-date the model snapshot of the release."""
 
 
 # --------------------------------------------------------------------------- #
@@ -79,6 +87,10 @@ def _task(
     reference: str | None = None,
     unit_whitelist: tuple[str, ...] = (),
     meta: dict[str, Any] | None = None,
+    closing: str = "Верни ответ одной строкой без пояснений.",
+    languages: tuple[str, ...] = ("ru",),
+    cultures: tuple[str, ...] = (),
+    fresh_after: str | None = None,
 ) -> core.TaskInstance:
     """Build a single-check reasoning task and retain the oracle's native value."""
     canonical = str(answer) if reference is None else reference
@@ -92,10 +104,20 @@ def _task(
         id=scenario,
         category="B",
         title=title,
-        prompt=prompt.rstrip("\n") + "\n\nВерни ответ одной строкой без пояснений.",
+        prompt=prompt.rstrip("\n") + "\n\n" + closing,
         max_points=_POINTS,
         oracle=oracle,
-        meta={"scenario": scenario, "kind": kind, "expected": answer, **(meta or {})},
+        languages=list(languages),
+        cultures=list(cultures),
+        fresh_after=fresh_after,
+        meta={
+            "scenario": scenario,
+            "kind": kind,
+            "expected": answer,
+            "languages": list(languages),
+            "cultures": list(cultures),
+            **(meta or {}),
+        },
     )
 
 
@@ -1432,6 +1454,141 @@ def r16(rng: random.Random) -> core.TaskInstance:
 
 
 # --------------------------------------------------------------------------- #
+# R-17 — working-day schedule with Kazakhstan holidays (ru and kk twins)
+# --------------------------------------------------------------------------- #
+
+_R17_HOLIDAYS: tuple[tuple[int, int, str, str], ...] = (
+    (1, 1, "Новый год", "Жаңа жыл"),
+    (1, 2, "Новый год", "Жаңа жыл"),
+    (1, 7, "Рождество", "Рождество"),
+    (3, 8, "Международный женский день", "Халықаралық әйелдер күні"),
+    (3, 21, "Наурыз мейрамы", "Наурыз мейрамы"),
+    (3, 22, "Наурыз мейрамы", "Наурыз мейрамы"),
+    (3, 23, "Наурыз мейрамы", "Наурыз мейрамы"),
+    (5, 1, "Праздник единства народа Казахстана", "Қазақстан халқының бірлігі күні"),
+    (5, 7, "День защитника Отечества", "Отан қорғаушы күні"),
+    (5, 9, "День Победы", "Жеңіс күні"),
+    (7, 6, "День столицы", "Астана күні"),
+    (8, 30, "День Конституции", "Конституция күні"),
+    (10, 25, "День Республики", "Республика күні"),
+    (12, 16, "День Независимости", "Тәуелсіздік күні"),
+)
+"""Fixed public holidays of Kazakhstan as ``(month, day, ru name, kk name)``.
+
+A holiday that falls on a weekend is not transferred: the excerpt lists the
+official days and the rule is applied literally, so the answer is a single
+date rather than a calendar-law discussion.
+"""
+
+
+def _r17_working(day: date, holidays: frozenset[date]) -> bool:
+    return day.weekday() < 5 and day not in holidays
+
+
+def _r17_finish(start: date, days: int, holidays: frozenset[date]) -> date:
+    """Date of the ``days``-th working day, starting no earlier than ``start``."""
+    day = start
+    while not _r17_working(day, holidays):
+        day += timedelta(days=1)
+    remaining = days
+    while True:
+        remaining -= 1
+        if remaining == 0:
+            return day
+        day += timedelta(days=1)
+        while not _r17_working(day, holidays):
+            day += timedelta(days=1)
+
+
+def _r17_calendar(year: int) -> tuple[list[tuple[date, str, str]], frozenset[date]]:
+    listed = [(date(year, month, day), ru_name, kk_name) for month, day, ru_name, kk_name in _R17_HOLIDAYS]
+    return listed, frozenset(day for day, _, _ in listed)
+
+
+def _r17_fixture(rng: random.Random) -> tuple[date, int, list[tuple[date, str, str]], frozenset[date]]:
+    year = rng.choice((2026, 2027))
+    start = date(year, 1, 5) + timedelta(days=rng.randrange(0, 320))
+    days = rng.randrange(4, 13)
+    listed, holidays = _r17_calendar(year)
+    return start, days, listed, holidays
+
+
+def _r17_block(day: date, days: int, listed: list[tuple[date, str, str]], lang: str) -> str:
+    """Holiday list in the language of the brief, plus the seed's span."""
+    lines = []
+    for holiday, ru_name, kk_name in listed:
+        name = kk_name if lang == "kk" else ru_name
+        lines.append(f"{holiday.isoformat()} — {name}")
+    span = [holiday for holiday, _, _ in listed if day <= holiday <= day + timedelta(days=40)]
+    note = "В промежутке очереди: " if lang == "ru" else "Кезек аралығында: "
+    if span:
+        note += ", ".join(item.isoformat() for item in span) + "."
+    else:
+        note += "праздников нет." if lang == "ru" else "мереке жоқ."
+    return "\n".join(lines) + "\n\n" + note
+
+
+def _r17_task(rng: random.Random, lang: str) -> core.TaskInstance:
+    start, days, listed, holidays = _r17_fixture(rng)
+    finish = _r17_finish(start, days, holidays)
+    calendar = _r17_block(start, days, listed, lang)
+    begin = start.isoformat()
+    resources = f"resources-{rng.randrange(100, 999)}"
+    if lang == "kk":
+        prompt = (
+            "Бригада тапсырыстарды жұмыс күндері (дүйсенбі–жұма) орындайды.\n"
+            "Сенбі, жексенбі және Қазақстанның мемлекеттік мерекелері — жұмыс істемейтін күндер:\n\n"
+            f"{calendar}\n\n"
+            f"Бірінші тапсырыс {begin} күніне қойылады, егер ол жұмыс күні болса; әйтпесе — "
+            "келесі жұмыс күніне. Әр келесі тапсырыс — келесі жұмыс күніне.\n"
+            "Демалыс күніне түскен мереке бөлек ауыстырылмайды.\n\n"
+            f"Тапсырыс нөмірі {days} қай күні орындалады? Күнді ISO (ЖЖЖЖ-АА-КК) түрінде жаз.\n"
+            f"Ресурс: {resources}."
+        )
+        return _task(
+            "R-17-KK",
+            "Мерекелері бар кесте (қазақша)",
+            prompt,
+            finish.isoformat(),
+            kind="date",
+            meta={"start": begin, "working_days": days, "finish": finish.isoformat(), "resources": resources},
+            closing="Жауапты бір жолмен, түсіндірмесіз қайтар.",
+            languages=("kk",),
+            cultures=("kz",),
+            fresh_after=FRESH_AFTER,
+        )
+    prompt = (
+        "Бригада выполняет заявки по рабочим дням (понедельник–пятница).\n"
+        "Суббота, воскресенье и государственные праздники Казахстана — нерабочие дни:\n\n"
+        f"{calendar}\n\n"
+        f"Первая заявка ставится на {begin}, если это рабочий день; иначе — на ближайший "
+        "следующий рабочий день. Каждая следующая заявка — на следующий рабочий день.\n"
+        "Праздник, совпавший с выходным, отдельно не переносится.\n\n"
+        f"На какое число приходится заявка номер {days}? Напиши дату в ISO (ГГГГ-ММ-ДД).\n"
+        f"Ресурс: {resources}."
+    )
+    return _task(
+        "R-17",
+        "Расписание с праздниками (ru)",
+        prompt,
+        finish.isoformat(),
+        kind="date",
+        meta={"start": begin, "working_days": days, "finish": finish.isoformat(), "resources": resources},
+        languages=("ru",),
+        cultures=("kz",),
+        fresh_after=FRESH_AFTER,
+    )
+
+
+def r17(rng: random.Random) -> core.TaskInstance:
+    return _r17_task(rng, "ru")
+
+
+def r17_kk(rng: random.Random) -> core.TaskInstance:
+    return _r17_task(rng, "kk")
+
+
+# --------------------------------------------------------------------------- #
 # Generation and evaluation
 # --------------------------------------------------------------------------- #
 
@@ -1453,7 +1610,12 @@ _BUILDERS: dict[str, Callable[[random.Random], core.TaskInstance]] = {
     "R-14": r14,
     "R-15": r15,
     "R-16": r16,
+    "R-17": r17,
+    "R-17-KK": r17_kk,
 }
+
+PRIVATE_IDS = frozenset({"R-3", "R-9", "R-17", "R-17-KK"})
+"""Private layer: the whole schedule pair plus two baseline scenarios."""
 
 
 def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
@@ -1464,7 +1626,10 @@ def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
         scenarios = ALL_IDS
     else:
         scenarios = IDS
-    return [_BUILDERS[scenario](rng) for scenario in scenarios]
+    tasks = [_BUILDERS[scenario](rng) for scenario in scenarios]
+    for task in tasks:
+        task.private = task.id in PRIVATE_IDS
+    return tasks
 
 
 def _compare(kind: str, token: str | None, answer: Any) -> tuple[bool, str]:
@@ -1498,6 +1663,16 @@ def _compare(kind: str, token: str | None, answer: Any) -> tuple[bool, str]:
         expected = answer if isinstance(answer, Fraction) else Fraction(str(answer))
         passed = value == expected
         return passed, f"получено {token} ({value}), ожидалось {expected}"
+    if kind == "date":
+        match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", token)
+        if not match:
+            return False, f"ожидалась дата ISO (ГГГГ-ММ-ДД), получено {token!r}"
+        try:
+            value = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            return False, f"несуществующая календарная дата {token!r}"
+        passed = value.isoformat() == str(answer)
+        return passed, f"получено {token}, ожидалось {answer}"
     if kind == "hm":
         match = re.fullmatch(r"(\d{1,2}):([0-5]\d)", token)
         if not match:

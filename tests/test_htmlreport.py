@@ -588,3 +588,167 @@ def test_the_visual_gallery_skips_a_frame_outside_the_run(tmp_path: Path):
     assert "кадров нет" not in page
     assert "кадра нет: страница не отрисовалась" in page
     assert not (directory / "visual" / "K-1.png").exists()
+
+
+# --------------------------------------------------------------------------- #
+# Uncertainty bands (spec 5 / 7.1): decodable values, small-sample caveat
+# --------------------------------------------------------------------------- #
+
+
+def _ci_run(tmp_path: Path, name: str, model: str, earned: list[float]) -> Path:
+    directory = _run(tmp_path, name, model=model)
+    scores = [
+        {"task_id": f"IF-{index}", "category": "A", "earned": value, "possible": 10.0,
+         "checks": [{"name": "json_format", "passed": value == 10.0, "detail": "", "points": 10.0}]}
+        for index, value in enumerate(earned)
+    ]
+    (directory / "scores.json").write_text(json.dumps(scores), encoding="utf-8")
+    return directory
+
+
+def _headline_bands(page: str) -> list[tuple[str, float, float]]:
+    """Model of each card and the first (headline) band that follows it."""
+    cards = list(re.finditer(r"class='card' data-model='([^']+)'", page))
+    found = []
+    for index, card in enumerate(cards):
+        end = cards[index + 1].start() if index + 1 < len(cards) else len(page)
+        band = re.search(r"data-ci-low='([\d.]+)' data-ci-high='([\d.]+)'", page[card.end():end])
+        if band:
+            found.append((card.group(1), float(band.group(1)), float(band.group(2))))
+    return found
+
+
+def test_uncertainty_is_encoded_in_data_attributes(tmp_path: Path):
+    strong = _ci_run(tmp_path, "run-a", "сильная", [10.0, 9.0] * 20)
+    weak = _ci_run(tmp_path, "run-b", "слабая", [2.0, 1.0] * 20)
+    page = render_html([strong, weak])
+
+    bands = {model: (low, high) for model, low, high in _headline_bands(page)}
+    for directory in (strong, weak):
+        summary = summarise(json.loads((directory / "scores.json").read_text(encoding="utf-8")))
+        model = json.loads((directory / "config.json").read_text(encoding="utf-8"))["model"]
+        assert bands[model][0] <= bands[model][1]
+        assert bands[model] == pytest.approx(summary["headline_ci95"])
+
+
+def test_category_scales_carry_a_band_for_each_measured_metric(tmp_path: Path):
+    run = _ci_run(tmp_path, "run-a", "одна", [10.0, 9.0] * 3)
+    page = render_html([run])
+    summary = summarise(json.loads((run / "scores.json").read_text(encoding="utf-8")))
+    expected = sum(1 for row in summary["per_category"].values() if row["ci95"]) + 1  # + headline
+    bands = re.findall(r"data-ci-low='([\d.]+)' data-ci-high='([\d.]+)'", page)
+    assert len(bands) == expected
+    assert all(float(low) <= float(high) for low, high in bands)
+
+
+def test_a_small_sample_is_marked_provisional_on_the_page(tmp_path: Path):
+    run = _ci_run(tmp_path, "run-a", "одна", [10.0, 2.0, 9.0])
+    page = render_html([run])
+    assert re.search(r"ci-caption'>[^<]*ориентировочно", page)
+    band = re.search(r"class='ci-band'[^>]*data-n='(\d+)'", page)
+    assert band and int(band.group(1)) == 3
+
+
+def test_a_sound_sample_has_no_provisional_note(tmp_path: Path):
+    run = _ci_run(tmp_path, "run-a", "одна", [10.0, 9.0] * 16)
+    page = render_html([run])
+    assert not re.search(r"ci-caption'>[^<]*ориентировочно", page)
+    assert re.search(r"ci-caption'>ДИ 95%", page)
+
+
+# --------------------------------------------------------------------------- #
+# Visual figures (spec 7.2/7.3): compare gets the radar and heatmap,
+# a per-run page gets verdict, completeness, clusters and diffs
+# --------------------------------------------------------------------------- #
+
+
+def test_compare_has_a_radar_and_a_value_bearing_heatmap(tmp_path: Path):
+    strong = _run(tmp_path, "run-a", model="сильная")
+    weak = _run(tmp_path, "run-b", model="слабая")
+    page = render_html([strong, weak])
+    assert "viz radar" in page and "viz heatmap" in page
+    assert "Радар компетенций" in page and "Heatmap ошибок" in page
+    # каждая ячейка несёт модель, семейство и число, а не только цвет
+    assert "data-model='сильная'" in page
+    assert "data-family='det/logic'" in page and "data-pct=" in page
+    assert "role='img'" in page and "<title>" in page
+
+
+def test_an_empty_compare_page_says_no_data_and_does_not_crash(tmp_path: Path):
+    first = _run(tmp_path, "run-a", model="пустая-а")
+    second = _run(tmp_path, "run-b", model="пустая-б")
+    for directory in (first, second):
+        (directory / "scores.json").write_text("[]", encoding="utf-8")
+    page = render_html([first, second])
+    assert "нет данных для радара" in page
+    assert "нет данных для heatmap" in page
+
+
+def test_a_per_run_page_has_verdict_completeness_clusters_and_diffs(tmp_path: Path):
+    directory = _run(tmp_path, "run-a", model="одиночка")
+    page = render_html([directory], per_run=True, page_name="report.html")
+    markers = ["verdict-strip", "viz completeness", "viz clusters", "Визуальные диффы"]
+    positions = [page.index(marker) for marker in markers]
+    assert positions == sorted(positions), "порядок обязан идти за §7.2"
+    assert "3 вывода" in page and "3 риска" in page
+    assert "data-status='checked'" in page and "не запускалось" in page
+    assert "data-status='not_run' data-count='1'" in page
+
+
+def test_the_per_run_diff_names_the_task_and_survives_a_missing_reference(tmp_path: Path):
+    directory = _run(tmp_path, "run-a")
+    page = render_html([directory], per_run=True, page_name="report.html")
+    assert "K-1" in page.split("Визуальные диффы")[1]
+    assert "нет данных" in page.split("Визуальные диффы")[1]
+
+
+def test_a_shot_outside_the_run_and_cache_is_not_embedded(tmp_path: Path):
+    directory = _run(tmp_path, "run-a")
+    outside = tmp_path / "чужой-кадр.png"
+    outside.write_bytes(FRAME)
+    entries = json.loads((directory / "tasks.json").read_text(encoding="utf-8"))
+    entries[1]["transcript"]["extra"]["visual"]["shot"] = str(outside)
+    (directory / "tasks.json").write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+    page = render_html([directory], per_run=True, page_name="report.html")
+    diffs = page.split("Визуальные диффы")[1]
+    assert "data:image" not in diffs
+    assert "нет данных" in diffs
+
+
+def test_a_private_task_is_marked_and_its_oracle_detail_collapsed(tmp_path: Path):
+    directory = _run(tmp_path, "run-a")
+    (directory / "suite.json").write_text(json.dumps({
+        "per_task": [{"id": "IF-1", "category": "A", "private": True},
+                     {"id": "K-1", "category": "K"}],
+    }), encoding="utf-8")
+    entries = json.loads((directory / "tasks.json").read_text(encoding="utf-8"))
+    entries[0]["task"]["oracle"] = {"reference": "ОЖИДАЕМОЕ-42"}
+    entries[0]["score"]["checks"][0]["detail"] = "ожидалось ОЖИДАЕМОЕ-42"
+    (directory / "tasks.json").write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+    page = render_html([directory], per_run=True, page_name="report.html")
+    row = re.search(r"<tr class='ok'><td>IF-1</td>.*?</tr>", page, re.S).group(0)
+    assert "<span class='private'" in row
+    visible = re.sub(r"<details.*?</details>", "", row, flags=re.S)
+    assert "ОЖИДАЕМОЕ-42" not in visible
+    hidden = re.search(r"<details.*?</details>", row, re.S).group(0)
+    assert "ОЖИДАЕМОЕ-42" in hidden and "оракул" in hidden
+    assert "Приватный слой" in page
+
+
+def test_provenance_marks_an_unverified_runtime(tmp_path: Path):
+    directory = _run(tmp_path, "run-a")
+    (directory / "environment.json").write_text(json.dumps({
+        "image": "dailybench/runner-python:local", "status": "verified",
+        "runtime": "firecracker", "runtime_verified": False,
+    }), encoding="utf-8")
+    page = render_html([directory], per_run=True, page_name="report.html")
+    assert "firecracker (не подтверждён)" in page
+
+
+def test_a_per_run_page_without_any_data_still_renders(tmp_path: Path):
+    directory = _run(tmp_path, "run-a")
+    (directory / "scores.json").write_text("[]", encoding="utf-8")
+    page = render_html([directory], per_run=True, page_name="report.html")
+    assert "нет данных: ни одного измеренного балла" in page
+    assert "нет данных: ни одного задания" in page
+    assert "нет данных: провалов нет" in page

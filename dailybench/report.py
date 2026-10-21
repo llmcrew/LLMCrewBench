@@ -13,10 +13,11 @@ import html
 import json
 import re
 import shutil
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import core, gallery, generation
+from . import core, gallery, generation, stats
 
 SHORT_ORDER = core.ADMISSION_CATEGORIES
 
@@ -43,7 +44,17 @@ def load_run(directory: Path | str) -> dict[str, Any]:
         "dir": str(directory),
         "scores": json.loads(scores_path.read_text(encoding="utf-8")),
     }
-    for name in ("config", "provider", "hardware", "suite", "speed", "tasks", "sizing", "rescored"):
+    for name in (
+        "config",
+        "provider",
+        "hardware",
+        "suite",
+        "speed",
+        "tasks",
+        "sizing",
+        "rescored",
+        "environment",
+    ):
         path = base / f"{name}.json"
         if path.is_file():
             data[name] = json.loads(path.read_text(encoding="utf-8"))
@@ -66,6 +77,14 @@ def _stop_reason(run_entry: dict[str, Any] | None) -> str:
     if reasoning:
         return f"{reason} ({generated} ток., из них reasoning {reasoning})"
     return reason
+
+
+def _interval_of(row: dict[str, Any]) -> tuple[float, float] | None:
+    """95 % interval of one row's ratio, in percent; ``None`` without samples."""
+    if not row["samples"]:
+        return None
+    low, high = stats.bootstrap_ratio(row["samples"])
+    return (round(100.0 * low, 2), round(100.0 * high, 2))
 
 
 def summarise(
@@ -91,6 +110,10 @@ def summarise(
             "errors": 0,
             "skipped": 0,
             "skip_reasons": [],
+            "n": 0,
+            "ci95": None,
+            "provisional": False,
+            "samples": [],
         }
 
     per_category: dict[str, dict[str, Any]] = {key: blank() for key in core.CATEGORY_POINTS}
@@ -117,10 +140,17 @@ def summarise(
             # An errored task with no checks (evaluator crash, dead agent)
             # still counts at its max: the model did not earn the points.
             possible = float(score.get("max_points") or 0.0)
+        admission = score.get("admission")
         row["possible"] += possible
+        if possible > 0:
+            # One resampling unit per observed task, with its own weight: the
+            # interval of a category resamples tasks, not shares. A task that
+            # failed admission earned nothing in this metric.
+            row["samples"].append((float(score.get("earned", 0.0)
+                                        if admission is not False else 0.0), float(possible)))
+            row["n"] += 1
         if score.get("error"):
             row["errors"] += 1
-        admission = score.get("admission")
         if admission is False:
             row["admission"] = "failed"
             row["admitted"] = False
@@ -147,6 +177,13 @@ def summarise(
     showcase_earned = round(sum(row["earned"] for key, row in per_showcase.items() if key in core.SHOWCASE_CATEGORIES), 3)
     showcase_possible = round(sum(row["possible"] for key, row in per_showcase.items() if key in core.SHOWCASE_CATEGORIES), 3)
 
+    # Every published metric carries its interval and its sample size. A row
+    # without observed tasks has no interval: a missing measurement must not
+    # read as a zero-width one.
+    for row in list(per_category.values()) + list(per_showcase.values()):
+        row["ci95"] = _interval_of(row)
+        row["provisional"] = bool(row["n"]) and stats.is_small(row["n"])
+
     expected_scored: int | None = None
     if isinstance(suite_tasks, dict):
         expected_scored = sum(
@@ -162,6 +199,15 @@ def summarise(
         # Unknown admission keeps the full numerator and denominator: an
         # unmeasured input size is not a failed capability (R02).
         headline_earned, headline_possible = admitted_total, possible_total
+
+    headline_keys = SHORT_ORDER if admission_state == "failed" else core.SCORED_CATEGORIES
+    headline_samples = [sample for key in headline_keys for sample in per_category[key]["samples"]]
+    headline_n = len(headline_samples)
+    if headline_samples:
+        low, high = stats.bootstrap_ratio(headline_samples)
+        headline_ci95: tuple[float, float] | None = (round(100.0 * low, 2), round(100.0 * high, 2))
+    else:
+        headline_ci95 = None
 
     if expected_scored:
         full_suite = ran >= expected_scored
@@ -194,6 +240,9 @@ def summarise(
         "full_suite": full_suite,
         "headline_earned": headline_earned,
         "headline_possible": headline_possible,
+        "headline_ci95": headline_ci95,
+        "headline_n": headline_n,
+        "headline_provisional": bool(headline_n) and stats.is_small(headline_n),
         "long_context_admitted": long_context_admitted,
         "admission_state": admission_state,
         "errors": errors,
@@ -204,12 +253,109 @@ def summarise(
     }
 
 
+def _compare_pair(left: dict[str, Any] | None, right: dict[str, Any] | None) -> dict[str, Any]:
+    """One metric's difference, significant only on disjoint 95 % intervals."""
+    left_ci = (left or {}).get("ci95")
+    right_ci = (right or {}).get("ci95")
+    left_pct = _pct_of(left)
+    right_pct = _pct_of(right)
+    return {
+        "left_ci95": left_ci,
+        "right_ci95": right_ci,
+        "left_pct": left_pct,
+        "right_pct": right_pct,
+        "delta": None if left_pct is None or right_pct is None else round(left_pct - right_pct, 2),
+        "significant": stats.disjoint(left_ci, right_ci),
+        "provisional": bool((left or {}).get("provisional") or (right or {}).get("provisional")),
+    }
+
+
+def _pct_of(row: dict[str, Any] | None) -> float | None:
+    if not row or not row.get("possible"):
+        return None
+    return round(100.0 * row.get("earned", 0.0) / row["possible"], 2)
+
+
+def compare_summaries(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """Compare two summaries; ``significant`` means the 95 % intervals do not overlap.
+
+    The one place a significance flag appears: a single run alone has no
+    comparison, and two overlapping intervals are reported as "незначимо"
+    rather than as an ordering.
+    """
+    overall = {
+        "left_ci95": left.get("headline_ci95"),
+        "right_ci95": right.get("headline_ci95"),
+        "left_pct": round(100.0 * left["headline_earned"] / left["headline_possible"], 2)
+        if left.get("headline_possible") else None,
+        "right_pct": round(100.0 * right["headline_earned"] / right["headline_possible"], 2)
+        if right.get("headline_possible") else None,
+        "delta": None,
+        "significant": stats.disjoint(left.get("headline_ci95"), right.get("headline_ci95")),
+        "provisional": bool(left.get("headline_provisional") or right.get("headline_provisional")),
+    }
+    if overall["left_pct"] is not None and overall["right_pct"] is not None:
+        overall["delta"] = round(overall["left_pct"] - overall["right_pct"], 2)
+    return {
+        "overall": overall,
+        "categories": {
+            key: _compare_pair(left["per_category"].get(key), right["per_category"].get(key))
+            for key in sorted(core.CATEGORY_POINTS)
+        },
+    }
+
+
 def _fmt(value: Any, digits: int = 2) -> str:
     if value is None:
         return "n/a"
     if isinstance(value, float):
         return f"{value:.{digits}f}"
     return str(value)
+
+
+def _environment(record: dict[str, Any]) -> list[str]:
+    """The «Среда» section: what the numbers were executed on.
+
+    An unverified host (no Docker) is stated, not hidden — it is a limitation
+    of the evidence, not a reason to withhold the report.
+    """
+    if not record:
+        return []
+    verified = str(record.get("status") or "") == "verified"
+    lines = [
+        "## Среда",
+        "",
+        "| Поле | Значение |",
+        "| --- | --- |",
+        f"| Образ | `{record.get('image') or '—'}` |",
+        f"| Digest образа | `{record.get('image_digest') or '—'}` |",
+        f"| Статус | {'подтверждено' if verified else 'не проверено'}"
+        + (f": {record.get('reason')}" if record.get("reason") else "")
+        + " |",
+        f"| Runtime | `{record.get('runtime') or '—'}`"
+        + ("" if record.get("runtime_verified") else " (не подтверждён)")
+        + " |",
+        f"| Исполнитель | {record.get('executor_status') or '—'}"
+        + (f": {record.get('executor_reason')}" if record.get("executor_reason") else "")
+        + " |",
+        f"| SOURCE_DATE_EPOCH | {record.get('source_date_epoch', '—')} |",
+    ]
+    packages = [str(item) for item in record.get("sbom") or []]
+    if packages:
+        digest = sha256("\n".join(packages).encode("utf-8")).hexdigest()
+        lines.append(f"| SBOM | {len(packages)} пакетов, SHA-256 `{digest[:16]}` |")
+    lines.append("")
+    if packages:
+        lines.append("<details><summary>SBOM (пакет / версия)</summary>")
+        lines.append("")
+        lines.append("```")
+        lines.extend(packages[:200])
+        if len(packages) > 200:
+            lines.append(f"… ещё {len(packages) - 200}")
+        lines.append("```")
+        lines.append("</details>")
+        lines.append("")
+    return lines
 
 
 def render_markdown(run: dict[str, Any]) -> str:
@@ -266,6 +412,7 @@ def render_markdown(run: dict[str, Any]) -> str:
     if config.get("unsupported"):
         lines.append(f"| Не проверялось | {', '.join(config['unsupported'])} |")
     lines.append("")
+    lines.extend(_environment(run.get("environment") or {}))
     if config.get("launch"):
         lines.append("Загрузка конфигурации (для воспроизведения):")
         lines.append("")
@@ -274,6 +421,14 @@ def render_markdown(run: dict[str, Any]) -> str:
         lines.append("```")
         lines.append("")
     lines.append(f"**Итог: {summary['verdict']}**")
+    if summary.get("headline_ci95"):
+        low, high = summary["headline_ci95"]
+        note = stats.note(summary.get("headline_n") or 0)
+        lines.append("")
+        lines.append(
+            f"95 % ДИ итога: {low:.0f}–{high:.0f} % от возможного (n={summary.get('headline_n') or 0}"
+            + (f", {note}" if note else "") + ")."
+        )
     rescored = run.get("rescored") or {}
     if rescored:
         lines.append("")
@@ -282,21 +437,27 @@ def render_markdown(run: dict[str, Any]) -> str:
             f"(изменений: {len(rescored.get('changed') or [])}); модель повторно не вызывалась."
         )
     lines.append("")
-    lines.append("| Категория | Баллы | Допуск | Ошибок прогона |")
-    lines.append("| --- | ---: | --- | ---: |")
+    lines.append("| Категория | Баллы | Допуск | Ошибок прогона | 95 % ДИ |")
+    lines.append("| --- | ---: | --- | ---: | --- |")
     for key in sorted(core.CATEGORY_POINTS):
         row = summary["per_category"].get(key)
         if not row or not row["tasks"]:
             continue
         title = core.CATEGORY_TITLES.get(key, key)
         if row["skipped"] == row["tasks"]:
-            lines.append(f"| {key}. {title} | не проверялось | — | {row['errors']} |")
+            lines.append(f"| {key}. {title} | не проверялось | — | {row['errors']} | — |")
             continue
         score_text = f"{row['earned']:.0f} / {row['possible']:.0f}"
         if row["skipped"]:
             score_text += f" (не проверялось: {row['skipped']})"
         admitted = {"passed": "да", "unverified": "не подтверждён"}.get(row["admission"], "нет")
-        lines.append(f"| {key}. {title} | {score_text} | {admitted} | {row['errors']} |")
+        interval = "—"
+        if row.get("ci95"):
+            low, high = row["ci95"]
+            interval = f"{low:.0f}–{high:.0f} %"
+            if row.get("provisional"):
+                interval += f" ({stats.note(row['n'])})"
+        lines.append(f"| {key}. {title} | {score_text} | {admitted} | {row['errors']} | {interval} |")
     lines.append("")
     lines.append("## Задания")
     lines.append("")

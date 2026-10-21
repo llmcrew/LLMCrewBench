@@ -19,7 +19,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from . import core, generation, reference
+from . import core, generation, reference, schema
 from .config import DEFAULT_SEED, RunConfig
 from .measure import (
     SpeedResult,
@@ -31,8 +31,14 @@ from .measure import (
 from .providers import OpenAICompatibleProvider, Provider, ProviderError
 from .report import render_markdown, summarise, write_reports
 from .runner import RunResult, Runner, run_identity
+from .decontam import add_subcommands as add_decontam_commands
 from .selfcheck import save_suite, selfcheck, write_selfcheck_report
 from .suite import build_suite, fit_suite_sizing, public_prompts
+
+#: Upper bound for a document handed to ``validate``. The biggest strict suite
+#: exports to about 2 MB, so 16 MiB leaves room for YAML while stopping a file
+#: that would otherwise be walked element by element.
+MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 
 
 def _provider_from(cfg: RunConfig) -> Provider:
@@ -157,34 +163,161 @@ def cmd_list(args: argparse.Namespace) -> int:
     cfg = _config_from(args)
     tasks = build_suite(cfg)
     print(f"{'ID':6} {'Баллы':>6} {'Символов':>9} {'~токенов':>9}  Название")
-    for entry in public_prompts(tasks):
+    for entry in public_prompts(tasks, args.include_private):
         print(
-            f"{entry['id']:6} {entry['max_points']:>6.0f} {entry['prompt_chars']:>9} "
-            f"{(entry['estimated_tokens'] or 0):>9}  {entry['title']}"
+            f"{entry['id']:6} {entry['max_points']:>6.0f} {(entry.get('prompt_chars') or 0):>9} "
+            f"{(entry.get('estimated_tokens') or 0):>9}  {entry.get('title') or entry['id']}"
         )
     total = sum(task.max_points for task in tasks if task.category in core.SCORED_CATEGORIES)
     showcase = [task for task in tasks if task.category in core.VISUAL_CATEGORIES]
     note = f", витрина: {len(showcase)} заданий ({sum(t.max_points for t in showcase):.0f} вне счёта)" if showcase else ""
     print(f"\nЗаданий: {len(tasks)}, сумма баллов: {total:.0f}{note}, seed={cfg.seed}")
     if args.prompts:
-        for task in tasks:
+        shown = [task for task in tasks if args.include_private or not task.private]
+        hidden = len(tasks) - len(shown)
+        for task in shown:
             print("\n" + "-" * 78)
             title = task.title
             for prefix in (f"{task.id} — ", f"{task.id} - "):
                 if title.startswith(prefix):
                     title = title[len(prefix):]
                     break
-            print(f"{task.id} — {title} ({task.max_points:.0f} баллов)")
+            marker = " · приватное" if task.private else ""
+            print(f"{task.id} — {title} ({task.max_points:.0f} баллов){marker}")
             print(task.prompt)
+        if hidden:
+            print(f"\nПриватных заданий скрыто: {hidden} (добавьте --include-private)")
     return 0
 
 
 def cmd_generate(args: argparse.Namespace) -> int:
     cfg = _config_from(args)
-    written = save_suite(cfg, args.out)
+    written = save_suite(cfg, args.out, include_private=args.include_private)
     for name, path in written.items():
         print(f"{name}: {path}")
     print(f"\nПрофиль: {cfg.profile}. Файл prompts.json можно публиковать; oracles.json содержит ответы.")
+    return 0
+
+
+def _read_document(path: Path) -> Any:
+    """Read a JSON or YAML document by extension, then by content.
+
+    The size is capped first: a YAML alias bomb is tiny on disk but expensive
+    to walk, and a full strict suite is a couple of megabytes at most.
+    """
+    size = path.stat().st_size
+    if size > MAX_DOCUMENT_BYTES:
+        raise ValueError(
+            f"{path}: документ больше {MAX_DOCUMENT_BYTES} байт ({size} байт)"
+        )
+    text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() in (".yaml", ".yml"):
+        import yaml
+
+        try:
+            return yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise ValueError(f"{path}: не разбирается как YAML: {exc}") from exc
+    if path.suffix.lower() != ".json":
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            import yaml
+
+            try:
+                return yaml.safe_load(text)
+            except yaml.YAMLError as exc:
+                raise ValueError(f"{path}: не разбирается ни как JSON, ни как YAML: {exc}") from exc
+    return json.loads(text)
+
+
+def _suite_file(path: Path) -> Path:
+    if not path.is_dir():
+        return path
+    for name in ("suite.json", "suite.yaml", "suite.yml", "prompts.json", "prompts.yaml"):
+        candidate = path / name
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"в каталоге {path} нет suite.json/prompts.json")
+
+
+def _report_errors(errors: list[str], subject: str) -> int:
+    for error in errors:
+        print(f"  {error}", file=sys.stderr)
+    print(f"{subject}: {len(errors)} ошибок", file=sys.stderr)
+    return 1
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    if args.task:
+        path = Path(args.task)
+        try:
+            doc = _read_document(path)
+        except (OSError, ValueError) as exc:
+            print(f"  {exc}", file=sys.stderr)
+            return 1
+        errors = schema.validate_task(doc, str(path))
+        if errors:
+            return _report_errors(errors, str(path))
+        print(f"{path}: задание валидно")
+        return 0
+
+    if args.suite:
+        try:
+            path = _suite_file(Path(args.suite))
+            doc = _read_document(path)
+        except (OSError, ValueError) as exc:
+            print(f"  {exc}", file=sys.stderr)
+            return 1
+        errors = schema.validate_suite_doc(doc, check_totals=not args.no_totals)
+        if errors:
+            return _report_errors(errors, str(path))
+        tasks = doc.get("tasks") if isinstance(doc, dict) else []
+        print(f"{path}: сьют валиден ({len(tasks)} заданий)")
+        return 0
+
+    cfg = _config_from(args)
+    tasks = build_suite(cfg)
+    errors: list[str] = []
+    seen: set[str] = set()
+    for task in tasks:
+        if task.id in seen:
+            errors.append(f"task {task.id}: duplicate task id")
+        seen.add(task.id)
+        errors.extend(schema.validate_task(task, f"task {task.id}"))
+    if errors:
+        return _report_errors(errors, f"сгенерированный сьют {cfg.profile}")
+    print(f"сгенерированный сьют {cfg.profile}: валиден ({len(tasks)} заданий)")
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    cfg = _config_from(args)
+    tasks = build_suite(cfg)
+    include_private = bool(args.include_private)
+    doc = schema.export_document(cfg.profile, tasks, include_private=include_private)
+    errors = schema.validate_suite_doc(doc, check_totals=not cfg.only)
+    if errors:
+        return _report_errors(errors, f"экспорт {cfg.profile}")
+
+    if args.format == "yaml":
+        import yaml
+
+        text = yaml.safe_dump(doc, allow_unicode=True, sort_keys=False)
+    else:
+        text = json.dumps(doc, ensure_ascii=False, indent=2, default=core.json_default) + "\n"
+
+    if args.out and args.out != "-":
+        target = Path(args.out)
+        if target.is_dir() or args.out.endswith(("/", "\\")):
+            target.mkdir(parents=True, exist_ok=True)
+            target = target / f"suite.{args.format}"
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        print(f"{target}: {len(doc['tasks'])} заданий")
+    else:
+        print(text, end="" if text.endswith("\n") else "\n")
     return 0
 
 
@@ -223,6 +356,23 @@ def cmd_run(args: argparse.Namespace) -> int:
     cfg.out_dir = Path(args.out_dir or "runs") / name
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Provenance of the executor is captured once per run: the digest joins
+    # the identity below, so a rebuilt image is a different run, and the
+    # report can state what the numbers were measured on.
+    environment = generation.environment()
+    cfg.image_digest = str(environment.get("image_digest") or "")
+    if environment.get("status") != "verified":
+        print(
+            f"среда песочницы не проверена: {environment.get('reason') or 'нет данных'}",
+            flush=True,
+        )
+    if environment.get("executor_status") != "container_run":
+        print(
+            f"исполнитель не подтверждён контейнером: "
+            f"{environment.get('executor_reason') or environment.get('executor_status') or 'нет данных'}",
+            flush=True,
+        )
+
     resuming = getattr(args, "resume", False)
     saved_config = cfg.out_dir / "config.json"
     if resuming and saved_config.is_file():
@@ -255,7 +405,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     saved_runs: list = []
     if getattr(args, "resume", False):
-        tasks, saved_runs = _resume_tasks(cfg, tasks)
+        tasks, saved_runs = _resume_tasks(cfg, tasks, environment)
         print(
             f"Догрузка: {len(tasks)} заданий поверх {len(saved_runs)} сохранённых"
             if tasks
@@ -281,6 +431,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         provider_info=provider.describe(),
         suite_digest=build_suite_digest(cfg),
         hardware=_hardware(),
+        environment=environment,
     )
     if getattr(args, "resume", False):
         saved_speed = cfg.out_dir / "speed.json"
@@ -633,7 +784,9 @@ def build_suite_digest(cfg: RunConfig) -> dict:
     return suite_digest(build_suite(cfg), cfg.profile)
 
 
-def _resume_tasks(cfg: RunConfig, tasks: list) -> tuple[list, list]:
+def _resume_tasks(
+    cfg: RunConfig, tasks: list, environment: dict | None = None
+) -> tuple[list, list]:
     """Tasks still needing a fresh attempt, plus the saved runs worth keeping.
 
     A saved task is kept only when its transcript is *complete*: a reboot or a
@@ -655,6 +808,8 @@ def _resume_tasks(cfg: RunConfig, tasks: list) -> tuple[list, list]:
     suite_path = directory / "suite.json"
     if not tasks_path.is_file() or not suite_path.is_file():
         return tasks, []
+    if environment is None:
+        environment = generation.environment()
 
     saved_digest = generation.read_json(directory, "suite.json")
     saved_profile = saved_digest.get("profile") or core.DEFAULT_PROFILE
@@ -692,6 +847,14 @@ def _resume_tasks(cfg: RunConfig, tasks: list) -> tuple[list, list]:
     if not saved_config.is_file():
         raise SystemExit(f"{directory}: нет config.json — сохранённый прогон нечем опознать")
     old = generation.read_json(directory, "config.json")
+    try:
+        generation.verify_environment(old, environment)
+    except generation.ProvenanceError as exc:
+        raise SystemExit(f"{directory}: {exc}") from exc
+    # On a host without Docker the digest cannot be re-observed; the saved one
+    # is carried into the identity so an unverifiable resume is not refused.
+    if not cfg.image_digest:
+        cfg.image_digest = str(old.get("image_digest") or "")
     saved_identity = old.get("identity")
     if not saved_identity:
         raise SystemExit(
@@ -883,7 +1046,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     listing = sub.add_parser("list", help="показать задания сьюта без запуска")
     add_common(listing)
-    listing.add_argument("--prompts", action="store_true", help="напечатать промпты целиком")
+    listing.add_argument(
+        "--prompts",
+        action="store_true",
+        help="напечатать промпты целиком (приватные — только с --include-private)",
+    )
+    listing.add_argument("--include-private", action="store_true", help="показать приватные задания с промптами")
     listing.add_argument("--config", default="", help="id эталонной конфигурации (окно, бюджеты, политика)")
     listing.add_argument("--configs-path", default="")
     listing.set_defaults(func=cmd_list)
@@ -891,6 +1059,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate = sub.add_parser("generate", help="записать fixtures сьюта в каталог")
     add_common(generate)
     generate.add_argument("--out", required=True)
+    generate.add_argument("--include-private", action="store_true", help="писать промпты приватных заданий")
     generate.add_argument("--config", default="", help="id эталонной конфигурации (окно влияет на long-context)")
     generate.add_argument("--configs-path", default="")
     generate.set_defaults(func=cmd_generate)
@@ -1000,6 +1169,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rescore.add_argument("directories", nargs="+")
     rescore.set_defaults(func=cmd_rescore)
+
+    validate = sub.add_parser("validate", help="проверить задание или сьют по схеме")
+    add_common(validate)
+    source = validate.add_mutually_exclusive_group()
+    source.add_argument("--task", default="", help="JSON/YAML файл одного задания")
+    source.add_argument("--suite", default="", help="JSON/YAML файл или каталог со сьютом")
+    validate.add_argument("--no-totals", action="store_true", help="не сверять суммы баллов с профилем")
+    validate.set_defaults(func=cmd_validate)
+
+    export = sub.add_parser("export", help="выгрузить сьют по схеме в JSON или YAML")
+    add_common(export)
+    export.add_argument("--out", default="-", help="файл или каталог; по умолчанию stdout")
+    export.add_argument("--format", choices=("json", "yaml"), default="json")
+    export.add_argument("--include-private", action="store_true", help="включить приватные задания")
+    export.set_defaults(func=cmd_export)
+
+    add_decontam_commands(sub, add_common)
     return parser
 
 

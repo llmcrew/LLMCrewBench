@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1508,3 +1509,210 @@ def test_search_code_resolves_paths_under_a_realpath_root():
     # The extra scoped call shifts the injected read_file failure by one, so the
     # retry check still sees its own error/success pair.
     assert run.score.earned == task.max_points
+
+
+# --------------------------------------------------------------------------- #
+# Executor provenance in the generation manifest and the report
+# --------------------------------------------------------------------------- #
+
+_DIGEST_A = "sha256:" + "a" * 64
+_DIGEST_B = "sha256:" + "b" * 64
+
+
+def test_the_image_digest_is_part_of_the_run_identity():
+    """A rebuilt image measures another executor, so resume must see it."""
+    from dailybench.runner import run_identity
+
+    cfg = RunConfig(seed=20260915)
+    cfg.image_digest = _DIGEST_A
+    one = run_identity(cfg, "suite")
+    cfg.image_digest = _DIGEST_B
+    assert run_identity(cfg, "suite") != one
+
+
+def test_a_swapped_image_digest_is_refused():
+    from dailybench import generation
+
+    with pytest.raises(generation.ProvenanceError, match="окружение песочницы сменилось"):
+        generation.verify_environment(
+            {"image_digest": _DIGEST_A},
+            {"status": "verified", "image_digest": _DIGEST_B},
+        )
+
+
+def test_a_generation_whose_manifest_names_another_image_is_not_current(tmp_path: Path):
+    """Valid hashes are not enough: the manifest environment must match config."""
+    from dailybench import generation
+
+    _task, _older, latest = _two_generations(tmp_path)
+    manifest_path = latest / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    config_path = latest / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    # Both halves still hash correctly, but they name different images.
+    config["environment"] = {"status": "verified", "image_digest": _DIGEST_A}
+    manifest["environment"] = {"status": "verified", "image_digest": _DIGEST_B}
+    manifest["environment_sha256"] = generation.environment_digest(manifest["environment"])
+    config_path.unlink()
+    config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    manifest["files"]["config.json"] = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    assert generation.current(tmp_path) is None
+
+
+def test_without_docker_the_environment_is_unverified(monkeypatch, tmp_path: Path):
+    """No Docker is a limitation of the evidence, not a failed run."""
+    from dailybench import generation
+
+    monkeypatch.setattr(generation.shutil, "which", lambda _name: None)
+    record = generation.environment()
+    assert record["status"] == "unverified"
+    assert record["image_digest"] == ""
+    assert "docker" in record["reason"]
+    # A recorded digest does not block a resume on a Docker-less host.
+    generation.verify_environment({"image_digest": _DIGEST_A}, record)
+
+
+def _docker_available(monkeypatch, runtimes: tuple[str, ...] = ("runc",)) -> None:
+    """Make ``environment`` believe Docker answers, without a daemon."""
+    from dailybench import generation
+
+    monkeypatch.setattr(generation.shutil, "which", lambda _name: "/usr/bin/docker")
+
+    def call(argv: list[str], *, timeout: float):
+        if argv[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, f"repo@sha256:{'d' * 64}|sha256:{'c' * 64}\n", "")
+        if argv[1:3] == ["info", "--format"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps({name: {} for name in runtimes}), "")
+        return subprocess.CompletedProcess(argv, 1, "", "no dpkg")
+
+    monkeypatch.setattr(generation, "_docker_call", call)
+
+
+def test_an_image_without_a_running_container_is_a_host_run(monkeypatch):
+    """Naming an image is not the same as executing in it."""
+    from dailybench import generation
+
+    _docker_available(monkeypatch)
+    record = generation.environment()
+    assert record["status"] == "verified"
+    assert record["executor_status"] == "host_run"
+    assert "не запускался" in record["executor_reason"]
+    assert generation.environment(container_ran=True)["executor_status"] == "container_run"
+
+
+def test_without_docker_the_executor_is_unverified(monkeypatch):
+    from dailybench import generation
+
+    monkeypatch.setattr(generation.shutil, "which", lambda _name: None)
+    record = generation.environment()
+    assert record["executor_status"] == "unverified"
+    assert "docker" in record["executor_reason"]
+
+
+def test_an_unregistered_runtime_keeps_the_environment_unverified(monkeypatch):
+    from dailybench import generation
+
+    _docker_available(monkeypatch, runtimes=("runc",))
+    record = generation.environment(runtime="runsc")
+    assert record["runtime_verified"] is False
+    assert record["status"] == "unverified"
+    assert "runsc" in record["reason"]
+
+
+def test_a_malformed_source_date_epoch_is_refused(monkeypatch):
+    from dailybench import generation
+
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "вчера")
+    with pytest.raises(generation.ProvenanceError, match="SOURCE_DATE_EPOCH"):
+        generation.environment()
+
+
+def test_a_swapped_runtime_breaks_the_resume():
+    """The runtime changes what executes the code, so it is part of the identity."""
+    from dailybench import generation
+
+    recorded = {
+        "status": "verified",
+        "image_digest": _DIGEST_A,
+        "runtime": "runc",
+        "source_date_epoch": 1700000000,
+    }
+    with pytest.raises(generation.ProvenanceError, match="runtime"):
+        generation.verify_environment(recorded, {**recorded, "runtime": "runsc"})
+
+
+def test_the_same_environment_resumes():
+    from dailybench import generation
+
+    record = {
+        "status": "verified",
+        "image_digest": _DIGEST_A,
+        "runtime": "runc",
+        "source_date_epoch": 1700000000,
+    }
+    generation.verify_environment(record, dict(record))
+
+
+def test_an_unverified_side_never_refuses_a_resume():
+    from dailybench import generation
+
+    recorded = {"status": "verified", "image_digest": _DIGEST_A, "source_date_epoch": 1}
+    current = {"status": "unverified", "image_digest": _DIGEST_B, "source_date_epoch": 2}
+    generation.verify_environment(recorded, current)
+    generation.verify_environment(current, recorded)
+
+
+def test_the_report_prints_the_executor_environment():
+    run = {
+        "dir": ".",
+        "config": {},
+        "scores": [],
+        "environment": {
+            "status": "verified",
+            "image": "dailybench/runner-python@sha256:…",
+            "image_digest": _DIGEST_A,
+            "runtime": "runsc",
+            "runtime_verified": True,
+            "executor_status": "host_run",
+            "executor_reason": "образ указан, но контейнер не запускался",
+            "source_date_epoch": 1700000000,
+            "sbom": ["libc6\t2.36-9+deb12u4"],
+        },
+    }
+    markdown = render_markdown(run)
+    assert "## Среда" in markdown
+    assert _DIGEST_A in markdown
+    assert "runsc" in markdown
+    assert "host_run: образ указан, но контейнер не запускался" in markdown
+    assert "1700000000" in markdown
+    assert "libc6\t2.36-9+deb12u4" in markdown
+
+    unverified = {**run, "environment": {"status": "unverified", "reason": "docker CLI не найден"}}
+    assert "не проверено: docker CLI не найден" in render_markdown(unverified)
+
+
+def test_provenance_refuses_a_foreign_image_on_resume(tmp_path: Path):
+    """The reader, not only ``verify_environment``, must stop a swapped image."""
+    from dailybench import cli
+    from dailybench.runner import RunResult
+    from dailybench.selfcheck import OracleProvider
+
+    task = next(t for t in build_suite(RunConfig(seed=20260915)) if t.id == "R-4")
+    cfg = RunConfig(seed=20260915, out_dir=tmp_path, image_digest=_DIGEST_A)
+    run = Runner(cfg, OracleProvider(task)).run_task(task)
+    RunResult(
+        cfg=cfg,
+        runs=[run],
+        provider_info={"provider": "oracle"},
+        environment={"status": "verified", "image_digest": _DIGEST_A},
+    ).save()
+
+    cfg.image_digest = _DIGEST_B
+    with pytest.raises(SystemExit, match="окружение песочницы сменилось"):
+        cli._resume_tasks(
+            cfg,
+            build_suite(cfg),
+            {"status": "verified", "image_digest": _DIGEST_B},
+        )

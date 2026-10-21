@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import json
 import random
+import unicodedata
+from datetime import date, timedelta
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from .. import core, text
@@ -17,7 +20,13 @@ from .. import core, text
 IDS = ("IF-1", "IF-2", "IF-3", "IF-4", "IF-5")
 PILOT_IDS = ("IF-6",)
 """Scenarios that only the ``pilot`` and ``stretch-v1`` profiles measure."""
-STRETCH_IDS = IDS + PILOT_IDS
+STRETCH_IDS = IDS + PILOT_IDS + ("IF-7", "IF-7-KK", "IF-8")
+"""Stretch adds the ru/kk dated-ledger twins and the Unicode edge case."""
+
+PRIVATE_IDS = frozenset({"IF-7", "IF-7-KK", "IF-8"})
+"""Private layer of the category: the three stretch-only scenarios."""
+FRESH_AFTER = "2026-10-01"
+"""The stretch scenarios post-date the model snapshot of the release."""
 
 SERVICES = ("api-01", "api-02", "api-03", "web-01", "web-02", "db-01", "cache-07")
 LEVELS = ("INFO", "WARN", "ERROR")
@@ -690,6 +699,353 @@ def _eval_if6(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 
 
 # --------------------------------------------------------------------------- #
+# IF-7 — dated ledger: Russian/Kazakh date and number formats into ISO/SI
+# --------------------------------------------------------------------------- #
+
+RU_MONTHS = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
+KK_MONTHS = (
+    "қаңтар", "ақпан", "наурыз", "сәуір", "мамыр", "маусым",
+    "шілде", "тамыз", "қыркүйек", "қазан", "қараша", "желтоқсан",
+)
+
+_IF7_THRESHOLD_TENTHS = 12_000  # 1200.0 kg, the inclusive boundary
+
+
+def _if7_date(day: date, lang: str) -> str:
+    """A date as documents of the two languages write it, not as ISO."""
+    if lang == "kk":
+        return f"{day.year} жылғы {day.day} {KK_MONTHS[day.month - 1]}"
+    return f"{day.day} {RU_MONTHS[day.month - 1]} {day.year} г."
+
+
+def _if7_mass(tenths: int) -> str:
+    """Kilograms with a thousands space and a decimal comma: ``1 845,5``."""
+    whole, fraction = divmod(tenths, 10)
+    grouped = f"{whole:,}".replace(",", " ")
+    return f"{grouped},{fraction}"
+
+
+def _if7_tonnes(tenths: int) -> Decimal:
+    return (Decimal(tenths) / 1000).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+
+
+def _if7_rows(rng: random.Random) -> tuple[date, list[dict[str, Any]]]:
+    """Ten rows: three selected, seven rejected by window or by mass."""
+    year = rng.choice((2026, 2027))
+    base = date(year, 1, 5) + timedelta(days=rng.randrange(0, 300))
+    numbers = rng.sample(range(1000, 9999), 10)
+    plan = [
+        (base + timedelta(days=1), _IF7_THRESHOLD_TENTHS),          # exact boundary
+        (base + timedelta(days=3), rng.randrange(16_000, 28_000)),
+        (base + timedelta(days=5), rng.randrange(13_000, 20_000)),  # last day, inclusive
+        (base - timedelta(days=2), rng.randrange(15_000, 25_000)),  # before the window
+        (base + timedelta(days=7), rng.randrange(15_000, 25_000)),  # after the window
+        (base + timedelta(days=2), rng.randrange(9_000, 11_999)),   # too light
+        (base + timedelta(days=4), rng.randrange(1_000, 9_000)),
+        (base + timedelta(days=6), rng.randrange(9_000, 11_999)),
+        (base + timedelta(days=4), rng.randrange(1_000, 9_000)),
+        (base, _IF7_THRESHOLD_TENTHS),                              # before the window
+    ]
+    rows = [
+        {"invoice": f"НК-{number}/{index + 1}", "day": day, "tenths": tenths}
+        for index, ((day, tenths), number) in enumerate(zip(plan, numbers))
+    ]
+    rng.shuffle(rows)
+    return base, rows
+
+
+def _if7_selection(rows: list[dict[str, Any]], start: date, end: date) -> list[dict[str, Any]]:
+    picked = [
+        row for row in rows
+        if row["day"] >= start and row["day"] <= end and row["tenths"] >= _IF7_THRESHOLD_TENTHS
+    ]
+    picked.sort(key=lambda row: (row["day"], row["invoice"]))
+    return picked
+
+
+def _if7_prompt(lang: str, rows: list[dict[str, Any]], start: date, end: date) -> str:
+    listing = "\n".join(f"{row['invoice']}; {_if7_date(row['day'], lang)}; {_if7_mass(row['tenths'])}" for row in rows)
+    if lang == "kk":
+        return (
+            "Төменде қойма ведомосінен үзінді (бөлгіш — нүктелі үтір):\n\n"
+            f"{listing}\n\n"
+            "Күндер қазақша, сандарда мыңдық разряд бос орынмен, ал бөлшек бөлігі үтірмен "
+            "жазылған; масса килограммен берілген.\n\n"
+            f"Күні {start.isoformat()} мен {end.isoformat()} аралығына (қоса) кіретін және "
+            f"массасы {_if7_mass(_IF7_THRESHOLD_TENTHS)} кг кем емес жолдарды қалдыр.\n\n"
+            "Әр қалған жол үшін:\n"
+            "- күнді ISO (ЖЖЖЖ-АА-КК) түріне келтір;\n"
+            "- массаны тоннаға ауыстырып, үтірден кейінгі 3 таңбаға дейін дөңгелекте "
+            "(жартысы — жоғары).\n\n"
+            "Жолдарды күні бойынша, содан кейін нөмірі бойынша өсу ретімен сұрыпта.\n\n"
+            "ТЕК жарамды JSON қайтар:\n\n"
+            '{"rows":[{"date":"...","invoice":"...","tonnes":0.0}],"total_tonnes":0.0}\n\n'
+            "Markdown және қосымша мәтін жоқ."
+        )
+    return (
+        "Ниже выписка из складской ведомости (разделитель — точка с запятой):\n\n"
+        f"{listing}\n\n"
+        "Даты записаны по-русски, числа — с пробелом между тысячами и запятой перед дробной "
+        "частью; масса указана в килограммах.\n\n"
+        f"Оставь строки, где дата попадает в окно с {start.isoformat()} по {end.isoformat()} "
+        f"включительно, а масса не меньше {_if7_mass(_IF7_THRESHOLD_TENTHS)} кг.\n\n"
+        "Для каждой оставшейся строки:\n"
+        "- переведи дату в ISO (ГГГГ-ММ-ДД);\n"
+        "- переведи массу в тонны и округли до 3 знаков после запятой (половина — вверх).\n\n"
+        "Отсортируй строки по дате, затем по номеру накладной по возрастанию.\n\n"
+        "Верни ТОЛЬКО валидный JSON:\n\n"
+        '{"rows":[{"date":"...","invoice":"...","tonnes":0.0}],"total_tonnes":0.0}\n\n'
+        "Никакого Markdown и дополнительного текста."
+    )
+
+
+def _if7(rng: random.Random, lang: str) -> core.TaskInstance:
+    base, rows = _if7_rows(rng)
+    start, end = base + timedelta(days=1), base + timedelta(days=5)
+    picked = _if7_selection(rows, start, end)
+    assert len(picked) == 3, "the fixture must select exactly three rows"
+    expected_rows = [
+        {"date": row["day"].isoformat(), "invoice": row["invoice"], "tonnes": _if7_tonnes(row["tenths"])}
+        for row in picked
+    ]
+    total = sum((row["tonnes"] for row in expected_rows), Decimal("0"))
+    reference = json.dumps(
+        {
+            "rows": [
+                {"date": row["date"], "invoice": row["invoice"], "tonnes": float(row["tonnes"])}
+                for row in expected_rows
+            ],
+            "total_tonnes": float(total),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    scenario = "IF-7" if lang == "ru" else "IF-7-KK"
+    return core.TaskInstance(
+        id=scenario,
+        category="A",
+        title="Ведомость с датами ru" if lang == "ru" else "Күндері бар ведомость kk",
+        prompt=_if7_prompt(lang, rows, start, end),
+        max_points=2.0,
+        oracle={
+            "reference": reference,
+            "rows": expected_rows,
+            "total_tonnes": total,
+            "threshold_tenths": _IF7_THRESHOLD_TENTHS,
+            "window": (start.isoformat(), end.isoformat()),
+        },
+        languages=[lang],
+        cultures=["kz"],
+        fresh_after=FRESH_AFTER,
+        meta={
+            "scenario": scenario,
+            "rows": len(rows),
+            "selected": len(expected_rows),
+            "window": [start.isoformat(), end.isoformat()],
+            "languages": [lang],
+            "cultures": ["kz"],
+        },
+    )
+
+
+def _if7_eval(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
+    score = core.Score(task_id=task.id, category="A")
+    oracle = task.oracle
+    value, strict = text.strict_json(tr.final_text)
+
+    def number(raw: Any) -> Decimal | None:
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return None
+        try:
+            return Decimal(str(raw))
+        except InvalidOperation:
+            return None
+
+    rows = value.get("rows") if isinstance(value, dict) else None
+    iso = rows is not None and isinstance(rows, list) and all(
+        isinstance(row, dict)
+        and set(row) == {"date", "invoice", "tonnes"}
+        and isinstance(row.get("date"), str)
+        and isinstance(row.get("invoice"), str)
+        and number(row.get("tonnes")) is not None
+        for row in rows
+    )
+    try:
+        parsed_dates = [date.fromisoformat(row["date"]) for row in rows] if iso else []
+        iso = iso and len(parsed_dates) == len(rows)
+    except ValueError:
+        iso = False
+    fmt_ok = (
+        strict
+        and isinstance(value, dict)
+        and set(value) == {"rows", "total_tonnes"}
+        and iso
+        and number(value.get("total_tonnes")) is not None
+    )
+
+    rows_ok = False
+    if fmt_ok:
+        rows_ok = len(rows) == len(oracle["rows"]) and all(
+            row["date"] == expected["date"]
+            and row["invoice"] == expected["invoice"]
+            and text.decimals_equal(number(row["tonnes"]), expected["tonnes"], places=3)
+            for row, expected in zip(rows, oracle["rows"])
+        )
+    total_ok = False
+    if fmt_ok:
+        total_ok = text.decimals_equal(number(value["total_tonnes"]), oracle["total_tonnes"], places=3)
+
+    _format_point(score, "json_format",
+        fmt_ok,
+        "ожидался строгий JSON с ключами rows и total_tonnes, ISO-датами и числовой массой"
+        if not fmt_ok else "ok",
+    )
+    _content_point(score, "rows", rows_ok,
+        f"получено {rows if isinstance(rows, list) else None}, ожидалось {oracle['rows']}",
+    )
+    _content_point(score, "total", total_ok,
+        f"получено {value.get('total_tonnes') if isinstance(value, dict) else None}, "
+        f"ожидалось {oracle['total_tonnes']}",
+    )
+    return score
+
+
+# --------------------------------------------------------------------------- #
+# IF-8 — RTL input, NFC/NFD key comparison
+# --------------------------------------------------------------------------- #
+
+_IF8_HEBREW = ("דבש", "תַּפּוּחַ", "שָׁלוֹם")
+_IF8_ARABIC = ("مفتاح", "مرآة")
+_IF8_COMPOSED = ("йод", "ёлка", "объём", "звёзды")
+"""Keys whose NFC and NFD spellings really differ (composing Cyrillic letters)."""
+
+_IF8_KEYS = _IF8_HEBREW + _IF8_ARABIC + _IF8_COMPOSED + ("подъезд",)
+
+
+def _if8_rows(rng: random.Random) -> list[dict[str, str]]:
+    """Ten records: five distinct keys, each written twice in two Unicode forms.
+
+    Two composing Cyrillic keys prove the normalization, one Hebrew and one
+    Arabic key keep both RTL scripts in the brief.
+    """
+    keys = rng.sample(_IF8_COMPOSED, 2) + [rng.choice(_IF8_HEBREW), rng.choice(_IF8_ARABIC)]
+    rest = rng.sample([key for key in _IF8_KEYS if key not in keys], 1)
+    keys += rest
+    rng.shuffle(keys)
+    rows: list[dict[str, str]] = []
+    for index, key in enumerate(keys):
+        first = unicodedata.normalize("NFC", key) if index % 2 == 0 else unicodedata.normalize("NFD", key)
+        second = unicodedata.normalize("NFD", key) if index % 2 == 0 else unicodedata.normalize("NFC", key)
+        # The decomposed spelling is the later, winning record.
+        rows.append({"key": first, "day": f"2027-02-{10 + index:02d}", "value": f"v{rng.randrange(100, 999)}"})
+        rows.append({"key": second, "day": f"2027-03-{10 + index:02d}", "value": f"v{rng.randrange(100, 999)}"})
+    distractor = rng.choice([key for key in _IF8_KEYS if key not in keys])
+    rows.append({"key": unicodedata.normalize("NFD", distractor), "day": "2027-01-05", "value": "v000"})
+    extra = rng.choice([key for key in _IF8_KEYS if key not in keys and key != distractor])
+    rows.append({"key": unicodedata.normalize("NFC", extra), "day": "2027-04-01", "value": "v999"})
+    rng.shuffle(rows)
+    return rows
+
+
+def _if8_selection(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    latest: dict[str, dict[str, str]] = {}
+    for row in rows:
+        key = unicodedata.normalize("NFC", row["key"])
+        current = latest.get(key)
+        if current is None or row["day"] >= current["day"]:
+            latest[key] = {"key": key, "day": row["day"], "value": row["value"]}
+    return [latest[key] for key in sorted(latest)]
+
+
+def _if8(rng: random.Random) -> core.TaskInstance:
+    rows = _if8_rows(rng)
+    selected = _if8_selection(rows)
+    listing = "\n".join(f"{row['key']}\t{row['day']}\t{row['value']}" for row in rows)
+    reference = json.dumps(
+        {"keys": [{"key": row["key"], "value": row["value"]} for row in selected]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    prompt = (
+        "Даны записи (поля через табуляцию): ключ, дата, значение.\n\n"
+        f"{listing}\n\n"
+        "Ключи записаны на разных письменностях (иврит, арабский, кириллица), "
+        "включая RTL. Один и тот же ключ может быть записан в разложенной форме Unicode "
+        "(NFD) и в составленной (NFC) — это один и тот же ключ.\n\n"
+        "Правила:\n"
+        "1. сравнивай ключи после нормализации NFC;\n"
+        "2. для каждого ключа оставь запись с более поздней датой;\n"
+        "3. ключ в ответе выводи в NFC;\n"
+        "4. отсортируй ключи по возрастанию кодовых точек Unicode.\n\n"
+        "Верни ТОЛЬКО валидный JSON:\n\n"
+        '{"keys":[{"key":"...","value":"..."}]}\n\n'
+        "Никакого Markdown и дополнительного текста."
+    )
+    return core.TaskInstance(
+        id="IF-8",
+        category="A",
+        title="RTL и NFC/NFD ключи",
+        prompt=prompt,
+        max_points=2.0,
+        oracle={
+            "reference": reference,
+            "keys": [{"key": row["key"], "value": row["value"]} for row in selected],
+            "distractor_key": unicodedata.normalize("NFC", selected[0]["key"]),
+        },
+        languages=["ru"],
+        cultures=["il", "kz"],
+        fresh_after=FRESH_AFTER,
+        meta={
+            "scenario": "IF-8",
+            "rows": len(rows),
+            "distinct_keys": len(selected),
+            "decomposed_rows": sum(1 for row in rows if unicodedata.normalize("NFC", row["key"]) != row["key"]),
+            "languages": ["ru"],
+            "cultures": ["il", "kz"],
+        },
+    )
+
+
+def _if8_eval(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
+    score = core.Score(task_id=task.id, category="A")
+    oracle = task.oracle
+    value, strict = text.strict_json(tr.final_text)
+    payload = value.get("keys") if isinstance(value, dict) else None
+
+    shaped = isinstance(payload, list) and all(
+        isinstance(item, dict) and set(item) == {"key", "value"}
+        and isinstance(item.get("key"), str) and isinstance(item.get("value"), str)
+        for item in payload
+    )
+    fmt_ok = strict and isinstance(value, dict) and set(value) == {"keys"} and shaped
+
+    normalized = (
+        [{"key": unicodedata.normalize("NFC", item["key"]), "value": item["value"]} for item in payload]
+        if shaped else []
+    )
+    pairs = sorted((item["key"], item["value"]) for item in normalized)
+    expected_pairs = sorted((item["key"], item["value"]) for item in oracle["keys"])
+    keys_ok = bool(shaped) and pairs == expected_pairs
+    order_ok = bool(shaped) and [item["key"] for item in normalized] == [item["key"] for item in oracle["keys"]]
+
+    _format_point(score, "json_format",
+        fmt_ok,
+        "ожидался строгий JSON с ключом keys и парами key/value"
+        if not fmt_ok else "ok",
+    )
+    _content_point(score, "keys", keys_ok,
+        f"получено {normalized or None}, ожидалось {oracle['keys']}",
+    )
+    _content_point(score, "order", order_ok,
+        f"получено {[item['key'] for item in normalized]}, ожидалось {[item['key'] for item in oracle['keys']]}",
+    )
+    return score
+
+
+# --------------------------------------------------------------------------- #
 # Registration
 # --------------------------------------------------------------------------- #
 
@@ -703,7 +1059,15 @@ _SCENARIOS = (
 
 _PILOT_SCENARIOS = (("IF-6", _if6, _eval_if6),)
 
-_EVALUATORS = {scenario: fn for scenario, _, fn in _SCENARIOS + _PILOT_SCENARIOS}
+_STRETCH_SCENARIOS = (
+    ("IF-7", lambda rng: _if7(rng, "ru"), _if7_eval),
+    ("IF-7-KK", lambda rng: _if7(rng, "kk"), _if7_eval),
+    ("IF-8", _if8, _if8_eval),
+)
+
+_EVALUATORS = {
+    scenario: fn for scenario, _, fn in _SCENARIOS + _PILOT_SCENARIOS + _STRETCH_SCENARIOS
+}
 
 
 def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
@@ -713,6 +1077,9 @@ def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
     tasks = [builder(rng) for _, builder, _ in _SCENARIOS]
     if profile == "stretch-v1":
         tasks.extend(builder(rng) for _, builder, _ in _PILOT_SCENARIOS)
+        tasks.extend(builder(rng) for _, builder, _ in _STRETCH_SCENARIOS)
+    for task in tasks:
+        task.private = task.id in PRIVATE_IDS
     return tasks
 
 

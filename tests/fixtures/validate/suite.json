@@ -1,0 +1,369 @@
+{
+  "schema": "dailybench/suite/2",
+  "profile": {
+    "schema": "dailybench/profile/2",
+    "profile": "baseline-20261020",
+    "frozen": true,
+    "total": 209.0,
+    "categories": {
+      "A": 10.0,
+      "B": 15.0,
+      "C": 20.0,
+      "D": 14.0,
+      "E": 10.0,
+      "F": 8.0,
+      "G": 8.0,
+      "H": 6.0,
+      "I": 4.0,
+      "J": 5.0,
+      "K": 80.0,
+      "L": 29.0
+    }
+  },
+  "tasks": [
+    {
+      "schema": "dailybench/task/2",
+      "id": "R-1",
+      "category": "B",
+      "block": "deterministic",
+      "family": "det/math",
+      "languages": [
+        "ru"
+      ],
+      "cultures": [],
+      "fresh_after": null,
+      "private": false,
+      "holdout_seeds": [],
+      "title": "Очередь GPU workers",
+      "prompt": "В момент t=0 в очереди находится 240 задач.\n\nWorker A обрабатывает 5 задач в минуту,\nно первые 5 полных минут недоступен.\n\nWorker B обрабатывает 6 задач в минуту,\nно работает только первые 16 минут.\n\nWorker C обрабатывает 4 задач в минуту\nи работает постоянно.\n\nВсе workers начинают и заканчивают задачи\nна границах минут.\n\nЧерез сколько полных минут очередь впервые станет пустой?\n\nОтветь только целым числом.\n\nВерни ответ одной строкой без пояснений.",
+      "system": null,
+      "workspace": null,
+      "tools": null,
+      "dialogue": null,
+      "meta": {
+        "scenario": "R-1",
+        "kind": "int",
+        "expected": 19,
+        "languages": [
+          "ru"
+        ],
+        "cultures": [],
+        "total": 240,
+        "rates": {
+          "a": 5,
+          "b": 6,
+          "c": 4
+        },
+        "a_down": 5,
+        "b_window": 16,
+        "timeline": [
+          {
+            "minute": 1,
+            "capacity": 10,
+            "done": 10,
+            "remaining": 230
+          },
+          {
+            "minute": 2,
+            "capacity": 10,
+            "done": 10,
+            "remaining": 220
+          },
+          {
+            "minute": 3,
+            "capacity": 10,
+            "done": 10,
+            "remaining": 210
+          },
+          {
+            "minute": 4,
+            "capacity": 10,
+            "done": 10,
+            "remaining": 200
+          },
+          {
+            "minute": 5,
+            "capacity": 10,
+            "done": 10,
+            "remaining": 190
+          },
+          {
+            "minute": 6,
+            "capacity": 15,
+            "done": 15,
+            "remaining": 175
+          },
+          {
+            "minute": 7,
+            "capacity": 15,
+            "done": 15,
+            "remaining": 160
+          },
+          {
+            "minute": 8,
+            "capacity": 15,
+            "done": 15,
+            "remaining": 145
+          },
+          {
+            "minute": 9,
+            "capacity": 15,
+            "done": 15,
+            "remaining": 130
+          },
+          {
+            "minute": 10,
+            "capacity": 15,
+            "done": 15,
+            "remaining": 115
+          },
+          {
+            "minute": 11,
+            "capacity": 15,
+            "done": 15,
+            "remaining": 100
+          },
+          {
+            "minute": 12,
+            "capacity": 15,
+            "done": 15,
+            "remaining": 85
+          },
+          {
+            "minute": 13,
+            "capacity": 15,
+            "done": 15,
+            "remaining": 70
+          },
+          {
+            "minute": 14,
+            "capacity": 15,
+            "done": 15,
+            "remaining": 55
+          },
+          {
+            "minute": 15,
+            "capacity": 15,
+            "done": 15,
+            "remaining": 40
+          },
+          {
+            "minute": 16,
+            "capacity": 15,
+            "done": 15,
+            "remaining": 25
+          },
+          {
+            "minute": 17,
+            "capacity": 9,
+            "done": 9,
+            "remaining": 16
+          },
+          {
+            "minute": 18,
+            "capacity": 9,
+            "done": 9,
+            "remaining": 7
+          },
+          {
+            "minute": 19,
+            "capacity": 9,
+            "done": 7,
+            "remaining": 0
+          }
+        ],
+        "previous_remaining": 7,
+        "distractors": [
+          18,
+          20
+        ]
+      },
+      "oracle": {
+        "reference": "19",
+        "answer": 19,
+        "kind": "int",
+        "unit_whitelist": [
+          "минут",
+          "минуты",
+          "минута",
+          "min",
+          "minutes",
+          "minute"
+        ]
+      },
+      "points": 1.0
+    },
+    {
+      "schema": "dailybench/task/2",
+      "id": "K-1",
+      "category": "K",
+      "block": "open",
+      "family": "vis/sim",
+      "languages": [
+        "ru"
+      ],
+      "cultures": [],
+      "fresh_after": null,
+      "private": false,
+      "holdout_seeds": [],
+      "title": "K-1 — баллистика: три снаряда под гравитацией",
+      "prompt": "Собери сцену баллистики: три снаряда летят под гравитацией над\nплоскостью земли, камера смотрит на них сбоку.\n\nСцена:\n* земля — плоскость 60x60 в плоскости y=0, материал тёмно-синий (0x2b3a4a), имя объекта `ground`;\n* три снаряда — сферы радиуса 0.35, материал оранжевый (0xff8a3d), имена\n  `projectile-0`, `projectile-1`, `projectile-2`;\n* старты заданы поштучно (x, y, vx, vy):\n  `projectile-0`: x=-4.0, y=0.25, vx=0.8, vy=4.95\n  `projectile-1`: x=0.0, y=0.25, vx=1.02, vy=5.33\n  `projectile-2`: x=4.0, y=0.25, vx=1.24, vy=5.71;\n* гравитация — 3.71 м/с² вниз. Землю снаряды не пробивают и не отскакивают: они\n  падают сквозь неё, столкновений в этой задаче нет;\n* камера `PerspectiveCamera(50, 800/600, 0.1, 200)` в точке [0.0, 7.0, 16.0] и смотрит в\n  [0.0, 3.5, 0.0]; свет — `AmbientLight(0xffffff, 0.35)` и\n  `DirectionalLight(0xffffff, 2.2)` из точки [6.0, 12.0, 8.0].\n\nСимуляция:\n* шаг делается только вызовом `window.__step(dt)`;\n* схема шага — полунеявный (симплектический) Эйлер ровно в таком порядке:\n  `vy += g_negative * dt; y += vy * dt; x += vx * dt`, где `vx` постоянна;\n* снаряды начинают с y = 0.25 и летят вниз, пока y не станет меньше -40 — после\n  этого считай их остановившимися на y = -40 (дальше не двигай);\n* `window.__probe()` возвращает ровно такие поля (числа — с 4 знаками):\n\n{\n  \"steps\": <число сделанных шагов>,\n  \"t\": <время в секундах, 4 знака>,\n  \"objects\": [\"ground\", \"projectile-0\", \"projectile-1\", \"projectile-2\", \"...\"],\n  \"camera\": [0, 7, 16],\n  \"projectiles\": [{\"x\": <x>, \"y\": <y>, \"vy\": <vy>}, ...]\n}\n\n`objects` — имена объектов сцены; проверяется наличие `ground` и всех трёх\n`projectile-*`, лишние имена (например следы траекторий) не мешают.\n\nПроверяется: состав сцены и камера, координаты всех трёх снарядов после\nзаданного числа шагов (сверка с той же схемой Эйлера, допуск 1e-3), и кадр —\nснаряды видны и различимы, картинка воспроизводима при повторной загрузке.\n\nСобери одну HTML-страницу с симуляцией на Three.js.\n\nТребования к странице (общие для всех визуальных заданий):\n1. Ответ — один самодостаточный документ `<html>` целиком, без внешних\n   ресурсов. Библиотека лежит рядом: `import * as THREE from './vendor/three.module.js'`\n   (никаких CDN и никаких других внешних запросов).\n2. Рендерер: `new THREE.WebGLRenderer({preserveDrawingBuffer: true})`,\n   `renderer.setPixelRatio(1)`, `renderer.setSize(800, 600, false)`, canvas — в\n   body. Кадр 800x600 при devicePixelRatio 1.\n3. Камера фиксирована (позиция и lookAt заданы в задании), сцена\n   детерминирована: при двух загрузках страница обязана дать побитово\n   одинаковый кадр. Никаких `Math.random()` без seed и никакой зависимости от\n   `performance.now()` или реального времени.\n4. Симуляция шагает только по вызову: `window.__step(dt)` продвигает состояние\n   ровно на `dt` секунд и возвращает новое состояние. Своё\n   `requestAnimationFrame` для физики использовать нельзя (для первой отрисовки\n   — можно).\n5. Состояние сцены доступно как `window.__probe()` — объект с ровно теми\n   полями, которые перечислены в задании, числа округлены до 4 знаков.\n6. `window.__ready = true` — после первой отрисовки, когда `__probe()` уже\n   отвечает.\n",
+      "system": null,
+      "workspace": null,
+      "tools": null,
+      "dialogue": null,
+      "meta": {
+        "gravity": 3.71,
+        "steps": 75,
+        "dt": 0.016666666666666666,
+        "camera": [
+          0.0,
+          7.0,
+          16.0
+        ],
+        "look": [
+          0.0,
+          3.5,
+          0.0
+        ],
+        "launches": [
+          {
+            "x0": -4.0,
+            "y0": 0.25,
+            "vx": 0.8,
+            "vy": 4.95
+          },
+          {
+            "x0": 0.0,
+            "y0": 0.25,
+            "vx": 1.02,
+            "vy": 5.33
+          },
+          {
+            "x0": 4.0,
+            "y0": 0.25,
+            "vx": 1.24,
+            "vy": 5.71
+          }
+        ],
+        "expected": [
+          [
+            -3.0,
+            3.5004,
+            0.3125
+          ],
+          [
+            1.275,
+            3.9754,
+            0.6925
+          ],
+          [
+            5.55,
+            4.4504,
+            1.0725
+          ]
+        ],
+        "driver": "visual",
+        "browser": true,
+        "estimated_tokens": 1262,
+        "answer_tokens_estimate": 1403
+      },
+      "oracle": {
+        "spec": {
+          "scene": [
+            "<проверка: objects содержит ['ground', 'projectile-0', 'projectile-1', 'projectile-2']>",
+            "<проверка: camera.0 ≈ 0.0 ± 0.0001>",
+            "<проверка: camera.1 ≈ 7.0 ± 0.0001>",
+            "<проверка: camera.2 ≈ 16.0 ± 0.0001>",
+            "<проверка: размер projectiles в 3..3>"
+          ],
+          "simulation": [
+            "<проверка: projectiles.0.x ≈ -3.0 ± 0.001>",
+            "<проверка: projectiles.1.x ≈ 1.275 ± 0.001>",
+            "<проверка: projectiles.2.x ≈ 5.55 ± 0.001>",
+            "<проверка: projectiles.0.y ≈ 3.5004 ± 0.001>",
+            "<проверка: projectiles.1.y ≈ 3.9754 ± 0.001>",
+            "<проверка: projectiles.2.y ≈ 4.4504 ± 0.001>",
+            "<проверка: t ≈ 1.25 ± 0.001>",
+            "<проверка: steps ≈ 75 ± 0>"
+          ],
+          "image": [
+            "<проверка: кадр: changed_fraction >= 0.15>",
+            "<проверка: кадр: distinct_colors >= 8>",
+            "<проверка: кадр: оранжевые снаряды различимы (доля >= 0.0015)>",
+            "<проверка: кадр: снаряды видны в кадре, а не у его края (центр y в 0.0..0.8)>",
+            "<проверка: область 7: низ кадра — тёмная земля>"
+          ],
+          "steps": 75,
+          "dt": 0.016666666666666666,
+          "need_same_frame": true
+        },
+        "reference": "```html\n<!DOCTYPE html>\n<html lang=\"ru\">\n<head><meta charset=\"utf-8\"><title>ballistics</title>\n<style>html,body{margin:0;background:#101318;overflow:hidden}canvas{display:block}</style></head>\n<body>\n<script type=\"module\">\nimport * as THREE from './vendor/three.module.js';\n\nconst G = 3.71;\nconst RUNNERS = [{x: -4.00, y: 0.25, vx: 0.80, vy: 4.95}, {x: 0.00, y: 0.25, vx: 1.02, vy: 5.33}, {x: 4.00, y: 0.25, vx: 1.24, vy: 5.71}];\n\nconst renderer = new THREE.WebGLRenderer({antialias: false, preserveDrawingBuffer: true});\nrenderer.setPixelRatio(1);\nrenderer.setSize(800, 600, false);\ndocument.body.appendChild(renderer.domElement);\n\nconst scene = new THREE.Scene();\nscene.background = new THREE.Color(0x101318);\n\nconst camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);\ncamera.position.set(...[0.0, 7.0, 16.0]);\ncamera.lookAt(...[0.0, 3.5, 0.0]);\n\nscene.add(new THREE.AmbientLight(0xffffff, 0.35));\nconst key = new THREE.DirectionalLight(0xffffff, 2.2);\nkey.position.set(...[6.0, 12.0, 8.0]);\nscene.add(key);\n\nconst ground = new THREE.Mesh(\n  new THREE.PlaneGeometry(60, 60),\n  new THREE.MeshStandardMaterial({color: 0x2b3a4a})\n);\nground.rotation.x = -Math.PI / 2;\nground.name = 'ground';\nscene.add(ground);\n\nconst TRAIL = 80;\n\nconst bodies = RUNNERS.map((spec, index) => {\n  const mesh = new THREE.Mesh(\n    new THREE.SphereGeometry(0.35, 24, 16),\n    new THREE.MeshStandardMaterial({color: 0xff8a3d})\n  );\n  mesh.name = `projectile-${index}`;\n  mesh.position.set(spec.x, spec.y, 0);\n  scene.add(mesh);\n\n  // След траектории: делает движение читаемым на кадре и остаётся\n  // детерминированным — он зависит только от шагов симуляции.\n  const trail = new THREE.Line(\n    new THREE.BufferGeometry().setFromPoints(Array.from({length: TRAIL}, () => new THREE.Vector3(0, -100, 0))),\n    new THREE.LineBasicMaterial({color: 0xffb35d})\n  );\n  trail.name = `trail-${index}`;\n  scene.add(trail);\n\n  const body = {mesh, trail, points: [], vx: spec.vx, vy: spec.vy, stopped: false};\n  pushTrail(body);\n  return body;\n});\n\nfunction pushTrail(body) {\n  body.points.push(body.mesh.position.clone());\n  if (body.points.length > TRAIL) body.points.shift();\n  const positions = body.trail.geometry.attributes.position;\n  for (let i = 0; i < TRAIL; i++) {\n    const point = body.points[Math.max(0, body.points.length - TRAIL + i)] || body.mesh.position;\n    positions.setXYZ(i, point.x, point.y, point.z);\n  }\n  positions.needsUpdate = true;\n  body.trail.geometry.setDrawRange(Math.max(0, TRAIL - body.points.length), body.points.length);\n  body.trail.geometry.computeBoundingSphere();\n}\n\nlet elapsed = 0;\nlet steps = 0;\n\nfunction frame() {\n  renderer.render(scene, camera);\n}\n\nwindow.__step = (dt) => {\n  for (const body of bodies) {\n    if (body.stopped) continue;\n    body.vy -= G * dt;\n    body.mesh.position.y += body.vy * dt;\n    body.mesh.position.x += body.vx * dt;\n    if (body.mesh.position.y < -40) { body.mesh.position.y = -40; body.stopped = true; }\n    pushTrail(body);\n  }\n  elapsed += dt;\n  steps += 1;\n  frame();\n  return window.__probe();\n};\n\nconst round = (value) => Math.round(value * 1e4) / 1e4;\n\nwindow.__probe = () => ({\n  steps,\n  t: round(elapsed),\n  objects: scene.children.map((o) => o.name).filter(Boolean),\n  camera: [camera.position.x, camera.position.y, camera.position.z],\n  projectiles: bodies.map((body) => ({\n    x: round(body.mesh.position.x),\n    y: round(body.mesh.position.y),\n    vy: round(body.vy),\n  })),\n});\n\nframe();\nwindow.__ready = true;\n</script>\n</body></html>\n```",
+        "final_answer": "```html\n<!DOCTYPE html>\n<html lang=\"ru\">\n<head><meta charset=\"utf-8\"><title>ballistics</title>\n<style>html,body{margin:0;background:#101318;overflow:hidden}canvas{display:block}</style></head>\n<body>\n<script type=\"module\">\nimport * as THREE from './vendor/three.module.js';\n\nconst G = 3.71;\nconst RUNNERS = [{x: -4.00, y: 0.25, vx: 0.80, vy: 4.95}, {x: 0.00, y: 0.25, vx: 1.02, vy: 5.33}, {x: 4.00, y: 0.25, vx: 1.24, vy: 5.71}];\n\nconst renderer = new THREE.WebGLRenderer({antialias: false, preserveDrawingBuffer: true});\nrenderer.setPixelRatio(1);\nrenderer.setSize(800, 600, false);\ndocument.body.appendChild(renderer.domElement);\n\nconst scene = new THREE.Scene();\nscene.background = new THREE.Color(0x101318);\n\nconst camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);\ncamera.position.set(...[0.0, 7.0, 16.0]);\ncamera.lookAt(...[0.0, 3.5, 0.0]);\n\nscene.add(new THREE.AmbientLight(0xffffff, 0.35));\nconst key = new THREE.DirectionalLight(0xffffff, 2.2);\nkey.position.set(...[6.0, 12.0, 8.0]);\nscene.add(key);\n\nconst ground = new THREE.Mesh(\n  new THREE.PlaneGeometry(60, 60),\n  new THREE.MeshStandardMaterial({color: 0x2b3a4a})\n);\nground.rotation.x = -Math.PI / 2;\nground.name = 'ground';\nscene.add(ground);\n\nconst TRAIL = 80;\n\nconst bodies = RUNNERS.map((spec, index) => {\n  const mesh = new THREE.Mesh(\n    new THREE.SphereGeometry(0.35, 24, 16),\n    new THREE.MeshStandardMaterial({color: 0xff8a3d})\n  );\n  mesh.name = `projectile-${index}`;\n  mesh.position.set(spec.x, spec.y, 0);\n  scene.add(mesh);\n\n  // След траектории: делает движение читаемым на кадре и остаётся\n  // детерминированным — он зависит только от шагов симуляции.\n  const trail = new THREE.Line(\n    new THREE.BufferGeometry().setFromPoints(Array.from({length: TRAIL}, () => new THREE.Vector3(0, -100, 0))),\n    new THREE.LineBasicMaterial({color: 0xffb35d})\n  );\n  trail.name = `trail-${index}`;\n  scene.add(trail);\n\n  const body = {mesh, trail, points: [], vx: spec.vx, vy: spec.vy, stopped: false};\n  pushTrail(body);\n  return body;\n});\n\nfunction pushTrail(body) {\n  body.points.push(body.mesh.position.clone());\n  if (body.points.length > TRAIL) body.points.shift();\n  const positions = body.trail.geometry.attributes.position;\n  for (let i = 0; i < TRAIL; i++) {\n    const point = body.points[Math.max(0, body.points.length - TRAIL + i)] || body.mesh.position;\n    positions.setXYZ(i, point.x, point.y, point.z);\n  }\n  positions.needsUpdate = true;\n  body.trail.geometry.setDrawRange(Math.max(0, TRAIL - body.points.length), body.points.length);\n  body.trail.geometry.computeBoundingSphere();\n}\n\nlet elapsed = 0;\nlet steps = 0;\n\nfunction frame() {\n  renderer.render(scene, camera);\n}\n\nwindow.__step = (dt) => {\n  for (const body of bodies) {\n    if (body.stopped) continue;\n    body.vy -= G * dt;\n    body.mesh.position.y += body.vy * dt;\n    body.mesh.position.x += body.vx * dt;\n    if (body.mesh.position.y < -40) { body.mesh.position.y = -40; body.stopped = true; }\n    pushTrail(body);\n  }\n  elapsed += dt;\n  steps += 1;\n  frame();\n  return window.__probe();\n};\n\nconst round = (value) => Math.round(value * 1e4) / 1e4;\n\nwindow.__probe = () => ({\n  steps,\n  t: round(elapsed),\n  objects: scene.children.map((o) => o.name).filter(Boolean),\n  camera: [camera.position.x, camera.position.y, camera.position.z],\n  projectiles: bodies.map((body) => ({\n    x: round(body.mesh.position.x),\n    y: round(body.mesh.position.y),\n    vy: round(body.vy),\n  })),\n});\n\nframe();\nwindow.__ready = true;\n</script>\n</body></html>\n```",
+        "golden_html": "<!DOCTYPE html>\n<html lang=\"ru\">\n<head><meta charset=\"utf-8\"><title>ballistics</title>\n<style>html,body{margin:0;background:#101318;overflow:hidden}canvas{display:block}</style></head>\n<body>\n<script type=\"module\">\nimport * as THREE from './vendor/three.module.js';\n\nconst G = 3.71;\nconst RUNNERS = [{x: -4.00, y: 0.25, vx: 0.80, vy: 4.95}, {x: 0.00, y: 0.25, vx: 1.02, vy: 5.33}, {x: 4.00, y: 0.25, vx: 1.24, vy: 5.71}];\n\nconst renderer = new THREE.WebGLRenderer({antialias: false, preserveDrawingBuffer: true});\nrenderer.setPixelRatio(1);\nrenderer.setSize(800, 600, false);\ndocument.body.appendChild(renderer.domElement);\n\nconst scene = new THREE.Scene();\nscene.background = new THREE.Color(0x101318);\n\nconst camera = new THREE.PerspectiveCamera(50, 800 / 600, 0.1, 200);\ncamera.position.set(...[0.0, 7.0, 16.0]);\ncamera.lookAt(...[0.0, 3.5, 0.0]);\n\nscene.add(new THREE.AmbientLight(0xffffff, 0.35));\nconst key = new THREE.DirectionalLight(0xffffff, 2.2);\nkey.position.set(...[6.0, 12.0, 8.0]);\nscene.add(key);\n\nconst ground = new THREE.Mesh(\n  new THREE.PlaneGeometry(60, 60),\n  new THREE.MeshStandardMaterial({color: 0x2b3a4a})\n);\nground.rotation.x = -Math.PI / 2;\nground.name = 'ground';\nscene.add(ground);\n\nconst TRAIL = 80;\n\nconst bodies = RUNNERS.map((spec, index) => {\n  const mesh = new THREE.Mesh(\n    new THREE.SphereGeometry(0.35, 24, 16),\n    new THREE.MeshStandardMaterial({color: 0xff8a3d})\n  );\n  mesh.name = `projectile-${index}`;\n  mesh.position.set(spec.x, spec.y, 0);\n  scene.add(mesh);\n\n  // След траектории: делает движение читаемым на кадре и остаётся\n  // детерминированным — он зависит только от шагов симуляции.\n  const trail = new THREE.Line(\n    new THREE.BufferGeometry().setFromPoints(Array.from({length: TRAIL}, () => new THREE.Vector3(0, -100, 0))),\n    new THREE.LineBasicMaterial({color: 0xffb35d})\n  );\n  trail.name = `trail-${index}`;\n  scene.add(trail);\n\n  const body = {mesh, trail, points: [], vx: spec.vx, vy: spec.vy, stopped: false};\n  pushTrail(body);\n  return body;\n});\n\nfunction pushTrail(body) {\n  body.points.push(body.mesh.position.clone());\n  if (body.points.length > TRAIL) body.points.shift();\n  const positions = body.trail.geometry.attributes.position;\n  for (let i = 0; i < TRAIL; i++) {\n    const point = body.points[Math.max(0, body.points.length - TRAIL + i)] || body.mesh.position;\n    positions.setXYZ(i, point.x, point.y, point.z);\n  }\n  positions.needsUpdate = true;\n  body.trail.geometry.setDrawRange(Math.max(0, TRAIL - body.points.length), body.points.length);\n  body.trail.geometry.computeBoundingSphere();\n}\n\nlet elapsed = 0;\nlet steps = 0;\n\nfunction frame() {\n  renderer.render(scene, camera);\n}\n\nwindow.__step = (dt) => {\n  for (const body of bodies) {\n    if (body.stopped) continue;\n    body.vy -= G * dt;\n    body.mesh.position.y += body.vy * dt;\n    body.mesh.position.x += body.vx * dt;\n    if (body.mesh.position.y < -40) { body.mesh.position.y = -40; body.stopped = true; }\n    pushTrail(body);\n  }\n  elapsed += dt;\n  steps += 1;\n  frame();\n  return window.__probe();\n};\n\nconst round = (value) => Math.round(value * 1e4) / 1e4;\n\nwindow.__probe = () => ({\n  steps,\n  t: round(elapsed),\n  objects: scene.children.map((o) => o.name).filter(Boolean),\n  camera: [camera.position.x, camera.position.y, camera.position.z],\n  projectiles: bodies.map((body) => ({\n    x: round(body.mesh.position.x),\n    y: round(body.mesh.position.y),\n    vy: round(body.vy),\n  })),\n});\n\nframe();\nwindow.__ready = true;\n</script>\n</body></html>\n",
+        "label": "K-1 — баллистика: три снаряда под гравитацией",
+        "meta": {
+          "gravity": 3.71,
+          "steps": 75,
+          "dt": 0.016666666666666666,
+          "camera": [
+            0.0,
+            7.0,
+            16.0
+          ],
+          "look": [
+            0.0,
+            3.5,
+            0.0
+          ],
+          "launches": [
+            {
+              "x0": -4.0,
+              "y0": 0.25,
+              "vx": 0.8,
+              "vy": 4.95
+            },
+            {
+              "x0": 0.0,
+              "y0": 0.25,
+              "vx": 1.02,
+              "vy": 5.33
+            },
+            {
+              "x0": 4.0,
+              "y0": 0.25,
+              "vx": 1.24,
+              "vy": 5.71
+            }
+          ],
+          "expected": [
+            [
+              -3.0,
+              3.5004,
+              0.3125
+            ],
+            [
+              1.275,
+              3.9754,
+              0.6925
+            ],
+            [
+              5.55,
+              4.4504,
+              1.0725
+            ]
+          ],
+          "driver": "visual",
+          "browser": true,
+          "estimated_tokens": 1262,
+          "answer_tokens_estimate": 1403
+        },
+        "answer_file": "index.html",
+        "assets": [
+          "vendor/three.module.js"
+        ]
+      },
+      "points": 4.0
+    }
+  ]
+}

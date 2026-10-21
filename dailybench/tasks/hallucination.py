@@ -34,6 +34,9 @@ QUESTIONS = 10
 PILOT_IDS = ("F-2",)
 ALL_IDS = ("F", "F-2")
 
+PRIVATE_IDS = frozenset({"F"})
+"""Private layer: the single baseline scenario is never published."""
+
 _F2_FACTS = 6
 _F2_POINT = 1.0
 
@@ -369,6 +372,8 @@ def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
         tasks.extend(_generate_baseline(rng))
     if profile != core.DEFAULT_PROFILE:
         tasks.append(_build_versions(rng))
+    for task in tasks:
+        task.private = task.id in PRIVATE_IDS
     return tasks
 
 

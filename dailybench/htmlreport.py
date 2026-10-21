@@ -19,6 +19,11 @@
 
 Страница самодостаточна: plotly, three.js и кадры лежат рядом в `_vendor` и
 `_showcase`, внешние запросы не нужны.
+
+Визуальные фигуры спецификации §7.2 собирает :mod:`dailybench.viz`, а этот
+модуль только подаёт им посчитанные строки: радар и heatmap — на страницу
+сравнения, вердикт-полоса, полнота, кластеры и диффы — на страницу прогона, в
+порядке §7.2. Ни одна фигура не пересчитывает метрики.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from . import core, gallery
+from . import core, gallery, schema, stats, viz
 from .report import load_run, summarise
 
 SCORED = core.SCORED_CATEGORIES
@@ -57,6 +62,14 @@ def _short(title: str, task_id: str) -> str:
     return title
 
 
+def _task_sort_key(task_id: Any) -> tuple[int, str]:
+    """Numeric second id segment, tolerant of a missing dash; the raw id ties."""
+    text = str(task_id or "")
+    head, _, rest = text.partition("-")
+    tail = rest.split("-", 1)[0]
+    return (int(tail) if head and tail.isdigit() else 0, text)
+
+
 def _tone(earned: float, possible: float) -> str:
     share = earned / (possible or 1)
     return "good" if share >= 0.8 else ("mid" if share >= 0.5 else "bad")
@@ -64,6 +77,25 @@ def _tone(earned: float, possible: float) -> str:
 
 def _pct(earned: float, possible: float) -> float | None:
     return round(100 * earned / possible, 1) if possible else None
+
+
+def _ci_band(ci: tuple[float, float] | None, n: int) -> str:
+    """A 0–100 % uncertainty bar, with its numbers in data attributes.
+
+    Decoding is the point: a test (or a screen reader) reads ``data-ci-low`` and
+    ``data-ci-high`` instead of guessing from pixels. Below the small-sample
+    threshold the band is labelled "ориентировочно".
+    """
+    if not ci:
+        return ""
+    low, high = (max(0.0, ci[0]), min(100.0, ci[1]))
+    note = stats.note(n)
+    label = f"ДИ 95%: {low:.0f}–{high:.0f}% · n={n}" + (f" · {note}" if note else "")
+    return (
+        f"<span class='ci-band' data-ci-low='{low:.2f}' data-ci-high='{high:.2f}' data-n='{n}' "
+        f"title='{_cell(label)}' style='--lo:{low:.1f}%;--width:{max(0.0, high - low):.1f}%'>"
+        "<i></i></span>"
+    )
 
 
 def _caveat(summary: dict[str, Any]) -> str:
@@ -314,6 +346,15 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_
         zero = sum(1 for r in rows if not r.get("earned") and not r.get("skipped") and r.get("possible"))
         failed_cats = sorted({r["category"] for r in rows
                               if r.get("earned", 0) < r.get("possible", 0) and not r.get("skipped")})
+        ci = summary.get("headline_ci95")
+        ci_line = ""
+        if ci:
+            note = stats.note(summary.get("headline_n") or 0)
+            ci_line = (
+                f"<div class='ci-scale'>{_ci_band(ci, summary.get('headline_n') or 0)}</div>"
+                f"<div class='sub ci-caption'>ДИ 95%: {ci[0]:.0f}–{ci[1]:.0f}% · "
+                f"n={summary.get('headline_n') or 0}" + (f" · {note}" if note else "") + "</div>"
+            )
         cards.append(
             f"<div class='card' data-model='{_cell(_model_name(run))}'>"
             f"<div class='rank'>{place}</div>"
@@ -322,6 +363,7 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_
             f"{summary['headline_earned']:.0f}<span class='of'>/{summary['headline_possible']:.0f}</span>"
             f"<span class='unit'>баллов качества</span></div>"
             f"<div class='meter'><i style='width:{100 * summary['headline_earned'] / (summary['headline_possible'] or 1):.0f}%'></i></div>"
+            f"{ci_line}"
             f"{f'<div class=\'sub verdict\'>{_cell(_caveat(summary))}</div>' if _caveat(summary) else ''}"
             f"<div class='sub'>симуляции K: <b>{summary['showcase_earned']:.0f}/{summary['showcase_possible']:.0f}</b> · L — оценка человеком · "
             f"заданий с потерей: <b>{failed}</b> (нулевых {zero})</div>"
@@ -371,7 +413,11 @@ def _verdict_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> st
                 )
                 continue
             pct = _pct(row.get("earned", 0), row.get("possible", 0))
-            cells.append(f"<td class='num'>{'—' if pct is None else f'{pct:.0f}%'}</td>")
+            band = _ci_band(row.get("ci95"), row.get("n") or 0)
+            cells.append(
+                f"<td class='num'>{'—' if pct is None else f'{pct:.0f}%'}"
+                f"{f'<div class=\"ci-scale small\">{band}</div>' if band else ''}</td>"
+            )
         for key in SHOWCASE:
             row = (summary.get("showcase") or {}).get(key, {})
             if key in core.ART_CATEGORIES:
@@ -381,7 +427,11 @@ def _verdict_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> st
                 cells.append(f"<td class='show'>{label}</td>")
                 continue
             pct = _pct(row.get("earned", 0), row.get("possible", 0))
-            cells.append(f"<td class='num show'>{'—' if pct is None else f'{pct:.0f}%'}</td>")
+            band = _ci_band(row.get("ci95"), row.get("n") or 0)
+            cells.append(
+                f"<td class='num show'>{'—' if pct is None else f'{pct:.0f}%'}"
+                f"{f'<div class=\"ci-scale small\">{band}</div>' if band else ''}</td>"
+            )
         cells.append(f"<td class='num'>{spend['total'] / 1000:.0f}K</td>")
         cells.append(f"<td class='num'>{spend['seconds'] / 60:.0f}</td>")
         body.append("<tr>" + "".join(cells) + "</tr>")
@@ -397,6 +447,7 @@ def _suite_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
     two columns, not one overwriting the other.
     """
     by_run: dict[str, dict[str, dict[str, Any]]] = {}
+    private_by_run = {_run_id(run): _private_ids(run) for run, _summary in summaries}
     order: list[tuple[str, str, str]] = []
     for run, _summary in summaries:
         run_id = _run_id(run)
@@ -412,7 +463,7 @@ def _suite_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
                 order.append((task_id, score.get("category", ""), title))
     def order_key(row: tuple[str, str, str]) -> tuple[int, int, str]:
         task_id, category = row[0], row[1]
-        number = int(task_id.split("-")[-1]) if task_id.split("-")[-1].isdigit() else 0
+        number, _ = _task_sort_key(task_id)
         return (SCORED.index(category) if category in SCORED else 99 + SHOWCASE.index(category), number, task_id)
 
     order.sort(key=order_key)
@@ -443,8 +494,10 @@ def _suite_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
                 f"{'<span class=\"badge\">' + _cell(', '.join(failed)) + '</span>' if failed else ''}</td>"
             )
         block = "витрина" if category in SHOWCASE else ""
+        badge = (" <span class='private' title='приватное задание: детали свёрнуты'>private</span>"
+                 if any(task_id in ids for ids in private_by_run.values()) else "")
         rows.append(
-            f"<tr><td class='task'><b>{_cell(task_id)}</b> {_cell(title)}"
+            f"<tr><td class='task'><b>{_cell(task_id)}</b> {_cell(title)}{badge}"
             f"<span class='cat'>{_cell(core.category_title(category))}{' · ' + block if block else ''}</span></td>"
             + "".join(cells) + "</tr>"
         )
@@ -458,11 +511,31 @@ def _suite_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
             f"<tbody>{''.join(rows)}</tbody></table>{legend}")
 
 
+def _private_ids(run: dict[str, Any]) -> set[str]:
+    """Ids of the private layer, from the suite digest the run recorded.
+
+    The digest carries ``private`` per task; a run recorded before that flag is
+    simply treated as public. Rebuilding the suite is the last resort because
+    it re-runs generators only to learn a boolean.
+    """
+    if "_private_ids" in run:  # the page asks three times per run
+        return run["_private_ids"]
+    known = (run.get("suite") or {}).get("per_task") or []
+    ids = {str(row.get("id")) for row in known if isinstance(row, dict) and row.get("private") is True}
+    if known and not ids and (run.get("config") or {}):
+        ids = {task.id for task in _live_tasks(run).values() if task.private}
+    run["_private_ids"] = ids
+    return ids
+
+
 def _task_rows(run: dict[str, Any]) -> str:
     tasks = {entry.get("task", {}).get("id"): entry for entry in (run.get("tasks") or [])}
+    private_ids = _private_ids(run)
+    live: dict[str, Any] | None = None
     rows = []
     for score in run["scores"]:
         task_id = score["task_id"]
+        private = task_id in private_ids
         entry = tasks.get(task_id) or {}
         title = _short(str(entry.get("task", {}).get("title", "")), task_id)
         spend = ((entry.get("transcript") or {}).get("spend") or {})
@@ -478,8 +551,28 @@ def _task_rows(run: dict[str, Any]) -> str:
             detail = f"<b>ошибка</b>: {_cell(score['error'])}"
         if score.get("skipped"):
             detail = f"<b>не проверялось</b>: {_cell(score['skipped'])}"
+        badge = ""
+        if private:
+            # The private layer may publish aggregates only: the row stays, the
+            # oracle-bearing detail is collapsed, and the marker tells a reader
+            # why. The reference is fetched from the rebuilt task when an older
+            # snapshot did not store it.
+            reference = (((task := entry.get("task") or {}).get("oracle") or {}).get("reference") or "")
+            if not reference:
+                if live is None:
+                    live = _live_tasks(run)
+                rebuilt = live.get(task_id)
+                if rebuilt is not None:
+                    reference = (rebuilt.oracle or {}).get("reference") or ""
+            if reference:
+                detail += f"<div class='oracle'><b>оракул</b>: {_cell(reference)}</div>"
+            detail = (
+                "<details class='private-detail'><summary>детали и оракул — раскрыть</summary>"
+                f"{detail}</details>"
+            )
+            badge = " <span class='private' title='приватное задание: детали свёрнуты'>private</span>"
         rows.append(
-            f"<tr class='{klass}'><td>{_cell(task_id)}</td><td>{_cell(title)}</td>"
+            f"<tr class='{klass}'><td>{_cell(task_id)}</td><td>{_cell(title)}{badge}</td>"
             f"<td class='num'>{score.get('earned', 0):.1f}/{score.get('possible', 0):.0f}</td>"
             f"<td class='num small'>{spend.get('answer_tokens') or 0}</td>"
             f"<td class='num small'>{spend.get('reasoning_tokens') or 0}</td>"
@@ -534,6 +627,36 @@ def _provenance(runs: list[dict[str, Any]]) -> str:
             rows.append(("Железо", str(hardware.get("gpu") or hardware.get("name") or "—")))
         if suite.get("sha256"):
             rows.append(("Сьюта SHA-256", str(suite["sha256"])))
+        environment = run.get("environment") or {}
+        if environment:
+            rows.append(("Образ песочницы", str(environment.get("image") or "—")))
+            rows.append(("Digest образа", str(environment.get("image_digest") or "—")))
+            status = "подтверждено" if environment.get("status") == "verified" else "не проверено"
+            if environment.get("reason"):
+                status += f": {environment['reason']}"
+            rows.append(("Среда", status))
+            runtime = str(environment.get("runtime") or "—")
+            if environment.get("runtime_verified") is False:
+                # The image digest says nothing about the requested runtime: a
+                # name that is not registered on this host runs as plain runc,
+                # so the row must not read as confirmed.
+                runtime += " (не подтверждён)"
+            rows.append(("Runtime песочницы", runtime))
+            executor = str(environment.get("executor_status") or "—")
+            if environment.get("executor_reason"):
+                executor += f": {environment['executor_reason']}"
+            rows.append(("Исполнитель", executor))
+            rows.append(("SOURCE_DATE_EPOCH", str(environment.get("source_date_epoch") or "—")))
+            packages = environment.get("sbom") or []
+            if packages:
+                rows.append(("SBOM", f"{len(packages)} пакетов"))
+        private_ids = _private_ids(run)
+        if private_ids:
+            rows.append((
+                "Приватный слой",
+                f"{len(private_ids)} заданий: публикуются id, категория и хеши; "
+                "их проверки и оракул в таблицах свёрнуты и видны только после раскрытия",
+            ))
         if (run.get("rescored") or {}).get("rescored_at"):
             rows.append(("Пересчёт", str(run["rescored"]["rescored_at"])))
 
@@ -549,13 +672,19 @@ def _charts_payload(runs: list[dict[str, Any]]) -> dict[str, Any]:
     payload: dict[str, Any] = {"models": [], "scoredKeys": list(SCORED),
                                "scoredNames": [f"{k}. {core.category_title(k).split(' ')[0]}" for k in SCORED],
                                "showcaseKeys": list(core.SHOWCASE_CATEGORIES), "scored": [], "showcase": [],
-                               "spend": [], "cost": []}
+                               "scoredCi": [], "spend": [], "cost": []}
     for run in runs:
         summary = summarise(run["scores"], run.get("suite"))
         name = _model_name(run)
         payload["models"].append(name)
         payload["scored"].append([_pct(summary["per_category"].get(k, {}).get("earned", 0),
                                        summary["per_category"].get(k, {}).get("possible", 0)) for k in SCORED])
+        payload["scoredCi"].append([
+            (summary["per_category"].get(k, {}).get("ci95") and
+             (lambda ci, pct: None if pct is None else
+              (max(0.0, pct - ci[0]), max(0.0, ci[1] - pct)))(summary["per_category"][k]["ci95"], pct))
+            for k, pct in zip(SCORED, payload["scored"][-1])
+        ])
         showcase = summary.get("showcase") or {}
         payload["showcase"].append([_pct(showcase.get(k, {}).get("earned", 0),
                                          showcase.get(k, {}).get("possible", 0)) for k in core.SHOWCASE_CATEGORIES])
@@ -568,6 +697,163 @@ def _charts_payload(runs: list[dict[str, Any]]) -> dict[str, Any]:
     return payload
 
 
+
+
+def _radar_payload(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
+    """One radar series per model, measured axes only."""
+    series = []
+    for run, summary in summaries:
+        values = {}
+        for key in SCORED:
+            row = summary["per_category"].get(key) or {}
+            values[key] = _pct(row.get("earned", 0), row.get("possible", 0))
+        series.append({"name": _model_name(run), "values": values})
+    return viz.radar(series, SCORED, labels={key: key for key in SCORED})
+
+
+def _heatmap_payload(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
+    """Losses per family, aggregated from the scores themselves.
+
+    The family comes from the taxonomy, not from a hand-written list, so a new
+    category appears in the heatmap without touching the report.
+    """
+    families = sorted({
+        schema.family_for(score.get("category", "")) or score.get("category", "?")
+        for run, _ in summaries for score in run["scores"]
+    })
+    rows = []
+    for run, _ in summaries:
+        buckets: dict[str, dict[str, float]] = {
+            family: {"earned": 0.0, "possible": 0.0, "tasks": 0, "failed": 0} for family in families
+        }
+        for score in run["scores"]:
+            family = schema.family_for(score.get("category", "")) or score.get("category", "?")
+            bucket = buckets[family]
+            bucket["tasks"] += 1
+            if score.get("skipped"):
+                continue
+            earned, possible = float(score.get("earned", 0) or 0), float(score.get("possible", 0) or 0)
+            bucket["earned"] += earned
+            bucket["possible"] += possible
+            if earned < possible:
+                bucket["failed"] += 1
+        rows.append({
+            "name": _model_name(run),
+            "values": {
+                family: {
+                    "pct": _pct(bucket["earned"], bucket["possible"]) if bucket["tasks"] else None,
+                    "tasks": bucket["tasks"], "failed": bucket["failed"],
+                }
+                for family, bucket in buckets.items()
+            },
+        })
+    return viz.heatmap(rows, families)
+
+
+def _failure_items(run: dict[str, Any]) -> list[dict[str, Any]]:
+    """Failed checks, errors and skip reasons as cluster points."""
+    titles = {entry.get("task", {}).get("id"): entry.get("task", {}).get("title") for entry in run.get("tasks") or []}
+    items: list[dict[str, Any]] = []
+    for score in run["scores"]:
+        task_id, category = score.get("task_id", "?"), score.get("category", "?")
+        texts = [f"{check.get('name')}: {check.get('detail')}" for check in score.get("checks") or [] if not check.get("passed")]
+        if score.get("error"):
+            texts.append(f"ошибка: {score['error']}")
+        if score.get("skipped"):
+            texts.append(f"не проверялось: {score['skipped']}")
+        for text in texts:
+            items.append({
+                "id": task_id, "model": _model_name(run), "category": category,
+                "text": text, "count": 1, "title": titles.get(task_id) or "",
+            })
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in items:
+        key = (str(item["id"]), str(item["text"]))
+        if key in merged:
+            merged[key]["count"] += 1
+        else:
+            merged[key] = item
+    return list(merged.values())
+
+
+def _live_tasks(run: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the run's tasks from its own config seed, keyed by id."""
+    from .config import RunConfig
+    from .suite import build_suite
+
+    try:
+        return {task.id: task for task in build_suite(RunConfig.from_dict(run.get("config") or {}))}
+    except Exception:  # старый/частичный конфиг не должен ронять отчёт
+        return {}
+
+
+def _diffs(run: dict[str, Any], *, limit: int = 4) -> str:
+    """Reference/answer diff per visual task, when both frames exist.
+
+    A reference frame is rendered through the same deterministic cache the
+    showcase uses; without a browser the panel says «нет данных» instead of
+    hiding the task.
+    """
+    from . import visual
+
+    entries = {entry.get("task", {}).get("id"): entry for entry in run.get("tasks") or []}
+    run_dir = Path(run["dir"])
+    roots = gallery._allowed_roots(run_dir)
+    # Older run snapshots did not store the oracle. The registry still rebuilds
+    # the same task from the run's seed, so the reference frame is available
+    # instead of the panel collapsing to "нет данных" for every task.
+    live: dict[str, Any] | None = None
+    blocks: list[str] = []
+    for score in run["scores"]:
+        if len(blocks) >= limit:
+            break
+        if score.get("category") not in SHOWCASE or score.get("skipped"):
+            continue
+        task_id = score.get("task_id")
+        entry = entries.get(task_id) or {}
+        task = entry.get("task") or {}
+        oracle = task.get("oracle") or {}
+        reference = oracle.get("reference") or ""
+        visual_extra = ((entry.get("transcript") or {}).get("extra") or {}).get("visual") or {}
+        candidate = gallery._shot_candidate(str(visual_extra.get("shot") or ""), run_dir)
+        # Containment: a hand-edited tasks.json can point anywhere on the
+        # machine, and the page embeds every byte it reads as a data URI.
+        if candidate is None or not candidate.is_file() or not gallery._within(candidate, roots):
+            continue
+        shot = candidate
+        meta = task.get("meta") or {}
+        if not reference:
+            if live is None:
+                live = _live_tasks(run)
+            rebuilt = live.get(task_id)
+            if rebuilt is not None:
+                reference = (rebuilt.oracle or {}).get("reference") or ""
+                meta = meta or rebuilt.meta
+                task = task or {"title": rebuilt.title}
+        if not reference:
+            continue
+        steps = visual_extra.get("steps") or meta.get("steps")
+        dt = visual_extra.get("dt") or 1 / 60
+        html = visual.extract_html(reference)
+        result, _ = visual._cached_render(html, steps, dt) if steps else (None, False)
+        if result is None or not result.ok:
+            blocks.append(
+                f"<h3>{_cell(task_id)} · {_cell(_short(str(task.get('title') or ''), str(task_id)))}</h3>"
+                + viz.visual_diff(Path("/nonexistent"), shot)
+            )
+            continue
+        ref_path = visual.shot_path(html, steps, dt)
+        if not gallery._within(ref_path, roots):
+            ref_path = Path("/nonexistent")
+        earned, possible = score.get("earned", 0), score.get("possible", 0)
+        blocks.append(
+            f"<h3>{_cell(task_id)} · {_cell(_short(str(task.get('title') or ''), str(task_id)))} "
+            f"<span class='score {_tone(earned, possible)}'>{_cell(f'{earned:.0f}/{possible:.0f}')}</span></h3>"
+            + viz.visual_diff(ref_path, shot)
+        )
+    if not blocks:
+        return viz.visual_diff(Path("/nonexistent"), Path("/nonexistent"))
+    return "".join(blocks)
 
 
 def _verdict_text(category: str, failed: list[str]) -> str:
@@ -681,11 +967,55 @@ def render_html(
         + "</div>"
     ) if per_run else ""
 
+    if per_run:
+        run = runs[0]
+        summary = summaries[0][1]
+        statuses = viz.task_statuses(run["scores"])
+        viz_tab = '<div class="tab" data-panel="p-viz">Карты прогона</div>'
+        viz_panel = (
+            '<div class="panel" id="p-viz">'
+            '<h2>Вердикт по цифрам</h2>'
+            '<p class="hint">Три вывода и три риска собраны из баллов, ДИ и статусов ниже; '
+            'ничего не написано рукой.</p>'
+            + viz.verdict_strip(
+                summary, statuses,
+                titles={key: core.category_title(key) for key in core.CATEGORY_POINTS},
+            )
+            + '<h2>Полнота прогона и статусы</h2>'
+            '<p class="hint">«Не проверялось» — не ноль: причины разные, поэтому у каждого статуса '
+            'свой цвет, знак и подпись.</p>'
+            + viz.completeness(statuses)
+            + viz.status_legend(statuses)
+            + '<h2>Семантические кластеры провалов</h2>'
+            '<p class="hint">Похожие формулировки провалов ложатся рядом: char-триграммы → '
+            'хеш-признаки → PCA 2D. Наведите на точку, чтобы прочитать задание.</p>'
+            + viz.cluster_map(_failure_items(run))
+            + '<h2>Визуальные диффы: эталон / ответ</h2>'
+            '<p class="hint">Красный бокс — изменённые пиксели, врезка показывает их крупно; '
+            'координаты и число пикселей подписаны.</p>'
+            + _diffs(run)
+            + '</div>'
+        )
+    else:
+        viz_tab = '<div class="tab" data-panel="p-viz">Компетенции</div>'
+        viz_panel = (
+            '<div class="panel" id="p-viz">'
+            '<h2>Радар компетенций</h2>'
+            '<p class="hint">Ось — категория A–J, радиус — процент от возможного. '
+            'Провал оси виден формой профиля; пустая ось помечена в подсказке.</p>'
+            + _radar_payload(summaries)
+            + '<h2>Heatmap ошибок (модель × семейство)</h2>'
+            '<p class="hint">Ячейка несёт процент и сырые числа: провалы и «нет задач» '
+            'различаются не только цветом.</p>'
+            + _heatmap_payload(summaries)
+            + '</div>'
+        )
+
     charts = _json_script(_charts_payload([run for run, _ in summaries]))
     compare_rows = "".join(
         f"<label class='pick'><input type='checkbox' class='cmp' value='{_cell(item['id'])}' "
         f"data-model='{_cell(item['model'])}'><span>{_cell(item['model'])}</span> {_cell(item['id'])}</label>"
-        for item in sorted(index, key=lambda x: (reversed(x["id"].split("-")) and int(x["id"].split("-")[1]), x["model"]))
+        for item in sorted(index, key=lambda x: (*_task_sort_key(x["id"]), x["model"]))
     )
 
     return f"""<!DOCTYPE html>
@@ -711,6 +1041,11 @@ def render_html(
  .big .unit {{ display:block; font-size:11px; color:#8b949e; font-weight:400; letter-spacing:.03em }}
  .meter {{ height:5px; background:#21262d; border-radius:4px; margin:8px 0; overflow:hidden }}
  .meter i {{ display:block; height:100%; background:#7ee787 }}
+ .ci-scale {{ position:relative; height:8px; background:#21262d; border-radius:4px; margin:4px 0 5px; overflow:hidden }}
+ .ci-scale.small {{ height:4px; margin:3px 0 0 }}
+ .ci-band {{ position:absolute; left:var(--lo); width:var(--width); top:0; bottom:0;
+   background:#79c0ff44; border-left:1px solid #79c0ff; border-right:1px solid #79c0ff }}
+ .ci-caption {{ margin-bottom:4px }}
  .good {{ color:#7ee787 }} .mid {{ color:#e3b341 }} .bad {{ color:#ff7b72 }}
  .sub {{ color:#8b949e; font-size:11.5px }} .spend b {{ color:#c9d1d9 }}
  table.grid {{ border-collapse:collapse; width:100% }}
@@ -732,6 +1067,10 @@ def render_html(
  .cell.skip {{ color:#8b949e }}
  .cell .of {{ color:#8b949e; font-weight:400; font-size:11px }}
  .cell .badge {{ display:block; color:#8b949e; font-weight:400; font-size:10.5px }}
+ .private {{ color:#d2a8ff; border:1px solid #8957e5; border-radius:5px; padding:0 5px; font-size:10px; margin-left:4px }}
+ details.private-detail summary {{ cursor:pointer; color:#8b949e; font-size:11.5px }}
+ details.private-detail[open] summary {{ color:#c9d1d9; margin-bottom:3px }}
+ .oracle {{ margin-top:3px; color:#8b949e }}
  .row {{ display:flex; gap:8px; margin-top:8px }}
  button.open, a.link {{ background:#21262d; border:1px solid #30363d; color:#c9d1d9; border-radius:6px;
    padding:4px 9px; font-size:12px; cursor:pointer; text-decoration:none }}
@@ -776,6 +1115,19 @@ def render_html(
  .chart {{ margin:6px 0 22px }}
  .warn {{ background:#3d2b00; color:#e3b341; border:1px solid #6b4b00; border-radius:8px; padding:8px 12px; margin:8px 0 }}
  code {{ background:#21262d; border-radius:4px; padding:1px 5px }}
+ .viz {{ margin:10px 0 16px; max-width:100% }}
+ .viz svg {{ width:100%; height:auto; display:block }}
+ .viz-legend {{ display:flex; flex-wrap:wrap; gap:4px 14px; font-size:11.5px; color:#8b949e; margin:4px 0 10px }}
+ .viz-key i {{ display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:4px; vertical-align:baseline }}
+ .hm rect {{ fill:#21262d }}
+ .hm text {{ fill:#c9d1d9; font-variant-numeric:tabular-nums }}
+ .hm.full rect {{ fill:#7ee787; fill-opacity:.28 }} .hm.full text {{ fill:#7ee787 }}
+ .hm.part rect {{ fill:#e3b341; fill-opacity:.28 }} .hm.part text {{ fill:#e3b341 }}
+ .hm.zero rect {{ fill:#ff7b72; fill-opacity:.32 }} .hm.zero text {{ fill:#ff7b72 }}
+ .hm.none rect {{ fill:#21262d; stroke:#30363d; stroke-dasharray:3 3 }} .hm.none text {{ fill:#8b949e }}
+ .viz-legend-svg rect.full {{ fill:#7ee787; fill-opacity:.4 }} .viz-legend-svg rect.part {{ fill:#e3b341; fill-opacity:.4 }}
+ .viz-legend-svg rect.zero {{ fill:#ff7b72; fill-opacity:.4 }} .viz-legend-svg rect.none {{ fill:#21262d; stroke:#30363d; stroke-dasharray:3 3 }}
+ .verdict-strip {{ background:#161b22; border:1px solid #30363d; border-radius:10px; padding:10px 14px }}
 </style></head>
 <body>
 <header>
@@ -787,6 +1139,7 @@ def render_html(
 </header>
 <nav class="tabs">
  <div class="tab active" data-panel="p-summary">Решения моделей</div>
+ {viz_tab}
  <div class="tab" data-panel="p-suite">Решения моделей по сьюту</div>
  <div class="tab" data-panel="p-charts">Графики</div>
  <div class="tab" data-panel="p-showcase">Витрина решений</div>
@@ -816,6 +1169,8 @@ def render_html(
  <ul class="hint">
    <li><b>Баллы качества</b> — только категории A–J, максимум 100. Витрина K и L в итог не входит.</li>
    <li><b>«Не проверялось»</b> — задание не удалось проверить на этой машине (например нет браузера); это не ноль.</li>
+   <li><b>Полоса неопределённости</b> — 95 % бутстрэп-ДИ: перекрытие полос у двух моделей означает
+       незначимую разницу. При выборке меньше 30 метрика помечена «ориентировочно».</li>
    <li><b>Стоп-причина</b> — почему генерация закончилась: <code>stop</code> — сама, <code>length</code> — упёрлась в окно,
        <code>tool_calls</code> — ждёт результат инструмента.</li>
  </ul>
@@ -824,6 +1179,8 @@ def render_html(
           f"<th>Балл</th><th>Ответ</th><th>Думанье</th><th>Сек</th><th>Стоп</th><th>Проваленная проверка</th></tr></thead>"
           f"<tbody>{_task_rows(run)}</tbody></table>" for run, _ in summaries)}
 </div>
+
+{viz_panel}
 
 <div class="panel" id="p-suite">
  <h2>Сьют × решения моделей</h2>
@@ -860,7 +1217,7 @@ def render_html(
  <p class="hint">Режим съёмки: одна сцена на весь экран, ← / → листают задачи, пробел шагает время, Esc закрывает.
  Сравнение: отметьте решения двух и более моделей — они встанут рядом и будут шагать синхронно.</p>
  <div id="cmp-list">{compare_rows}</div>
- <div class="gallery" id="gallery">{_gallery(sorted(index, key=lambda x: (x['category'], int(x['id'].split('-')[1]), x['model'])))}</div>
+ <div class="gallery" id="gallery">{_gallery(sorted(index, key=lambda x: (x['category'], *_task_sort_key(x['id']), x['model'])))}</div>
 </div>
 
 {prov_panel}
@@ -894,6 +1251,9 @@ function drawCharts() {{
   Plotly.newPlot('ch-scored', DATA.models.map((m, i) => ({{
     type:'bar', name:m, x: DATA.scoredNames, y: DATA.scored[i],
     marker:{{color:PALETTE[i % PALETTE.length]}},
+    error_y:{{type:'data', symmetric:false,
+      array: DATA.scoredCi[i].map(c => c ? c[1] : 0),
+      arrayminus: DATA.scoredCi[i].map(c => c ? c[0] : 0), color:'#8b949e', thickness:1}},
     text: DATA.scored[i].map(v => v === null ? '' : v.toFixed(0) + '%'), textposition:'outside',
     hovertemplate: m + ': %{{y:.0f}}% от возможного<extra></extra>',
   }})), Object.assign({{}}, LAYOUT, {{yaxis:{{title:{{text:'% от возможного', font:AXTITLE}}, range:[0,110]}}}}), CONFIG);

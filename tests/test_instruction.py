@@ -290,7 +290,8 @@ def test_if6_is_a_pilot_scenario_only() -> None:
     assert module.expected_ids == instruction.IDS
     assert module.expected_ids_for() == instruction.IDS
     assert module.expected_ids_for("pilot") == ("IF-6",)
-    assert module.expected_ids_for("stretch-v1") == instruction.STRETCH_IDS == instruction.IDS + ("IF-6",)
+    assert module.expected_ids_for("stretch-v1") == instruction.STRETCH_IDS
+    assert instruction.STRETCH_IDS == instruction.IDS + ("IF-6", "IF-7", "IF-7-KK", "IF-8")
 
     def generated(profile: str) -> list[TaskInstance]:
         return instruction.generate(task_rng(1, "A"), RunConfig(profile=profile))
@@ -300,11 +301,11 @@ def test_if6_is_a_pilot_scenario_only() -> None:
     assert [(task.id, task.max_points) for task in pilot] == [("IF-6", 2.0)]
 
     stretch = generated("stretch-v1")
-    assert [task.id for task in stretch] == [*instruction.IDS, "IF-6"]
-    # The stretch profile splits the fixed category total over its six tasks.
+    assert [task.id for task in stretch] == list(instruction.STRETCH_IDS)
+    # The stretch profile splits the fixed category total over its nine tasks.
     apply_profile_weights(stretch, "stretch-v1")
     assert sum(task.max_points for task in stretch) == core.CATEGORY_POINTS["A"] == 10.0
-    # 10 / 6 leaves a 1e-4-scale rounding tail on the last task.
+    # 10 / 9 leaves a 1e-4-scale rounding tail on the last task.
     assert max(task.max_points for task in stretch) - min(task.max_points for task in stretch) <= 0.0002
 
 

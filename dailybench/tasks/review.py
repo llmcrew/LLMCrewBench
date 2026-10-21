@@ -50,6 +50,9 @@ ALL_IDS = IDS + ("J-3", "J-4")
 """Scenarios of the stretch profile: the baseline plus both extensions."""
 _POINTS = {"J-1": 3.0, "J-2": 2.0, "J-3": 2.0, "J-4": 2.0}
 
+PRIVATE_IDS = frozenset({"J-2"})
+"""Private layer: the module-cache key defect scenario."""
+
 #: Per-task shares of the budget for the shape and the location; the repair gets
 #: the remainder, so the three checks always sum to ``max_points`` even when a
 #: profile redistributes the category total (J-3/J-4 average 1.25 in stretch).
@@ -1357,10 +1360,13 @@ def _reference_reply(target_file: str, line: int, source: str) -> str:
 def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
     profile = core.profile_of(cfg)
     if profile == "pilot":
-        return [_scenario_j3(rng)]
-    tasks = [_scenario_j1(rng), _scenario_j2(rng)]
-    if profile == "stretch-v1":
-        tasks += [_scenario_j3(rng), _scenario_j4(rng)]
+        tasks = [_scenario_j3(rng)]
+    else:
+        tasks = [_scenario_j1(rng), _scenario_j2(rng)]
+        if profile == "stretch-v1":
+            tasks += [_scenario_j3(rng), _scenario_j4(rng)]
+    for task in tasks:
+        task.private = task.id in PRIVATE_IDS
     return tasks
 
 

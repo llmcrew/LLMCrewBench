@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
+from . import schema
+
 # --------------------------------------------------------------------------- #
 # Suite profiles
 # --------------------------------------------------------------------------- #
@@ -224,6 +226,42 @@ class TaskInstance:
 
     meta: dict[str, Any] = field(default_factory=dict)
     """Driver hints: ``{"driver": "tools", "target_tokens": 16384, ...}``."""
+
+    block: str | None = None
+    """``deterministic`` or ``open``; derived from ``category`` when omitted."""
+
+    family: str | None = None
+    """Taxonomy family (``det/math`` … ``vis/aes``); derived from ``category``."""
+
+    languages: list[str] = field(default_factory=lambda: ["ru"])
+    """Language tags of the brief. A twin scenario has its own id and fixtures."""
+
+    cultures: list[str] = field(default_factory=list)
+    """Cultures the brief is adapted to (calendars, units, names, formats)."""
+
+    fresh_after: str | None = None
+    """ISO date after which the scenario counts as a fresh slice; ``None`` = evergreen."""
+
+    private: bool = False
+    """A private task is excluded from the published prompt view."""
+
+    holdout_seeds: list[int] = field(default_factory=list)
+    """Blind seeds, never used while the scenario was tuned."""
+
+    def __post_init__(self) -> None:
+        if self.block is None:
+            self.block = schema.block_for(self.category)
+        if self.family is None:
+            self.family = schema.family_for(self.category)
+        if not self.languages:
+            self.languages = ["ru"]
+        if self.cultures is None:
+            self.cultures = []
+        if self.holdout_seeds is None:
+            self.holdout_seeds = []
+        errors = schema.validate_task_fields(self)
+        if errors:
+            raise ValueError(f"некорректное задание {self.id!r}: " + "; ".join(errors))
 
     def check(self, max_points: float | None = None) -> "TaskInstance":
         if max_points is not None:

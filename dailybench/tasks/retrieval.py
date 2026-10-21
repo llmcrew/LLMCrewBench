@@ -42,6 +42,9 @@ from .. import core, text
 
 IDS = ("I-1", "I-2")
 
+PRIVATE_IDS = frozenset({"I-1"})
+"""Private layer: the aggregate scenario over the workspace corpus."""
+
 #: Two checks per scenario; every scenario is worth 2.0 points (frozen table).
 _CHECK = 1.0
 
@@ -1193,7 +1196,10 @@ def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
         ids = ALL_IDS
     else:
         ids = BASELINE_IDS
-    return [_BUILDERS[scenario](rng) for scenario in ids]
+    tasks = [_BUILDERS[scenario](rng) for scenario in ids]
+    for task in tasks:
+        task.private = task.id in PRIVATE_IDS
+    return tasks
 
 
 def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:

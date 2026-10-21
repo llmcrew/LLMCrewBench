@@ -198,6 +198,13 @@ def suite_digest(tasks: Iterable[core.TaskInstance], profile: str = core.DEFAULT
         {
             "id": task.id,
             "category": task.category,
+            "block": task.block,
+            "family": task.family,
+            "languages": task.languages,
+            "cultures": task.cultures,
+            "fresh_after": task.fresh_after,
+            "private": task.private,
+            "holdout_seeds": task.holdout_seeds,
             "max_points": task.max_points,
             "evaluator_sha256": evaluator_sha(task.category),
             "prompt_sha256": hashlib.sha256(task.prompt.encode()).hexdigest(),
@@ -227,27 +234,60 @@ def suite_digest(tasks: Iterable[core.TaskInstance], profile: str = core.DEFAULT
     }
 
 
-def public_prompts(tasks: Iterable[core.TaskInstance]) -> list[dict[str, Any]]:
+def public_prompts(
+    tasks: Iterable[core.TaskInstance], include_private: bool = False
+) -> list[dict[str, Any]]:
     """Model-visible view of the suite: safe to publish before/after a run.
 
     Includes the follow-up dialogue and full tool schemas, so a reader can
     reconstruct the real task the model faced; no oracle fields are exposed.
+    A private task contributes only its id, category, denominator and layer
+    hashes by default — its prompt never leaves the machine.
     """
-    return [
-        {
-            "id": task.id,
-            "category": task.category,
-            "title": task.title,
-            "max_points": task.max_points,
-            "prompt": task.prompt,
-            "prompt_chars": len(task.prompt),
-            "estimated_tokens": task.meta.get("estimated_tokens"),
-            "dialogue": task.dialogue or [],
-            "workspace_files": sorted(task.workspace) if task.workspace else [],
-            "tools": task.tools or [],
-        }
-        for task in tasks
-    ]
+    from .decontam import is_private, prompt_hashes
+
+    entries: list[dict[str, Any]] = []
+    for task in tasks:
+        if is_private(task):
+            if not include_private:
+                entries.append(
+                    {
+                        "id": task.id,
+                        "category": task.category,
+                        "block": task.block,
+                        "family": task.family,
+                        "languages": list(task.languages),
+                        "cultures": list(task.cultures),
+                        "fresh_after": task.fresh_after,
+                        "holdout_seeds": list(task.holdout_seeds),
+                        "max_points": task.max_points,
+                        "private": True,
+                        **prompt_hashes(task),
+                    }
+                )
+                continue
+        entries.append(
+            {
+                "id": task.id,
+                "category": task.category,
+                "block": task.block,
+                "family": task.family,
+                "languages": list(task.languages),
+                "cultures": list(task.cultures),
+                "fresh_after": task.fresh_after,
+                "holdout_seeds": list(task.holdout_seeds),
+                "title": task.title,
+                "max_points": task.max_points,
+                "prompt": task.prompt,
+                "prompt_chars": len(task.prompt),
+                "estimated_tokens": task.meta.get("estimated_tokens"),
+                "dialogue": task.dialogue or [],
+                "workspace_files": sorted(task.workspace) if task.workspace else [],
+                "tools": task.tools or [],
+                **({"private": True} if is_private(task) else {}),
+            }
+        )
+    return entries
 
 
 def grading_material(tasks: Iterable[core.TaskInstance]) -> list[dict[str, Any]]:

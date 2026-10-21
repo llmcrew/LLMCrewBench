@@ -56,6 +56,9 @@ ALL_IDS = BASELINE_IDS + PILOT_IDS
 # The historical name the baseline tests use.
 IDS = BASELINE_IDS
 
+PRIVATE_IDS = frozenset({"G-2"})
+"""Private layer: the journal clean-up baseline scenario."""
+
 _POINT_SCHEMA = 1.0
 _POINT_CONTENT = 1.0
 
@@ -763,10 +766,13 @@ _SCENARIOS = (
 def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
     profile = core.profile_of(cfg)
     if profile == "pilot":
-        return [_g5(rng)]
-    tasks = [builder(rng) for _, builder in _SCENARIOS]
-    if profile == "stretch-v1":
-        tasks.append(_g5(rng))
+        tasks = [_g5(rng)]
+    else:
+        tasks = [builder(rng) for _, builder in _SCENARIOS]
+        if profile == "stretch-v1":
+            tasks.append(_g5(rng))
+    for task in tasks:
+        task.private = task.id in PRIVATE_IDS
     return tasks
 
 
