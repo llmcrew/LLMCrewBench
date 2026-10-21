@@ -89,6 +89,11 @@ def status_of(
         return task_status(model, scene, runs_root) or "model_failed"
     if clip.is_file() and clip.stat().st_size > 0:
         return "ok"
+    # Клипа ещё нет: если задача не запускалась или упала — это причина, а не
+    # «нет медиа»; живая страница без клипа — именно media_missing.
+    reason = task_status(model, scene, runs_root)
+    if reason and reason != "ok":
+        return reason
     return "media_missing"
 
 
@@ -129,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-MODEL_NAMES = ("deepseek-v4.1-flash-unc", "deepseek-v4.1-flash-unc-1017")
+MODEL_NAMES = ("deepseek-v4.1-flash-unc-1021", "deepseek-v4.1-flash-unc-1017-1021")
 
 
 if __name__ == "__main__":

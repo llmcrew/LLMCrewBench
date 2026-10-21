@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ночной город · Neon Rain</title>
+<style>
+  html,body{margin:0;height:100%;background:#04030e;overflow:hidden}
+  canvas{display:block;width:100vw;height:100vh}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(function () {
+  "use strict";
+
+  var cv = document.getElementById("c");
+  var ctx = cv.getContext("2d");
+  var off = document.createElement("canvas");
+  var octx = off.getContext("2d");
+
+  var W = 0, H = 0, dpr = 1, horizon = 0;
+  var t0 = performance.now();
+
+  var stars = [], layers = [], neon = [], rain = [], cars = [], ripples = [];
+  var CFG_HAZE = [0.55, 0.36, 0.20, 0.08];
+  var NEON = ["#25e6ff", "#ff2fae", "#ffd166", "#7dff6f", "#b06bff", "#ff8a45", "#4dffd0"];
+
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function newDrop(init) {
+    return {
+      x: Math.random() * (W + 240) - 120,
+      y: init ? Math.random() * H : -30,
+      l: 9 + Math.random() * 22,
+      sp: 7 + Math.random() * 12,
+      a: 0.06 + Math.random() * 0.20
+    };
+  }
+
+  function gen() {
+    var rng = mulberry32(20240711);
+    horizon = H * 0.60;
+
+    stars = [];
+    for (var i = 0; i < 280; i++) {
+      stars.push({
+        x: rng() * W,
+        y: rng() * horizon * 0.92,
+        r: 0.3 + rng() * 1.4,
+        ph: rng() * 6.283,
+        sp: 0.5 + rng() * 1.8,
+        tint: rng() < 0.12 ? "#ffd0e6" : (rng() < 0.12 ? "#bfe6ff" : "#e6ecff")
+      });
+    }
+
+    var cfg = [
+      { n: 30, w: [14, 40], hmax: 0.30, col: "#2b1e60", win: "#ffd9a0", wa: 0.50, neon: false },
+      { n: 24, w: [26, 68], hmax: 0.44, col: "#1c1248", win: "#ffcf87", wa: 0.62, neon: false },
+      { n: 17, w: [46, 108], hmax: 0.60, col: "#120b32", win: "#ffe0a0", wa: 0.68, neon: true },
+      { n: 11, w: [84, 184], hmax: 0.84, col: "#070519", win: "#ffd28a", wa: 0.48, neon: true }
+    ];
+
+    layers = [];
+    neon = [];
+    for (var li = 0; li < cfg.length; li++) {
+      var c = cfg[li];
+      var arr = [];
+      var x = -180;
+      while (x < W + 180) {
+        var bw = c.w[0] + rng() * (c.w[1] - c.w[0]);
+        var bh = (0.26 + rng() * 0.74) * c.hmax * H;
+        var b = { x: x, w: bw, h: bh, col: c.col, wins: [], ant: rng() < 0.32, aph: rng() * 6.283 };
+
+        var cols = Math.max(2, Math.floor(bw / 9));
+        var rows = Math.max(3, Math.floor(bh / 11));
+        for (var r = 0; r < rows; r++) {
+          for (var q = 0; q < cols; q++) {
+            if (rng() < 0.30) continue;
+            var cc = rng() < 0.15 ? "#9fe8ff" : (rng() < 0.10 ? "#ffb0d8" : c.win);
+            b.wins.push({
+              x: b.x + ((q + 0.28) / cols) * bw,
+              y: horizon - bh + ((r + 0.25) / rows) * bh,
+              w: Math.max(1.3, (bw / cols) * 0.44),
+              h: Math.max(1.5, (bh / rows) * 0.42),
+              on: rng() < c.wa,
+              col: cc,
+              fl: rng() < 0.07,
+              ph: rng() * 6.283,
+              sp: 1 + rng() * 6,
+              a: 0.38 + rng() * 0.6
+            });
+          }
+        }
+
+        if (c.neon && rng() < 0.62) {
+          var nn = 1 + Math.floor(rng() * 2);
+          for (var k = 0; k < nn; k++) {
+            var vert = rng() < 0.55;
+            var nw = vert ? 3 + rng() * 4 : 12 + rng() * 48;
+            var nh = vert ? 22 + rng() * 84 : 4 + rng() * 7;
+            neon.push({
+              li: li,
+              x: b.x + rng() * Math.max(1, bw - nw),
+              y: horizon - bh * (0.30 + rng() * 0.62),
+              w: nw, h: nh,
+              c: NEON[Math.floor(rng() * NEON.length)],
+              ph: rng() * 6.283, sp: 0.6 + rng() * 2.6, a: 0.7 + rng() * 0.3
+            });
+          }
+        }
+        arr.push(b);
+        x += bw + 4 + rng() * 10;
+      }
+      layers.push(arr);
+    }
+
+    rain = [];
+    var rn = Math.round((W * H) / 7500);
+    for (var d = 0; d < rn; d++) rain.push(newDrop(true));
+
+    cars = [];
+    for (var m = 0; m < 8; m++) {
+      cars.push({
+        y: horizon + (0.05 + rng() * 0.32) * (H - horizon),
+        x: rng() * W,
+        sp: (0.7 + rng() * 1.7) * (rng() < 0.5 ? -1 : 1),
+        len: 40 + rng() * 100,
+        c: rng() < 0.5 ? "#ffd9a0" : "#8fe3ff",
+        a: 0.22 + rng() * 0.35
+      });
+    }
+    ripples = [];
+  }
+
+  function drawSky(c) {
+    var g = c.createLinearGradient(0, 0, 0, horizon);
+    g.addColorStop(0, "#03020b");
+    g.addColorStop(0.42, "#0a0830");
+    g.addColorStop(0.72, "#241a56");
+    g.addColorStop(1, "#5c2b70");
+    c.fillStyle = g;
+    c.fillRect(0, 0, W, horizon);
+
+    var gg = c.createRadialGradient(W * 0.5, horizon, 0, W * 0.5, horizon, W * 0.62);
+    gg.addColorStop(0, "rgba(255,126,176,0.40)");
+    gg.addColorStop(0.4, "rgba(150,76,176,0.18)");
+    gg.addColorStop(1, "rgba(0,0,0,0)");
+    c.fillStyle = gg;
+    c.fillRect(0, 0, W, horizon);
+  }
+
+  function drawStars(c, t) {
+    for (var i = 0; i < stars.length; i++) {
+      var s = stars[i];
+      var a = 0.30 + 0.70 * (0.5 + 0.5 * Math.sin(t * s.sp + s.ph));
+      a *= Math.max(0, 1 - s.y / (horizon * 1.05));
+      c.globalAlpha = a;
+      c.fillStyle = s.tint;
+      c.beginPath();
+      c.arc(s.x, s.y, s.r, 0, 6.283);
+      c.fill();
+    }
+    c.globalAlpha = 1;
+  }
+
+  function drawMoon(c) {
+    var mx = W * 0.76, my = horizon * 0.24;
+    var R = Math.min(W, H) * 0.052;
+    var g = c.createRadialGradient(mx, my, R * 0.2, mx, my, R * 6.5);
+    g.addColorStop(0, "rgba(212,222,255,0.42)");
+    g.addColorStop(0.22, "rgba(150,170,255,0.13)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    c.fillStyle = g;
+    c.beginPath();
+    c.arc(mx, my, R * 6.5, 0, 6.283);
+    c.fill();
+
+    var dg = c.createRadialGradient(mx - R * 0.3, my - R * 0.3, R * 0.2, mx, my, R);
+    dg.addColorStop(0, "#fdfdff");
+    dg.addColorStop(1, "#c9d0f2");
+    c.fillStyle = dg;
+    c.beginPath();
+    c.arc(mx, my, R, 0, 6.283);
+    c.fill();
+
+    c.fillStyle = "rgba(150,160,200,0.30)";
+    c.beginPath(); c.arc(mx + R * 0.26, my - R * 0.16, R * 0.18, 0, 6.283); c.fill();
+    c.beginPath(); c.arc(mx - R * 0.22, my + R * 0.30, R * 0.12, 0, 6.283); c.fill();
+    c.beginPath(); c.arc(mx - R * 0.05, my - R * 0.42, R * 0.09, 0, 6.283); c.fill();
+  }
+
+  function drawBuildings(c, t) {
+    var pan = Math.sin(t * 0.05) * 12;
+
+    for (var li = 0; li < layers.length; li++) {
+      var arr = layers[li];
+      var offx = -pan * (li + 1) * 0.55;
+
+      for (var bi = 0; bi < arr.length; bi++) {
+        var b = arr[bi];
+        var x = b.x + offx, top = horizon - b.h;
+        c.fillStyle = b.col;
+        c.fillRect(x, top, b.w, b.h + 2);
+
+        for (var wi = 0; wi < b.wins.length; wi++) {
+          var w = b.wins[wi];
+          var on = w.on, alpha = w.a;
+          if (w.fl) {
+            var f = 0.5 + 0.5 * Math.sin(t * w.sp + w.ph);
+            on = f > 0.30;
+            alpha = w.a * (0.35 + 0.65 * f);
+          }
+          if (!on) continue;
+          c.globalAlpha = alpha;
+          c.fillStyle = w.col;
+          c.fillRect(w.x + offx, w.y, w.w, w.h);
+        }
+        c.globalAlpha = 1;
+
+        if (b.ant) {
+          var ax = x + b.w * 0.5;
+          c.strokeStyle = "rgba(120,130,170,0.6)";
+          c.lineWidth = 1;
+          c.beginPath(); c.moveTo(ax, top); c.lineTo(ax, top - 16 - b.h * 0.05); c.stroke();
+          var bl = 0.5 + 0.5 * Math.sin(t * 3 + b.aph);
+          c.globalAlpha = 0.3 + 0.7 * bl;
+          c.fillStyle = "#ff5a5a";
+          c.beginPath(); c.arc(ax, top - 16 - b.h * 0.05, 1.6, 0, 6.283); c.fill();
+          c.globalAlpha = 1;
+        }
+      }
+
+      var haze = CFG_HAZE[li];
+      if (haze > 0) {
+        c.fillStyle = "rgba(74,42,116," + (haze * 0.10) + ")";
+        c.fillRect(0, 0, W, horizon);
+      }
+    }
+
+    c.save();
+    c.globalCompositeOperation = "lighter";
+    for (var ni = 0; ni < neon.length; ni++) {
+      var n = neon[ni];
+      var noff = -pan * (n.li + 1) * 0.55;
+      var flick = 0.72 + 0.28 * Math.sin(t * n.sp * 3 + n.ph);
+      var cx = n.x + noff + n.w * 0.5, cy = n.y + n.h * 0.5;
+      // wide halo
+      c.globalAlpha = n.a * flick * 0.30;
+      c.shadowColor = n.c;
+      c.shadowBlur = 46;
+      c.fillStyle = n.c;
+      c.fillRect(n.x + noff, n.y, n.w, n.h);
+      // tight glow
+      c.globalAlpha = n.a * flick * 0.95;
+      c.shadowColor = n.c;
+      c.shadowBlur = 16;
+      c.fillStyle = n.c;
+      c.fillRect(n.x + noff, n.y, n.w, n.h);
+      // hot core
+      c.shadowBlur = 8;
+      c.globalAlpha = Math.min(1, n.a * flick);
+      c.fillStyle = "#ffffff";
+      c.fillRect(n.x + noff + n.w * 0.28, n.y + n.h * 0.28, n.w * 0.44, n.h * 0.44);
+      c.beginPath();
+      c.arc(cx, cy, Math.max(n.w, n.h) * 0.16, 0, 6.283);
+      c.fill();
+    }
+    c.restore();
+    c.globalAlpha = 1;
+  }
+
+  function drawReflection(t) {
+    var streetH = H - horizon;
+    var step = 1;
+    for (var y = horizon; y < H; y += step) {
+      var d = y - horizon;
+      var srcY = horizon - d * 1.12;
+      if (srcY < 0) continue;
+      var fall = 1 - (d / streetH) * 0.55;
+      if (fall <= 0) continue;
+      var wob = Math.sin(d * 0.09 + t * 2.4) * 2.0 + Math.sin(d * 0.028 - t * 1.5) * 3.2;
+      ctx.globalAlpha = 0.78 * fall;
+      ctx.drawImage(off, 0, srcY * dpr, off.width, Math.max(1, step * dpr), wob, y, W, step);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawStreet() {
+    var g = ctx.createLinearGradient(0, horizon, 0, H);
+    g.addColorStop(0, "rgba(10,7,28,0.06)");
+    g.addColorStop(0.5, "rgba(5,4,16,0.38)");
+    g.addColorStop(1, "rgba(2,2,8,0.82)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, horizon, W, H - horizon);
+
+    var s = ctx.createLinearGradient(0, horizon, 0, horizon + (H - horizon) * 0.42);
+    s.addColorStop(0, "rgba(140,170,255,0.16)");
+    s.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = s;
+    ctx.fillRect(0, horizon, W, (H - horizon) * 0.38);
+  }
+
+  function drawCars() {
+    for (var i = 0; i < cars.length; i++) {
+      var car = cars[i];
+      car.x += car.sp * 1.6;
+      if (car.x > W + 140) car.x = -140;
+      if (car.x < -140) car.x = W + 140;
+      var x2 = car.x + car.len * (car.sp < 0 ? -1 : 1);
+      var xa = Math.min(car.x, x2), wd = Math.abs(x2 - car.x);
+      var gg = ctx.createLinearGradient(car.x, 0, x2, 0);
+      gg.addColorStop(0, "rgba(0,0,0,0)");
+      gg.addColorStop(0.5, car.c);
+      gg.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.globalAlpha = car.a;
+      ctx.fillStyle = gg;
+      ctx.fillRect(xa, car.y, wd, 2.2);
+      ctx.globalAlpha = 1;
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.shadowColor = car.c;
+      ctx.shadowBlur = 12;
+      ctx.globalAlpha = car.a * 0.85;
+      ctx.fillStyle = car.c;
+      ctx.fillRect(car.x - 2, car.y - 1.4, 5, 4.6);
+      ctx.restore();
+    }
+  }
+
+  function drawRain() {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.lineWidth = 1;
+    for (var i = 0; i < rain.length; i++) {
+      var r = rain[i];
+      r.y += r.sp;
+      r.x -= r.sp * 0.22;
+      if (r.y > H) { r.y = -20; r.x = Math.random() * (W + 240) - 120; }
+      if (r.x < -120) r.x += W + 240;
+      ctx.strokeStyle = "rgba(165,195,255," + r.a + ")";
+      ctx.beginPath();
+      ctx.moveTo(r.x, r.y);
+      ctx.lineTo(r.x + r.l * 0.22, r.y + r.l);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawRipples() {
+    if (Math.random() < 0.55 && ripples.length < 70) {
+      ripples.push({
+        x: Math.random() * W,
+        y: horizon + Math.random() * (H - horizon),
+        r: 1,
+        max: 6 + Math.random() * 18,
+        a: 0.30
+      });
+    }
+    for (var i = ripples.length - 1; i >= 0; i--) {
+      var rp = ripples[i];
+      rp.r += 0.34;
+      rp.a *= 0.986;
+      if (rp.r > rp.max) { ripples.splice(i, 1); continue; }
+      ctx.strokeStyle = "rgba(150,190,255," + rp.a + ")";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(rp.x, rp.y, rp.r, rp.r * 0.34, 0, 0, 6.283);
+      ctx.stroke();
+    }
+  }
+
+  function drawVignette() {
+    var g = ctx.createRadialGradient(W * 0.5, H * 0.46, Math.min(W, H) * 0.18, W * 0.5, H * 0.5, Math.max(W, H) * 0.78);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(1, "rgba(0,0,0,0.50)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  function frame(now) {
+    var t = (now - t0) / 1000;
+
+    octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    octx.clearRect(0, 0, W, H);
+    drawSky(octx);
+    drawStars(octx, t);
+    drawMoon(octx);
+    drawBuildings(octx, t);
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(off, 0, 0, off.width, off.height, 0, 0, W, H);
+
+    drawReflection(t);
+    drawStreet();
+    drawCars();
+    drawRain();
+    drawRipples();
+    drawVignette();
+
+    requestAnimationFrame(frame);
+  }
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    cv.width = Math.floor(W * dpr);
+    cv.height = Math.floor(H * dpr);
+    cv.style.width = W + "px";
+    cv.style.height = H + "px";
+    off.width = cv.width;
+    off.height = cv.height;
+    gen();
+  }
+
+  window.addEventListener("resize", resize);
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

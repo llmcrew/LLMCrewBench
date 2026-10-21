@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Мандала дыхания</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: #04040a; overflow: hidden;
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  }
+  #stage { position: fixed; inset: 0; display: block; }
+  .caption {
+    position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+    color: rgba(233, 224, 255, 0.55);
+    font-size: 13px; letter-spacing: 0.42em; text-transform: uppercase;
+    text-align: center; pointer-events: none; user-select: none;
+    text-shadow: 0 0 18px rgba(160, 120, 255, 0.5);
+    transition: opacity 1.2s ease;
+  }
+  .caption b { font-weight: 600; letter-spacing: 0.5em; color: rgba(246, 234, 255, 0.82); }
+  .caption span { display: block; margin-top: 7px; font-size: 10px; letter-spacing: 0.34em; opacity: 0.6; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="caption" id="caption"><b>मण्डल</b><span>mandala · дыхание</span></div>
+
+<script>
+(() => {
+  "use strict";
+
+  const canvas = document.getElementById("stage");
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const caption = document.getElementById("caption");
+
+  let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, R = 0;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    cx = W / 2;
+    cy = H / 2;
+    R = Math.min(W, H) * 0.455;
+  }
+  window.addEventListener("resize", resize, { passive: true });
+  resize();
+
+  // ---- deterministic noise helpers -------------------------------------
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const rnd = mulberry32(20240517);
+
+  // ---- palette ---------------------------------------------------------
+  // Hues ride a slow cycle; each layer gets its own offset for depth.
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+
+  // pointer parallax
+  const pointer = { x: 0, y: 0, tx: 0, ty: 0, active: false };
+  window.addEventListener("pointermove", (e) => {
+    pointer.tx = (e.clientX / W - 0.5) * 2;
+    pointer.ty = (e.clientY / H - 0.5) * 2;
+    pointer.active = true;
+    if (caption) caption.style.opacity = "0.28";
+  }, { passive: true });
+  window.addEventListener("pointerleave", () => { pointer.tx = 0; pointer.ty = 0; }, { passive: true });
+
+  // A layered curl of petals. Each layer: symmetry, radial span, width,
+  // spin, hue offset, breathing phase. Tuned by hand for scale contrast.
+  const layers = [
+    { n: 6,  r0: 0.30, r1: 0.60, w: 0.150, spin:  0.020, hue:   0, phase: 0.0, alpha: 0.16, tip: 0.9 },
+    { n: 6,  r0: 0.60, r1: 0.95, w: 0.110, spin: -0.014, hue:  28, phase: 0.7, alpha: 0.13, tip: 0.7 },
+    { n: 12, r0: 0.42, r1: 0.82, w: 0.062, spin:  0.031, hue:  64, phase: 1.4, alpha: 0.14, tip: 0.6 },
+    { n: 12, r0: 0.16, r1: 0.40, w: 0.075, spin: -0.040, hue: 150, phase: 2.1, alpha: 0.15, tip: 0.8 },
+    { n: 24, r0: 0.66, r1: 1.00, w: 0.036, spin:  0.022, hue: 200, phase: 0.4, alpha: 0.12, tip: 0.5 },
+    { n: 36, r0: 0.78, r1: 1.04, w: 0.021, spin: -0.012, hue: 268, phase: 1.9, alpha: 0.11, tip: 0.45 },
+    { n: 48, r0: 0.88, r1: 1.06, w: 0.012, spin:  0.009, hue: 312, phase: 2.6, alpha: 0.10, tip: 0.4 },
+  ];
+  // stable per-layer randomness
+  layers.forEach((L, i) => {
+    const r = mulberry32(1000 + i * 977);
+    L.jit = new Float32Array(L.n).map(() => r());
+    L.jitC = new Float32Array(L.n).map(() => r());
+  });
+
+  // filigree rings: dotted halos at fractional radii
+  const rings = [
+    { r: 0.345, n: 12, dot: 0.0075, spin:  0.026, hue: 120 },
+    { r: 0.545, n: 24, dot: 0.0060, spin: -0.018, hue: 190 },
+    { r: 0.715, n: 36, dot: 0.0046, spin:  0.013, hue: 250 },
+    { r: 0.845, n: 60, dot: 0.0034, spin: -0.008, hue: 300 },
+    { r: 0.965, n: 72, dot: 0.0026, spin:  0.006, hue: 20  },
+  ];
+
+  // ---- drawing primitives ---------------------------------------------
+  function hsla(h, s, l, a) {
+    return `hsla(${((h % 360) + 360) % 360}, ${s}%, ${l}%, ${a})`;
+  }
+
+  // one petal outline in local space: base at r0 along +x, tip at r1.
+  // Width bulges toward the middle; edges waver gently with time so the
+  // whole flower feels like it is respiring rather than spinning rigidly.
+  function petalPath(r0, r1, width, k, t, jitter, tipSharp) {
+    const steps = 16;
+    const seedA = jitter * 3.1;
+    const seedB = (1 - jitter) * 2.7;
+    const cxMid = 0; // local x baseline is the radial axis
+
+    // upper edge
+    ctx.beginPath();
+    for (let i = 0; i <= steps; i++) {
+      const u = i / steps;
+      const bulge = Math.pow(Math.sin(Math.PI * u), 0.72);
+      const flare = 1 + 0.22 * Math.sin(t * 1.15 + k * 0.9 + seedA);
+      const ripple = 0.16 * Math.sin(u * 7.0 - t * 1.6 + seedB);
+      const y = -width * bulge * flare * (1 + ripple) * (1 - 0.35 * u * tipSharp);
+      const x = r0 + (r1 - r0) * u;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    // tip
+    ctx.lineTo(r1 + width * 0.30 * tipSharp, 0);
+    // lower edge
+    for (let i = steps; i >= 0; i--) {
+      const u = i / steps;
+      const bulge = Math.pow(Math.sin(Math.PI * u), 0.72);
+      const flare = 1 + 0.22 * Math.sin(t * 1.15 + k * 0.9 + seedA);
+      const ripple = 0.16 * Math.sin(u * 7.0 - t * 1.6 + seedB);
+      const y = width * bulge * flare * (1 + ripple) * (1 - 0.35 * u * tipSharp);
+      const x = r0 + (r1 - r0) * u;
+      ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+  }
+
+  function drawLayer(L, t, baseHue, breath) {
+    const n = L.n;
+    const span = R * (L.r1 - L.r0);
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(L.spin * t + L.phase);
+    ctx.scale(breath, breath);
+
+    for (let k = 0; k < n; k++) {
+      const a = (k / n) * TAU;
+      const jitter = L.jit ? L.jit[k] : 0.5;
+
+      ctx.save();
+      ctx.rotate(a);
+      // slight per-petal radial breathing
+      const pulse = 1 + 0.05 * Math.sin(t * 0.9 + k * 1.7 + L.phase * 2);
+      const r0 = R * L.r0 * pulse;
+      const r1 = R * L.r1 * (2 - pulse);
+      const hue = baseHue + L.hue + (k / n) * 46;
+
+      // translucent body
+      petalPath(r0, r1, span * L.w * (0.85 + 0.3 * jitter), k, t, jitter, L.tip);
+      const g = ctx.createLinearGradient(r0, 0, r1, 0);
+      g.addColorStop(0, hsla(hue, 74, 62, L.alpha * 0.5));
+      g.addColorStop(0.55, hsla(hue + 18, 82, 58, L.alpha));
+      g.addColorStop(1, hsla(hue + 40, 90, 66, L.alpha * 0.35));
+      ctx.fillStyle = g;
+      ctx.fill();
+
+      // luminous edge
+      ctx.lineWidth = Math.max(0.6, R * 0.0028 * (0.7 + jitter));
+      ctx.strokeStyle = hsla(hue + 10, 96, 74, 0.55 * L.alpha * 6);
+      ctx.stroke();
+
+      // central vein
+      ctx.beginPath();
+      ctx.moveTo(r0, 0);
+      const steps = 10;
+      for (let i = 1; i <= steps; i++) {
+        const u = i / steps;
+        const y = Math.sin(u * 5 + t * 1.3 + jitter * 6) * span * L.w * 0.16 * Math.sin(Math.PI * u);
+        ctx.lineTo(r0 + (r1 - r0) * u, y);
+      }
+      ctx.lineWidth = Math.max(0.5, R * 0.0016);
+      ctx.strokeStyle = hsla(hue + 60, 100, 82, 0.30);
+      ctx.stroke();
+
+      // tip spark
+      ctx.beginPath();
+      ctx.arc(r1, 0, Math.max(1, R * 0.006 * (0.6 + jitter)), 0, TAU);
+      ctx.fillStyle = hsla(hue + 70, 100, 88, 0.55);
+      ctx.fill();
+
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  function drawRings(t, baseHue, breath) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(breath, breath);
+    ctx.globalCompositeOperation = "lighter";
+    for (const rg of rings) {
+      const rr = R * rg.r * (1 + 0.012 * Math.sin(t * 0.7 + rg.r * 30));
+      ctx.save();
+      ctx.rotate(rg.spin * t + rg.r * 10);
+      const hue = baseHue + rg.hue;
+      for (let k = 0; k < rg.n; k++) {
+        const a = (k / rg.n) * TAU;
+        const x = Math.cos(a) * rr;
+        const y = Math.sin(a) * rr;
+        const tw = 0.5 + 0.5 * Math.sin(t * 1.8 + k * 0.8 + rg.r * 12);
+        const rad = Math.max(0.6, R * rg.dot * (0.55 + tw * 0.9));
+        ctx.beginPath();
+        ctx.arc(x, y, rad, 0, TAU);
+        ctx.fillStyle = hsla(hue + k * 3, 95, 70 + tw * 18, 0.18 + tw * 0.42);
+        ctx.fill();
+        // occasional long spoke joining rings
+        if (k % 3 === 0) {
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a) * rr * 0.86, Math.sin(a) * rr * 0.86);
+          ctx.lineTo(Math.cos(a) * rr * 1.10, Math.sin(a) * rr * 1.10);
+          ctx.lineWidth = Math.max(0.4, R * 0.0013);
+          ctx.strokeStyle = hsla(hue + 20, 100, 80, 0.10 + tw * 0.18);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  function drawCore(t, baseHue, breath) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(breath, breath);
+
+    const coreR = R * 0.30;
+
+    // outer soft halo
+    ctx.globalCompositeOperation = "lighter";
+    const halo = ctx.createRadialGradient(0, 0, 0, 0, 0, coreR * 2.4);
+    halo.addColorStop(0, hsla(baseHue + 210, 90, 68, 0.30));
+    halo.addColorStop(0.4, hsla(baseHue + 260, 85, 55, 0.12));
+    halo.addColorStop(1, hsla(baseHue + 300, 80, 45, 0.0));
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(0, 0, coreR * 2.4, 0, TAU);
+    ctx.fill();
+
+    // rotating polygon ring
+    ctx.globalCompositeOperation = "source-over";
+    for (let l = 0; l < 3; l++) {
+      const rr = coreR * (0.30 + l * 0.16) * (1 + 0.03 * Math.sin(t * 0.8 + l));
+      const sides = 6 + l * 3;
+      ctx.save();
+      ctx.rotate(t * (0.10 - l * 0.045) + l * 0.5);
+      ctx.beginPath();
+      for (let s = 0; s <= sides; s++) {
+        const a = (s / sides) * TAU;
+        const x = Math.cos(a) * rr;
+        const y = Math.sin(a) * rr;
+        if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.lineWidth = Math.max(0.7, R * 0.0022);
+      ctx.strokeStyle = hsla(baseHue + 200 + l * 30, 95, 72, 0.5 - l * 0.1);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // dashed concentric circles
+    ctx.setLineDash([R * 0.006, R * 0.018]);
+    for (let l = 0; l < 4; l++) {
+      const rr = coreR * (0.62 + l * 0.13);
+      ctx.beginPath();
+      ctx.arc(0, 0, rr, 0, TAU);
+      ctx.lineDashOffset = -t * (10 + l * 8);
+      ctx.lineWidth = Math.max(0.5, R * 0.0016);
+      ctx.strokeStyle = hsla(baseHue + 40 + l * 26, 100, 78, 0.30 - l * 0.05);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // living seed: blooming radial rays
+    ctx.globalCompositeOperation = "lighter";
+    const rays = 16;
+    for (let k = 0; k < rays; k++) {
+      const a = (k / rays) * TAU + t * 0.05;
+      const len = coreR * (0.22 + 0.16 * (0.5 + 0.5 * Math.sin(t * 1.4 + k * 1.3)));
+      const x = Math.cos(a), y = Math.sin(a);
+      ctx.beginPath();
+      ctx.moveTo(x * coreR * 0.10, y * coreR * 0.10);
+      ctx.lineTo(x * len, y * len);
+      ctx.lineWidth = Math.max(0.7, R * 0.0022);
+      ctx.strokeStyle = hsla(baseHue + 150 + k * 5, 100, 84, 0.5);
+      ctx.stroke();
+    }
+
+    // bright heart
+    const heart = ctx.createRadialGradient(0, 0, 0, 0, 0, coreR * 0.34);
+    heart.addColorStop(0, "rgba(255,255,255,0.95)");
+    heart.addColorStop(0.35, hsla(baseHue + 220, 100, 80, 0.7));
+    heart.addColorStop(1, hsla(baseHue + 260, 100, 60, 0));
+    ctx.fillStyle = heart;
+    ctx.beginPath();
+    ctx.arc(0, 0, coreR * 0.34 * (1 + 0.06 * Math.sin(t * 2.0)), 0, TAU);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  // drifting motes around the mandala
+  const motes = Array.from({ length: 90 }, (_, i) => {
+    const r = mulberry32(7000 + i * 131);
+    return { a: r() * TAU, rr: 0.34 + r() * 0.82, sp: (0.02 + r() * 0.09) * (r() < 0.5 ? -1 : 1), sz: 0.4 + r() * 1.5, ph: r() * TAU };
+  });
+
+  function drawMotes(t, baseHue, breath) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(breath, breath);
+    ctx.globalCompositeOperation = "lighter";
+    for (const m of motes) {
+      const a = m.a + m.sp * t;
+      const rr = R * m.rr * (1 + 0.05 * Math.sin(t * 0.5 + m.ph));
+      const x = Math.cos(a) * rr, y = Math.sin(a) * rr;
+      const tw = 0.5 + 0.5 * Math.sin(t * 2.3 + m.ph);
+      ctx.beginPath();
+      ctx.arc(x, y, m.sz * (0.5 + tw) * (R / 420), 0, TAU);
+      ctx.fillStyle = hsla(baseHue + 180 + m.ph * 40, 100, 85, 0.15 + tw * 0.5);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ---- background ------------------------------------------------------
+  function drawBackground(baseHue) {
+    const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.75);
+    bg.addColorStop(0, hsla(baseHue + 240, 42, 10, 1));
+    bg.addColorStop(0.45, hsla(baseHue + 260, 40, 6, 1));
+    bg.addColorStop(1, "#030308");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.globalCompositeOperation = "lighter";
+    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.5);
+    glow.addColorStop(0, hsla(baseHue + 200, 80, 40, 0.16));
+    glow.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  // ---- main loop -------------------------------------------------------
+  let start = performance.now();
+  let last = start;
+
+  function frame(now) {
+    const t = (now - start) / 1000;
+
+    // ease the pointer
+    pointer.x += (pointer.tx - pointer.x) * 0.05;
+    pointer.y += (pointer.ty - pointer.y) * 0.05;
+
+    const baseHue = (t * 7) % 360 + pointer.x * 40;
+    const breath = 1 + 0.038 * Math.sin(t * 0.62) + 0.012 * Math.sin(t * 1.7);
+
+    // parallax offset of the whole field
+    const ox = cx + pointer.x * R * 0.05;
+    const oy = cy + pointer.y * R * 0.05;
+
+    drawBackground(baseHue);
+
+    // keep the canvas centre-aware with a small parallax shift
+    const savedCx = cx, savedCy = cy;
+    cx = ox; cy = oy;
+
+    drawRings(t, baseHue, breath);
+    for (const L of layers) drawLayer(L, t, baseHue, breath);
+    drawMotes(t, baseHue, breath);
+    drawCore(t, baseHue, breath);
+
+    // faint film grain / grid so the glow has texture
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = 0.05;
+    for (let gx = 0; gx < W; gx += 4) {
+      ctx.fillStyle = "rgba(255,255,255,0.6)";
+      ctx.fillRect(gx, 0, 1, H);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
+
+    cx = savedCx; cy = savedCy;
+
+    requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

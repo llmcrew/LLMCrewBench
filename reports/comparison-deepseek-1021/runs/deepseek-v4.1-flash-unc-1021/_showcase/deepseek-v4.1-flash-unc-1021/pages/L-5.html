@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Мост</title>
+<style>
+  :root{ color-scheme: dark; }
+  html,body{ margin:0; height:100%; background:#04050c; overflow:hidden; }
+  canvas{ display:block; width:100vw; height:100vh; }
+  .cap{
+    position:fixed; left:clamp(14px,3vw,42px); bottom:clamp(12px,2.6vh,34px);
+    font:500 clamp(11px,1.05vw,15px)/1.35 ui-serif,Georgia,"Times New Roman",serif;
+    letter-spacing:.42em; text-transform:uppercase;
+    color:rgba(255,224,180,.55);
+    text-shadow:0 0 20px rgba(255,170,90,.35);
+    pointer-events:none; user-select:none;
+  }
+  .cap b{
+    display:block; font-weight:400; letter-spacing:.24em;
+    font-size:.6em; color:rgba(255,220,180,.32); margin-top:.6em;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="cap">Мост<b>nocturne &middot; на закате</b></div>
+<script>
+"use strict";
+(function(){
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  const TAU = Math.PI * 2;
+  const rnd = (a,b) => a + Math.random()*(b-a);
+  const clamp = (v,a,b) => v<a?a:(v>b?b:v);
+
+  let W=0, H=0, DPR=1;
+  let horizon=0, vpx=0, A=0, HW=0, CH=0, TW=0;
+
+  let stars=[], shimmer=[], mists=[], birds=[];
+  const towers = [1.0, 1.45, 2.1, 3.05, 4.6, 7.2];
+  const lampNs = [0.72,0.86,1.02,1.2,1.43,1.7,2.02,2.4,2.85,3.4,4.05,4.85,5.8,7.0,8.5,10.5,13];
+
+  const par = {x:0,y:0}, parT = {x:0,y:0};
+
+  // ---- projection helpers (symmetric perspective toward vanishing point) ----
+  const topY  = xo => horizon - (CH-A)*xo/HW;
+  const deckY = xo => horizon + A*xo/HW;
+
+  function layout(){
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+    cv.style.width = W+'px'; cv.style.height = H+'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    horizon = H*0.55; vpx = W*0.5;
+    A = H*0.45;       // deck drop at n=1
+    HW = W*0.40;      // deck half-width at n=1
+    CH = H*0.72;      // tower height at n=1
+    TW = W*0.030;     // tower width at n=1
+    buildScene();
+  }
+
+  function buildScene(){
+    stars = [];
+    const sn = Math.floor(W*H/7000);
+    for(let i=0;i<sn;i++){
+      const x = Math.random()*W;
+      const y = Math.random()*horizon*0.95;
+      const p = y/horizon;
+      if(Math.random() < p*p*0.75) continue;      // fade near bright horizon
+      stars.push({x, y, r:rnd(0.35,1.5), a:rnd(0.12,0.85), ph:rnd(0,TAU), sp:rnd(0.4,2.2)});
+    }
+
+    shimmer = [];
+    const shn = Math.floor(W*H/5200);
+    for(let i=0;i<shn;i++){
+      const p = Math.pow(Math.random(), 1.7);
+      const y = horizon + p*(H-horizon);
+      const x = Math.random()*W;
+      const warm = Math.random() < clamp(0.55 - Math.abs(x-vpx)/W, 0.06, 0.55);
+      shimmer.push({
+        x, y, len: rnd(5,55)*(0.35+p),
+        a: rnd(0.02,0.13)*(1-p*0.55),
+        ph: rnd(0,TAU),
+        col: warm ? '255,190,120' : '170,190,235'
+      });
+    }
+
+    mists = [];
+    for(let i=0;i<7;i++){
+      mists.push({ x:rnd(0,W), y:horizon+rnd(-H*0.01,H*0.05), r:rnd(W*0.12,W*0.34),
+                   a:rnd(0.03,0.075), vx:rnd(-6,6), vy:rnd(-1.5,1.5), ph:rnd(0,TAU) });
+    }
+
+    birds = [];
+    for(let i=0;i<4;i++){
+      birds.push({ x:rnd(W*0.1,W*0.9), y:rnd(H*0.12,H*0.36), s:rnd(0.6,1.3),
+                   vx:rnd(9,20), ph:rnd(0,TAU), sp:rnd(1.4,2.4) });
+    }
+  }
+
+  function computeLamps(){
+    const out = [];
+    for(const n of lampNs){
+      const xo = HW/n, R = Math.max(2.2, W*0.019/n);
+      for(const s of [-1,1]){
+        const x = vpx + s*xo;
+        const yb = deckY(xo);
+        const ph = CH*0.13/n;
+        out.push({ x, yb, oy: yb-ph, R, n, s });
+      }
+    }
+    return out;
+  }
+
+  function computeCars(t){
+    // moving headlights/taillights along the deck centre, looping through perspective
+    const defs = [
+      { up:0.00, sp:0.055, dir: 1, col:'255,244,214', r:1.5 },   // coming toward viewer
+      { up:0.55, sp:0.040, dir:-1, col:'255,150,80',  r:1.2 }    // going away
+    ];
+    const out = [];
+    for(const d of defs){
+      const u = ((t*d.sp*d.dir + d.up) % 1 + 1) % 1;
+      const n = 0.66 * Math.pow(60/0.66, u);
+      const y = horizon + A/n;
+      const x = vpx + Math.sin(t*0.7 + d.up*9)*0.004*W*(1-u);
+      out.push({ x, y, n, col:d.col, r:d.r, u });
+    }
+    return out;
+  }
+
+  // ---------- background ----------
+  function drawSky(){
+    const g = ctx.createLinearGradient(0,0,0,horizon);
+    g.addColorStop(0.00,'#04050e');
+    g.addColorStop(0.30,'#0d1030');
+    g.addColorStop(0.55,'#241f4a');
+    g.addColorStop(0.74,'#4d2c50');
+    g.addColorStop(0.88,'#94483f');
+    g.addColorStop(1.00,'#e79e54');
+    ctx.fillStyle = g;
+    ctx.fillRect(-30,-30,W+60,horizon+31);
+
+    const sx = vpx, sy = horizon - H*0.035;
+    const rg = ctx.createRadialGradient(sx,sy,0,sx,sy,W*0.6);
+    rg.addColorStop(0.00,'rgba(255,216,152,0.55)');
+    rg.addColorStop(0.22,'rgba(255,170,110,0.22)');
+    rg.addColorStop(0.58,'rgba(200,110,90,0.08)');
+    rg.addColorStop(1.00,'rgba(200,110,90,0)');
+    ctx.fillStyle = rg;
+    ctx.fillRect(-30,-30,W+60,horizon+31);
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(255,200,130,0.9)';
+    ctx.shadowBlur = W*0.06;
+    ctx.beginPath(); ctx.arc(sx,sy,W*0.046,0,TAU);
+    ctx.fillStyle = '#ffe6bd'; ctx.fill();
+    ctx.restore();
+    ctx.beginPath(); ctx.arc(sx,sy,W*0.031,0,TAU);
+    ctx.fillStyle = '#fff7e6'; ctx.fill();
+  }
+
+  function drawStars(t){
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0,0,W,horizon); ctx.clip();
+    for(const s of stars){
+      const a = s.a * (0.55 + 0.45*Math.sin(t*s.sp + s.ph));
+      if(a<=0) continue;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = 'rgb(235,240,255)';
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, TAU); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  function drawHills(){
+    ctx.fillStyle = 'rgba(9,11,26,0.9)';
+    ctx.beginPath();
+    ctx.moveTo(-30,horizon+1);
+    ctx.quadraticCurveTo(W*0.10, horizon-H*0.055, W*0.30, horizon+1);
+    ctx.quadraticCurveTo(W*0.13, horizon-H*0.018, -30, horizon+1);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(W+30,horizon+1);
+    ctx.quadraticCurveTo(W*0.86, horizon-H*0.045, W*0.66, horizon+1);
+    ctx.quadraticCurveTo(W*0.86, horizon-H*0.014, W+30, horizon+1);
+    ctx.fill();
+
+    // far shore: tiny city of lights right at the vanishing point
+    let seed = 1234567;
+    const rr = () => (seed = (seed*1103515245+12345) & 0x7fffffff)/0x7fffffff;
+    for(let i=0;i<90;i++){
+      const x = vpx + (rr()-0.5)*W*0.30;
+      const h = 1.5 + rr()*9;
+      ctx.fillStyle = 'rgba(8,10,20,0.95)';
+      ctx.fillRect(x, horizon-h, 1 + rr()*2.2, h);
+      if(rr()<0.5){
+        ctx.fillStyle = 'rgba(255,200,130,'+(0.10+rr()*0.30)+')';
+        ctx.fillRect(x+0.3, horizon-h+1.2, 1, 1.2);
+      }
+    }
+  }
+
+  function drawWater(t){
+    const g = ctx.createLinearGradient(0,horizon,0,H);
+    g.addColorStop(0.00,'#2b2442');
+    g.addColorStop(0.14,'#1a1830');
+    g.addColorStop(0.50,'#0b0c1a');
+    g.addColorStop(1.00,'#05060e');
+    ctx.fillStyle = g;
+    ctx.fillRect(-30,horizon,W+60,H-horizon+30);
+
+    // broad warm column under the sun
+    const rg = ctx.createLinearGradient(0,horizon,0,H);
+    rg.addColorStop(0,'rgba(255,180,110,0.16)');
+    rg.addColorStop(0.5,'rgba(255,150,90,0.05)');
+    rg.addColorStop(1,'rgba(255,150,90,0)');
+    ctx.fillStyle = rg;
+    const cw = W*0.16;
+    ctx.fillRect(vpx-cw/2, horizon, cw, H-horizon);
+
+    // shimmering ripples
+    for(const s of shimmer){
+      const wob = Math.sin(t*1.6 + s.ph + s.y*0.09) * (2 + (s.y-horizon)*0.05);
+      ctx.globalAlpha = s.a;
+      ctx.fillStyle = 'rgb('+s.col+')';
+      ctx.fillRect(s.x + wob - s.len/2, s.y, s.len, 1.6);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawReflection(x, y, color, size, t){
+    const y0 = horizon, y1 = Math.min(H, horizon + (horizon-y)*1.06);
+    if(y1<=y0) return;
+    for(let yy=y0; yy<y1; yy+=3){
+      const f = (yy-y0)/(y1-y0);
+      const wob = Math.sin(t*2.3 + yy*0.13 + x*0.04) * (5 + 22*f);
+      const w = Math.max(1, size*(0.55 + 0.85*(1-f))*(1-f*0.5));
+      ctx.globalAlpha = (1-f)*0.5;
+      ctx.fillStyle = color;
+      ctx.fillRect(x + wob - w/2, yy, w, 2.2);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ---------- bridge ----------
+  function drawCable(a, b, s){
+    const ax=vpx+s*a.xo, ay=a.y, bx=vpx+s*b.xo, by=b.y;
+    const mx=(ax+bx)/2, my=(ay+by)/2;
+    const midxo=(a.xo+b.xo)/2;
+    const sag=(deckY(midxo)-my)*0.5;
+    const cy=my+2*sag;
+    ctx.beginPath();
+    ctx.moveTo(ax,ay);
+    ctx.quadraticCurveTo(mx,cy,bx,by);
+    ctx.lineWidth = Math.max(1, 2.4/(HW/midxo)*(W/1400));
+    ctx.strokeStyle = 'rgba(6,8,16,0.95)';
+    ctx.stroke();
+    return {ax,ay,bx,by,mx,cy};
+  }
+
+  function drawSusp(a, b, s, q){
+    const nA = HW/a.xo;
+    const steps = clamp(Math.round(a.xo/(W*0.055)), 2, 9);
+    for(let k=1;k<steps;k++){
+      const u=k/steps;
+      const x = (1-u)*(1-u)*q.ax + 2*(1-u)*u*q.mx + u*u*q.bx;
+      const y = (1-u)*(1-u)*q.ay + 2*(1-u)*u*q.cy + u*u*q.by;
+      const dy = deckY(Math.abs(x-vpx));
+      if(dy<=y) continue;
+      ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x,dy);
+      ctx.lineWidth = Math.max(0.5, 1.05/nA*(W/1200));
+      ctx.strokeStyle = 'rgba(9,11,20,0.7)';
+      ctx.stroke();
+    }
+  }
+
+  function drawBridge(t, lamps){
+    const nb = 0.66;
+    const bx = HW/nb, byy = horizon + A/nb;
+
+    // deck
+    ctx.beginPath();
+    ctx.moveTo(vpx-bx, byy);
+    ctx.lineTo(vpx, horizon);
+    ctx.lineTo(vpx+bx, byy);
+    ctx.closePath();
+    const dg = ctx.createLinearGradient(0,horizon,0,byy);
+    dg.addColorStop(0,'#1b2038'); dg.addColorStop(0.4,'#0d1020'); dg.addColorStop(1,'#05060d');
+    ctx.fillStyle = dg; ctx.fill();
+
+    // rails along the deck edges
+    ctx.strokeStyle = 'rgba(255,190,130,0.16)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(vpx-bx,byy); ctx.lineTo(vpx,horizon);
+    ctx.moveTo(vpx+bx,byy); ctx.lineTo(vpx,horizon);
+    ctx.stroke();
+
+    // centre lane dashes
+    for(let n=0.7;n<30;n*=1.34){
+      const y=horizon+A/n, w=Math.max(1, W*0.006/n), h=w*1.7;
+      ctx.globalAlpha = clamp(1.6/n,0.04,0.16);
+      ctx.fillStyle = '#ffd9a0';
+      ctx.fillRect(vpx-w/2, y, w, h);
+    }
+    ctx.globalAlpha = 1;
+
+    // towers
+    for(const n of towers){
+      const xo=HW/n, w=TW/n, yT=topY(xo), yB=deckY(xo);
+      for(const s of [-1,1]){
+        const x=vpx+s*xo;
+        ctx.beginPath();
+        ctx.moveTo(x-w*0.78,yB);
+        ctx.lineTo(x-w*0.44,yT);
+        ctx.lineTo(x+w*0.44,yT);
+        ctx.lineTo(x+w*0.78,yB);
+        ctx.closePath();
+        const tg=ctx.createLinearGradient(x-w,0,x+w,0);
+        tg.addColorStop(0,'#04050b');
+        tg.addColorStop(0.55,'#0c1020');
+        tg.addColorStop(1,'#04050b');
+        ctx.fillStyle=tg; ctx.fill();
+        // warm rim toward the sun
+        ctx.strokeStyle='rgba(255,175,110,0.22)';
+        ctx.lineWidth=Math.max(0.8,1.5/n);
+        ctx.beginPath();
+        ctx.moveTo(x - s*w*0.72, yB);
+        ctx.lineTo(x - s*w*0.40, yT);
+        ctx.stroke();
+      }
+      // cross beams between the legs
+      const l=vpx-xo, r=vpx+xo;
+      ctx.strokeStyle='rgba(8,10,20,0.92)';
+      ctx.lineWidth=Math.max(1,TW*0.55/n);
+      ctx.beginPath();
+      ctx.moveTo(l+w*0.5, yT + w*1.4); ctx.lineTo(r-w*0.5, yT + w*1.4);
+      ctx.moveTo(l+w*0.7, yT + w*4.0); ctx.lineTo(r-w*0.7, yT + w*4.0);
+      ctx.stroke();
+    }
+
+    // main cables + suspenders
+    const anchorN = HW/nb, farN = HW/26;
+    const seq = [{xo:anchorN, y:deckY(anchorN)}];
+    for(const n of towers) seq.push({xo:HW/n, y:topY(HW/n)});
+    seq.push({xo:farN, y:deckY(farN)});
+    for(let i=0;i<seq.length-1;i++){
+      for(const s of [-1,1]){
+        const q = drawCable(seq[i], seq[i+1], s);
+        drawSusp(seq[i], seq[i+1], s, q);
+      }
+    }
+
+    // lamps
+    for(const L of lamps){
+      // pool of light on the deck
+      const pg = ctx.createRadialGradient(L.x, L.yb, 0, L.x, L.yb, L.R*2.4);
+      pg.addColorStop(0,'rgba(255,190,120,0.14)');
+      pg.addColorStop(1,'rgba(255,170,90,0)');
+      ctx.fillStyle=pg;
+      ctx.beginPath(); ctx.ellipse(L.x, L.yb, L.R*2.2, L.R*0.9, 0,0,TAU); ctx.fill();
+
+      ctx.beginPath(); ctx.moveTo(L.x,L.yb); ctx.lineTo(L.x,L.oy);
+      ctx.lineWidth=Math.max(0.7, 1.4/L.n*(W/1400));
+      ctx.strokeStyle='rgba(4,5,11,0.92)'; ctx.stroke();
+
+      const gg=ctx.createRadialGradient(L.x,L.oy,0,L.x,L.oy,L.R);
+      gg.addColorStop(0,'rgba(255,228,175,0.95)');
+      gg.addColorStop(0.24,'rgba(255,180,105,0.55)');
+      gg.addColorStop(1,'rgba(255,150,80,0)');
+      ctx.fillStyle=gg;
+      ctx.beginPath(); ctx.arc(L.x,L.oy,L.R,0,TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(L.x,L.oy,Math.max(0.8,L.R*0.15),0,TAU);
+      ctx.fillStyle='#fff3d8'; ctx.fill();
+    }
+  }
+
+  function drawCars(cars, t){
+    for(const c of cars){
+      const size = clamp(1.6/c.n, 0.05, 1.6) * 5;
+      const gg = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, size*4);
+      gg.addColorStop(0,'rgba('+c.col+',0.95)');
+      gg.addColorStop(0.3,'rgba('+c.col+',0.4)');
+      gg.addColorStop(1,'rgba('+c.col+',0)');
+      ctx.fillStyle=gg;
+      ctx.beginPath(); ctx.arc(c.x, c.y, size*4, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(c.x, c.y, Math.max(0.8,size*0.5), 0, TAU);
+      ctx.fillStyle='rgba(255,250,235,0.98)'; ctx.fill();
+
+      // short trailing smears along the road
+      for(let k=1;k<=3;k++){
+        const u=clamp(c.u - c.dir*0.012*k,0,1);
+        const n=0.66*Math.pow(60/0.66,u);
+        ctx.globalAlpha=0.18/k;
+        ctx.fillStyle='rgba('+c.col+',1)';
+        ctx.fillRect(c.x-size*0.35, horizon+A/n-size*0.35, size*0.7, size*0.7);
+      }
+      ctx.globalAlpha=1;
+    }
+  }
+
+  function drawMist(t, front){
+    for(const m of mists){
+      if(front !== (m.r > W*0.2)) continue;
+      const x = m.x + m.vx*t;
+      const y = m.y + Math.sin(t*0.4+m.ph)*m.vy*3;
+      const xx = ((x % (W+2*m.r)) + (W+2*m.r)) % (W+2*m.r) - m.r;
+      const g = ctx.createRadialGradient(xx,y,0,xx,y,m.r);
+      g.addColorStop(0,'rgba(190,200,230,'+m.a+')');
+      g.addColorStop(1,'rgba(190,200,230,0)');
+      ctx.fillStyle=g;
+      ctx.beginPath(); ctx.ellipse(xx,y,m.r,m.r*0.32,0,0,TAU); ctx.fill();
+    }
+  }
+
+  function drawBirds(t){
+    ctx.strokeStyle='rgba(10,12,24,0.8)';
+    for(const b of birds){
+      const x = ((b.x + b.vx*t) % (W+80)) - 40;
+      const flap = Math.sin(t*b.sp + b.ph);
+      const y = b.y + Math.sin(t*0.6+b.ph)*4;
+      const s = 5*b.s;
+      ctx.lineWidth = 1.1*b.s;
+      ctx.beginPath();
+      ctx.moveTo(x - s, y + flap*s*0.5);
+      ctx.quadraticCurveTo(x, y - s*0.35, x + s, y + flap*s*0.5);
+      ctx.stroke();
+    }
+  }
+
+  function vignette(){
+    const g = ctx.createRadialGradient(W*0.5,H*0.52,H*0.22, W*0.5,H*0.52,H*0.86);
+    g.addColorStop(0,'rgba(0,0,0,0)');
+    g.addColorStop(1,'rgba(0,0,0,0.55)');
+    ctx.fillStyle=g;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  // ---------- main loop ----------
+  let t0 = performance.now(), last = t0;
+
+  function frame(now){
+    const t = (now - t0)/1000;
+    const dt = Math.min(0.05, (now - last)/1000);
+    last = now;
+
+    par.x += (parT.x - par.x)*Math.min(1, dt*3.2);
+    par.y += (parT.y - par.y)*Math.min(1, dt*3.2);
+
+    const lamps = computeLamps();
+    const cars  = computeCars(t);
+
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    ctx.clearRect(0,0,W,H);
+    ctx.save();
+    ctx.translate(par.x*8, par.y*5);
+
+    drawSky();
+    drawStars(t);
+    drawHills();
+    drawBirds(t);
+    drawWater(t);
+
+    // reflections on the water (before the bridge so it occludes them)
+    drawReflection(vpx, horizon-H*0.035, 'rgba(255,200,140,0.9)', W*0.11, t);
+    for(const L of lamps) if(L.n < 6)
+      drawReflection(L.x, L.oy, 'rgba(255,180,110,0.85)', L.R*1.15, t);
+    for(const c of cars)
+      drawReflection(c.x, c.y, 'rgba('+c.col+',0.7)', clamp(1.4/c.n,0.05,1.4)*6, t);
+
+    drawMist(t, false);
+    drawBridge(t, lamps);
+    drawMist(t, true);
+    drawCars(cars, t);
+
+    ctx.restore();
+    vignette();
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- input ----------
+  window.addEventListener('pointermove', e => {
+    parT.x = (e.clientX/W - 0.5)*2;
+    parT.y = (e.clientY/H - 0.5)*2;
+  });
+  window.addEventListener('resize', layout);
+
+  if(window.DeviceOrientationEvent){
+    window.addEventListener('deviceorientation', e=>{
+      if(e.gamma==null) return;
+      parT.x = clamp(e.gamma/35,-1,1);
+      parT.y = clamp((e.beta-45)/45,-1,1);
+    });
+  }
+
+  layout();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

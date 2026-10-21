@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Следы сфер · traces of spheres</title>
+<style>
+  :root{
+    --bg:#06070f;
+    --ink:#cfd6e6;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(120% 120% at 50% 42%, #0b1020 0%, #06070f 55%, #030409 100%);
+    overflow:hidden;
+    cursor:crosshair;
+  }
+  #stage{
+    position:fixed; inset:0;
+    width:100%; height:100%;
+    display:block;
+  }
+  /* тёnкая вуаль поверх — сливает слои и гасит края */
+  .veil{
+    position:fixed; inset:0; pointer-events:none;
+    background:
+      radial-gradient(130% 130% at 50% 45%, rgba(0,0,0,0) 45%, rgba(0,0,0,.45) 78%, rgba(0,0,0,.72) 100%);
+  }
+  .grain{
+    position:fixed; inset:0; pointer-events:none;
+    opacity:.05; mix-blend-mode:overlay;
+  }
+  .frame{
+    position:fixed; inset:18px; pointer-events:none;
+    border:1px solid rgba(200,214,246,.10);
+  }
+  .frame::after{
+    content:""; position:absolute; inset:0;
+    box-shadow:inset 0 0 60px rgba(120,170,255,.05);
+  }
+  .caption{
+    position:fixed; left:44px; bottom:40px; pointer-events:none;
+    color:var(--ink);
+    opacity:0; transform:translateY(8px);
+    animation:rise 2.6s 1.4s cubic-bezier(.2,.7,.2,1) forwards;
+    text-shadow:0 2px 18px rgba(0,0,0,.85);
+  }
+  @keyframes rise{ to{opacity:.92; transform:none} }
+  .caption h1{
+    font:400 clamp(20px,3.4vw,42px)/1.05 "Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    letter-spacing:.14em; text-transform:lowercase;
+  }
+  .caption p{
+    margin-top:.7em;
+    font:400 clamp(9px,1vw,11px)/1.6 ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+    letter-spacing:.42em; text-transform:uppercase;
+    color:rgba(180,200,235,.55);
+  }
+  .hint{
+    position:fixed; right:44px; bottom:40px; pointer-events:none;
+    text-align:right; color:rgba(170,190,225,.42);
+    font:400 10px/1.9 ui-monospace,Menlo,Consolas,monospace;
+    letter-spacing:.3em; text-transform:uppercase;
+    opacity:0; animation:rise 2.6s 2.4s cubic-bezier(.2,.7,.2,1) forwards;
+  }
+  @media (max-width:640px){
+    .caption{left:30px;bottom:30px}
+    .hint{right:30px;bottom:30px;letter-spacing:.2em}
+    .frame{inset:10px}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="veil"></div>
+<div class="grain" id="grain"></div>
+<div class="frame"></div>
+<div class="caption">
+  <h1>следы сфер</h1>
+  <p>traces of spheres · generative study</p>
+</div>
+<div class="hint">двигай · клик — новый посев</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ── зерно (генерим один раз, без внешних файлов) ──────────────
+  (function grain(){
+    var g = document.getElementById('grain');
+    var n = document.createElement('canvas');
+    n.width = n.height = 128;
+    var nctx = n.getContext('2d');
+    var img = nctx.createImageData(128,128);
+    for (var i=0;i<img.data.length;i+=4){
+      var v = (Math.random()*255)|0;
+      img.data[i]=img.data[i+1]=img.data[i+2]=v;
+      img.data[i+3]=255;
+    }
+    nctx.putImageData(img,0,0);
+    g.style.backgroundImage = 'url('+n.toDataURL()+')';
+    g.style.backgroundSize = '128px 128px';
+  })();
+
+  // ── сцена ─────────────────────────────────────────────────────
+  var BG = [6,7,15];
+  var stage = document.getElementById('stage');
+  var ctx = stage.getContext('2d');
+  var trail = document.createElement('canvas');
+  var tctx = trail.getContext('2d');
+
+  var W=0,H=0,DPR=1, WORLD=1;
+
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    stage.width = Math.round(W*DPR); stage.height = Math.round(H*DPR);
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    trail.width = stage.width; trail.height = stage.height;
+    tctx.setTransform(DPR,0,0,DPR,0,0);
+    tctx.clearRect(0,0,W,H);
+    WORLD = Math.min(W,H) * 0.82;
+  }
+
+  // палитра — холодная ночь с редкими тёплыми искрами
+  var PALETTE = [
+    [186, 94, 62], [34, 96, 64], [214, 86, 66],
+    [282, 84, 66], [324, 88, 66], [52, 96, 62],
+    [150, 74, 58]
+  ];
+
+  var spheres = [];
+  var COUNT = 30;
+
+  function rnd(a,b){ return a + Math.random()*(b-a); }
+
+  function makeSphere(i){
+    var col = PALETTE[i % PALETTE.length];
+    return {
+      col: col,
+      // частоты лиссаджу-подобного блуждания
+      fx: rnd(0.06, 0.24),
+      fy: rnd(0.08, 0.27),
+      fz: rnd(0.05, 0.20),
+      spd: rnd(0.35, 0.95),
+      off: rnd(0, 6.283),
+      p1: rnd(0,6.283), p2: rnd(0,6.283), p3: rnd(0,6.283),
+      p4: rnd(0,6.283), p5: rnd(0,6.283),
+      baseR: rnd(5, 13),
+      // личная орбита вращения, чтобы пути красиво расходились
+      orx: rnd(-0.5,0.5), ory: rnd(-0.5,0.5), orz: rnd(-0.4,0.4),
+      prev: null
+    };
+  }
+
+  function reseed(){
+    spheres = [];
+    for (var i=0;i<COUNT;i++) spheres.push(makeSphere(i));
+    tctx.clearRect(0,0,W,H);
+  }
+
+  // ── ввод ─────────────────────────────────────────────────────
+  var mx = 0, my = 0, tx = 0, ty = 0, pointer = false;
+  var rx = 0.35, ry = 0.6, rz = 0, trx = 0.35, try_ = 0.6;
+
+  window.addEventListener('pointermove', function(e){
+    mx = (e.clientX / W) - 0.5;
+    my = (e.clientY / H) - 0.5;
+    pointer = true;
+  });
+  window.addEventListener('pointerdown', function(){ reseed(); });
+  window.addEventListener('resize', function(){ resize(); });
+
+  // ── геометрия ────────────────────────────────────────────────
+  var FOV = 2.4;
+
+  function project(x,y,z, rot){
+    // вращение вокруг Y затем X
+    var cy=Math.cos(rot.y), sy=Math.sin(rot.y);
+    var cx=Math.cos(rot.x), sx=Math.sin(rot.x);
+    var x1 =  x*cy + z*sy;
+    var z1 = -x*sy + z*cy;
+    var y1 =  y*cx - z1*sx;
+    var z2 =  y*sx + z1*cx;
+    var s = FOV / (FOV + z2);
+    return {
+      x: W*0.5 + x1*WORLD*s,
+      y: H*0.5 + y1*WORLD*s,
+      s: s,
+      z: z2
+    };
+  }
+
+  function pointOf(sp, t){
+    var tt = t*sp.spd + sp.off;
+    // сумма двух синусоид — богатый, заполняющий кадр путь
+    var x = 0.60*Math.sin(sp.fx*tt + sp.p1) + 0.40*Math.sin(sp.fy*tt*0.53 + sp.p3);
+    var y = 0.60*Math.sin(sp.fy*tt + sp.p2) + 0.40*Math.cos(sp.fx*tt*0.47 + sp.p4);
+    var z = 0.55*Math.sin(sp.fz*tt + sp.p5) + 0.45*Math.cos(sp.fx*tt*0.61 + sp.p1);
+    // медленный дрейф — со временем путь смещается и кадр заполняется
+    x += 0.24*Math.sin(t*0.031 + sp.p2) + sp.orx*0.10;
+    y += 0.24*Math.sin(t*0.027 + sp.p4) + sp.ory*0.10;
+    return { x:x, y:y, z:z };
+  }
+
+  // ── цикл ─────────────────────────────────────────────────────
+  var t = 0, last = performance.now();
+
+  function stepCamera(dt){
+    t += dt;
+    // камера медленно дышит и слушает курсор
+    trx = 0.30 + Math.sin(t*0.11)*0.22 - (my*0.7);
+    try_ = 0.55 + Math.cos(t*0.083)*0.30 + (mx*0.9);
+    rx += (trx - rx) * (dt*2.7);
+    ry += (try_ - ry) * (dt*2.7);
+    rz  = Math.sin(t*0.05)*0.12 + (pointer ? mx*0.10 : 0);
+  }
+
+  // прожигаем следы в отдельном слое
+  function carve(){
+    // «дыхание»: слой следов гаснет и снова набирает плотность
+    var fade = 0.0016 + 0.0040*(0.5 + 0.5*Math.sin(t*0.075 - 1.2));
+
+    tctx.globalCompositeOperation = 'destination-out';
+    tctx.fillStyle = 'rgba(0,0,0,'+fade.toFixed(4)+')';
+    tctx.fillRect(0,0,W,H);
+
+    tctx.globalCompositeOperation = 'lighter';
+    tctx.lineCap = 'round';
+    tctx.lineJoin = 'round';
+
+    var pts = [];
+    for (var i=0;i<spheres.length;i++){
+      var sp = spheres[i];
+      var p = pointOf(sp, t);
+      var pr = project(p.x, p.y, p.z, {x:rx, y:ry, z:rz});
+      pts.push({sp:sp, pr:pr});
+    }
+
+    for (var j=0;j<pts.length;j++){
+      var o = pts[j], sp = o.sp, pr = o.pr;
+      if (sp.prev){
+        var depth = Math.max(0.15, Math.min(1.4, pr.s));
+        var a = 0.30 + 0.55*depth;
+        var c = sp.col;
+        var lw = 1.6 + 4.6*depth;
+        tctx.beginPath();
+        tctx.moveTo(sp.prev.x, sp.prev.y);
+        tctx.lineTo(pr.x, pr.y);
+        // широкое мягкое тело следа
+        tctx.strokeStyle = 'hsla('+c[0]+','+c[1]+'%,'+c[2]+'%,'+(a*0.46).toFixed(3)+')';
+        tctx.lineWidth = lw*3.2;
+        tctx.stroke();
+        // узкая яркая нить внутри
+        tctx.strokeStyle = 'hsla('+c[0]+','+c[1]+'%,'+Math.min(92,c[2]+22)+'%,'+a.toFixed(3)+')';
+        tctx.lineWidth = lw*0.55;
+        tctx.stroke();
+
+        // редкое эхо-пятно по следу
+        if ((j + (t*8|0)) % 4 === 0){
+          var rr = (2.0 + 6.0*depth);
+          var gr = tctx.createRadialGradient(pr.x,pr.y,0,pr.x,pr.y,rr);
+          gr.addColorStop(0,'hsla('+c[0]+','+c[1]+'%,'+Math.min(80,c[2]+16)+'%,'+(0.26*depth).toFixed(3)+')');
+          gr.addColorStop(1,'hsla('+c[0]+','+c[1]+'%,'+c[2]+'%,0)');
+          tctx.fillStyle = gr;
+          tctx.beginPath(); tctx.arc(pr.x,pr.y,rr,0,6.2832); tctx.fill();
+        }
+      }
+      sp.prev = { x: pr.x, y: pr.y };
+    }
+    return pts;
+  }
+
+  function render(pts){
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgb('+BG[0]+','+BG[1]+','+BG[2]+')';
+    ctx.fillRect(0,0,W,H);
+    ctx.drawImage(trail, 0, 0, W, H);
+
+    // светящиеся сферы поверх — свет не запекается в след
+    ctx.globalCompositeOperation = 'lighter';
+    for (var k=0;k<pts.length;k++){
+      var q = pts[k], sp2 = q.sp, pr2 = q.pr;
+      var d = Math.max(0.12, Math.min(1.5, pr2.s));
+      var r = sp2.baseR * pr2.s;
+      var halo = r*4.6;
+      var c2 = sp2.col;
+      var g2 = ctx.createRadialGradient(pr2.x,pr2.y,0, pr2.x,pr2.y, halo);
+      g2.addColorStop(0.00,'rgba(255,255,255,'+(0.85*d).toFixed(3)+')');
+      g2.addColorStop(0.12,'hsla('+c2[0]+','+c2[1]+'%,'+(Math.min(88,c2[2]+20))+'%,'+(0.42*d).toFixed(3)+')');
+      g2.addColorStop(0.38,'hsla('+c2[0]+','+c2[1]+'%,'+c2[2]+'%,'+(0.12*d).toFixed(3)+')');
+      g2.addColorStop(1.00,'hsla('+c2[0]+','+c2[1]+'%,'+c2[2]+'%,0)');
+      ctx.fillStyle = g2;
+      ctx.beginPath(); ctx.arc(pr2.x,pr2.y, halo, 0, 6.2832); ctx.fill();
+
+      ctx.fillStyle = 'rgba(255,255,255,'+(0.9*d).toFixed(3)+')';
+      ctx.beginPath(); ctx.arc(pr2.x,pr2.y, Math.max(0.8, r*0.30), 0, 6.2832); ctx.fill();
+    }
+  }
+
+  function frame(now){
+    var dt = Math.min((now-last)/1000, 1/30);
+    last = now;
+    stepCamera(dt);
+    render(carve());
+    requestAnimationFrame(frame);
+  }
+
+  resize();
+  reseed();
+
+  // прогрев: к моменту показа след уже прорисован
+  for (var w=0; w<600; w++){ stepCamera(1/60); carve(); }
+  last = performance.now();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

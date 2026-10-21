@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Поток частиц</title>
+<style>
+  :root{
+    --ink:#05060b;
+    --paper:#f7e8d6;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;
+    background:var(--ink);
+    color:var(--paper);
+    overflow:hidden;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased;
+    cursor:crosshair;
+  }
+  #stage{position:fixed;inset:0;width:100%;height:100%;display:block}
+  .veil{
+    position:fixed;inset:0;pointer-events:none;
+    box-shadow:inset 0 0 18vmax 4vmax rgba(3,4,9,.72);
+  }
+  .frame{
+    position:fixed;inset:clamp(14px,2.2vmin,26px);
+    border:1px solid rgba(247,232,214,.13);
+    pointer-events:none;
+    mix-blend-mode:screen;
+  }
+  .frame::before,.frame::after{
+    content:"";position:absolute;width:7px;height:7px;border:1px solid rgba(247,232,214,.45);
+  }
+  .frame::before{top:-1px;left:-1px;border-right:0;border-bottom:0}
+  .frame::after{bottom:-1px;right:-1px;border-left:0;border-top:0}
+
+  .plate{
+    position:fixed;left:clamp(26px,4.6vmin,64px);bottom:clamp(26px,4.6vmin,60px);
+    pointer-events:none;mix-blend-mode:screen;max-width:min(62ch,64vw);
+  }
+  .kicker{
+    font-size:10px;letter-spacing:.42em;text-transform:uppercase;
+    color:rgba(247,232,214,.62);margin:0 0 14px;
+    display:flex;align-items:center;gap:12px;
+  }
+  .kicker i{
+    display:block;width:26px;height:1px;background:rgba(255,170,120,.75);
+    box-shadow:0 0 8px rgba(255,150,110,.9);
+  }
+  h1{
+    margin:0;
+    font-family:"Didot","Bodoni 72",Georgia,"Times New Roman",serif;
+    font-weight:400;font-size:clamp(30px,5.1vmin,58px);
+    line-height:.94;letter-spacing:.012em;
+    text-shadow:0 0 30px rgba(255,140,120,.22);
+  }
+  h1 em{font-style:italic;color:#ffc79a}
+  .sub{
+    margin:14px 0 0;
+    font-family:"Didot","Bodoni 72",Georgia,serif;
+    font-style:italic;font-size:clamp(12px,1.55vmin,15px);
+    letter-spacing:.02em;color:rgba(247,232,214,.58);
+  }
+  .hint{
+    position:fixed;right:clamp(26px,4.6vmin,64px);bottom:clamp(27px,4.7vmin,61px);
+    text-align:right;pointer-events:none;mix-blend-mode:screen;
+    font-size:9.5px;letter-spacing:.26em;text-transform:uppercase;
+    color:rgba(247,232,214,.42);line-height:2.1;
+  }
+  .hint b{font-weight:400;color:rgba(255,190,150,.8)}
+  .meta{
+    position:fixed;top:clamp(26px,4.6vmin,60px);right:clamp(26px,4.6vmin,64px);
+    text-align:right;pointer-events:none;mix-blend-mode:screen;
+    font-size:9.5px;letter-spacing:.26em;text-transform:uppercase;
+    color:rgba(247,232,214,.4);line-height:2.1;
+  }
+  .meta span{color:rgba(255,190,150,.72)}
+  .live{
+    display:inline-block;width:5px;height:5px;border-radius:50%;
+    background:#ff9e6b;margin-right:8px;vertical-align:1px;
+    box-shadow:0 0 9px #ff8752;
+    animation:pulse 2.6s ease-in-out infinite;
+  }
+  @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+  @media (max-width:640px){
+    .hint{display:none}
+    .plate{max-width:78vw}
+  }
+  @media (prefers-reduced-motion:reduce){ .live{animation:none} }
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="Живая абстрактная композиция: светящиеся частицы закручиваются в вихревой поток"></canvas>
+
+<div class="veil"></div>
+<div class="frame" aria-hidden="true"></div>
+
+<div class="meta" aria-hidden="true">
+  <div><span class="live"></span>живой поток</div>
+  <div>поле № 07 · дифференциальное вращение</div>
+</div>
+
+<div class="plate">
+  <p class="kicker"><i></i>поле частиц</p>
+  <h1>Поток<br><em>частиц</em></h1>
+  <p class="sub">чем слабее сопротивление, тем длиннее след света</p>
+</div>
+
+<div class="hint" aria-hidden="true">
+  <div>вести курсором — <b>вихрь</b></div>
+  <div>нажать — <b>импульс</b></div>
+  <div>R — пересобрать поле</div>
+</div>
+
+<script type="module">
+(() => {
+  const canvas = document.getElementById('stage');
+  const gl = canvas.getContext('webgl2', {
+    antialias: false, alpha: false, depth: false, stencil: false,
+    powerPreference: 'high-performance', preserveDrawingBuffer: false
+  });
+  if (!gl) {
+    document.body.insertAdjacentHTML('beforeend',
+      '<p style="position:fixed;inset:auto 0 45% 0;text-align:center;font:14px monospace;color:#f7e8d6">' +
+      'Для этой работы нужен браузер с WebGL2.</p>');
+    return;
+  }
+
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const PART_W = 512, PART_H = 512, COUNT = PART_W * PART_H;
+  const DPR = Math.min(devicePixelRatio || 1, 1.6);
+  let W = 1, H = 1, AW = 1, AH = 1;
+
+  gl.getExtension('EXT_color_buffer_float');
+  gl.getExtension('EXT_color_buffer_half_float');
+  gl.getExtension('OES_texture_float_linear');
+
+  const compile = (type, src) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      throw new Error(gl.getShaderInfoLog(s) + '\n' + src);
+    }
+    return s;
+  };
+  const program = (vs, fs) => {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    return p;
+  };
+  const U = (p, names) => {
+    const o = {};
+    for (const n of names) o[n] = gl.getUniformLocation(p, n);
+    return o;
+  };
+
+  /* ---------------- fullscreen quad ---------------- */
+  const quadVS = `#version 300 es
+  void main(){
+    vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0);
+    gl_Position = vec4(p, 0.0, 1.0);
+  }`;
+  const quadVAO = gl.createVertexArray();
+
+  /* ---------------- simulation ---------------- */
+  const simFS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uState;
+  uniform float uTime;
+  uniform vec2  uMouse;
+  uniform vec2  uMouseVel;
+  uniform float uAspect;
+  uniform float uImpulse;
+  uniform float uSpeed;
+  out vec4 outColor;
+
+  float hash31(vec3 p){
+    p = fract(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+  }
+  float vnoise(vec3 x){
+    vec3 i = floor(x), f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    float n000 = hash31(i);
+    float n100 = hash31(i + vec3(1.0, 0.0, 0.0));
+    float n010 = hash31(i + vec3(0.0, 1.0, 0.0));
+    float n110 = hash31(i + vec3(1.0, 1.0, 0.0));
+    float n001 = hash31(i + vec3(0.0, 0.0, 1.0));
+    float n101 = hash31(i + vec3(1.0, 0.0, 1.0));
+    float n011 = hash31(i + vec3(0.0, 1.0, 1.0));
+    float n111 = hash31(i + vec3(1.0, 1.0, 1.0));
+    float nx00 = mix(n000, n100, f.x);
+    float nx10 = mix(n010, n110, f.x);
+    float nx01 = mix(n001, n101, f.x);
+    float nx11 = mix(n011, n111, f.x);
+    return mix(mix(nx00, nx10, f.y), mix(nx01, nx11, f.y), f.z);
+  }
+  float fbm(vec3 p){
+    float s = 0.0, a = 0.5;
+    for (int i = 0; i < 3; i++){ s += a * vnoise(p); p *= 2.07; a *= 0.5; }
+    return s;
+  }
+  vec2 curl(vec3 p){
+    const float e = 0.09;
+    float dx = fbm(p + vec3(e, 0.0, 0.0)) - fbm(p - vec3(e, 0.0, 0.0));
+    float dy = fbm(p + vec3(0.0, e, 0.0)) - fbm(p - vec3(0.0, e, 0.0));
+    return vec2(dy, -dx) / (2.0 * e);
+  }
+
+  const vec2 CTR = vec2(-0.10, 0.02);
+  const float TILT = -0.19;
+
+  vec2 toPolar(vec2 p, float aspect){
+    vec2 rel = p - vec2(CTR.x * aspect, CTR.y);
+    float c = cos(TILT), s = sin(TILT);
+    vec2 q = vec2(rel.x * c - rel.y * s, rel.x * s + rel.y * c);
+    return vec2(q.x / aspect, q.y);
+  }
+  vec2 fromPolar(vec2 pa, float aspect){
+    vec2 q = vec2(pa.x * aspect, pa.y);
+    float c = cos(-TILT), s = sin(-TILT);
+    return vec2(q.x * c - q.y * s, q.x * s + q.y * c) + vec2(CTR.x * aspect, CTR.y);
+  }
+
+  void main(){
+    ivec2 c = ivec2(gl_FragCoord.xy);
+    vec4 st = texelFetch(uState, c, 0);
+    vec2 p = st.xy;
+    vec2 v = st.zw;
+
+    float s1 = hash31(vec3(vec2(c), 1.7));
+    float s2 = hash31(vec3(vec2(c) * 1.31, 9.2));
+    float t = uTime;
+
+    vec2 pa = toPolar(p, uAspect);
+
+    float r = length(pa);
+    if (r < 0.0001) r = 0.0001;
+    vec2 dir = pa / r;
+    vec2 tang = vec2(-dir.y, dir.x);
+
+    // breathing, softly wandering orbit radius
+    float ring = 0.50 + 0.05 * sin(t * 0.21 + 1.3) + 0.035 * sin(s2 * 41.0 + t * 0.63);
+    float breath = 0.5 + 0.5 * sin(t * 0.29 + s1 * 6.283);
+
+    // differential rotation: inner filaments outrun the outer ones
+    float orb = (0.0009 + 0.0072 * pow(0.24 / max(r, 0.17), 1.25))
+              * (0.72 + 0.5 * breath) * uSpeed;
+    vec2 target = tang * orb;
+
+    // loose containment toward a breathing, elliptical band
+    vec2 ellipse = pa * vec2(1.0, 1.22);
+    target += normalize(ellipse + 1e-5) * (ring - length(ellipse)) * 0.0062;
+
+    // curl turbulence: long folds + fine vortices, stronger away from the eye
+    vec2 q = pa * 1.3;
+    float turb = 0.22 + 1.0 * smoothstep(0.12, 0.72, r);
+    target += curl(vec3(q * 0.62 + 5.0, t * 0.052)) * 0.0042 * turb;
+    target += curl(vec3(q * 2.1 + 31.0, t * 0.11)) * 0.0015 * turb;
+    target += tang * turb * 0.0016 * sin(r * 13.0 - t * 1.1);
+
+    // satellite vortex pulls a knot through the right-hand sweep
+    vec2 rel2 = pa - vec2(0.68, -0.40);
+    float r2 = length(rel2) + 1e-4;
+    float k = exp(-r2 * r2 * 9.0) * uSpeed;
+    target += vec2(-rel2.y, rel2.x) / r2 * k * 0.011;
+    target -= rel2 / r2 * k * 0.0016;
+
+    // pointer: tangential vortex + drag
+    vec2 mpa = toPolar(uMouse, uAspect);
+    vec2 mv = vec2((uMouseVel.x * cos(TILT) - uMouseVel.y * sin(TILT)) / uAspect,
+                   uMouseVel.x * sin(TILT) + uMouseVel.y * cos(TILT));
+    vec2 md = pa - mpa;
+    float mf = exp(-dot(md, md) * 6.0);
+    vec2 mt = vec2(-md.y, md.x) / max(length(md), 0.001);
+    target += mt * mf * 0.014;
+    target += mv * mf * 0.6;
+
+    // click impulse: radial shock + swirl
+    target += dir * uImpulse * 0.017 * exp(-abs(r - 0.5) * 2.2);
+    target += tang * uImpulse * 0.011 * exp(-abs(r - 0.5) * 2.2);
+
+    v = mix(v, target, 0.052);
+    v *= 0.9935;
+    p += v;
+
+    // recycle: edge runaways, core falls, stray teleports
+    float resetP = 0.0011 + (r > 1.22 ? 0.4 : 0.0) + (r < 0.03 ? 0.45 : 0.0);
+    if (s1 < resetP){
+      // spawn in a few broad arm sectors rather than a uniform ring
+      float arm = floor(hash31(vec3(vec2(c) * 0.77, 3.1)) * 4.0);
+      float a = arm * 1.5707963 + (hash31(vec3(vec2(c) * 1.13, t * 0.6)) - 0.5) * 1.25
+              + t * 0.11;
+      float rr = ring + pow(hash31(vec3(vec2(c) * 0.31, 8.4)), 1.5) * 0.16 - 0.05;
+      vec2 seedRel = vec2(cos(a) * rr, sin(a) * rr);
+      p = fromPolar(seedRel, uAspect);
+      v = tang * orb * 0.7 + dir * 0.0012;
+    }
+
+    outColor = vec4(p, v);
+  }`;
+  const simProg = program(quadVS, simFS);
+  const simU = U(simProg, ['uState','uTime','uMouse','uMouseVel','uAspect','uImpulse','uSpeed']);
+
+  /* ---------------- fade (long exposure) ---------------- */
+  const fadeFS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uPrev;
+  uniform float uDecay;
+  out vec4 outColor;
+  void main(){
+    vec3 c = texelFetch(uPrev, ivec2(gl_FragCoord.xy), 0).rgb;
+    c *= vec3(0.998, 0.994, 0.988);
+    outColor = vec4(c * uDecay, 1.0);
+  }`;
+  const fadeProg = program(quadVS, fadeFS);
+  const fadeU = U(fadeProg, ['uPrev','uDecay']);
+
+  /* ---------------- particle draw ---------------- */
+  const pointVS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uState;
+  uniform float uAspect;
+  uniform float uDpr;
+  uniform float uScale;
+  out vec3 vColor;
+  out float vAlpha;
+
+  float hash21(vec2 p){
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+  }
+  vec3 ramp(float x){
+    vec3 c = mix(vec3(1.00, 0.86, 0.62), vec3(1.00, 0.46, 0.44), smoothstep(0.04, 0.50, x));
+    c = mix(c, vec3(1.00, 0.30, 0.56), smoothstep(0.44, 0.66, x));
+    c = mix(c, vec3(0.62, 0.36, 1.00), smoothstep(0.63, 0.84, x));
+    c = mix(c, vec3(0.16, 0.80, 0.86), smoothstep(0.82, 1.06, x));
+    return c;
+  }
+
+  void main(){
+    int id = gl_VertexID;
+    ivec2 c = ivec2(id % ${PART_W}, id / ${PART_W});
+    vec4 st = texelFetch(uState, c, 0);
+    vec2 p = st.xy;
+    vec2 v = st.zw;
+    gl_Position = vec4(p.x / uAspect / max(uScale, 0.0001), p.y / uScale, 0.0, 1.0);
+
+    float s = hash21(vec2(c) * 0.731);
+    float r = length(p / uAspect);
+    float sp = length(v);
+    float speedK = smoothstep(0.0005, 0.0075, sp);
+    float edge = smoothstep(1.16, 0.55, r);
+
+    vec3 col = ramp(clamp(r * 0.86 + 0.06, 0.0, 1.05));
+    col = mix(col, vec3(1.0, 0.94, 0.82), smoothstep(0.22, 0.02, r) * 0.55);
+    col *= 0.78 + 0.42 * s;
+    col += speedK * 0.22 * vec3(1.0, 0.92, 0.85);
+
+    vColor = col;
+    vAlpha = (0.055 + 0.30 * pow(speedK, 1.4)) * edge * (0.55 + 0.7 * s);
+    gl_PointSize = (0.9 + 1.7 * speedK + 0.7 * s) * uDpr;
+  }`;
+  const pointFS = `#version 300 es
+  precision highp float;
+  in vec3 vColor;
+  in float vAlpha;
+  out vec4 outColor;
+  void main(){
+    vec2 d = gl_PointCoord - 0.5;
+    float a = exp(-dot(d, d) * 9.5);
+    outColor = vec4(vColor * vAlpha * a, 1.0);
+  }`;
+  const pointProg = program(pointVS, pointFS);
+  const pointU = U(pointProg, ['uState','uAspect','uDpr','uScale']);
+  const pointVAO = gl.createVertexArray();
+
+  /* ---------------- present: bloom, tone, grain ---------------- */
+  const presentFS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uTex;
+  uniform vec2 uRes;
+  uniform float uTime;
+  out vec4 outColor;
+
+  float hash12(vec2 p){
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+  }
+  void main(){
+    vec2 uv = gl_FragCoord.xy / uRes;
+    vec3 c = texture(uTex, uv).rgb;
+
+    // cheap spiral bloom
+    vec3 b = vec3(0.0);
+    float ws = 0.0;
+    for (int i = 0; i < 12; i++){
+      float fi = float(i);
+      float a = fi * 2.39996;
+      float rad = (0.35 + fi * 0.62) / uRes.y;
+      float w = 1.0 / (1.0 + fi * 0.55);
+      b += texture(uTex, uv + vec2(cos(a), sin(a)) * rad * 1.25).rgb * w;
+      ws += w;
+    }
+    c += (b / ws) * 0.85;
+
+    // tone + gentle gamma
+    c = c / (1.0 + c * 0.72);
+    c = pow(c, vec3(0.88));
+
+    // vignette + corner falloff
+    vec2 d = uv - 0.5;
+    d.x *= uRes.x / uRes.y;
+    float vig = smoothstep(0.98, 0.20, length(d));
+    c *= mix(0.55, 1.0, vig);
+
+    // film grain, faintly animated
+    float g = hash12(gl_FragCoord.xy + fract(uTime) * 431.0) - 0.5;
+    c += g * 0.026;
+
+    // cool shadows, warm highs
+    c = mix(c, c * vec3(0.86, 0.93, 1.12), smoothstep(0.22, 0.0, dot(c, vec3(0.33)))) ;
+    c = mix(c, c * vec3(1.07, 1.0, 0.92), smoothstep(0.55, 1.0, dot(c, vec3(0.33))));
+
+    outColor = vec4(c, 1.0);
+  }`;
+  const presentProg = program(quadVS, presentFS);
+  const presentU = U(presentProg, ['uTex','uRes','uTime']);
+
+  /* ---------------- textures / framebuffers ---------------- */
+  const makeTex = (w, h, internal, format, type, filter) => {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+  };
+  const makeFBO = (tex) => {
+    const f = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    return f;
+  };
+
+  const stateTex = [0, 1].map(() =>
+    makeTex(PART_W, PART_H, gl.RGBA32F, gl.RGBA, gl.FLOAT, gl.NEAREST));
+  const stateFBO = stateTex.map(makeFBO);
+  let simSide = 0;
+
+  let accumTex = [], accumFBO = [], accumSide = 0;
+  const allocAccum = () => {
+    accumTex.forEach(t => gl.deleteTexture(t));
+    accumFBO.forEach(f => gl.deleteFramebuffer(f));
+    const internal = gl.RGBA16F, type = gl.HALF_FLOAT;
+    accumTex = [0, 1].map(() => makeTex(AW, AH, internal, gl.RGBA, type, gl.LINEAR));
+    accumFBO = accumTex.map(makeFBO);
+    for (const f of accumFBO){
+      gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE){
+        gl.deleteTexture(accumTex[0]); gl.deleteTexture(accumTex[1]);
+        gl.deleteFramebuffer(accumFBO[0]); gl.deleteFramebuffer(accumFBO[1]);
+        accumTex = [0, 1].map(() => makeTex(AW, AH, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR));
+        accumFBO = accumTex.map(makeFBO);
+        break;
+      }
+    }
+    for (const f of accumFBO){
+      gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+    accumSide = 0;
+  };
+
+  /* ---------------- seed particles ---------------- */
+  const seed = () => {
+    const data = new Float32Array(COUNT * 4);
+    for (let i = 0; i < COUNT; i++){
+      const a = Math.random() * Math.PI * 2;
+      const rr = 0.50 + (Math.random() - 0.5) * 0.10;
+      data[i * 4] = Math.cos(a) * rr * (AW / AH);
+      data[i * 4 + 1] = Math.sin(a) * rr * 1.02;
+      data[i * 4 + 2] = -Math.sin(a) * 0.002;
+      data[i * 4 + 3] = Math.cos(a) * 0.002;
+    }
+    for (let s = 0; s < 2; s++){
+      gl.bindTexture(gl.TEXTURE_2D, stateTex[s]);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, PART_W, PART_H, gl.RGBA, gl.FLOAT, data);
+    }
+  };
+
+  /* ---------------- sizing ---------------- */
+  let aspect = 1, scale = 1;
+  const resize = () => {
+    W = Math.max(2, Math.floor(innerWidth));
+    H = Math.max(2, Math.floor(innerHeight));
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    aspect = W / H;
+    scale = Math.max(1, aspect * 0.94);
+    AW = Math.max(2, Math.min(1920, canvas.width));
+    AH = Math.max(2, Math.round(AW * H / W));
+    allocAccum();
+    gl.viewport(0, 0, AW, AH);
+  };
+  addEventListener('resize', resize, { passive: true });
+
+  /* ---------------- input ---------------- */
+  const mouse = { x: 9, y: 9, vx: 0, vy: 0, px: 9, py: 9, active: false };
+  let impulse = 0;
+
+  const toField = (cx, cy) => {
+    const nx = (cx / W) * 2 - 1;
+    const ny = 1 - (cy / H) * 2;
+    return [nx * aspect / scale, ny / scale];
+  };
+  const onMove = (e) => {
+    const [fx, fy] = toField(e.clientX, e.clientY);
+    if (!mouse.active){ mouse.px = fx; mouse.py = fy; mouse.x = fx; mouse.y = fy; mouse.active = true; }
+    mouse.x = fx; mouse.y = fy;
+  };
+  addEventListener('pointermove', onMove, { passive: true });
+  addEventListener('pointerdown', (e) => {
+    onMove(e);
+    impulse = Math.min(1.6, impulse + 1.15);
+  });
+  addEventListener('pointerleave', () => { mouse.active = false; mouse.x = 9; mouse.y = 9; });
+  addEventListener('keydown', (e) => {
+    if (e.key === 'r' || e.key === 'R' || e.key === 'к' || e.key === 'К') seed();
+  });
+
+  /* ---------------- loop ---------------- */
+  let t0 = performance.now();
+  let time = 0, last = t0, frames = 0;
+
+  const frame = (now) => {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    time += dt * (reduceMotion ? 0.55 : 1);
+
+    // smooth pointer velocity
+    mouse.vx += ((mouse.x - mouse.px) - mouse.vx) * 0.22;
+    mouse.vy += ((mouse.y - mouse.py) - mouse.vy) * 0.22;
+    mouse.px = mouse.x; mouse.py = mouse.y;
+    impulse *= 0.93;
+
+    // 1. simulate
+    const src = simSide, dst = 1 - simSide;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, stateFBO[dst]);
+    gl.viewport(0, 0, PART_W, PART_H);
+    gl.disable(gl.BLEND);
+    gl.useProgram(simProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, stateTex[src]);
+    gl.uniform1i(simU.uState, 0);
+    gl.uniform1f(simU.uTime, time);
+    gl.uniform2f(simU.uMouse, mouse.x, mouse.y);
+    gl.uniform2f(simU.uMouseVel, mouse.vx, mouse.vy);
+    gl.uniform1f(simU.uAspect, aspect);
+    gl.uniform1f(simU.uImpulse, impulse);
+    gl.uniform1f(simU.uSpeed, reduceMotion ? 0.65 : 1.0);
+    gl.bindVertexArray(quadVAO);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    simSide = dst;
+
+    // 2. fade previous exposure into the other buffer
+    const prev = accumSide, next = 1 - accumSide;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, accumFBO[next]);
+    gl.viewport(0, 0, AW, AH);
+    gl.disable(gl.BLEND);
+    gl.useProgram(fadeProg);
+    gl.bindTexture(gl.TEXTURE_2D, accumTex[prev]);
+    gl.uniform1i(fadeU.uPrev, 0);
+    gl.uniform1f(fadeU.uDecay, 0.958);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // 3. draw particles additively
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.useProgram(pointProg);
+    gl.bindTexture(gl.TEXTURE_2D, stateTex[simSide]);
+    gl.uniform1i(pointU.uState, 0);
+    gl.uniform1f(pointU.uAspect, aspect);
+    gl.uniform1f(pointU.uDpr, DPR);
+    gl.uniform1f(pointU.uScale, scale);
+    gl.bindVertexArray(pointVAO);
+    gl.drawArrays(gl.POINTS, 0, COUNT);
+
+    // 4. present
+    accumSide = next;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.disable(gl.BLEND);
+    gl.useProgram(presentProg);
+    gl.bindTexture(gl.TEXTURE_2D, accumTex[accumSide]);
+    gl.uniform1i(presentU.uTex, 0);
+    gl.uniform2f(presentU.uRes, canvas.width, canvas.height);
+    gl.uniform1f(presentU.uTime, time);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    if (++frames === 2) document.body.dataset.ready = '1';
+    requestAnimationFrame(frame);
+  };
+
+  resize();
+  seed();
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  requestAnimationFrame((n) => { last = n; t0 = n; frame(n); });
+
+  canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); });
+})();
+</script>
+</body>
+</html>

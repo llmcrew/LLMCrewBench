@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Аврора</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #02030a; overflow: hidden; }
+  #scene { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
+
+  .caption {
+    position: fixed; left: clamp(18px, 4vw, 56px); bottom: clamp(18px, 5vh, 56px);
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: rgba(232, 244, 255, .88);
+    letter-spacing: .46em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+    animation: rise 2.6s cubic-bezier(.22,.7,.25,1) .6s both;
+  }
+  .caption .t { font-size: clamp(15px, 2.5vw, 26px); font-weight: 300; }
+  .caption .s {
+    margin-top: .95em; font-size: clamp(8px, 1.05vw, 11px);
+    letter-spacing: .34em; color: rgba(150, 200, 214, .7);
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+  .sig {
+    position: fixed; right: clamp(18px, 4vw, 56px); bottom: clamp(18px, 5vh, 56px);
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: clamp(8px, 1vw, 10px); letter-spacing: .3em; text-transform: uppercase;
+    color: rgba(150, 200, 214, .48); pointer-events: none; user-select: none;
+    writing-mode: vertical-rl; animation: rise 2.6s cubic-bezier(.22,.7,.25,1) 1.1s both;
+  }
+  #fallback {
+    position: fixed; inset: 0; display: none; place-items: center;
+    font-family: "Helvetica Neue", sans-serif; color: #cfe; letter-spacing: .3em;
+  }
+</style>
+</head>
+<body>
+<canvas id="scene" aria-label="Аврора — северное сияние над горами и озером"></canvas>
+
+<div class="caption">
+  <div class="t">Аврора</div>
+  <div class="s">Северное сияние · 68° с. ш.</div>
+</div>
+<div class="sig">Aurora Borealis</div>
+<div id="fallback">AURORA</div>
+
+<script id="vert" type="x-shader/x-vertex">
+attribute vec2 aPos;
+void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }
+</script>
+
+<script id="frag" type="x-shader/x-fragment">
+precision highp float;
+
+uniform vec2  uRes;
+uniform float uTime;
+
+/* ---------------- value noise ---------------- */
+float hash(vec2 p){
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+float noise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float fbm(vec2 p){
+  float v = 0.0, a = 0.5;
+  mat2 m = mat2(1.6, 1.2, -1.2, 1.6);
+  for (int i = 0; i < 5; i++){
+    v += a * noise(p);
+    p = m * p;
+    a *= 0.5;
+  }
+  return v;
+}
+
+/* ---------------- aurora palette by height ---------------- */
+vec3 auroraColor(float h){
+  vec3 green  = vec3(0.34, 1.35, 0.58);
+  vec3 teal   = vec3(0.20, 1.05, 0.88);
+  vec3 violet = vec3(0.58, 0.36, 1.20);
+  vec3 magenta= vec3(1.15, 0.34, 0.92);
+  vec3 c = mix(green,  teal,    smoothstep(0.04, 0.34, h));
+  c      = mix(c,      violet,  smoothstep(0.30, 0.64, h));
+  c      = mix(c,      magenta, smoothstep(0.62, 0.98, h));
+  return c;
+}
+
+/* one drifting curtain, sampled on the z = 1 view plane */
+vec3 auroraLayer(vec2 cp, float t, float seed, float scale, vec2 off, float gain){
+  vec2 q = cp * scale + off;
+
+  // wavy lower hem of the curtain
+  float edge = 0.035 + 0.135 * fbm(vec2(q.x * 1.3 + seed * 2.0, t * 0.05 + seed));
+
+  float h = q.y - edge;
+  float below = smoothstep(-0.025, 0.045, h);
+
+  float body = below * exp(-max(h, 0.0) * 2.5);        // tall fading sheet
+  float hem  = below * exp(-max(h, 0.0) * 26.0);       // incandescent lower edge
+
+  // fine vertical rays that sway
+  float stri = fbm(vec2(q.x * 8.5 + t * 0.26 + seed * 5.0, q.y * 2.1 - t * 0.18));
+  float ray  = 0.34 + 1.00 * stri;
+
+  // broad banding gives the curtain body
+  float band = 0.50 + 0.80 * fbm(vec2(q.x * 2.3 - t * 0.08, q.y * 1.05 + seed));
+  band *= 0.62 + 0.62 * fbm(vec2(q.x * 0.85 + t * 0.03, q.y * 0.5));
+
+  float I = (body * 0.85 + hem * 1.05) * ray * band * gain;
+
+  vec3 col = auroraColor(clamp(h + edge, 0.0, 1.2));
+  col = mix(col, vec3(1.35, 0.62, 1.0), below * 0.12);
+  return col * I;
+}
+
+/* ---------------- star field ---------------- */
+float stars(vec3 dir, float t){
+  vec2 sp = vec2(atan(dir.x, dir.z), asin(clamp(dir.y, -1.0, 1.0))) * 46.0;
+  vec2 g  = floor(sp);
+  vec2 f  = fract(sp) - 0.5;
+  float s = 0.0;
+  for (int i = -1; i <= 1; i++){
+    for (int j = -1; j <= 1; j++){
+      vec2 o = vec2(float(i), float(j));
+      float hh = hash(g + o);
+      if (hh > 0.955){
+        vec2 pos = o + (vec2(hash(g + o + 3.1), hash(g + o + 7.7)) - 0.5) * 0.82;
+        float d = length(f - pos);
+        float tw = 0.55 + 0.45 * sin(t * (1.4 + hh * 4.5) + hh * 40.0);
+        float sz = 0.10 + hh * 0.10;
+        s += smoothstep(sz, 0.0, d) * tw * (0.35 + hh * 1.1);
+      }
+    }
+  }
+  return s;
+}
+
+/* ---------------- a shooting star ---------------- */
+float shooting(vec2 uv, float t){
+  float cyc = 7.0;
+  float k   = floor(t / cyc);
+  float lt  = fract(t / cyc);
+  vec2  a   = vec2(-0.9 + hash(vec2(k, 5.0)) * 0.9, 0.30 + hash(vec2(k, 1.0)) * 0.45);
+  vec2  dir = normalize(vec2(0.95, -0.32));
+  vec2  p   = a + dir * (lt * 1.9);
+  float d   = length(uv - p);
+  float tail= smoothstep(0.055, 0.0, length((uv - p) - dir * -0.02));
+  float live = smoothstep(0.0, 0.06, lt) * (1.0 - smoothstep(0.55, 0.75, lt));
+  return smoothstep(0.035, 0.0, d) * live * 1.4 + tail * live * 0.5;
+}
+
+/* ---------------- landscape ridgelines ---------------- */
+float ridgeA(float x){ return 0.150 + 0.150 * fbm(vec2(x * 1.15 + 4.2, 3.7)) + 0.03 * fbm(vec2(x * 4.0, 9.1)); }
+float ridgeB(float x){ return 0.080 + 0.110 * fbm(vec2(x * 2.30 + 21.0, 7.3)); }
+
+/* ---------------- sky + landscape for a view direction ---------------- */
+vec3 sky(vec2 uv, float t){
+  vec3 d = normalize(vec3(uv, 1.0));
+
+  // slow camera drift
+  float ang = sin(t * 0.021) * 0.06;
+  float ca = cos(ang), sa = sin(ang);
+  d = vec3(ca * d.x - sa * d.z, d.y, sa * d.x + ca * d.z);
+
+  float elev = asin(clamp(d.y, -1.0, 1.0));
+  float up = clamp(elev, 0.0, 1.0);
+
+  /* deep night gradient, denser toward zenith */
+  vec3 col = mix(vec3(0.018, 0.034, 0.070), vec3(0.004, 0.008, 0.030), pow(up, 0.5));
+  col += vec3(0.012, 0.034, 0.030) * exp(-up * 5.0);
+
+  /* faint milky-way haze */
+  float mw = fbm(vec2(atan(d.x, d.z) * 1.6 + 1.7, elev * 3.0));
+  col += vec3(0.05, 0.06, 0.095) * smoothstep(0.55, 0.95, mw) * (0.3 + 0.7 * up);
+
+  /* stars */
+  col += vec3(0.86, 0.93, 1.0) * stars(d, t) * smoothstep(-0.02, 0.10, d.y);
+
+  /* aurora, three parallax curtains */
+  vec2 cp = vec2(d.x, d.y) / max(d.z, 0.075);
+  vec3 aur = vec3(0.0);
+  aur += auroraLayer(cp, t, 0.0, 0.62, vec2( 0.0, 0.06), 1.15);
+  aur += auroraLayer(cp, t, 3.7, 0.95, vec2(-1.6, 0.02), 0.95);
+  aur += auroraLayer(cp, t, 8.3, 1.50, vec2( 2.3, 0.16), 0.65);
+  aur *= smoothstep(-0.06, 0.08, d.y);
+  col += aur;
+
+  /* low green breath spilling into the sky */
+  col += vec3(0.05, 0.17, 0.14) * exp(-up * 3.0) * (0.35 + 0.65 * fbm(cp * 1.1 + t * 0.04));
+
+  /* shooting star */
+  col += vec3(0.85, 0.95, 1.0) * shooting(uv, t) * smoothstep(0.0, 0.05, d.y);
+
+  /* mountain silhouettes with aurora rim-light */
+  float rx = d.x / max(d.z, 0.06);
+  float rB = ridgeB(rx);
+  float near = smoothstep(rB + 0.004, rB - 0.004, d.y);
+  float rimB = exp(-max(rB - d.y, 0.0) * 70.0) * near;
+  vec3 colB = vec3(0.014, 0.024, 0.048) + vec3(0.05, 0.22, 0.18) * rimB;
+  col = mix(col, colB, near);
+
+  float rA = ridgeA(rx);
+  float far = smoothstep(rA + 0.004, rA - 0.004, d.y);
+  float rimA = exp(-max(rA - d.y, 0.0) * 55.0) * far;
+  vec3 colA = vec3(0.008, 0.013, 0.030) + vec3(0.06, 0.28, 0.22) * rimA;
+  col = mix(col, colA, far);
+
+  return col;
+}
+
+void main(){
+  vec2 uv  = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
+  float t  = uTime;
+  float hz = -0.075;                 // horizon sits a little below centre
+  float yy = uv.y - hz;
+
+  vec3 col;
+  if (yy >= 0.0){
+    col = sky(vec2(uv.x, yy), t);
+  } else {
+    /* calm lake: near-mirror, vertically stretched reflection with ripples */
+    vec2 rip;
+    rip.x = sin(uv.x * 24.0 + t * 1.05) * 0.0035 + sin(uv.x * 8.0 - t * 0.6) * 0.0060;
+    rip.y = sin(uv.x * 16.0 + t * 1.6) * 0.0035;
+    vec2 ruv = vec2(uv.x + rip.x, (-yy) * 0.55 + rip.y);
+    vec3 refl = sky(ruv, t);
+    float depth = smoothstep(0.0, 0.40, -yy);
+    col = mix(refl * 0.82, vec3(0.010, 0.020, 0.040), depth * 0.5);
+
+    /* horizontal ripple bands stretch the light */
+    float bands = 0.5 + 0.5 * sin(uv.x * 30.0 + sin(uv.x * 7.0 + t) * 2.0);
+    col *= 0.9 + 0.16 * bands * smoothstep(0.0, 0.25, -yy);
+
+    /* glints */
+    float glint = pow(max(refl.g, 0.0), 3.0) * smoothstep(0.02, 0.28, -yy);
+    col += vec3(0.08, 0.26, 0.22) * glint * 0.6;
+    col += vec3(0.02, 0.05, 0.06) * exp(-(-yy) * 5.0);
+  }
+
+  /* bloom-ish lift of bright cores */
+  col += pow(max(col, 0.0), vec3(2.0)) * 0.4;
+
+  /* hue-preserving tonemap + gentle grade */
+  col = 1.0 - exp(-col * 1.55);
+  col = pow(max(col, 0.0), vec3(0.90));
+  col *= vec3(0.95, 1.0, 1.05);
+  col = mix(vec3(dot(col, vec3(0.299, 0.587, 0.114))), col, 1.16);  // saturate
+
+  /* vignette */
+  vec2 q = gl_FragCoord.xy / uRes;
+  col *= mix(0.68, 1.0, smoothstep(1.18, 0.32, length(q - 0.5) * 1.32));
+
+  /* fine grain against banding */
+  col += (hash(gl_FragCoord.xy + fract(uTime) * 71.0) - 0.5) * 0.010;
+
+  gl_FragColor = vec4(col, 1.0);
+}
+</script>
+
+<script>
+(function () {
+  var canvas = document.getElementById('scene');
+
+  function compile(gl, type, src) {
+    var s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(s));
+      return null;
+    }
+    return s;
+  }
+
+  var gl = canvas.getContext('webgl', { antialias: true, alpha: false, powerPreference: 'high-performance' })
+        || canvas.getContext('experimental-webgl', { antialias: true, alpha: false });
+  if (!gl) { document.getElementById('fallback').style.display = 'grid'; return; }
+
+  var vs = compile(gl, gl.VERTEX_SHADER, document.getElementById('vert').textContent);
+  var fs = compile(gl, gl.FRAGMENT_SHADER, document.getElementById('frag').textContent);
+  var prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { console.error(gl.getProgramInfoLog(prog)); return; }
+  gl.useProgram(prog);
+
+  var buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  var aPos = gl.getAttribLocation(prog, 'aPos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  var uRes  = gl.getUniformLocation(prog, 'uRes');
+  var uTime = gl.getUniformLocation(prog, 'uTime');
+
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  function resize() {
+    var w = Math.floor(window.innerWidth * dpr);
+    var h = Math.floor(window.innerHeight * dpr);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w; canvas.height = h;
+      gl.viewport(0, 0, w, h);
+    }
+  }
+  window.addEventListener('resize', resize, { passive: true });
+  resize();
+
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var start = performance.now();
+
+  function frame(now) {
+    var t = (now - start) / 1000;
+    if (reduce) t = 6.0;
+    resize();
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.uniform1f(uTime, t);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

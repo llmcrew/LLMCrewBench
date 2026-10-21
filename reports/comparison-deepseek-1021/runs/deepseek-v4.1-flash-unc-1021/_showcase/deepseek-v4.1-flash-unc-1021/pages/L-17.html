@@ -1,0 +1,760 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Дождь за окном</title>
+<style>
+  html,body{margin:0;height:100%;background:#060507;overflow:hidden;}
+  #scene{display:block;width:100vw;height:100vh;}
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<script>
+(() => {
+  "use strict";
+
+  const TAU = Math.PI * 2;
+  const rand = (a, b) => a + Math.random() * (b - a);
+
+  const cvs = document.getElementById("scene");
+  const ctx = cvs.getContext("2d");
+
+  // Off-screen "outside world" rendered at reduced resolution so that
+  // upscaling it into the window gives a soft, rainy, out-of-focus look.
+  const world = document.createElement("canvas");
+  const wctx = world.getContext("2d");
+
+  const grain = document.createElement("canvas");
+  const gctx = grain.getContext("2d");
+
+  let W = 0, H = 0, DPR = 1;
+  const win = { x: 0, y: 0, w: 0, h: 0 };
+
+  let buildings = [], bokeh = [], outRain = [];
+  let drops = [], slides = [], runs = [];
+  let t = 0, last = 0, flash = 0, nextFlash = 3;
+
+  function roundRect(c, x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  World (seen through the glass)                                     */
+  /* ------------------------------------------------------------------ */
+
+  function buildWorld() {
+    // City silhouettes in window-local coordinates.
+    buildings = [];
+    let x = -win.w * 0.12;
+    while (x < win.w * 1.12) {
+      const w = rand(win.w * 0.05, win.w * 0.16);
+      const h = rand(win.h * 0.16, win.h * 0.58);
+      const b = { x, y: win.h - h, w, h, near: Math.random() < 0.55, lit: [] };
+      const cols = Math.max(1, Math.floor(w / 15));
+      const rows = Math.max(1, Math.floor(h / 19));
+      for (let c = 0; c < cols; c++) {
+        for (let r = 0; r < rows; r++) {
+          if (Math.random() < (b.near ? 0.26 : 0.4)) {
+            b.lit.push({
+              x: b.x + 4 + c * (w - 6) / cols,
+              y: b.y + 5 + r * (h - 8) / rows,
+              w: Math.max(1.5, (w / cols) * 0.42),
+              h: Math.max(2, (h / rows) * 0.42),
+              warm: Math.random() < 0.75,
+              a: rand(0.4, 1)
+            });
+          }
+        }
+      }
+      buildings.push(b);
+      x += w + rand(2, 11);
+    }
+    buildings.sort((a, b) => (a.near ? 1 : 0) - (b.near ? 1 : 0));
+
+    // Warm street lights / bokeh near the bottom of the view.
+    bokeh = [];
+    for (let i = 0; i < 16; i++) {
+      bokeh.push({
+        x: rand(0, win.w),
+        y: rand(win.h * 0.7, win.h * 1.02),
+        r: rand(win.w * 0.02, win.w * 0.075),
+        warm: Math.random() < 0.8,
+        a: rand(0.25, 0.7),
+        ph: rand(0, TAU)
+      });
+    }
+
+    // Rain outside.
+    outRain = [];
+    const n = Math.round(win.w * win.h / 1400);
+    for (let i = 0; i < n; i++) {
+      outRain.push({
+        x: rand(-win.w * 0.2, win.w),
+        y: rand(0, win.h * 1.2),
+        len: rand(win.h * 0.02, win.h * 0.07),
+        sp: rand(win.h * 0.9, win.h * 2.1),
+        a: rand(0.06, 0.28),
+        wd: rand(0.6, 1.6)
+      });
+    }
+  }
+
+  function drawWorld() {
+    const sc = world.width / win.w;
+    wctx.setTransform(sc, 0, 0, sc, 0, 0);
+    wctx.clearRect(0, 0, win.w, win.h);
+
+    // --- night sky ---
+    const sky = wctx.createLinearGradient(0, 0, 0, win.h);
+    sky.addColorStop(0, "#08131f");
+    sky.addColorStop(0.45, "#0e2233");
+    sky.addColorStop(0.78, "#1a3a52");
+    sky.addColorStop(1, "#2a4b60");
+    wctx.fillStyle = sky;
+    wctx.fillRect(0, 0, win.w, win.h);
+
+    // --- moon glow ---
+    const mx = win.w * 0.74, my = win.h * 0.14;
+    const mg = wctx.createRadialGradient(mx, my, 0, mx, my, win.w * 0.5);
+    mg.addColorStop(0, "rgba(205,225,255,0.55)");
+    mg.addColorStop(0.12, "rgba(170,200,240,0.28)");
+    mg.addColorStop(0.5, "rgba(120,160,210,0.09)");
+    mg.addColorStop(1, "rgba(90,130,180,0)");
+    wctx.fillStyle = mg;
+    wctx.fillRect(0, 0, win.w, win.h);
+    wctx.beginPath();
+    wctx.arc(mx, my, win.w * 0.028, 0, TAU);
+    wctx.fillStyle = "rgba(225,238,255,0.75)";
+    wctx.fill();
+
+    // --- clouds ---
+    wctx.globalAlpha = 0.16;
+    for (let i = 0; i < 7; i++) {
+      const cy = win.h * (0.05 + i * 0.06) + Math.sin(t * 0.1 + i) * 4;
+      const cx = ((i * 0.31 + t * 0.006) % 1.3 - 0.15) * win.w;
+      const cg = wctx.createRadialGradient(cx, cy, 0, cx, cy, win.w * 0.22);
+      cg.addColorStop(0, "rgba(150,175,205,0.9)");
+      cg.addColorStop(1, "rgba(150,175,205,0)");
+      wctx.fillStyle = cg;
+      wctx.beginPath();
+      wctx.ellipse(cx, cy, win.w * 0.22, win.h * 0.05, 0, 0, TAU);
+      wctx.fill();
+    }
+    wctx.globalAlpha = 1;
+
+    // --- city ---
+    for (const b of buildings) {
+      const a = b.near ? 0.92 : 0.55;
+      wctx.fillStyle = b.near ? `rgba(10,16,26,${a})` : `rgba(24,40,58,${a})`;
+      wctx.fillRect(b.x, b.y, b.w, b.h);
+      // faint top edge from the sky glow
+      wctx.fillStyle = `rgba(120,160,200,${b.near ? 0.12 : 0.2})`;
+      wctx.fillRect(b.x, b.y, b.w, 1.2);
+      for (const l of b.lit) {
+        wctx.fillStyle = l.warm
+          ? `rgba(255,200,120,${l.a})`
+          : `rgba(170,215,255,${l.a * 0.8})`;
+        wctx.fillRect(l.x, l.y, l.w, l.h);
+      }
+    }
+
+    // --- street haze ---
+    const hz = wctx.createLinearGradient(0, win.h * 0.6, 0, win.h);
+    hz.addColorStop(0, "rgba(255,160,90,0)");
+    hz.addColorStop(1, "rgba(255,150,80,0.22)");
+    wctx.fillStyle = hz;
+    wctx.fillRect(0, win.h * 0.6, win.w, win.h * 0.4);
+
+    // --- bokeh lights ---
+    wctx.globalCompositeOperation = "lighter";
+    for (const b of bokeh) {
+      const y = b.y + Math.sin(t * 0.4 + b.ph) * 2;
+      const g = wctx.createRadialGradient(b.x, y, 0, b.x, y, b.r);
+      const col = b.warm ? "255,180,110" : "170,215,255";
+      g.addColorStop(0, `rgba(${col},${b.a})`);
+      g.addColorStop(0.35, `rgba(${col},${b.a * 0.28})`);
+      g.addColorStop(1, `rgba(${col},0)`);
+      wctx.fillStyle = g;
+      wctx.beginPath();
+      wctx.arc(b.x, y, b.r, 0, TAU);
+      wctx.fill();
+    }
+    wctx.globalCompositeOperation = "source-over";
+
+    // --- outside rain ---
+    wctx.lineCap = "round";
+    for (const d of outRain) {
+      d.y += d.sp / 60;
+      if (d.y > win.h + d.len) {
+        d.y = -d.len - rand(0, win.h * 0.3);
+        d.x = rand(-win.w * 0.2, win.w);
+      }
+      wctx.strokeStyle = `rgba(200,225,255,${d.a})`;
+      wctx.lineWidth = d.wd;
+      wctx.beginPath();
+      wctx.moveTo(d.x, d.y);
+      wctx.lineTo(d.x - d.len * 0.13, d.y + d.len);
+      wctx.stroke();
+    }
+
+    // --- lightning ---
+    if (flash > 0.001) {
+      wctx.fillStyle = `rgba(190,215,255,${flash * 0.5})`;
+      wctx.fillRect(0, 0, win.w, win.h);
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Glass effects                                                      */
+  /* ------------------------------------------------------------------ */
+
+  function buildDrops() {
+    drops = [];
+    const n = Math.round(Math.min(70, win.w * win.h / 11000));
+    for (let i = 0; i < n; i++) {
+      drops.push({
+        x: rand(win.x, win.x + win.w),
+        y: rand(win.y, win.y + win.h),
+        r: rand(1.6, 5.5),
+        ph: rand(0, TAU),
+        sp: rand(0.6, 1.6)
+      });
+    }
+    slides = [];
+    for (let i = 0; i < 11; i++) {
+      slides.push({
+        x: rand(win.x + 6, win.x + win.w - 6),
+        y: rand(win.y, win.y + win.h),
+        r: rand(2.6, 6.5),
+        v: rand(0.1, 0.6),
+        trail: []
+      });
+    }
+    runs = [];
+    for (let i = 0; i < 40; i++) {
+      runs.push({
+        x: rand(win.x, win.x + win.w),
+        y: rand(win.y, win.y + win.h),
+        len: rand(win.h * 0.03, win.h * 0.16),
+        sp: rand(3, 9),
+        a: rand(0.05, 0.16),
+        wd: rand(0.5, 1.4)
+      });
+    }
+  }
+
+  // Draw one glass bead with a tiny magnifying-lens refraction.
+  function bead(x, y, r, lens) {
+    if (r < 0.4) return;
+    if (lens) {
+      const sc = world.width / win.w;
+      const mag = 1.55;
+      const cx = (x - win.x) * sc, cy = (y - win.y) * sc;
+      const s = 2 * r * sc / mag;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, TAU);
+      ctx.clip();
+      ctx.drawImage(world, cx - s / 2, cy - s / 2, s, s, x - r, y - r, 2 * r, 2 * r);
+      ctx.restore();
+    }
+    // rim
+    ctx.beginPath();
+    ctx.arc(x, y, r * 0.98, 0, TAU);
+    ctx.strokeStyle = "rgba(190,215,240,0.22)";
+    ctx.lineWidth = Math.max(0.5, r * 0.16);
+    ctx.stroke();
+    // specular from the light (upper-right)
+    const hx = x + r * 0.34, hy = y - r * 0.34, hr = Math.max(0.6, r * 0.55);
+    const g = ctx.createRadialGradient(hx, hy, 0, hx, hy, hr);
+    g.addColorStop(0, "rgba(255,250,240,0.85)");
+    g.addColorStop(0.5, "rgba(220,235,255,0.3)");
+    g.addColorStop(1, "rgba(200,225,255,0)");
+    ctx.globalCompositeOperation = "lighter";
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(hx, hy, hr, 0, TAU);
+    ctx.fill();
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  function drawDrops() {
+    for (const d of drops) {
+      const wob = 1 + Math.sin(t * d.sp + d.ph) * 0.08;
+      bead(d.x, d.y, d.r * wob, true);
+    }
+    for (const s of slides) {
+      for (let i = 0; i < s.trail.length; i++) {
+        const p = s.trail[i];
+        const k = (i + 1) / (s.trail.length + 1);
+        bead(p.x, p.y, p.r * 0.42 * k, false);
+      }
+      bead(s.x, s.y, s.r, true);
+    }
+  }
+
+  function updateDrops() {
+    for (const s of slides) {
+      s.v += 0.02;
+      s.y += s.v;
+      if (Math.random() < 0.08) {
+        s.trail.push({ x: s.x + rand(-0.6, 0.6), y: s.y, r: s.r });
+        if (s.trail.length > 8) s.trail.shift();
+      }
+      if (s.y > win.y + win.h + 4) {
+        s.y = win.y - rand(0, 20);
+        s.x = rand(win.x + 6, win.x + win.w - 6);
+        s.r = rand(2.6, 6.5);
+        s.v = rand(0.1, 0.6);
+        s.trail.length = 0;
+      }
+    }
+  }
+
+  function drawGlassRain() {
+    ctx.lineCap = "round";
+    for (const r of runs) {
+      r.y += r.sp;
+      if (r.y > win.y + win.h + r.len) {
+        r.y = win.y - r.len;
+        r.x = rand(win.x, win.x + win.w);
+      }
+      const g = ctx.createLinearGradient(0, r.y - r.len, 0, r.y + 2);
+      g.addColorStop(0, "rgba(200,225,255,0)");
+      g.addColorStop(1, `rgba(210,232,255,${r.a})`);
+      ctx.strokeStyle = g;
+      ctx.lineWidth = r.wd;
+      ctx.beginPath();
+      ctx.moveTo(r.x, r.y - r.len);
+      ctx.lineTo(r.x, r.y);
+      ctx.stroke();
+    }
+  }
+
+  function drawFog() {
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "rgba(140,170,200,0.10)";
+    ctx.fillRect(win.x, win.y, win.w, win.h);
+    const corners = [
+      [win.x, win.y], [win.x + win.w, win.y],
+      [win.x, win.y + win.h], [win.x + win.w, win.y + win.h]
+    ];
+    for (const [cx, cy] of corners) {
+      const r = win.w * 0.4;
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+      g.addColorStop(0, "rgba(200,220,240,0.20)");
+      g.addColorStop(1, "rgba(200,220,240,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(win.x, win.y, win.w, win.h);
+    }
+  }
+
+  function drawReflections() {
+    // warm lamp glow reflected on the glass
+    const lx = W * 0.82, ly = H * 0.74;
+    const g = ctx.createRadialGradient(lx, ly, 0, lx, ly, win.w * 0.7);
+    g.addColorStop(0, "rgba(255,175,95,0.22)");
+    g.addColorStop(0.4, "rgba(255,160,85,0.07)");
+    g.addColorStop(1, "rgba(255,150,80,0)");
+    ctx.globalCompositeOperation = "lighter";
+    ctx.fillStyle = g;
+    ctx.fillRect(win.x, win.y, win.w, win.h);
+
+    // cool diagonal sheen
+    const dg = ctx.createLinearGradient(win.x, win.y, win.x + win.w * 0.7, win.y + win.h);
+    dg.addColorStop(0, "rgba(170,200,240,0.07)");
+    dg.addColorStop(0.45, "rgba(170,200,240,0)");
+    dg.addColorStop(0.75, "rgba(200,225,255,0.05)");
+    dg.addColorStop(1, "rgba(200,225,255,0)");
+    ctx.fillStyle = dg;
+    ctx.fillRect(win.x, win.y, win.w, win.h);
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Room, frame, furniture                                             */
+  /* ------------------------------------------------------------------ */
+
+  function drawRoom() {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, "#241a22");
+    g.addColorStop(0.5, "#181119");
+    g.addColorStop(1, "#0b080c");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    const lg = ctx.createRadialGradient(W * 0.82, H * 0.72, 8, W * 0.82, H * 0.72, W * 0.6);
+    lg.addColorStop(0, "rgba(255,172,92,0.30)");
+    lg.addColorStop(0.4, "rgba(255,150,80,0.10)");
+    lg.addColorStop(1, "rgba(255,140,70,0)");
+    ctx.globalCompositeOperation = "lighter";
+    ctx.fillStyle = lg;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = "source-over";
+
+    // floor
+    const fg = ctx.createLinearGradient(0, H * 0.84, 0, H);
+    fg.addColorStop(0, "#140e13");
+    fg.addColorStop(1, "#060406");
+    ctx.fillStyle = fg;
+    ctx.fillRect(0, H * 0.84, W, H);
+  }
+
+  function drawWindowInto() {
+    const fx = win.x, fy = win.y, fw = win.w, fh = win.h;
+
+    // recess shadow
+    ctx.fillStyle = "#070508";
+    roundRect(ctx, fx - 16, fy - 16, fw + 32, fh + 32, 12);
+    ctx.fill();
+
+    ctx.save();
+    roundRect(ctx, fx, fy, fw, fh, 6);
+    ctx.clip();
+    ctx.drawImage(world, 0, 0, world.width, world.height, fx, fy, fw, fh);
+    drawFog();
+    drawReflections();
+    drawGlassRain();
+    drawDrops();
+    ctx.restore();
+
+    // frame
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 15;
+    ctx.strokeStyle = "#2c211a";
+    roundRect(ctx, fx - 7.5, fy - 7.5, fw + 15, fh + 15, 12);
+    ctx.stroke();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,190,120,0.16)";
+    roundRect(ctx, fx + 4, fy + 4, fw - 8, fh - 8, 6);
+    ctx.stroke();
+
+    // mullions
+    ctx.fillStyle = "#241a14";
+    const mw = 8;
+    ctx.fillRect(fx + fw * 0.5 - mw / 2, fy, mw, fh);
+    ctx.fillRect(fx, fy + fh * 0.42 - mw / 2, fw, mw);
+    ctx.fillStyle = "rgba(255,200,140,0.10)";
+    ctx.fillRect(fx + fw * 0.5 - mw / 2, fy, 1.5, fh);
+    ctx.fillRect(fx, fy + fh * 0.42 - mw / 2, fw, 1.5);
+
+    // sill
+    const sy = fy + fh;
+    const sg = ctx.createLinearGradient(0, sy, 0, sy + 22);
+    sg.addColorStop(0, "#3a2a20");
+    sg.addColorStop(1, "#1c1310");
+    ctx.fillStyle = sg;
+    roundRect(ctx, fx - 26, sy + 4, fw + 52, 20, 5);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,200,140,0.18)";
+    ctx.fillRect(fx - 26, sy + 4, fw + 52, 1.5);
+  }
+
+  function curtain(px, pw, phase) {
+    const top = win.y - H * 0.06;
+    const bot = H * 0.98;
+    const folds = 7;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(px, top);
+    ctx.lineTo(px + pw, top);
+    ctx.lineTo(px + pw * 1.04, bot);
+    // wavy lower edge
+    const steps = 24;
+    for (let i = steps; i >= 0; i--) {
+      const u = i / steps;
+      const x = px - pw * 0.04 + u * pw * 1.08;
+      const y = bot + Math.sin(u * 12 + t * 0.8 + phase) * 6;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(px - pw * 0.04, bot);
+    ctx.closePath();
+
+    const g = ctx.createLinearGradient(px - pw * 0.1, 0, px + pw * 1.1, 0);
+    for (let i = 0; i <= folds; i++) {
+      const u = i / folds;
+      const lum = Math.sin(u * Math.PI * folds + phase) * 0.5 + 0.5;
+      const c = Math.round(22 + lum * 46);
+      const rr = c + 22, gg = Math.round(c * 0.62), bb = Math.round(c * 0.72);
+      g.addColorStop(u, `rgb(${rr},${gg},${bb})`);
+    }
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawCurtains() {
+    // rod
+    ctx.fillStyle = "#2a2018";
+    ctx.fillRect(win.x - W * 0.06, win.y - H * 0.075, win.w + W * 0.12, 5);
+    ctx.fillStyle = "rgba(255,200,140,0.2)";
+    ctx.fillRect(win.x - W * 0.06, win.y - H * 0.075, win.w + W * 0.12, 1.5);
+
+    curtain(win.x - W * 0.075, W * 0.10, 0.0);
+    curtain(win.x + win.w - W * 0.035, W * 0.10, 1.7);
+  }
+
+  function drawPlant() {
+    const bx = win.x + win.w - 16;
+    const by = win.y + win.h + 2;
+    ctx.save();
+    ctx.globalAlpha = 0.95;
+    for (let i = 0; i < 9; i++) {
+      const a = -Math.PI / 2 + (i - 4) * 0.30;
+      const len = 34 + Math.cos(i * 1.7) * 16 + 22;
+      const sway = Math.sin(t * 0.7 + i) * 3;
+      const ex = bx + Math.cos(a) * len + sway;
+      const ey = by + Math.sin(a) * len * 0.9;
+      const mx = (bx + ex) / 2 + Math.cos(a) * 8;
+      const my = (by + ey) / 2 - 16;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.quadraticCurveTo(mx, my, ex, ey);
+      ctx.quadraticCurveTo(mx + 6, my + 6, bx, by);
+      const shade = 18 + i * 4;
+      ctx.fillStyle = `rgb(${shade},${shade + 34},${shade + 12})`;
+      ctx.fill();
+    }
+    // pot
+    ctx.fillStyle = "#241a14";
+    ctx.beginPath();
+    ctx.moveTo(bx - 15, by - 4);
+    ctx.lineTo(bx + 15, by - 4);
+    ctx.lineTo(bx + 11, by + 24);
+    ctx.lineTo(bx - 11, by + 24);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawDesk() {
+    const dy = H * 0.845;
+    // front panel / body of the desk
+    const bg = ctx.createLinearGradient(0, dy, 0, H);
+    bg.addColorStop(0, "#221812");
+    bg.addColorStop(1, "#0b0706");
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, dy, W, H - dy);
+    // top surface
+    const tg = ctx.createLinearGradient(0, dy - 14, 0, dy + 8);
+    tg.addColorStop(0, "#3d2c20");
+    tg.addColorStop(0.4, "#2c1f16");
+    tg.addColorStop(1, "#150e0a");
+    ctx.fillStyle = tg;
+    ctx.fillRect(0, dy - 14, W, 22);
+    ctx.fillStyle = "rgba(255,200,140,0.20)";
+    ctx.fillRect(0, dy - 14, W, 1.5);
+    // warm sheen on the surface under the lamp
+    const sg = ctx.createRadialGradient(W * 0.82, dy - 6, 0, W * 0.82, dy - 6, W * 0.28);
+    sg.addColorStop(0, "rgba(255,180,100,0.30)");
+    sg.addColorStop(1, "rgba(255,170,90,0)");
+    ctx.globalCompositeOperation = "lighter";
+    ctx.fillStyle = sg;
+    ctx.fillRect(0, dy - 16, W, 40);
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  function drawLamp() {
+    const lx = W * 0.82, ly = H * 0.72;
+    const deskY = H * 0.845;
+    ctx.save();
+    // glow
+    const g = ctx.createRadialGradient(lx, ly, 0, lx, ly, W * 0.22);
+    g.addColorStop(0, "rgba(255,200,130,0.55)");
+    g.addColorStop(0.25, "rgba(255,170,95,0.22)");
+    g.addColorStop(1, "rgba(255,150,80,0)");
+    ctx.globalCompositeOperation = "lighter";
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(lx, ly, W * 0.22, 0, TAU);
+    ctx.fill();
+    ctx.globalCompositeOperation = "source-over";
+
+    // arm + base
+    ctx.strokeStyle = "#241b15";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(lx + 26, deskY - 4);
+    ctx.lineTo(lx + 26, ly + 26);
+    ctx.quadraticCurveTo(lx + 26, ly, lx + 2, ly);
+    ctx.stroke();
+
+    // shade
+    ctx.beginPath();
+    ctx.moveTo(lx - 26, ly + 6);
+    ctx.lineTo(lx + 22, ly - 6);
+    ctx.lineTo(lx + 6, ly - 26);
+    ctx.lineTo(lx - 30, ly - 12);
+    ctx.closePath();
+    ctx.fillStyle = "#2b2018";
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(lx - 27, ly + 7);
+    ctx.lineTo(lx + 22, ly - 6);
+    ctx.lineTo(lx + 20, ly - 13);
+    ctx.lineTo(lx - 28, ly + 1);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(255,210,150,0.9)";
+    ctx.fill();
+
+    // base
+    ctx.beginPath();
+    ctx.ellipse(lx + 26, deskY - 4, 18, 5, 0, 0, TAU);
+    ctx.fillStyle = "#1a1310";
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawMug() {
+    const mx = W * 0.735, my = H * 0.845;
+    ctx.save();
+    // steam
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = 0; i < 3; i++) {
+      const p = ((t * 0.5 + i * 0.33) % 1);
+      const sx = mx + Math.sin(t * 1.4 + i * 2) * 5 + (i - 1) * 4;
+      const sy = my - 12 - p * 46;
+      const r = 5 + p * 9;
+      const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+      g.addColorStop(0, `rgba(255,235,210,${0.14 * (1 - p)})`);
+      g.addColorStop(1, "rgba(255,235,210,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = "source-over";
+
+    // body
+    const w = 30, h = 34;
+    ctx.beginPath();
+    ctx.moveTo(mx - w / 2, my - h);
+    ctx.lineTo(mx + w / 2, my - h);
+    ctx.quadraticCurveTo(mx + w / 2 + 2, my, mx + w / 2 - 4, my);
+    ctx.lineTo(mx - w / 2 + 4, my);
+    ctx.quadraticCurveTo(mx - w / 2 - 2, my, mx - w / 2, my - h);
+    ctx.closePath();
+    ctx.fillStyle = "#3a2b26";
+    ctx.fill();
+    // rim light from lamp
+    ctx.strokeStyle = "rgba(255,190,120,0.5)";
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    // handle
+    ctx.beginPath();
+    ctx.arc(mx + w / 2, my - h * 0.5, 9, -1.1, 1.1);
+    ctx.strokeStyle = "#3a2b26";
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    // top rim highlight
+    ctx.beginPath();
+    ctx.ellipse(mx, my - h, w / 2, 3.5, 0, 0, TAU);
+    ctx.fillStyle = "rgba(255,200,140,0.22)";
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawVignette() {
+    const g = ctx.createRadialGradient(W * 0.5, H * 0.48, Math.min(W, H) * 0.28,
+      W * 0.5, H * 0.48, Math.max(W, H) * 0.78);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(1, "rgba(0,0,0,0.62)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  function drawGrain() {
+    ctx.save();
+    ctx.globalAlpha = 0.045;
+    ctx.globalCompositeOperation = "overlay";
+    const ox = Math.floor(rand(0, 64)), oy = Math.floor(rand(0, 64));
+    for (let y = -64; y < H; y += 64) {
+      for (let x = -64; x < W; x += 64) {
+        ctx.drawImage(grain, x + ox - 64, y + oy - 64);
+      }
+    }
+    ctx.restore();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Setup + loop                                                       */
+  /* ------------------------------------------------------------------ */
+
+  function makeGrain() {
+    grain.width = 64; grain.height = 64;
+    const img = gctx.createImageData(64, 64);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 128 + (Math.random() * 2 - 1) * 40;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+    gctx.putImageData(img, 0, 0);
+  }
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    cvs.width = Math.round(W * DPR);
+    cvs.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    win.x = W * 0.11;
+    win.y = H * 0.085;
+    win.w = W * 0.58;
+    win.h = H * 0.72;
+
+    const sc = 0.55;
+    world.width = Math.max(2, Math.round(win.w * sc));
+    world.height = Math.max(2, Math.round(win.h * sc));
+
+    buildWorld();
+    buildDrops();
+  }
+
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000 || 0);
+    last = now;
+    t += dt;
+
+    // occasional lightning
+    nextFlash -= dt;
+    if (nextFlash <= 0) {
+      flash = 0.9;
+      nextFlash = rand(5, 13);
+    }
+    flash *= Math.pow(0.12, dt);
+
+    drawWorld();
+    updateDrops();
+
+    drawRoom();
+    drawWindowInto();
+    drawCurtains();
+    drawDesk();
+    drawPlant();
+    drawLamp();
+    drawMug();
+    drawVignette();
+    drawGrain();
+
+    requestAnimationFrame(frame);
+  }
+
+  window.addEventListener("resize", resize);
+  makeGrain();
+  resize();
+  requestAnimationFrame((n) => { last = n; frame(n); });
+})();
+</script>
+</body>
+</html>

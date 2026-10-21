@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Лавовая лампа</title>
+<style>
+  html, body { margin:0; height:100%; background:#070409; overflow:hidden; }
+  canvas { display:block; width:100vw; height:100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(() => {
+  "use strict";
+
+  const cv = document.getElementById("c");
+  const ctx = cv.getContext("2d");
+
+  // Offscreen low-res buffers holding the metaball field.
+  const blobCanvas = document.createElement("canvas");
+  const blobCtx = blobCanvas.getContext("2d");
+  const glowCanvas = document.createElement("canvas");
+  const glowCtx = glowCanvas.getContext("2d");
+
+  let W, H, DPR;
+  let X, Yt, Yb, L, R, baseH, capH;
+  let imgBlob, imgGlow, bw, bh;
+
+  // ---- Lamp silhouette -----------------------------------------------------------------
+  // ny: 0 = bottom of the glass, 1 = top. Returns the half-width (normalised, 1 == R).
+  function vesselW(y) {
+    const t = Math.min(1, Math.max(0, (y + 0.15) / 1.15));
+    return 0.42 + 0.58 * Math.sin(Math.PI * t);
+  }
+  const sy = (y) => Yb - y * L;
+
+  function vesselPath(pad) {
+    const p = new Path2D();
+    const N = 56;
+    const k = pad || 0;
+    const top = Math.min(0.999, 1 - k / L);
+    const bot = Math.max(0.001, k / L);
+    const shrink = pad ? 1 : 1; // width handled via R below
+    const Rr = R - (pad || 0);
+    p.moveTo(X - Rr * vesselW(bot), sy(bot));
+    for (let i = 1; i <= N; i++) {
+      const y = bot + (top - bot) * (i / N);
+      p.lineTo(X - Rr * vesselW(y), sy(y));
+    }
+    for (let i = N; i >= 0; i--) {
+      const y = bot + (top - bot) * (i / N);
+      p.lineTo(X + Rr * vesselW(y), sy(y));
+    }
+    p.closePath();
+    return p;
+  }
+
+  // ---- Blobs ---------------------------------------------------------------------------
+  const blobs = [];
+  const rnd = (a, b) => a + Math.random() * (b - a);
+
+  function resetBlob(b) {
+    b.nx = (Math.random() * 2 - 1) * 0.55;
+    b.ny = rnd(0.05, 0.95);
+    b.r = rnd(0.05, 0.112);
+    b.vx = rnd(-0.02, 0.02);
+    b.vy = rnd(-0.03, 0.03);
+    b.heat = 0.35 + Math.random() * 0.5;
+    b.phase = rnd(0, Math.PI * 2);
+    b.phase2 = rnd(0, Math.PI * 2);
+    b.rr = b.r;
+  }
+
+  function initBlobs() {
+    blobs.length = 0;
+    const n = 10;
+    for (let i = 0; i < n; i++) {
+      const b = {};
+      resetBlob(b);
+      // spread them out initially
+      b.ny = (i + 0.5) / n + rnd(-0.04, 0.04);
+      b.nx = (Math.random() * 2 - 1) * 0.4;
+      blobs.push(b);
+    }
+  }
+
+  // ---- Bubbles -------------------------------------------------------------------------
+  const bubbles = [];
+  for (let i = 0; i < 26; i++) {
+    bubbles.push({
+      nx: rnd(-0.5, 0.5),
+      ny: Math.random(),
+      r: rnd(0.004, 0.014),
+      sp: rnd(0.03, 0.11),
+      ph: rnd(0, 6.28),
+    });
+  }
+
+  // ---- Sizing --------------------------------------------------------------------------
+  function resize() {
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    cv.width = Math.max(1, Math.round(W * DPR));
+    cv.height = Math.max(1, Math.round(H * DPR));
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    L = Math.min(H * 0.74, W * 1.25);
+    if (L < 240) L = Math.max(180, H * 0.8);
+    R = L * 0.175;
+    baseH = L * 0.15;
+    capH = L * 0.085;
+
+    const total = capH + L + baseH;
+    const top = Math.max(10, (H - total) / 2);
+    X = W / 2;
+    Yt = top + capH;
+    Yb = Yt + L;
+
+    X = Math.round(X * 2) / 2;
+
+    const scale = 0.58;
+    bw = Math.max(2, Math.ceil(W * scale));
+    bh = Math.max(2, Math.ceil(H * scale));
+    blobCanvas.width = bw; blobCanvas.height = bh;
+    glowCanvas.width = bw; glowCanvas.height = bh;
+    imgBlob = blobCtx.createImageData(bw, bh);
+    imgGlow = glowCtx.createImageData(bw, bh);
+  }
+
+  // ---- Physics -------------------------------------------------------------------------
+  let now = 0;
+
+  function update(dt) {
+    now += dt;
+    const dtc = Math.min(dt, 0.05);
+    for (const b of blobs) {
+      if (b.ny < 0.17) b.heat = Math.min(1, b.heat + dtc * 0.5);
+      else if (b.ny > 0.78) b.heat = Math.max(0, b.heat - dtc * 0.4);
+      b.heat += (0.5 - b.heat) * 0.07 * dtc;
+
+      const buoy = (b.heat - 0.5) * 1.35;
+      b.vy += (buoy - b.vy * 1.7) * dtc;
+      b.ny += b.vy * dtc;
+
+      b.vx += (Math.sin(now * 0.45 + b.phase) * 0.035 - b.vx) * 1.6 * dtc;
+      b.nx += b.vx * dtc;
+
+      b.rr = b.r * (1 + 0.14 * Math.sin(now * 1.15 + b.phase2));
+
+      const maxN = Math.max(0.02, vesselW(b.ny) * 0.96 - b.rr * 0.55);
+      if (b.nx > maxN) { b.nx = maxN; b.vx = -Math.abs(b.vx) * 0.5; }
+      if (b.nx < -maxN) { b.nx = -maxN; b.vx = Math.abs(b.vx) * 0.5; }
+
+      if (b.ny < b.rr) { b.ny = b.rr; b.vy = Math.abs(b.vy) * 0.35; }
+      if (b.ny > 1 - b.rr) { b.ny = 1 - b.rr; b.vy = -Math.abs(b.vy) * 0.35; }
+    }
+
+    for (const s of bubbles) {
+      s.ny += s.sp * dtc;
+      s.nx += Math.sin(now * 1.4 + s.ph) * 0.01 * dtc;
+      if (s.ny > 1) { s.ny = 0; s.nx = rnd(-0.55, 0.55); s.r = rnd(0.004, 0.012); }
+    }
+  }
+
+  // ---- Metaball render -----------------------------------------------------------------
+  const smooth = (a, b, x) => {
+    let t = (x - a) / (b - a);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return t * t * (3 - 2 * t);
+  };
+
+  function renderField() {
+    const blobD = imgBlob.data;
+    const glowD = imgGlow.data;
+    const n = blobs.length;
+    const bx = new Float64Array(n), by = new Float64Array(n);
+    const br2 = new Float64Array(n), bh_ = new Float64Array(n);
+
+    for (let k = 0; k < n; k++) {
+      const b = blobs[k];
+      bx[k] = b.nx;
+      by[k] = b.ny;
+      br2[k] = b.rr * b.rr;
+      bh_[k] = b.heat;
+    }
+
+    const invSc = W / bw;   // buffer px -> css px
+    const invSy = H / bh;
+    const invR = 1 / R;
+    const invL = 1 / L;
+
+    for (let j = 0; j < bw; j++) {
+      const nx = ((j + 0.5) * invSc - X) * invR;
+      const colBase = j * 4;
+      for (let i = 0; i < bh; i++) {
+        const ny = (Yb - (i + 0.5) * invSy) * invL;
+        if (ny < -0.06 || ny > 1.06) continue;
+
+        let sum = 0, gx = 0, gy = 0, heatAcc = 0;
+        for (let k = 0; k < n; k++) {
+          const dx = nx - bx[k];
+          const dy = ny - by[k];
+          const d2 = dx * dx + dy * dy + 1e-5;
+          const r2 = br2[k];
+          const inv = r2 / d2;
+          sum += inv;
+          const d4 = d2 * d2;
+          gx += -2 * r2 * dx / d4;
+          gy += -2 * r2 * dy / d4;
+          heatAcc += inv * bh_[k];
+        }
+        if (sum < 0.035) continue;
+
+        const idx = (i * bw + j) * 4;
+        let heat = Math.min(1, Math.max(0, heatAcc / sum));
+        // lower wax is hotter; upper wax cools toward magenta
+        heat = Math.min(1, Math.max(0, heat * 0.72 + (1 - ny) * 0.34));
+
+        // palette: molten gold at the bottom -> orange -> crimson/magenta up top
+        let cr, cg, cb;
+        if (heat > 0.62) {
+          const t = (heat - 0.62) / 0.38;
+          cr = 255; cg = 150 + 96 * t; cb = 40 + 110 * t;
+        } else {
+          const t = heat / 0.62;
+          cr = 196 + 59 * t; cg = 26 + 124 * t; cb = 118 - 78 * t;
+        }
+
+        // outer normal from field gradient (used for glossy shading)
+        const nl = Math.sqrt(gx * gx + gy * gy) + 1e-6;
+        let diff = (0.62 * gx - 0.78 * gy) / nl;
+        if (diff < 0) diff = 0;
+        const spec = Math.pow(diff, 30) * 1.15;
+        const rim = Math.max(0, 1 - Math.abs(sum - 1.4) / 0.55) * 0.5;
+        const shade = 0.5 + 0.7 * diff + rim;
+
+        const cov = smooth(1.22, 1.62, sum);
+
+        if (cov > 0.003) {
+          const a = Math.min(1, cov) * 0.97;
+          let r = cr * shade + 255 * spec;
+          let g = cg * shade + 236 * spec;
+          let bl = cb * shade + 210 * spec;
+          blobD[idx]     = Math.min(255, r);
+          blobD[idx + 1] = Math.min(255, g);
+          blobD[idx + 2] = Math.min(255, bl);
+          blobD[idx + 3] = Math.min(255, a * 255);
+        }
+
+        const glowA = smooth(0.15, 1.7, sum) * 0.0 + Math.max(0, sum - 1) * 0.08;
+        if (glowA > 0.004) {
+          const ga = Math.min(1, glowA);
+          glowD[idx]     = Math.min(255, cr * 0.95 + 40);
+          glowD[idx + 1] = Math.min(255, cg * 0.8 + 20);
+          glowD[idx + 2] = Math.min(255, cb * 0.85 + 30);
+          glowD[idx + 3] = Math.min(255, ga * 255);
+        }
+      }
+    }
+    blobCtx.putImageData(imgBlob, 0, 0);
+    glowCtx.putImageData(imgGlow, 0, 0);
+  }
+
+  // ---- Background ----------------------------------------------------------------------
+  function drawBackground() {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, "#0b0611");
+    g.addColorStop(0.55, "#0a050c");
+    g.addColorStop(1, "#050307");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    // warm ambience behind the lamp
+    const rg = ctx.createRadialGradient(X, Yb - L * 0.4, R * 0.2, X, Yb - L * 0.4, L * 1.15);
+    rg.addColorStop(0, "rgba(255,120,40,0.30)");
+    rg.addColorStop(0.35, "rgba(200,40,90,0.16)");
+    rg.addColorStop(0.7, "rgba(90,20,80,0.10)");
+    rg.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = rg;
+    ctx.fillRect(0, 0, W, H);
+
+    // floor glow
+    const fg = ctx.createRadialGradient(X, Yb + baseH, R * 0.1, X, Yb + baseH, R * 4);
+    fg.addColorStop(0, "rgba(255,140,60,0.22)");
+    fg.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = fg;
+    ctx.save();
+    ctx.translate(X, Yb + baseH);
+    ctx.scale(1, 0.28);
+    ctx.beginPath();
+    ctx.arc(0, 0, R * 4, 0, 6.2832);
+    ctx.fillStyle = fg;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // ---- Glass & hardware ----------------------------------------------------------------
+  function drawLiquid() {
+    const g = ctx.createLinearGradient(0, Yt, 0, Yb);
+    g.addColorStop(0, "#2a0816");
+    g.addColorStop(0.35, "#4a0d16");
+    g.addColorStop(0.7, "#3a0710");
+    g.addColorStop(1, "#570d0c");
+    ctx.fillStyle = g;
+    ctx.fill();
+
+    // inner vertical warm core
+    const cg = ctx.createLinearGradient(X - R, 0, X + R, 0);
+    cg.addColorStop(0, "rgba(0,0,0,0.45)");
+    cg.addColorStop(0.5, "rgba(255,90,40,0.06)");
+    cg.addColorStop(1, "rgba(0,0,0,0.45)");
+    ctx.fillStyle = cg;
+    ctx.fill();
+  }
+
+  function drawGlass() {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+
+    // broad soft highlight streak
+    const hg = ctx.createLinearGradient(X - R, 0, X - R * 0.05, 0);
+    hg.addColorStop(0, "rgba(255,240,230,0.00)");
+    hg.addColorStop(0.28, "rgba(255,240,230,0.16)");
+    hg.addColorStop(0.55, "rgba(255,240,230,0.05)");
+    hg.addColorStop(1, "rgba(255,240,230,0.00)");
+    ctx.save();
+    ctx.clip(vesselPath(0));
+    ctx.fillStyle = hg;
+    ctx.fillRect(X - R, Yt, R, L);
+
+    // second thin highlight
+    const hg2 = ctx.createLinearGradient(X + R * 0.25, 0, X + R * 0.85, 0);
+    hg2.addColorStop(0, "rgba(255,235,220,0.00)");
+    hg2.addColorStop(0.6, "rgba(255,235,220,0.10)");
+    hg2.addColorStop(1, "rgba(255,235,220,0.00)");
+    ctx.fillStyle = hg2;
+    ctx.fillRect(X, Yt, R, L);
+    ctx.restore();
+
+    // rim lines
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,214,190,0.28)";
+    ctx.stroke(vesselPath(0));
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(255,255,255,0.10)";
+    ctx.stroke(vesselPath(5));
+
+    ctx.restore();
+  }
+
+  function drawHardware() {
+    // ---- base
+    const bw0 = R * 0.86, bw1 = R * 1.3, bh = baseH;
+    const g = ctx.createLinearGradient(X - bw1, 0, X + bw1, 0);
+    g.addColorStop(0, "#1d2026");
+    g.addColorStop(0.15, "#787f8a");
+    g.addColorStop(0.34, "#3b4048");
+    g.addColorStop(0.55, "#2a2e34");
+    g.addColorStop(0.78, "#6d7480");
+    g.addColorStop(1, "#191c21");
+    ctx.beginPath();
+    ctx.moveTo(X - bw0, Yb + 4);
+    ctx.lineTo(X - bw1, Yb + bh * 0.6);
+    ctx.quadraticCurveTo(X - bw1 * 1.03, Yb + bh, X - bw1 * 0.78, Yb + bh);
+    ctx.lineTo(X + bw1 * 0.78, Yb + bh);
+    ctx.quadraticCurveTo(X + bw1 * 1.03, Yb + bh, X + bw1, Yb + bh * 0.6);
+    ctx.lineTo(X + bw0, Yb + 4);
+    ctx.closePath();
+    ctx.fillStyle = g;
+    ctx.fill();
+
+    // warm light spilling from under the glass
+    const lg = ctx.createLinearGradient(0, Yb - R * 0.2, 0, Yb + bh * 0.4);
+    lg.addColorStop(0, "rgba(255,150,60,0.45)");
+    lg.addColorStop(1, "rgba(255,150,60,0)");
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.fillStyle = lg;
+    ctx.fillRect(X - bw1, Yb - R * 0.3, bw1 * 2, bh * 0.7);
+
+    // ---- cap
+    const cw1 = R * 1.12, ch = capH;
+    const cg = ctx.createLinearGradient(X - cw1, 0, X + cw1, 0);
+    cg.addColorStop(0, "#161a1f");
+    cg.addColorStop(0.16, "#7a818c");
+    cg.addColorStop(0.4, "#33383f");
+    cg.addColorStop(0.68, "#5d646f");
+    cg.addColorStop(1, "#14171b");
+    ctx.beginPath();
+    ctx.moveTo(X - cw1, Yt + 2);
+    ctx.lineTo(X - R * 0.42, Yt - ch * 0.72);
+    ctx.quadraticCurveTo(X, Yt - ch * 1.08, X + R * 0.42, Yt - ch * 0.72);
+    ctx.lineTo(X + cw1, Yt + 2);
+    ctx.closePath();
+    ctx.fillStyle = cg;
+    ctx.fill();
+
+    // cap top glow
+    const tg = ctx.createRadialGradient(X, Yt - ch * 0.6, 1, X, Yt - ch * 0.6, cw1);
+    tg.addColorStop(0, "rgba(255,190,120,0.22)");
+    tg.addColorStop(1, "rgba(255,190,120,0)");
+    ctx.fillStyle = tg;
+    ctx.fillRect(X - cw1, Yt - ch * 1.2, cw1 * 2, ch * 1.4);
+    ctx.restore();
+  }
+
+  function drawBubbles() {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (const s of bubbles) {
+      const px = X + s.nx * R;
+      const py = sy(s.ny);
+      const rr = Math.max(0.6, s.r * R);
+      const g = ctx.createRadialGradient(px, py, 0, px, py, rr);
+      g.addColorStop(0, "rgba(255,225,190,0.55)");
+      g.addColorStop(0.5, "rgba(255,170,110,0.22)");
+      g.addColorStop(1, "rgba(255,120,80,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(px, py, rr, 0, 6.2832);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawVignette() {
+    const g = ctx.createRadialGradient(X, H * 0.45, Math.min(W, H) * 0.25, X, H * 0.5, Math.max(W, H) * 0.75);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(1, "rgba(0,0,0,0.62)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // ---- Frame ---------------------------------------------------------------------------
+  function frame(t) {
+    const dt = frame._last ? Math.min(0.05, (t - frame._last) / 1000) : 0.016;
+    frame._last = t;
+
+    if (dt > 0) update(dt);
+    renderField();
+
+    ctx.clearRect(0, 0, W, H);
+    drawBackground();
+
+    ctx.save();
+    ctx.clip(vesselPath(0));
+    drawLiquid();
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.filter = "blur(" + Math.max(4, R * 0.16) + "px)";
+    ctx.drawImage(glowCanvas, 0, 0, W, H);
+    ctx.filter = "none";
+    ctx.globalCompositeOperation = "source-over";
+    ctx.drawImage(blobCanvas, 0, 0, W, H);
+    ctx.restore();
+
+    drawBubbles();
+    drawGlass();
+    ctx.restore();
+
+    drawHardware();
+    drawVignette();
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---- Boot ----------------------------------------------------------------------------
+  function boot() {
+    resize();
+    initBlobs();
+    requestAnimationFrame(frame);
+  }
+
+  let rt;
+  window.addEventListener("resize", () => {
+    clearTimeout(rt);
+    rt = setTimeout(() => { resize(); }, 120);
+  });
+
+  if (document.readyState === "complete") boot();
+  else window.addEventListener("load", boot);
+})();
+</script>
+</body>
+</html>

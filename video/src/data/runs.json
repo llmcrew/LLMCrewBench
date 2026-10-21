@@ -1,90 +1,22 @@
 [
  {
-  "dir": "deepseek-v4.1-flash-unc",
-  "label": "стенд A",
-  "title": "стенд A",
+  "dir": "deepseek-v4.1-flash-unc-1021",
+  "label": "DeepSeek 4.1 Flash · стенд A",
+  "title": "DeepSeek 4.1 Flash · стенд A",
   "accent": "#4cc2ff",
   "quant": "bf16/fp8",
-  "context": 262144,
-  "score": 95.0,
-  "verdict": "95/100",
-  "errors": 1,
-  "tasks": 96,
-  "K": {
-   "e": 77.0,
-   "p": 80.0
-  },
-  "L": {
-   "e": 134.0,
-   "p": 145.0
-  },
-  "totals": {
-   "A": {
-    "earned": 10.0,
-    "possible": 10.0
-   },
-   "B": {
-    "earned": 15.0,
-    "possible": 15.0
-   },
-   "C": {
-    "earned": 20.0,
-    "possible": 20.0
-   },
-   "D": {
-    "earned": 9.0,
-    "possible": 14.0
-   },
-   "E": {
-    "earned": 10.0,
-    "possible": 10.0
-   },
-   "F": {
-    "earned": 8.0,
-    "possible": 8.0
-   },
-   "G": {
-    "earned": 8.0,
-    "possible": 8.0
-   },
-   "H": {
-    "earned": 6.0,
-    "possible": 6.0
-   },
-   "I": {
-    "earned": 4.0,
-    "possible": 4.0
-   },
-   "J": {
-    "earned": 5.0,
-    "possible": 5.0
-   }
-  },
-  "spend": {
-   "answer": null,
-   "reasoning": 585622,
-   "tools": 1449,
-   "minutes": 140.2
-  }
- },
- {
-  "dir": "deepseek-v4.1-flash-unc-1017",
-  "label": "стенд 1017",
-  "title": "стенд 1017",
-  "accent": "#ffb45c",
-  "quant": "bf16/fp8",
-  "context": 262144,
+  "context": 32768,
   "score": 100.0,
   "verdict": "100/100",
   "errors": 0,
-  "tasks": 68,
+  "tasks": 96,
   "K": {
-   "e": 80.0,
+   "e": 78.0,
    "p": 80.0
   },
   "L": {
-   "e": 1.0,
-   "p": 1.0
+   "e": 23.0,
+   "p": 29.0
   },
   "totals": {
    "A": {
@@ -129,10 +61,78 @@
    }
   },
   "spend": {
-   "answer": 174853,
-   "reasoning": 162583,
-   "tools": 609,
-   "minutes": 32.1
+   "answer": 451790,
+   "reasoning": 321983,
+   "tools": 894,
+   "minutes": 141.1
+  }
+ },
+ {
+  "dir": "deepseek-v4.1-flash-unc-1017-1021",
+  "label": "DeepSeek 4.1 Flash · стенд 1017",
+  "title": "DeepSeek 4.1 Flash · стенд 1017",
+  "accent": "#ffb45c",
+  "quant": "bf16/fp8",
+  "context": 32768,
+  "score": 99.5,
+  "verdict": "100/100",
+  "errors": 0,
+  "tasks": 96,
+  "K": {
+   "e": 79.0,
+   "p": 80.0
+  },
+  "L": {
+   "e": 16.0,
+   "p": 29.0
+  },
+  "totals": {
+   "A": {
+    "earned": 10.0,
+    "possible": 10.0
+   },
+   "B": {
+    "earned": 15.0,
+    "possible": 15.0
+   },
+   "C": {
+    "earned": 20.0,
+    "possible": 20.0
+   },
+   "D": {
+    "earned": 13.5,
+    "possible": 14.0
+   },
+   "E": {
+    "earned": 10.0,
+    "possible": 10.0
+   },
+   "F": {
+    "earned": 8.0,
+    "possible": 8.0
+   },
+   "G": {
+    "earned": 8.0,
+    "possible": 8.0
+   },
+   "H": {
+    "earned": 6.0,
+    "possible": 6.0
+   },
+   "I": {
+    "earned": 4.0,
+    "possible": 4.0
+   },
+   "J": {
+    "earned": 5.0,
+    "possible": 5.0
+   }
+  },
+  "spend": {
+   "answer": 536095,
+   "reasoning": 421868,
+   "tools": 728,
+   "minutes": 54.2
   }
  }
 ]

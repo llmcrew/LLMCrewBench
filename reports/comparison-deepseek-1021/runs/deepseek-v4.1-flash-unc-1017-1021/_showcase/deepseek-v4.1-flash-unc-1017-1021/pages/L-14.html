@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Тихая вода</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; overflow: hidden; background: #070b10; }
+  #stage { position: fixed; inset: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #gl { background: #0a1118; }
+  #fringe {
+    pointer-events: none;
+    opacity: .92;
+    mix-blend-mode: normal;
+  }
+  .plate {
+    position: fixed;
+    left: max(22px, 3.4vw);
+    bottom: max(20px, 3.2vh);
+    z-index: 5;
+    pointer-events: none;
+    color: #e9dcc9;
+    text-shadow: 0 1px 18px rgba(0,0,0,.55);
+    opacity: .82;
+  }
+  .plate h1 {
+    margin: 0;
+    font: 400 clamp(11px, 1.05vw, 15px)/1.35 "Helvetica Neue", Helvetica, Arial, sans-serif;
+    letter-spacing: .34em;
+    text-transform: uppercase;
+  }
+  .plate p {
+    margin: .55em 0 0;
+    font: 400 clamp(9px, .78vw, 11px)/1.5 "Helvetica Neue", Helvetica, Arial, sans-serif;
+    letter-spacing: .2em;
+    color: #c9b9a6;
+    opacity: .62;
+    transition: opacity 1.6s ease;
+  }
+  .plate.done p { opacity: .22; }
+  .rule {
+    width: 34px; height: 1px; margin: 0 0 .9em;
+    background: #e6d3ba; opacity: .5;
+  }
+  #hint {
+    position: fixed; right: max(20px, 3.2vw); bottom: max(22px, 3.4vh);
+    z-index: 5; pointer-events: none;
+    font: 400 10px/1.4 "Helvetica Neue", Helvetica, Arial, sans-serif;
+    letter-spacing: .26em; text-transform: uppercase;
+    color: #d8c8b6; opacity: .3; transition: opacity 1.8s ease;
+  }
+  #hint.gone { opacity: 0; }
+  @media (max-width: 620px) {
+    .plate { left: 18px; bottom: 18px; }
+    #hint { right: 18px; bottom: 20px; font-size: 9px; }
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <canvas id="fringe"></canvas>
+</div>
+<div class="plate">
+  <div class="rule"></div>
+  <h1>Тихая вода</h1>
+  <p>этюд на поверхности · закат</p>
+</div>
+<div id="hint">коснитесь воды</div>
+
+<script>
+(() => {
+  'use strict';
+
+  const glCanvas = document.getElementById('gl');
+  const fringe = document.getElementById('fringe');
+  const hint = document.getElementById('hint');
+  const plate = document.querySelector('.plate');
+
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const gl = glCanvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, powerPreference: 'high-performance' })
+          || glCanvas.getContext('webgl', { antialias: false, alpha: false, depth: false, stencil: false, powerPreference: 'high-performance' });
+
+  const TAU = Math.PI * 2;
+  const HORIZON = 0.445;      // screen v of waterline (0 = bottom)
+  const SUN = { x: 0.705, y: 0.4815 };
+  const CAM_H = 0.52;
+  const FOCAL = 1.45;
+  const MAX_RINGS = 9;
+
+  const state = {
+    w: 1, h: 1, dpr: 1, aspect: 1,
+    t0: performance.now(),
+    pointer: { x: 0.5, y: 0.5, px: 0.5, py: 0.5, active: false },
+    drift: { x: 0, y: 0, tx: 0, ty: 0 },
+    rings: [],
+    nextDrop: 0,
+    frames: 0,
+    running: true,
+    woke: false,
+    failed: false
+  };
+
+  // sun direction in world space (camera looks +z)
+  const sunNdcX = (SUN.x - 0.5) * 2;
+  const sunNdcY = (SUN.y - HORIZON) * 2;
+  const sunDirRaw = [sunNdcX, sunNdcY, CAM_H / FOCAL];
+  const sunLen = Math.hypot(...sunDirRaw);
+  const SUN_DIR = sunDirRaw.map(v => v / sunLen);
+
+  /* ---------- shaders ---------- */
+
+  const VS = `
+    attribute vec2 a;
+    varying vec2 vUv;
+    void main() {
+      vUv = a * 0.5 + 0.5;
+      gl_Position = vec4(a, 0.0, 1.0);
+    }
+  `;
+
+  const NOISE = `
+    float hash21(vec2 p) {
+      p = fract(p * vec2(123.34, 456.21));
+      p += dot(p, p + 45.32);
+      return fract(p.x * p.y);
+    }
+    float vnoise(vec2 p) {
+      vec2 i = floor(p), f = fract(p);
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      float a = hash21(i);
+      float b = hash21(i + vec2(1.0, 0.0));
+      float c = hash21(i + vec2(0.0, 1.0));
+      float d = hash21(i + vec2(1.0, 1.0));
+      return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+    }
+    float fbm(vec2 p) {
+      float s = 0.0, a = 0.5;
+      for (int i = 0; i < 5; i++) {
+        s += a * vnoise(p);
+        p = p * 2.03 + vec2(11.3, 7.7);
+        a *= 0.5;
+      }
+      return s;
+    }
+  `;
+
+  const FS_SCENE = `
+    precision highp float;
+    #define HORIZON ${HORIZON.toFixed(4)}
+    #define CAM_H ${CAM_H.toFixed(4)}
+    #define FOCAL ${FOCAL.toFixed(4)}
+    #define RINGS ${MAX_RINGS}
+
+    varying vec2 vUv;
+    uniform vec2  uRes;
+    uniform float uTime;
+    uniform vec2  uDrift;
+    uniform vec2  uPointer;
+    uniform vec3  uSunDir;
+    uniform vec4  uRing[RINGS];
+
+    ${NOISE}
+
+    const vec3 ZENITH   = vec3(0.036, 0.058, 0.098);
+    const vec3 UPMID    = vec3(0.150, 0.163, 0.224);
+    const vec3 HORIZON_C= vec3(0.395, 0.318, 0.298);
+    const vec3 HORIZON_W= vec3(1.020, 0.560, 0.255);
+    const vec3 SUNCOL   = vec3(1.000, 0.855, 0.640);
+    const vec3 DEEPC    = vec3(0.008, 0.021, 0.029);
+    const vec3 SHALC    = vec3(0.029, 0.083, 0.089);
+
+    vec3 aces(vec3 x) {
+      return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+    }
+
+    // height field gradient of open water
+    vec2 waterGrad(vec2 p, float t, float dist) {
+      vec2 g = vec2(0.0);
+      float damp = 1.0 / (1.0 + dist * 0.045);
+      float patch = 0.45 + 1.1 * fbm(p * vec2(0.28, 0.22) + vec2(t * 0.021, t * 0.013));
+
+      for (int i = 0; i < 5; i++) {
+        float fi = float(i);
+        float k = 1.55 * pow(1.82, fi);
+        vec2 dir = normalize(vec2(0.24 + 0.20 * sin(fi * 2.3 + p.x * 0.05), 1.0));
+        float ph = dot(p, dir) * k + t * (0.85 + fi * 0.55) - dist * 0.30;
+        float a = 0.055 / pow(1.65, fi);
+        g += dir * cos(ph) * a * k;
+      }
+      return g * patch * damp;
+    }
+
+    vec3 sky(vec3 d) {
+      float up = max(d.y, 0.0);
+      float az = atan(d.x, d.z);
+      float sunAz = atan(uSunDir.x, uSunDir.z);
+      float dAz = abs(az - sunAz);
+      float cs = max(dot(d, uSunDir), 0.0);
+      float ang = acos(min(cs, 1.0));
+
+      vec3 col = mix(HORIZON_C, UPMID, smoothstep(0.0, 0.20, up));
+      col = mix(col, ZENITH, smoothstep(0.13, 0.62, up));
+
+      // warm scattering banked around the sun
+      float warm = exp(-dAz * 1.35) * (1.0 - smoothstep(0.0, 0.26, up));
+      warm += exp(-dAz * 0.55) * 0.20;
+      col = mix(col, HORIZON_W, clamp(warm, 0.0, 1.0) * 0.92);
+
+      // high cirrus, stretched
+      float c = fbm(vec2(az * 2.1 + 4.0, up * 26.0));
+      float band = smoothstep(0.46, 0.80, c) * (1.0 - smoothstep(0.10, 0.34, up)) * smoothstep(0.0, 0.045, up);
+      vec3 cloud = mix(vec3(0.30, 0.245, 0.255), vec3(0.95, 0.62, 0.38), exp(-dAz * 1.2));
+      col = mix(col, cloud, band * 0.62);
+
+      // distant shoreline
+      float sh = 0.0035 + 0.016 * fbm(vec2(az * 2.6 + 9.0, 1.7));
+      sh *= 0.45 + 0.85 * smoothstep(-1.9, 0.9, az);
+      float land = smoothstep(sh, sh - 0.0025, up) * smoothstep(0.0, 0.0015, up);
+      vec3 landCol = mix(vec3(0.075, 0.086, 0.098), vec3(0.34, 0.26, 0.235), exp(-dAz * 1.1));
+      col = mix(col, landCol, land * 0.88);
+
+      // glow
+      col += vec3(1.0, 0.48, 0.19) * pow(cs, 300.0) * 2.6;
+      col += vec3(1.0, 0.55, 0.26) * pow(cs, 26.0) * 0.30;
+      col += vec3(1.0, 0.62, 0.34) * pow(cs, 5.0) * 0.075;
+
+      // disc
+      float disc = smoothstep(0.0125, 0.0090, ang);
+      float core = smoothstep(0.0055, 0.0018, ang);
+      col += SUNCOL * disc * 2.15;
+      col += SUNCOL * core * 2.6;
+
+      return col;
+    }
+
+    // ripple rings -> height + radial slope
+    vec2 ringSlope(vec2 p, float t, out float crest) {
+      vec2 g = vec2(0.0);
+      crest = 0.0;
+      for (int i = 0; i < RINGS; i++) {
+        vec4 r = uRing[i];
+        if (r.w <= 0.0) continue;
+        float age = t - r.z;
+        if (age < 0.0 || age > 5.2) continue;
+        vec2 dv = p - r.xy;
+        float d = length(dv) + 1e-4;
+        float q = d - age * 0.62;
+        float front = exp(-q * q * 3.2);
+        float env = front * exp(-age * 0.62) * r.w;
+        float ph = d * 17.0 - age * 15.0;
+        float w = sin(ph);
+        g += (dv / d) * cos(ph) * env * 1.55;
+        crest += max(w, 0.0) * env;
+        // tiny crown splash
+        g += (dv / d) * exp(-d * 26.0) * exp(-age * 3.0) * r.w * 1.4;
+      }
+      return g;
+    }
+
+    void main() {
+      float t = uTime;
+      vec2 uv = gl_FragCoord.xy / uRes;
+      float aspect = uRes.x / uRes.y;
+      vec2 nd = vec2(uv.x * 2.0 - 1.0, (uv.y - HORIZON) * 2.0) * vec2(aspect, 1.0);
+      nd.x += uDrift.x;
+      nd.y -= uDrift.y;
+
+      vec3 col;
+      float glow = 0.0;
+
+      if (nd.y > 0.0) {
+        /* ---- sky ---- */
+        vec3 dir = normalize(vec3(nd.x, nd.y, CAM_H / FOCAL));
+        col = sky(dir);
+        glow = smoothstep(0.05, 0.0, abs(length(nd - vec2((0.5 + uDrift.x) * 0.0 + sunNdcX(), 0.0)))) * 0.0;
+        float cs = max(dot(dir, uSunDir), 0.0);
+        glow = pow(cs, 60.0) * 0.7;
+      } else {
+        /* ---- water ---- */
+        float dyN = -nd.y;
+        float dist = CAM_H / max(dyN * FOCAL, 1e-5);
+        vec2 P = vec2(nd.x * dist, dist);
+
+        vec2 g = waterGrad(P, t, dist);
+
+        // wind slicks: smoother, darker patches
+        float slick = fbm(P * vec2(0.42, 0.13) + vec2(t * 0.012, 0.0));
+        g *= mix(0.55, 1.35, smoothstep(0.25, 0.75, slick));
+
+        float crest;
+        g += ringSlope(P, t, crest) * (1.0 / (1.0 + dist * 0.12));
+
+        // fine chop, only near camera
+        float near = 1.0 / (1.0 + dist * 0.35);
+        g += (vec2(vnoise(P * 34.0 + t * 0.7), vnoise(P * 34.0 + 17.0 - t * 0.6)) - 0.5) * 0.55 * near;
+
+        vec3 N = normalize(vec3(-g.x, 1.0, -g.y));
+        vec3 V = normalize(vec3(P.x, -CAM_H, P.y));
+        vec3 R = reflect(V, N);
+        R.y = abs(R.y) + 0.002;
+
+        float ct = clamp(dot(-V, N), 0.0, 1.0);
+        float fres = 0.023 + 0.977 * pow(1.0 - ct, 5.0);
+
+        vec3 refl = sky(normalize(R));
+
+        // body of water
+        float depthMix = smoothstep(0.4, 15.0, dist);
+        vec3 body = mix(SHALC * 0.55, DEEPC, depthMix);
+        body += SHALC * max(-g.y, 0.0) * 0.55 * (1.0 - depthMix * 0.6);
+        // light bleeding through backlit crests
+        float back = pow(max(dot(-V, uSunDir), 0.0), 3.0);
+        body += vec3(0.075, 0.095, 0.058) * back * (0.25 + crest * 3.2);
+
+        col = mix(body, refl, fres);
+
+        // sun glitter
+        float sp = max(dot(R, uSunDir), 0.0);
+        float sparkle = 0.35 + 1.3 * vnoise(P * vec2(26.0, 11.0) + t * 1.4);
+        float spec = pow(sp, 1500.0) * 11.0 + pow(sp, 150.0) * 0.55 + pow(sp, 16.0) * 0.13;
+        col += SUNCOL * spec * sparkle;
+
+        // crest foam
+        col += vec3(0.62, 0.72, 0.72) * clamp(crest * 1.15, 0.0, 1.0) * 0.28;
+
+        // aerial haze toward the waterline
+        float hz = 1.0 - smoothstep(0.0, 0.075, dyN);
+        vec3 haze = mix(HORIZON_C, HORIZON_W, exp(-abs(nd.x - sunNdcX()) * 1.1) * 0.85) * 0.92;
+        col = mix(col, haze, hz * 0.9);
+
+        // thin bright waterline
+        col += vec3(0.95, 0.80, 0.62) * smoothstep(0.0022, 0.0, dyN) * 0.22;
+
+        glow = pow(sp, 90.0) * 0.55 + pow(sp, 12.0) * 0.06;
+        glow += crest * 0.03;
+      }
+
+      // vignette + fine darkening low in the frame
+      vec2 vg = (uv - 0.5) * vec2(aspect, 1.0);
+      col *= 1.0 - 0.34 * dot(vg, vg);
+
+      col = aces(col * 1.02);
+      col = pow(col, vec3(0.965, 1.0, 1.035));
+
+      gl_FragColor = vec4(col, clamp(glow, 0.0, 1.0));
+    }
+  `.replace(/sunNdcX\(\)/g, `${sunNdcX.toFixed(5)}`);
+
+  const FS_BLUR = `
+    precision mediump float;
+    varying vec2 vUv;
+    uniform sampler2D uTex;
+    uniform vec2 uDir;
+    void main() {
+      float s = 0.0;
+      s += texture2D(uTex, vUv - uDir * 5.0).a * 0.0510;
+      s += texture2D(uTex, vUv - uDir * 4.0).a * 0.0918;
+      s += texture2D(uTex, vUv - uDir * 3.0).a * 0.1225;
+      s += texture2D(uTex, vUv - uDir * 2.0).a * 0.1500;
+      s += texture2D(uTex, vUv - uDir * 1.0).a * 0.1700;
+      s += texture2D(uTex, vUv).a * 0.1800;
+      s += texture2D(uTex, vUv + uDir * 1.0).a * 0.1700;
+      s += texture2D(uTex, vUv + uDir * 2.0).a * 0.1500;
+      s += texture2D(uTex, vUv + uDir * 3.0).a * 0.1225;
+      s += texture2D(uTex, vUv + uDir * 4.0).a * 0.0918;
+      s += texture2D(uTex, vUv + uDir * 5.0).a * 0.0510;
+      gl_FragColor = vec4(vec3(s), 1.0);
+    }
+  `;
+
+  const FS_POST = `
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uScene;
+    uniform sampler2D uGlow;
+    uniform vec2 uRes;
+    uniform float uTime;
+
+    float h21(vec2 p) {
+      p = fract(p * vec2(443.897, 441.423));
+      return fract(p.x * p.y + p.x + p.y);
+    }
+
+    void main() {
+      vec2 uv = vUv;
+      vec2 c = uv - 0.5;
+      vec2 ca = c * vec2(uRes.x / uRes.y, 1.0);
+      float r2 = dot(ca, ca);
+
+      float ab = 0.0018 + 0.0042 * r2;
+      vec3 col;
+      col.r = texture2D(uScene, uv + c * ab * 2.0).r;
+      col.g = texture2D(uScene, uv).g;
+      col.b = texture2D(uScene, uv - c * ab * 2.0).b;
+
+      vec3 bl = texture2D(uGlow, uv).rgb;
+      col += bl * vec3(1.05, 0.78, 0.55) * 0.72;
+
+      // gentle split tone
+      float lum = dot(col, vec3(0.299, 0.587, 0.114));
+      col = mix(col, col * vec3(0.90, 0.98, 1.14), (1.0 - smoothstep(0.05, 0.55, lum)) * 0.30);
+      col = mix(col, col * vec3(1.10, 1.02, 0.90), smoothstep(0.55, 1.0, lum) * 0.35);
+
+      // vignette
+      float v = 1.0 - 0.42 * smoothstep(0.15, 0.95, r2);
+      col *= v;
+
+      // grain
+      float g = h21(uv * uRes + fract(uTime) * 91.7) - 0.5;
+      col += g * 0.030 * (0.55 + 0.45 * (1.0 - lum));
+
+      // lift + shoulder
+      col = pow(max(col, 0.0), vec3(0.97));
+      col = col * 1.02 - 0.006;
+      col += (h21(uv * uRes + 7.3) - 0.5) * 0.0035;
+
+      gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+    }
+  `;
+
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      throw new Error(gl.getShaderInfoLog(s) + '\n' + src.split('\n').map((l, i) => (i + 1) + ': ' + l).join('\n'));
+    }
+    return s;
+  }
+  function program(fs) {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    return p;
+  }
+
+  let progScene, progBlur, progPost;
+  try {
+    progScene = program(FS_SCENE);
+    progBlur = program(FS_BLUR);
+    progPost = program(FS_POST);
+  } catch (err) {
+    console.error(err);
+    state.failed = true;
+    document.body.style.background = 'linear-gradient(#0a1420, #2a2430 45%, #6d4a35 52%, #101a1f)';
+  }
+  if (state.failed) return;
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+  function bindQuad(p) {
+    gl.useProgram(p);
+    const loc = gl.getAttribLocation(p, 'a');
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  }
+
+  const U = {
+    scene: {
+      res: gl.getUniformLocation(progScene, 'uRes'),
+      time: gl.getUniformLocation(progScene, 'uTime'),
+      drift: gl.getUniformLocation(progScene, 'uDrift'),
+      pointer: gl.getUniformLocation(progScene, 'uPointer'),
+      sun: gl.getUniformLocation(progScene, 'uSunDir'),
+      ring: gl.getUniformLocation(progScene, 'uRing')
+    },
+    post: {
+      scene: gl.getUniformLocation(progPost, 'uScene'),
+      glow: gl.getUniformLocation(progPost, 'uGlow'),
+      res: gl.getUniformLocation(progPost, 'uRes'),
+      time: gl.getUniformLocation(progPost, 'uTime')
+    },
+    blur: {
+      tex: gl.getUniformLocation(progBlur, 'uTex'),
+      dir: gl.getUniformLocation(progBlur, 'uDir')
+    }
+  };
+
+  const ringData = new Float32Array(MAX_RINGS * 4);
+
+  /* ---------- render targets ---------- */
+
+  function makeTarget(w, h) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { tex, fb, w, h };
+  }
+  function killTarget(tg) {
+    if (!tg) return;
+    gl.deleteTexture(tg.tex);
+    gl.deleteFramebuffer(tg.fb);
+  }
+
+  let sceneT = null, blurA = null, blurB = null;
+
+  /* ---------- sizing ---------- */
+
+  function resize() {
+    const w = Math.max(1, Math.round(window.innerWidth));
+    const h = Math.max(1, Math.round(window.innerHeight));
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.7);
+    const pw = Math.max(1, Math.round(w * dpr));
+    const ph = Math.max(1, Math.round(h * dpr));
+
+    state.w = pw; state.h = ph; state.dpr = dpr; state.aspect = pw / ph;
+
+    glCanvas.width = pw; glCanvas.height = ph;
+
+    const fw = Math.max(1, Math.round(pw * 0.5));
+    const fh = Math.max(1, Math.round(ph * 0.5));
+
+    killTarget(sceneT); killTarget(blurA); killTarget(blurB);
+    sceneT = makeTarget(pw, ph);
+    blurA = makeTarget(fw, fh);
+    blurB = makeTarget(fw, fh);
+
+    const od = Math.min(window.devicePixelRatio || 1, 1.35);
+    fringe.width = Math.max(1, Math.round(w * od));
+    fringe.height = Math.max(1, Math.round(h * od));
+    fringe.style.width = w + 'px';
+    fringe.style.height = h + 'px';
+    drawFringe(performance.now());
+  }
+
+  /* ---------- world mapping helpers ---------- */
+
+  function screenToWorld(ux, uy) {
+    // ux, uy in screen fraction (0..1, y from top)
+    const v = 1 - uy;
+    const dyN = (HORIZON - v) * 2;
+    if (dyN <= 0.0004) return null;
+    const dist = CAM_H / (dyN * FOCAL);
+    return { x: ((ux * 2 - 1) * state.aspect - state.drift.x) * dist, z: dist };
+  }
+
+  function addRing(ux, uy, strength) {
+    const w = screenToWorld(ux, uy);
+    if (!w) return;
+    const now = (performance.now() - state.t0) / 1000;
+    state.rings.push({ x: w.x, z: w.z, born: now, s: strength });
+    if (state.rings.length > MAX_RINGS) state.rings.shift();
+  }
+
+  /* ---------- fringe (reeds, pollen) ---------- */
+
+  const pollen = Array.from({ length: 22 }, (_, i) => ({
+    x: Math.random(), y: Math.random(), r: 0.6 + Math.random() * 2.0,
+    ph: Math.random() * TAU, sp: 0.006 + Math.random() * 0.016, a: 0.15 + Math.random() * 0.5
+  }));
+
+  const CLUSTERS = [
+    // far, soft bank at waterline left
+    { cx: 0.115, base: 0.548, n: 12, hmin: 0.045, hmax: 0.115, lean: 0.05, blur: 5.5, alpha: 0.30, wid: 1.5 },
+    // mid left
+    { cx: 0.045, base: 1.02, n: 10, hmin: 0.24, hmax: 0.47, lean: 0.12, blur: 2.4, alpha: 0.55, wid: 2.6 },
+    // near left, big
+    { cx: 0.012, base: 1.09, n: 7, hmin: 0.40, hmax: 0.78, lean: 0.20, blur: 1.2, alpha: 0.78, wid: 5.0 },
+    // right edge
+    { cx: 0.975, base: 1.06, n: 6, hmin: 0.26, hmax: 0.62, lean: -0.09, blur: 2.0, alpha: 0.6, wid: 3.6 }
+  ];
+
+  function stem(ctx, x, y, hh, lean, wid, alpha, blur, t, seed, head) {
+    const w = fringe.width, h = fringe.height;
+    const swayA = (reduce ? 0.004 : 0.016) * w;
+    const sway = Math.sin(t * 0.45 + seed * 9.1) * swayA + Math.sin(t * 0.19 + seed * 3.3) * swayA * 0.7;
+    const bx = x * w, by = y * h, len = hh * h;
+    const tipX = bx + lean * w + sway, tipY = by - len;
+    const c1x = bx + lean * w * 0.22 + sway * 0.25, c1y = by - len * 0.52;
+
+    const N = 16, left = [], right = [];
+    for (let i = 0; i <= N; i++) {
+      const s = i / N;
+      const mt = 1 - s;
+      const px = mt * mt * bx + 2 * mt * s * c1x + s * s * tipX;
+      const py = mt * mt * by + 2 * mt * s * c1y + s * s * tipY;
+      const dx = 2 * mt * (c1x - bx) + 2 * s * (tipX - c1x);
+      const dy = 2 * mt * (c1y - by) + 2 * s * (tipY - c1y);
+      const dl = Math.hypot(dx, dy) || 1;
+      const nx = -dy / dl, ny = dx / dl;
+      const hw = (wid * (1 - s * 0.92) + 0.35) * 0.5 * (w / 1400);
+      left.push([px + nx * hw, py + ny * hw]);
+      right.push([px - nx * hw, py - ny * hw]);
+    }
+
+    ctx.filter = blur > 0.3 ? `blur(${blur.toFixed(1)}px)` : 'none';
+    ctx.fillStyle = `rgba(7, 12, 15, ${alpha})`;
+    ctx.beginPath();
+    ctx.moveTo(left[0][0], left[0][1]);
+    for (const p of left) ctx.lineTo(p[0], p[1]);
+    for (let i = right.length - 1; i >= 0; i--) ctx.lineTo(right[i][0], right[i][1]);
+    ctx.closePath();
+    ctx.fill();
+
+    if (head) {
+      const hx = left[N][0] * 0.55 + right[N][0] * 0.45;
+      const hy = left[N][1] * 0.55 + right[N][1] * 0.45;
+      const hw = head * w * 0.0032, hl = hw * 3.4;
+      ctx.beginPath();
+      ctx.ellipse(hx, hy + hl * 0.55, hw, hl, lean * 0.25, 0, TAU);
+      ctx.fill();
+      ctx.filter = 'none';
+    }
+    ctx.filter = 'none';
+  }
+
+  function drawFringe(now) {
+    const ctx = fringe.getContext('2d');
+    const t = now / 1000;
+    ctx.clearRect(0, 0, fringe.width, fringe.height);
+
+    for (const cl of CLUSTERS) {
+      for (let i = 0; i < cl.n; i++) {
+        const seed = cl.cx * 13 + i * 1.71;
+        const r = (n) => {
+          const v = Math.sin(seed * 12.9898 + n * 78.233) * 43758.5453;
+          return v - Math.floor(v);
+        };
+        const x = cl.cx + (r(1) - 0.5) * 0.22;
+        const hh = cl.hmin + (cl.hmax - cl.hmin) * r(2);
+        const lean = cl.lean * (0.4 + r(3) * 0.9) + (r(4) - 0.5) * 0.08;
+        const wid = cl.wid * (0.6 + r(5) * 0.8);
+        const head = 0;
+        stem(ctx, x, cl.base + (r(6) - 0.5) * 0.05, hh, lean, wid, cl.alpha * (0.6 + r(7) * 0.7), cl.blur, t, seed, head);
+      }
+    }
+
+    // floating motes, warm
+    ctx.globalCompositeOperation = 'lighter';
+    for (const p of pollen) {
+      const yy = (p.y - t * p.sp) % 1.08;
+      const yy2 = yy < -0.04 ? yy + 1.08 : yy;
+      const xx = p.x + Math.sin(t * 0.23 + p.ph) * 0.012;
+      if (yy2 < 0.44) continue;
+      const r = p.r * (fringe.width / 1400) * 2.2;
+      const gx = xx * fringe.width, gy = (1 - yy2) * fringe.height;
+      const grd = ctx.createRadialGradient(gx, gy, 0, gx, gy, r * 4);
+      const a = p.a * (0.45 + 0.55 * Math.sin(t * 1.3 + p.ph));
+      grd.addColorStop(0, `rgba(255, 216, 158, ${a})`);
+      grd.addColorStop(0.35, `rgba(255, 190, 120, ${a * 0.35})`);
+      grd.addColorStop(1, 'rgba(255, 170, 90, 0)');
+      ctx.fillStyle = grd;
+      ctx.beginPath();
+      ctx.arc(gx, gy, r * 4, 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* ---------- interaction ---------- */
+
+  function pointerMove(e) {
+    const ux = e.clientX / window.innerWidth;
+    const uy = e.clientY / window.innerHeight;
+    state.pointer.x = ux; state.pointer.y = uy;
+    if (!state.woke) { state.woke = true; hint.classList.add('gone'); plate.classList.add('done'); }
+    if (uy > 1 - HORIZON) {
+      const dx = (ux - state.pointer.px) * state.aspect;
+      const dy = (uy - state.pointer.py);
+      if (Math.hypot(dx, dy) > 0.012) addRing(ux, uy, 0.55);
+    }
+    state.pointer.px = ux; state.pointer.py = uy;
+  }
+  window.addEventListener('pointermove', pointerMove, { passive: true });
+  window.addEventListener('pointerdown', (e) => {
+    addRing(e.clientX / window.innerWidth, e.clientY / window.innerHeight, 1.0);
+    addRing(e.clientX / window.innerWidth + 0.006, e.clientY / window.innerHeight + 0.004, 0.7);
+    if (!state.woke) { state.woke = true; hint.classList.add('gone'); plate.classList.add('done'); }
+  }, { passive: true });
+
+  // ambient drops
+  function ambient(tSec) {
+    if (tSec < state.nextDrop) return;
+    state.nextDrop = tSec + 1.5 + Math.random() * 2.6;
+    const ux = 0.08 + Math.random() * 0.86;
+    const uy = 0.58 + Math.random() * 0.38;
+    addRing(ux, uy, 0.35 + Math.random() * 0.45);
+  }
+
+  /* ---------- frame ---------- */
+
+  let driftX = 0, driftY = 0;
+
+  function draw(nowMs) {
+    if (!state.running) return;
+    const tSec = (nowMs - state.t0) / 1000;
+    const tSlow = reduce ? tSec * 0.25 : tSec;
+
+    if (!reduce) ambient(tSec);
+
+    // camera breathing
+    const targetX = Math.sin(tSlow * 0.075) * 0.006 + Math.sin(tSlow * 0.031 + 2.0) * 0.004;
+    const targetY = Math.cos(tSlow * 0.061) * 0.0032;
+    driftX += (targetX - driftX) * 0.02;
+    driftY += (targetY - driftY) * 0.02;
+    state.drift.x = driftX;
+    state.drift.y = driftY;
+
+    // ring buffer upload
+    ringData.fill(0);
+    let i = 0;
+    for (const r of state.rings) {
+      const age = tSec - r.born;
+      if (age > 5.2) continue;
+      ringData[i * 4] = r.x;
+      ringData[i * 4 + 1] = r.z;
+      ringData[i * 4 + 2] = r.born;
+      ringData[i * 4 + 3] = r.s;
+      i++;
+      if (i >= MAX_RINGS) break;
+    }
+
+    // scene
+    gl.bindFramebuffer(gl.FRAMEBUFFER, sceneT.fb);
+    gl.viewport(0, 0, sceneT.w, sceneT.h);
+    bindQuad(progScene);
+    gl.uniform2f(U.scene.res, sceneT.w, sceneT.h);
+    gl.uniform1f(U.scene.time, tSlow);
+    gl.uniform2f(U.scene.drift, driftX, driftY);
+    gl.uniform2f(U.scene.pointer, state.pointer.x, state.pointer.y);
+    gl.uniform3f(U.scene.sun, SUN_DIR[0], SUN_DIR[1], SUN_DIR[2]);
+    gl.uniform4fv(U.scene.ring, ringData);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // blur glow
+    gl.bindFramebuffer(gl.FRAMEBUFFER, blurA.fb);
+    gl.viewport(0, 0, blurA.w, blurA.h);
+    bindQuad(progBlur);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sceneT.tex);
+    gl.uniform1i(U.blur.tex, 0);
+    gl.uniform2f(U.blur.dir, 1 / blurA.w, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, blurB.fb);
+    gl.viewport(0, 0, blurB.w, blurB.h);
+    gl.bindTexture(gl.TEXTURE_2D, blurA.tex);
+    gl.uniform2f(U.blur.dir, 0, 1 / blurB.h);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // composite
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, state.w, state.h);
+    bindQuad(progPost);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sceneT.tex);
+    gl.uniform1i(U.post.scene, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, blurB.tex);
+    gl.uniform1i(U.post.glow, 1);
+    gl.uniform2f(U.post.res, state.w, state.h);
+    gl.uniform1f(U.post.time, tSec);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    drawFringe(nowMs);
+
+    state.frames++;
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', () => { resize(); }, { passive: true });
+  window.addEventListener('visibilitychange', () => {
+    if (document.hidden) { state.running = false; }
+    else if (!state.running) { state.running = true; state.t0 = performance.now() - 1000; requestAnimationFrame(draw); }
+  });
+
+  resize();
+  // seed a few rings so it is alive on first paint
+  for (let k = 0; k < 3; k++) {
+    addRing(0.25 + Math.random() * 0.5, 0.70 + Math.random() * 0.2, 0.5);
+    state.rings[k].born = (performance.now() - state.t0) / 1000 - 0.3 - k * 0.35;
+  }
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>

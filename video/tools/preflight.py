@@ -146,6 +146,13 @@ def validate(rows: list, scenes: list[str], errors: list[str], warnings: list[st
     scene_ids = [s["id"] for s in scenes]
     if [r.get("scene") for r in rows] != scene_ids:
         errors.append("showcase.json: набор/порядок сцен не совпадает с scenes.json")
+    # Свежее дерево до первой записи: клипов нет вообще, причины плашек придут
+    # из прогона и превратятся в маркеры при записи. Это предупреждения, а не
+    # ошибки; на записанном дереве те же расхождения — ошибки.
+    pre_record = not any(
+        media_status.clip_path(OUT, run.get("model", "?"), row.get("scene", "?")) .is_file()
+        for row in rows for run in row.get("runs") or []
+    )
     derived = []
     for row in rows:
         scene = row.get("scene", "?")
@@ -171,12 +178,14 @@ def validate(rows: list, scenes: list[str], errors: list[str], warnings: list[st
                     if clip.is_file():
                         errors.append(f"{model}/{scene}: статус media_missing, но клип есть")
                 elif status in media_status.STATUSES and not clip.is_file():
-                    errors.append(f"{model}/{scene}: нет файла клипа (статус {status})")
+                    (warnings if pre_record else errors).append(
+                        f"{model}/{scene}: нет файла клипа (статус {status})")
                 if status == "ok" and marker.is_file():
                     errors.append(f"{model}/{scene}: статус ok, но маркер плашки ещё лежит")
                 if status in media_status.PLACEHOLDER_STATUSES:
                     if not marker.is_file():
-                        errors.append(f"{model}/{scene}: нет маркера для статуса {status}")
+                        (warnings if pre_record and status != "capture_failed" else errors).append(
+                            f"{model}/{scene}: нет маркера для статуса {status}")
                     else:
                         reason = marker.read_text(encoding="utf-8").strip()
                         # Улика после двоеточия статус не меняет.

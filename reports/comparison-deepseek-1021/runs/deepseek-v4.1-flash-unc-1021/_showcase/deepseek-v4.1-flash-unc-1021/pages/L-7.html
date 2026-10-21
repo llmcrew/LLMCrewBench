@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Фейерверк над рекой</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #03040c; }
+
+  /* ---- staged layers: sky+city (bg), fireworks (fx), mirrored (refl) ---- */
+  #stage { position: fixed; inset: 0; }
+  #bg, #fx, #refl { position: absolute; left: 0; top: 0; display: block; }
+  #bg   { z-index: 0; }
+  #fx   { z-index: 1; mix-blend-mode: screen; }
+  #refl {
+    z-index: 2; mix-blend-mode: screen; opacity: .58;
+    filter: blur(1.1px) saturate(1.15);
+    pointer-events: none;
+  }
+
+  /* warm vignette + subtle grain-ish shading */
+  #vignette {
+    position: absolute; inset: 0; z-index: 4; pointer-events: none;
+    background:
+      radial-gradient(120% 90% at 50% 112%, rgba(255,170,90,.10), rgba(255,170,90,0) 55%),
+      radial-gradient(140% 120% at 50% 30%, rgba(0,0,0,0) 45%, rgba(0,0,0,.55) 100%);
+  }
+  #grain {
+    position: absolute; inset: 0; z-index: 5; pointer-events: none; opacity: .05;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/></filter><rect width='120' height='120' filter='url(%23n)'/></svg>");
+    mix-blend-mode: overlay;
+  }
+
+  #hint {
+    position: absolute; z-index: 6; left: 0; right: 0; bottom: max(14px, env(safe-area-inset-bottom));
+    text-align: center; pointer-events: none;
+    font: 500 11px/1.6 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+    letter-spacing: .32em; text-transform: uppercase;
+    color: rgba(255,228,190,.5);
+    text-shadow: 0 1px 14px rgba(0,0,0,.9);
+  }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <canvas id="bg"></canvas>
+    <canvas id="fx"></canvas>
+    <canvas id="refl"></canvas>
+    <div id="vignette"></div>
+    <div id="grain"></div>
+    <div id="hint">фейерверк над рекой · нажмите, чтобы запустить</div>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ------------------------------------------------------------------ setup
+  const bg = document.getElementById("bg");
+  const fx = document.getElementById("fx");
+  const refl = document.getElementById("refl");
+  const bgx = bg.getContext("2d");
+  const fxx = fx.getContext("2d");
+  const rfx = refl.getContext("2d");
+
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+  let W = 0, H = 0, horizon = 0, waterH = 0;
+  let starField = [], skyline = [], embers = [];
+
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const pick = a => a[(Math.random() * a.length) | 0];
+
+  // small seeded rng so the skyline/stars stay put between resizes
+  function mulberry32(seed) {
+    return function () {
+      seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+      let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+
+  // ------------------------------------------------------------------ canvas
+  function sizeCanvas(c, w, h, ctx) {
+    c.width = Math.max(1, Math.round(w * DPR));
+    c.height = Math.max(1, Math.round(h * DPR));
+    c.style.width = w + "px";
+    c.style.height = h + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+
+  function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    horizon = Math.round(H * 0.63);
+    waterH = H - horizon;
+
+    sizeCanvas(bg, W, H, bgx);
+    sizeCanvas(fx, W, H, fxx);
+    sizeCanvas(refl, W, waterH, rfx);
+    refl.style.top = horizon + "px";
+
+    buildStars();
+    buildSkyline();
+    buildEmbers();
+    drawBackground();
+
+    fxx.clearRect(0, 0, W, H);
+    rfx.clearRect(0, 0, W, waterH);
+  }
+
+  // ------------------------------------------------------------------ world
+  function buildStars() {
+    const rng = mulberry32(1337);
+    const n = Math.round(W * H / 5200);
+    starField = [];
+    for (let i = 0; i < n; i++) {
+      const y = rng() * horizon * 0.97;
+      const depth = 1 - y / horizon;
+      starField.push({
+        x: rng() * W,
+        y,
+        r: 0.3 + depth * 1.25 * rng(),
+        a: 0.15 + depth * 0.7 * rng(),
+        warm: rng() > 0.82,
+        tw: rng() * Math.PI * 2
+      });
+    }
+  }
+
+  function buildSkyline() {
+    const rng = mulberry32(90210);
+    skyline = [];
+    let x = -20;
+    while (x < W + 20) {
+      const bw = 26 + rng() * 74;
+      const isTower = rng() > 0.82;
+      const bh = isTower ? (90 + rng() * 150) : (26 + rng() * 100);
+      const b = { x, w: bw, h: bh, tower: isTower, windows: [] };
+      const cols = Math.max(2, Math.floor(bw / 13));
+      const rows = Math.max(2, Math.floor(bh / 15));
+      for (let c = 0; c < cols; c++) {
+        for (let r = 0; r < rows; r++) {
+          if (rng() > 0.62) {
+            b.windows.push({
+              x: 5 + c * (bw - 10) / cols,
+              y: 8 + r * (bh - 12) / rows,
+              w: 2.4 + rng() * 1.6,
+              h: 2.2 + rng() * 1.8,
+              warm: rng(),
+              a: 0.25 + rng() * 0.75
+            });
+          }
+        }
+      }
+      if (isTower && rng() > 0.4) b.beacon = { x: bw / 2, y: 3 };
+      skyline.push(b);
+      x += bw + (1 + rng() * 7);
+    }
+  }
+
+  function buildEmbers() {
+    embers = [];
+    for (let i = 0; i < 42; i++) {
+      embers.push({ x: rand(0, W), y: rand(horizon * 0.15, horizon), vy: rand(-9, -3), vx: rand(-7, 7), a: rand(.06, .22), r: rand(.6, 1.6) });
+    }
+  }
+
+  function drawBackground() {
+    // sky
+    const sky = bgx.createLinearGradient(0, 0, 0, horizon);
+    sky.addColorStop(0.00, "#03040d");
+    sky.addColorStop(0.38, "#070c22");
+    sky.addColorStop(0.72, "#101438");
+    sky.addColorStop(1.00, "#1d1c46");
+    bgx.fillStyle = sky;
+    bgx.fillRect(0, 0, W, horizon);
+
+    // city glow near the horizon
+    const glow = bgx.createRadialGradient(W * 0.5, horizon, 0, W * 0.5, horizon, W * 0.62);
+    glow.addColorStop(0, "rgba(255,150,110,.20)");
+    glow.addColorStop(0.4, "rgba(160,110,190,.10)");
+    glow.addColorStop(1, "rgba(60,60,150,0)");
+    bgx.fillStyle = glow;
+    bgx.fillRect(0, 0, W, horizon);
+
+    // stars
+    for (const s of starField) {
+      const c = s.warm ? "255,214,160" : "200,220,255";
+      bgx.fillStyle = `rgba(${c},${s.a})`;
+      bgx.beginPath(); bgx.arc(s.x, s.y, s.r, 0, Math.PI * 2); bgx.fill();
+    }
+
+    // moon
+    drawMoon(bgx, W * 0.80, horizon * 0.24, 34);
+
+    // skyline
+    const baseY = horizon;
+    for (const b of skyline) {
+      const y = baseY - b.h;
+      bgx.fillStyle = "#04050f";
+      bgx.fillRect(b.x, y, b.w, b.h);
+      if (b.beacon) {
+        bgx.fillStyle = "rgba(255,90,90,.85)";
+        bgx.beginPath(); bgx.arc(b.x + b.beacon.x, y + b.beacon.y, 1.4, 0, Math.PI * 2); bgx.fill();
+      }
+      for (const w of b.windows) {
+        const c = w.warm < .5 ? "255,206,140" : "180,214,255";
+        bgx.fillStyle = `rgba(${c},${w.a * 0.9})`;
+        bgx.fillRect(b.x + w.x, y + w.y, w.w, w.h);
+      }
+    }
+
+    // water
+    const sea = bgx.createLinearGradient(0, horizon, 0, H);
+    sea.addColorStop(0, "#0d1030");
+    sea.addColorStop(0.35, "#080a22");
+    sea.addColorStop(1, "#040510");
+    bgx.fillStyle = sea;
+    bgx.fillRect(0, horizon, W, waterH);
+
+    // reflected city glow on the water
+    const rglow = bgx.createLinearGradient(0, horizon, 0, horizon + waterH * 0.7);
+    rglow.addColorStop(0, "rgba(255,150,110,.16)");
+    rglow.addColorStop(1, "rgba(255,150,110,0)");
+    bgx.fillStyle = rglow;
+    bgx.fillRect(0, horizon, W, waterH);
+
+    // mirrored windows as vertical streaks
+    for (const b of skyline) {
+      const y = baseY - b.h;
+      for (const w of b.windows) {
+        if (w.a < 0.4) continue;
+        const c = w.warm < .5 ? "255,206,140" : "180,214,255";
+        const sx = b.x + w.x;
+        const sy = horizon + (horizon - (y + w.y)) * 0.6;
+        if (sy > H) continue;
+        const len = rand(6, 34);
+        bgx.fillStyle = `rgba(${c},${w.a * 0.14})`;
+        bgx.fillRect(sx, sy, w.w * 0.8, len);
+      }
+    }
+
+    // horizon line shimmer
+    bgx.fillStyle = "rgba(180,190,255,.06)";
+    bgx.fillRect(0, horizon - 1, W, 1.4);
+  }
+
+  function drawMoon(ctx, x, y, r) {
+    const halo = ctx.createRadialGradient(x, y, r * 0.4, x, y, r * 5);
+    halo.addColorStop(0, "rgba(255,240,205,.20)");
+    halo.addColorStop(1, "rgba(255,240,205,0)");
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(x, y, r * 5, 0, Math.PI * 2); ctx.fill();
+
+    ctx.fillStyle = "#f4ead0";
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    // crescent shadow
+    ctx.fillStyle = "rgba(10,14,38,.92)";
+    ctx.beginPath(); ctx.arc(x + r * 0.42, y - r * 0.20, r * 0.95, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // ------------------------------------------------------------------ engine
+  const PALETTE = [
+    [255, 207, 107], [255, 79, 160], [95, 224, 255], [168, 255, 122],
+    [180, 123, 255], [255, 138, 92], [207, 232, 255], [255, 245, 205]
+  ];
+  const HOT = [255, 244, 214];
+
+  let particles = [];
+  let shells = [];
+  let events = [];
+  let showTime = 0;
+  const MAX_PARTICLES = 3600;
+
+  function addP(x, y, vx, vy, o) {
+    if (particles.length >= MAX_PARTICLES) return null;
+    const p = {
+      x, y, px: x, py: y, vx, vy,
+      g: o.g ?? 52, drag: o.drag ?? 0.945,
+      life: 0, max: o.max ?? 1.6,
+      r: o.r ?? 1.7, col: o.col ?? PALETTE[0],
+      flick: o.flick ?? false, split: o.split ?? false,
+      splitAt: o.splitAt ?? 0.42, splitN: o.splitN ?? 4, splitDone: false,
+      crack: o.crack ?? false, bright: o.bright ?? 1
+    };
+    particles.push(p);
+    return p;
+  }
+
+  function shell(x, type, ci, scale) {
+    const g = 300;
+    const targetY = rand(horizon * 0.12, horizon * 0.45);
+    const rise = horizon - targetY;
+    const vy = -Math.sqrt(2 * g * rise);
+    const vx = rand(-24, 24);
+    shells.push({ x, y: horizon - 2, vx, vy, g, type, ci, scale, tt: 0 });
+  }
+
+  // -------------------------------------------------- burst choreography
+  function burst(x, y, type, ci, scale = 1) {
+    const base = PALETTE[ci % PALETTE.length];
+    const alt = PALETTE[(ci + 3 + ((Math.random() * 3) | 0)) % PALETTE.length];
+    const n = scale;
+
+    const spread = (count, speedMin, speedMax, opts) => {
+      for (let i = 0; i < count; i++) {
+        const th = Math.random() * Math.PI * 2;
+        const sp = rand(speedMin, speedMax) * n;
+        addP(x, y, Math.cos(th) * sp, Math.sin(th) * sp, opts);
+      }
+    };
+
+    switch (type) {
+      case "peony":
+        spread(Math.round(90 * n), 90, 240, { col: base, max: rand(1.3, 1.8), r: rand(1.4, 2.4) });
+        break;
+
+      case "chrysanthemum": {
+        for (let i = 0; i < Math.round(120 * n); i++) {
+          const th = Math.random() * Math.PI * 2;
+          const sp = rand(70, 210) * n;
+          addP(x, y, Math.cos(th) * sp, Math.sin(th) * sp,
+            { col: base, max: rand(1.8, 2.6), drag: 0.955, g: 40, r: rand(1.3, 2.1), bright: .95 });
+        }
+        for (let i = 0; i < 26; i++) {
+          const th = Math.random() * Math.PI * 2, sp = rand(10, 60);
+          addP(x, y, Math.cos(th) * sp, Math.sin(th) * sp, { col: HOT, max: rand(.9, 1.4), r: 1.5 });
+        }
+        break;
+      }
+
+      case "willow": {
+        const cnt = Math.round(110 * n);
+        for (let i = 0; i < cnt; i++) {
+          const th = Math.random() * Math.PI * 2;
+          const sp = rand(50, 150) * n;
+          addP(x, y, Math.cos(th) * sp, Math.sin(th) * sp,
+            { col: PALETTE[0], max: rand(2.8, 3.8), drag: 0.978, g: 92, r: rand(1.1, 1.9), bright: .9 });
+        }
+        break;
+      }
+
+      case "palm": {
+        const arms = Math.round(14 * n);
+        const rot = Math.random() * Math.PI;
+        for (let i = 0; i < arms; i++) {
+          const th = rot + (i / arms) * Math.PI * 2 + rand(-.05, .05);
+          const sp = rand(170, 240) * n;
+          addP(x, y, Math.cos(th) * sp, Math.sin(th) * sp,
+            { col: PALETTE[6], max: rand(1.9, 2.4), drag: 0.962, g: 66, r: 3.0, bright: 1.15 });
+          const sp2 = sp * 0.55;
+          addP(x, y, Math.cos(th) * sp2, Math.sin(th) * sp2,
+            { col: PALETTE[0], max: rand(1.6, 2.1), drag: 0.96, g: 70, r: 1.6 });
+        }
+        break;
+      }
+
+      case "ring": {
+        const cnt = Math.round(80 * n), sp = rand(130, 190) * n;
+        const rot = Math.random() * Math.PI, tilt = rand(0.22, 0.6);
+        for (let i = 0; i < cnt; i++) {
+          const th = (i / cnt) * Math.PI * 2;
+          const ex = Math.cos(th), ey = Math.sin(th) * tilt;
+          const rx = ex * Math.cos(rot) - ey * Math.sin(rot);
+          const ry = ex * Math.sin(rot) + ey * Math.cos(rot);
+          addP(x, y, rx * sp, ry * sp, { col: alt, max: rand(1.3, 1.8), r: 1.8, bright: 1.1 });
+        }
+        break;
+      }
+
+      case "double": {
+        for (const [sp, col, cnt] of [[190 * n, base, 70], [110 * n, alt, 55]]) {
+          for (let i = 0; i < cnt; i++) {
+            const th = Math.random() * Math.PI * 2;
+            addP(x, y, Math.cos(th) * sp, Math.sin(th) * sp,
+              { col, max: rand(1.3, 1.8), r: 1.7, bright: 1.05 });
+          }
+        }
+        break;
+      }
+
+      case "crossette": {
+        for (let i = 0; i < Math.round(34 * n); i++) {
+          const th = Math.random() * Math.PI * 2, sp = rand(120, 210) * n;
+          addP(x, y, Math.cos(th) * sp, Math.sin(th) * sp,
+            { col: base, max: rand(1.4, 1.9), r: 2.0, split: true, splitAt: rand(.32, .5) });
+        }
+        break;
+      }
+
+      case "crackle": {
+        for (let i = 0; i < Math.round(70 * n); i++) {
+          const th = Math.random() * Math.PI * 2, sp = rand(60, 200) * n;
+          addP(x, y, Math.cos(th) * sp, Math.sin(th) * sp,
+            { col: HOT, max: rand(.9, 1.5), r: 1.7, crack: true, bright: 1.2 });
+        }
+        for (let i = 0; i < Math.round(30 * n); i++) {
+          const th = Math.random() * Math.PI * 2, sp = rand(120, 230) * n;
+          addP(x, y, Math.cos(th) * sp, Math.sin(th) * sp, { col: base, max: rand(1.1, 1.6), r: 1.5 });
+        }
+        break;
+      }
+
+      case "strobe": {
+        for (let i = 0; i < Math.round(60 * n); i++) {
+          const th = Math.random() * Math.PI * 2, sp = rand(40, 170) * n;
+          addP(x, y, Math.cos(th) * sp, Math.sin(th) * sp,
+            { col: alt, max: rand(2.0, 2.8), drag: 0.965, r: 1.7, flick: true });
+        }
+        break;
+      }
+
+      default:
+        spread(Math.round(90 * n), 90, 230, { col: base, max: 1.6, r: 1.8 });
+    }
+  }
+
+  function miniSparks(x, y, col, count) {
+    for (let i = 0; i < count; i++) {
+      const th = Math.random() * Math.PI * 2, sp = rand(20, 70);
+      addP(x, y, Math.cos(th) * sp, Math.sin(th) * sp,
+        { col, max: rand(.3, .7), drag: 0.9, g: 40, r: 1.3, flick: true, bright: 1.2 });
+    }
+  }
+
+  // -------------------------------------------------- show script
+  function buildShow() {
+    const ev = [];
+    const T = [];
+    let t = 0.4;
+
+    // 1. opening — lone shells, breathing pace
+    const opening = ["peony", "chrysanthemum", "ring", "willow", "palm"];
+    for (let i = 0; i < 9; i++) {
+      ev.push({ t, x: rand(0.16, 0.84), type: opening[i % opening.length], ci: (i * 2) % PALETTE.length, s: rand(0.9, 1.15) });
+      t += rand(1.2, 1.9);
+    }
+
+    // 2. development — pairs and crossettes, richer colours
+    for (let i = 0; i < 12; i++) {
+      const xc = rand(0.2, 0.8);
+      const type = pick(["double", "crossette", "chrysanthemum", "strobe", "peony", "ring"]);
+      ev.push({ t, x: xc, type, ci: (i * 3 + 1) % PALETTE.length, s: rand(0.95, 1.2) });
+      ev.push({ t: t + rand(0.05, 0.35), x: Math.min(0.9, Math.max(0.1, xc + rand(-0.28, 0.28))), type: pick(["peony", "willow", "crackle", "double"]), ci: (i * 5 + 2) % PALETTE.length, s: rand(0.8, 1.05) });
+      t += rand(1.25, 1.8);
+    }
+
+    // 3. climax build-up — faster, layered
+    for (let i = 0; i < 18; i++) {
+      const type = pick(["crackle", "palm", "crossette", "double", "chrysanthemum", "strobe"]);
+      ev.push({ t, x: rand(0.12, 0.88), type, ci: (i * 4 + 3) % PALETTE.length, s: rand(1.0, 1.35) });
+      if (Math.random() > 0.45) ev.push({ t: t + rand(0.1, 0.4), x: rand(0.12, 0.88), type: pick(["peony", "ring", "willow"]), ci: (i * 2 + 5) % PALETTE.length, s: rand(0.85, 1.1) });
+      t += rand(0.55, 1.0);
+    }
+
+    // 4. finale — dense volley
+    const finaleStart = t + 0.3;
+    for (let i = 0; i < 40; i++) {
+      const type = pick(["chrysanthemum", "crackle", "double", "palm", "crossette", "willow", "strobe"]);
+      ev.push({ t: finaleStart + i * rand(0.14, 0.24), x: rand(0.08, 0.92), type, ci: (i * 7) % PALETTE.length, s: rand(1.1, 1.6) });
+    }
+    ev.push({ t: finaleStart + 0.1, x: 0.5, type: "chrysanthemum", ci: 0, s: 2.1 });
+
+    ev.sort((a, b) => a.t - b.t);
+    events = ev;
+    T.period = (ev.length ? ev[ev.length - 1].t : 10) + 4.5;
+    return T.period;
+  }
+  let PERIOD = buildShow();
+  let evIndex = 0;
+
+  let nextUserShell = 0;
+
+  function updateShow(dt) {
+    showTime += dt;
+    while (evIndex < events.length && events[evIndex].t <= showTime) {
+      const e = events[evIndex++];
+      shell(e.x * W, e.type, e.ci, e.s);
+    }
+    if (showTime > PERIOD) { showTime -= PERIOD; evIndex = 0; }
+
+    nextUserShell -= dt;
+  }
+
+  // -------------------------------------------------- update
+  function updateParticles(dt) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life += dt;
+      if (p.life >= p.max) {
+        if (p.crack) miniSparks(p.x, p.y, HOT, 3);
+        particles[i] = particles[particles.length - 1];
+        particles.pop();
+        continue;
+      }
+      if (p.split && !p.splitDone && p.life > p.max * p.splitAt) {
+        p.splitDone = true;
+        const sp = 55;
+        for (let k = 0; k < p.splitN; k++) {
+          const th = (k / p.splitN) * Math.PI * 2 + Math.random();
+          addP(p.x, p.y, Math.cos(th) * sp, Math.sin(th) * sp,
+            { col: HOT, max: rand(.4, .8), r: 1.4, flick: true, bright: 1.2 });
+        }
+      }
+      const d = Math.pow(p.drag, dt * 60);
+      p.vx *= d; p.vy *= d;
+      p.vy += p.g * dt;
+      p.px = p.x; p.py = p.y;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+    }
+  }
+
+  function updateShells(dt) {
+    for (let i = shells.length - 1; i >= 0; i--) {
+      const s = shells[i];
+      s.vy += s.g * dt;
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+
+      // launch trail
+      addP(s.x, s.y, rand(-12, 12), rand(6, 40),
+        { col: [255, 200, 120], max: rand(.35, .7), drag: 0.9, g: 20, r: rand(.8, 1.5), flick: Math.random() > .6 });
+
+      if (s.vy >= 0) {
+        burst(s.x, s.y, s.type, s.ci, s.scale);
+        // flash
+        for (let k = 0; k < 10; k++) {
+          const th = Math.random() * Math.PI * 2;
+          addP(s.x, s.y, Math.cos(th) * rand(30, 90), Math.sin(th) * rand(30, 90),
+            { col: [255, 255, 240], max: rand(.15, .35), drag: 0.85, r: rand(1.5, 2.5), bright: 1.4 });
+        }
+        shells[i] = shells[shells.length - 1];
+        shells.pop();
+      }
+    }
+  }
+
+  function updateEmbers(dt) {
+    for (const e of embers) {
+      e.x += e.vx * dt; e.y += e.vy * dt;
+      if (e.y < horizon * 0.05 || e.x < -20 || e.x > W + 20) {
+        e.x = rand(0, W); e.y = rand(horizon * 0.5, horizon); e.vx = rand(-7, 7); e.vy = rand(-9, -3);
+      }
+    }
+  }
+
+  // -------------------------------------------------- render
+  function renderFade() {
+    fxx.globalCompositeOperation = "source-over";
+    fxx.fillStyle = "rgba(0,0,0,0.155)";
+    fxx.fillRect(0, 0, W, H);
+    fxx.globalCompositeOperation = "lighter";
+    fxx.lineCap = "round";
+  }
+
+  function drawParticles() {
+    // soft halo pass
+    for (const p of particles) {
+      const k = 1 - p.life / p.max;
+      let a = k * k * 0.28 * (p.bright ?? 1);
+      if (p.flick) a *= 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(p.life * 42));
+      const [r, g, b] = p.col;
+      fxx.strokeStyle = `rgba(${r},${g},${b},${a})`;
+      fxx.lineWidth = p.r * 3.1;
+      fxx.beginPath();
+      fxx.moveTo(p.px, p.py);
+      fxx.lineTo(p.x, p.y);
+      fxx.stroke();
+    }
+    // core pass
+    for (const p of particles) {
+      const k = 1 - p.life / p.max;
+      let a = Math.min(1, k * 1.25) * (p.bright ?? 1);
+      if (p.flick) a *= 0.25 + 0.75 * (0.5 + 0.5 * Math.sin(p.life * 42));
+      const [r, g, b] = p.col;
+      fxx.strokeStyle = `rgba(${r},${g},${b},${a})`;
+      fxx.lineWidth = p.r;
+      fxx.beginPath();
+      fxx.moveTo(p.px, p.py);
+      fxx.lineTo(p.x, p.y);
+      fxx.stroke();
+    }
+  }
+
+  function drawEmbers() {
+    for (const e of embers) {
+      fxx.fillStyle = `rgba(255,190,130,${e.a})`;
+      fxx.beginPath(); fxx.arc(e.x, e.y, e.r, 0, Math.PI * 2); fxx.fill();
+    }
+  }
+
+  // mirror the fx canvas into the water with a gentle wobble
+  const BAND = 3;
+  function renderReflection(time) {
+    rfx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    rfx.clearRect(0, 0, W, waterH);
+
+    for (let dy = 0; dy < waterH; dy += BAND) {
+      const sy = horizon - dy - BAND;
+      if (sy < -BAND) break;
+      const depth = dy / waterH;
+      const wamp = 7 * depth + 1.5;
+      const off = Math.sin(dy * 0.055 + time * 1.6) * wamp
+                + Math.sin(dy * 0.017 - time * 0.9) * wamp * 0.5;
+
+      // source rows in device px
+      const sxd = 0, syd = Math.max(0, sy) * DPR, swd = W * DPR, shd = BAND * DPR;
+      const dx = off, dyd = dy, dw = W, dhd = BAND + 1;
+      rfx.drawImage(fx, sxd, syd, swd, shd, dx, dyd, dw, dhd);
+    }
+
+    // fade with depth
+    const grad = rfx.createLinearGradient(0, 0, 0, waterH);
+    grad.addColorStop(0, "rgba(0,0,0,0.95)");
+    grad.addColorStop(0.55, "rgba(0,0,0,0.5)");
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    rfx.globalCompositeOperation = "destination-in";
+    rfx.fillStyle = grad;
+    rfx.fillRect(0, 0, W, waterH);
+    rfx.globalCompositeOperation = "source-over";
+  }
+
+  // -------------------------------------------------- main loop
+  let last = performance.now();
+  let simTime = 0;
+
+  function frame(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.05) dt = 0.05;
+    simTime += dt;
+
+    updateShow(dt);
+    updateShells(dt);
+    updateParticles(dt);
+    updateEmbers(dt);
+
+    renderFade();
+    drawParticles();
+    drawEmbers();
+    renderReflection(simTime);
+
+    requestAnimationFrame(frame);
+  }
+
+  // -------------------------------------------------- interaction
+  function userShell() {
+    shell(rand(0.14, 0.86) * W, pick(["peony", "chrysanthemum", "ring", "crackle", "double", "willow"]), (Math.random() * PALETTE.length) | 0, rand(0.9, 1.25));
+  }
+  window.addEventListener("pointerdown", () => { userShell(); });
+  window.addEventListener("keydown", (e) => { if (e.code === "Space") { e.preventDefault(); userShell(); } });
+
+  let rt = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(rt);
+    rt = setTimeout(resize, 120);
+  });
+
+  // -------------------------------------------------- go
+  resize();
+  // a couple of immediate shells so the sky isn't empty on first paint
+  shell(0.35 * W, "chrysanthemum", 0, 1.15);
+  shell(0.68 * W, "willow", 0, 1.0);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

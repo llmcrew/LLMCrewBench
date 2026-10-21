@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import replace
 import shutil
 import sys
 from datetime import datetime
@@ -781,7 +782,9 @@ def cmd_rescore(args: argparse.Namespace) -> int:
 def build_suite_digest(cfg: RunConfig) -> dict:
     from .suite import suite_digest
 
-    return suite_digest(build_suite(cfg), cfg.profile)
+    # ``--only`` filters the run, not the suite identity.
+    full = build_suite(replace(cfg, only=()) if cfg.only else cfg)
+    return suite_digest(full, cfg.profile)
 
 
 def _resume_tasks(
@@ -818,11 +821,14 @@ def _resume_tasks(
             f"{directory}: сохранённый прогон собран в профиле {saved_profile}, "
             f"а сейчас {cfg.profile} — resume смешал бы версии сьюта"
         )
-    full = build_suite(cfg)
+    # The digest is a property of the whole profile: a resume filtered to a few
+    # ids must compare against the complete suite, not against its own slice.
+    full_cfg = replace(cfg, only=()) if cfg.only else cfg
+    full = build_suite(full_cfg)
     current = suite_digest(full, cfg.profile)
-    # A filtered or limited resume carries a smaller denominator by design; a
-    # complete one must weigh exactly the profile's declared total.
-    complete = not cfg.only and len(tasks) >= len(full)
+    # A limited resume carries a smaller denominator by design; the full one
+    # must weigh exactly the profile's declared total.
+    complete = len(tasks) >= len(full)
     if complete:
         expected_total = core.profile_total(cfg.profile)
         current_total = float(current.get("possible_total") or 0.0)

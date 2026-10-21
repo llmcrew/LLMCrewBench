@@ -21,7 +21,7 @@ export const Section: React.FC<{id: SceneId}> = ({id}) => {
     case 'hero':
       return (
         <Hero
-          clip="clips/deepseek-v4.1-flash-unc-1017__K-1.mp4"
+          clip="clips/deepseek-v4.1-flash-unc-1017-1021__K-1.mp4"
           caption="K-1 — баллистика: три снаряда под гравитацией"
           model="DeepSeek 4.1 Flash · стенд 1017 · 4/4"
         />

@@ -21,14 +21,14 @@ sys.path.insert(0, str(ROOT))
 from dailybench import core, report  # noqa: E402
 
 RUNS = ROOT / "runs"
-DIRS = ["deepseek-v4.1-flash-unc", "deepseek-v4.1-flash-unc-1017"]
+DIRS = ["deepseek-v4.1-flash-unc-1021", "deepseek-v4.1-flash-unc-1017-1021"]
 LABELS = {
-    "deepseek-v4.1-flash-unc": "стенд A",
-    "deepseek-v4.1-flash-unc-1017": "стенд 1017",
+    "deepseek-v4.1-flash-unc-1021": "DeepSeek 4.1 Flash · стенд A",
+    "deepseek-v4.1-flash-unc-1017-1021": "DeepSeek 4.1 Flash · стенд 1017",
 }
 ACCENTS = {
-    "deepseek-v4.1-flash-unc": "#4cc2ff",
-    "deepseek-v4.1-flash-unc-1017": "#ffb45c",
+    "deepseek-v4.1-flash-unc-1021": "#4cc2ff",
+    "deepseek-v4.1-flash-unc-1017-1021": "#ffb45c",
 }
 
 

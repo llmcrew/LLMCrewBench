@@ -175,6 +175,22 @@ def _expected_prompt(task_id: str) -> str:
     return next(task.prompt for task in build_suite(cfg) if task.id == task_id)
 
 
+def test_resume_with_a_narrower_only_slice_compares_the_full_suite(endpoint, tmp_path: Path):
+    """``--only IF-2`` must not look like a different suite than the saved run.
+
+    The suite digest identifies the profile; the filter only picks tasks. A
+    narrowed resume is exactly how a handful of interrupted tasks is replayed
+    (see the collector flow), so a digest of the slice would refuse every one.
+    """
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1,IF-2", "--name", "narrow") == 0
+
+    assert _run(base_url, out, "--only", "IF-1", "--name", "narrow", "--resume") == 0
+    saved = _read(out / "narrow" / "tasks.json")
+    assert [entry["task"]["id"] for entry in saved] == ["IF-1", "IF-2"]
+
+
 def test_resume_replays_a_task_whose_agent_died(endpoint, tmp_path: Path):
     """A truncated agent record is re-run, not shipped half-empty."""
     base_url, _server = endpoint

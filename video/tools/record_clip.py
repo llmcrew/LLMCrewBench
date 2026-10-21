@@ -51,7 +51,7 @@ VIDEO = ROOT / "video"
 #: Источник страниц — последнее сравнение (два ingress'а одной модели).
 ART = ROOT / "reports" / "comparison-deepseek-1017"
 OUT = VIDEO / "public" / "clips"
-MODELS = ("deepseek-v4.1-flash-unc", "deepseek-v4.1-flash-unc-1017")
+MODELS = ("deepseek-v4.1-flash-unc-1021", "deepseek-v4.1-flash-unc-1017-1021")
 SCENES = tuple(f"K-{i}" for i in range(1, 21)) + tuple(f"L-{i}" for i in range(1, 30))
 
 #: Частота клипа. Пара с `FPS` в `src/video/data.ts`: клип снят покадрово, и

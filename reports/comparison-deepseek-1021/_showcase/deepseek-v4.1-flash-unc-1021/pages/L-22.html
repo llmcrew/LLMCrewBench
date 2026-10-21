@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ремонтник под дождём</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #04050b; overflow: hidden;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  #c { display: block; width: 100vw; height: 100vh; }
+  .caption {
+    position: fixed; left: 26px; bottom: 22px;
+    pointer-events: none; user-select: none;
+    color: #cfe9ff; letter-spacing: .34em; text-transform: uppercase;
+    font-size: 11px; line-height: 1.9;
+    text-shadow: 0 0 14px rgba(56,232,255,.55), 0 0 3px rgba(0,0,0,.9);
+    mix-blend-mode: screen;
+  }
+  .caption b {
+    display: block; font-size: 20px; letter-spacing: .18em;
+    color: #fff; font-weight: 600; margin-bottom: 4px;
+    text-shadow: 0 0 24px rgba(56,232,255,.5), 0 0 60px rgba(255,62,165,.35);
+  }
+  .caption i { font-style: normal; color: #ff8a2b; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="caption">
+  <b>Ремонтник под дождём</b>
+  юнит R-7 · сектор 04 · <i>шов №113</i> · идёт сварка
+</div>
+<script>
+"use strict";
+(function () {
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d', { alpha: false });
+
+  let W = 0, H = 0, DPR = 1;
+
+  // ---------- helpers ----------
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  let seed = 20240517;
+  function rnd() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+  function rr(a, b) { return a + rnd() * (b - a); }
+
+  function roundRect(g, x, y, w, h, r) {
+    r = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
+    g.beginPath();
+    g.moveTo(x + r, y);
+    g.arcTo(x + w, y, x + w, y + h, r);
+    g.arcTo(x + w, y + h, x, y + h, r);
+    g.arcTo(x, y + h, x, y, r);
+    g.arcTo(x, y, x + w, y, r);
+    g.closePath();
+  }
+
+  // ---------- layout ----------
+  let groundY = 0, rx = 0, ry = 0, rs = 1, pipeX = 0, weldX = 0, weldY = 0, lampX = 0;
+
+  function layout() {
+    W = Math.max(320, window.innerWidth);
+    H = Math.max(320, window.innerHeight);
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = Math.round(W * DPR);
+    cv.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    groundY = H * 0.795;
+    rs = clamp(Math.min(W / 1280, H / 760), 0.55, 1.55);
+    rx = W * 0.585;
+    ry = groundY;
+    pipeX = rx + 104 * rs;
+    weldX = pipeX - 13 * rs;
+    weldY = ry - 150 * rs;
+    lampX = rx + 10 * rs;
+
+    buildBackground();
+    initRain();
+  }
+
+  // ---------- static background ----------
+  const bg = document.createElement('canvas');
+  const bctx = bg.getContext('2d');
+  const neon = [];
+
+  function buildingRow(g, baseY, minH, maxH, tint, winChance, alpha) {
+    let x = -80;
+    while (x < W + 80) {
+      const bw = rr(48, 130);
+      const bh = rr(minH, maxH);
+      const y = baseY - bh;
+      const shade = tint + rr(-4, 4);
+      g.fillStyle = `hsla(220, ${18 + rr(0, 16)}%, ${shade}%, ${alpha})`;
+      g.fillRect(x, y, bw, bh + 10);
+      // roof lip
+      g.fillStyle = `hsla(220, 20%, ${shade + 4}%, ${alpha})`;
+      g.fillRect(x - 3, y - 5, bw + 6, 6);
+
+      // windows
+      const cols = Math.max(2, Math.floor(bw / 22));
+      const rows = Math.max(2, Math.floor(bh / 30));
+      const mx = bw / cols, my = bh / rows;
+      for (let i = 0; i < cols; i++) {
+        for (let j = 0; j < rows; j++) {
+          if (rnd() > winChance) continue;
+          const warm = rnd() > 0.45;
+          g.fillStyle = warm
+            ? `hsla(${rr(30, 46)}, 95%, ${rr(52, 68)}%, ${alpha * rr(.35, .8)})`
+            : `hsla(${rr(180, 200)}, 95%, ${rr(55, 70)}%, ${alpha * rr(.25, .6)})`;
+          g.fillRect(x + i * mx + mx * 0.28, y + j * my + my * 0.28,
+                     mx * 0.38, my * 0.38);
+        }
+      }
+      // antennas
+      if (rnd() > 0.68) {
+        g.strokeStyle = `hsla(220,30%,12%,${alpha})`;
+        g.lineWidth = 2;
+        g.beginPath();
+        const ax = x + bw * rr(0.2, 0.8);
+        g.moveTo(ax, y - 5); g.lineTo(ax, y - rr(18, 54));
+        g.stroke();
+      }
+      x += bw + rr(5, 22);
+    }
+  }
+
+  function buildBackground() {
+    bg.width = Math.round(W * DPR);
+    bg.height = Math.round(H * DPR);
+    bctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    bctx.clearRect(0, 0, W, H);
+
+    // sky
+    const sky = bctx.createLinearGradient(0, 0, 0, groundY);
+    sky.addColorStop(0.00, '#04050c');
+    sky.addColorStop(0.42, '#080f22');
+    sky.addColorStop(0.78, '#12223f');
+    sky.addColorStop(1.00, '#1b3050');
+    bctx.fillStyle = sky;
+    bctx.fillRect(0, 0, W, groundY + 2);
+
+    // distant towers (hazy)
+    seed = 771;
+    buildingRow(bctx, groundY * 0.995, H * 0.24, H * 0.52, 13, 0.16, 0.85);
+    // near towers (dark)
+    seed = 4242;
+    buildingRow(bctx, groundY + 2, H * 0.20, H * 0.46, 7, 0.14, 1);
+
+    // horizon haze
+    const haze = bctx.createLinearGradient(0, groundY - H * 0.22, 0, groundY + 4);
+    haze.addColorStop(0, 'rgba(30,60,110,0)');
+    haze.addColorStop(1, 'rgba(46,92,150,0.30)');
+    bctx.fillStyle = haze;
+    bctx.fillRect(0, groundY - H * 0.22, W, H * 0.22 + 4);
+
+    // neon sign metadata (drawn live for glow)
+    neon.length = 0;
+    seed = 913;
+    const palette = ['#38e8ff', '#ff3ea5', '#ffb347', '#7cff9b'];
+    const cols = Math.max(3, Math.round(W / 360));
+    for (let i = 0; i < cols; i++) {
+      const x = W * ((i + 0.5) / cols) + rr(-40, 40);
+      neon.push({
+        x,
+        y: groundY * rr(0.20, 0.46),
+        text: ['REPAIR', '24/7', 'DROID', 'FIX&CO', 'SECTOR', 'GRID'][Math.floor(rnd() * 6)],
+        color: palette[Math.floor(rnd() * palette.length)],
+        vertical: rnd() > 0.62,
+        flicker: rnd() * 10,
+        size: rr(15, 25)
+      });
+    }
+  }
+
+  // ---------- rain ----------
+  let rain = [], ripples = [], sparks = [], splashes = [];
+  let wind = -0.30;
+
+  function makeDrop(front) {
+    return {
+      x: rr(-W * 0.25, W * 1.25),
+      y: rr(-H, groundY),
+      v: front ? rr(1.05, 1.7) : rr(0.55, 1.05),
+      len: front ? rr(20, 44) : rr(10, 24),
+      w: front ? rr(1.4, 2.6) : rr(0.7, 1.4),
+      a: front ? rr(0.30, 0.6) : rr(0.10, 0.28)
+    };
+  }
+  function initRain() {
+    rain = [];
+    const n = Math.round(clamp(W * H / 2600, 380, 1050));
+    for (let i = 0; i < n; i++) {
+      const d = makeDrop(i % 4 === 0);
+      d.y = rr(-H, groundY);
+      rain.push(d);
+    }
+    ripples = []; sparks = []; splashes = [];
+  }
+
+  function updateRain(dt, t) {
+    for (const d of rain) {
+      const vy = d.v * 900 * dt;
+      d.y += vy;
+      d.x += vy * wind * 0.55;
+      if (d.y > groundY) {
+        // splash on wet ground
+        if (d.w > 1.8 && Math.random() < 0.55) {
+          ripples.push({ x: d.x, y: groundY + rr(2, H - groundY - 6), r: 1, max: rr(9, 26), life: 1, sp: rr(0.5, 1.1) });
+        }
+        if (d.w > 1.4 && Math.random() < 0.5) {
+          for (let k = 0; k < 3; k++) {
+            splashes.push({
+              x: d.x, y: groundY - 1,
+              vx: rr(-0.5, 0.5) + wind, vy: -rr(0.4, 1.4),
+              life: 1, r: rr(0.8, 1.8)
+            });
+          }
+        }
+        d.y = rr(-H * 0.4, -8);
+        d.x = rr(-W * 0.25, W * 1.25);
+      }
+    }
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const p = ripples[i];
+      p.r += p.sp * 60 * dt;
+      p.life -= dt * 1.5;
+      if (p.life <= 0) ripples.splice(i, 1);
+    }
+    for (let i = splashes.length - 1; i >= 0; i--) {
+      const s = splashes[i];
+      s.vy += 5.2 * dt;
+      s.x += s.vx * 90 * dt;
+      s.y += s.vy * 90 * dt;
+      s.life -= dt * 2.2;
+      if (s.life <= 0) splashes.splice(i, 1);
+    }
+  }
+
+  function drawRain(front) {
+    ctx.lineCap = 'round';
+    for (const d of rain) {
+      const isFront = d.w > 1.8;
+      if (isFront !== front) continue;
+      const k = d.len / (d.v * 900);
+      ctx.strokeStyle = `rgba(${front ? '200,228,255' : '168,200,235'},${d.a})`;
+      ctx.lineWidth = d.w;
+      ctx.beginPath();
+      ctx.moveTo(d.x, d.y);
+      ctx.lineTo(d.x - wind * 900 * d.v * k, d.y - d.len);
+      ctx.stroke();
+    }
+  }
+
+  function drawRipples() {
+    for (const p of ripples) {
+      const a = p.life * 0.5;
+      ctx.strokeStyle = `rgba(150,205,255,${a})`;
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, p.r, p.r * 0.36, 0, 0, TAU);
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(255,255,255,${a * 0.5})`;
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, p.r * 0.55, p.r * 0.2, 0, 0, TAU);
+      ctx.stroke();
+    }
+    for (const s of splashes) {
+      ctx.fillStyle = `rgba(210,235,255,${s.life * 0.7})`;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r * s.life, 0, TAU);
+      ctx.fill();
+    }
+  }
+
+  // ---------- wet ground ----------
+  function drawGround(t) {
+    const g = ctx;
+    const grad = g.createLinearGradient(0, groundY, 0, H);
+    grad.addColorStop(0, '#16273e');
+    grad.addColorStop(0.3, '#0e1a2e');
+    grad.addColorStop(0.7, '#0a1220');
+    grad.addColorStop(1, '#060a13');
+    g.fillStyle = grad;
+    g.fillRect(0, groundY, W, H - groundY);
+
+    // curb line
+    g.strokeStyle = 'rgba(120,170,220,0.28)';
+    g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, groundY + 0.5); g.lineTo(W, groundY + 0.5); g.stroke();
+
+    // neon reflection smears on wet asphalt
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    for (const n of neon) {
+      const c = hexA(n.color, 0.22);
+      const w = n.vertical ? 16 : 90;
+      const rg = g.createLinearGradient(0, groundY, 0, groundY + 190);
+      rg.addColorStop(0, c);
+      rg.addColorStop(0.35, hexA(n.color, 0.09));
+      rg.addColorStop(1, hexA(n.color, 0));
+      g.fillStyle = rg;
+      const wob = Math.sin(t * 1.4 + n.x) * 3;
+      g.fillRect(n.x - w / 2 + wob, groundY, w, 190);
+    }
+
+    // wet specular streaks
+    g.lineWidth = 1;
+    for (let i = 0; i < 26; i++) {
+      const y = groundY + 6 + ((i * 37.7) % (H - groundY - 10));
+      const len = 120 + ((i * 91) % 260);
+      const x = ((i * 211) % (W + len)) - len;
+      const a = 0.06 + 0.05 * Math.sin(t * 1.1 + i);
+      g.strokeStyle = `rgba(150,195,240,${Math.max(0.01, a)})`;
+      g.beginPath();
+      g.moveTo(x, y);
+      g.lineTo(x + len, y + 1.2);
+      g.stroke();
+    }
+    g.restore();
+
+    // lamp pool
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    const pool = g.createRadialGradient(lampX, groundY + 6, 4, lampX, groundY + 6, 210 * rs);
+    pool.addColorStop(0, 'rgba(255,214,150,0.30)');
+    pool.addColorStop(0.5, 'rgba(255,190,120,0.10)');
+    pool.addColorStop(1, 'rgba(255,180,110,0)');
+    g.fillStyle = pool;
+    g.beginPath();
+    g.ellipse(lampX, groundY + 10, 230 * rs, 46 * rs, 0, 0, TAU);
+    g.fill();
+    g.restore();
+  }
+
+  function hexA(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  }
+
+  // ---------- neon ----------
+  function drawNeon(t) {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const n of neon) {
+      let flick = 1;
+      const f = Math.sin(t * 22 + n.flicker) * Math.sin(t * 3.1 + n.flicker * 2);
+      if (f > 0.93) flick = 0.35;
+      const a = 0.85 * flick;
+      ctx.save();
+      ctx.translate(n.x, n.y);
+      if (n.vertical) ctx.rotate(-Math.PI / 2);
+      ctx.font = `700 ${n.size}px ui-monospace, monospace`;
+      ctx.shadowColor = n.color;
+      ctx.shadowBlur = 22;
+      ctx.fillStyle = hexA(n.color, a);
+      ctx.fillText(n.text, 0, 0);
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = `rgba(255,255,255,${a * 0.75})`;
+      ctx.fillText(n.text, 0, 0);
+      ctx.restore();
+
+      // neon halo
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const hg = ctx.createRadialGradient(n.x, n.y, 2, n.x, n.y, 90);
+      hg.addColorStop(0, hexA(n.color, 0.16 * flick));
+      hg.addColorStop(1, hexA(n.color, 0));
+      ctx.fillStyle = hg;
+      ctx.fillRect(n.x - 90, n.y - 90, 180, 180);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // ---------- street lamp ----------
+  function drawLamp(t) {
+    const topY = ry - 330 * rs;
+    const armX = lampX + 46 * rs;
+    ctx.save();
+    // pole
+    ctx.strokeStyle = '#111823';
+    ctx.lineWidth = 9 * rs;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(lampX + 96 * rs, groundY);
+    ctx.lineTo(lampX + 96 * rs, topY + 26 * rs);
+    ctx.quadraticCurveTo(lampX + 96 * rs, topY, lampX + 60 * rs, topY);
+    ctx.lineTo(armX, topY);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(140,175,215,0.28)';
+    ctx.lineWidth = 2 * rs;
+    ctx.stroke();
+
+    // lamp head
+    const hx = armX, hy = topY + 6 * rs;
+    ctx.fillStyle = '#0e1520';
+    roundRect(ctx, hx - 22 * rs, hy, 44 * rs, 14 * rs, 5 * rs);
+    ctx.fill();
+    const flick = 0.9 + Math.sin(t * 9.3) * 0.04 + Math.sin(t * 37) * 0.02;
+
+    // glow bulb
+    ctx.globalCompositeOperation = 'lighter';
+    const bg2 = ctx.createRadialGradient(hx, hy + 12 * rs, 1, hx, hy + 12 * rs, 40 * rs);
+    bg2.addColorStop(0, `rgba(255,236,200,${0.9 * flick})`);
+    bg2.addColorStop(0.35, `rgba(255,200,130,${0.35 * flick})`);
+    bg2.addColorStop(1, 'rgba(255,180,110,0)');
+    ctx.fillStyle = bg2;
+    ctx.beginPath();
+    ctx.arc(hx, hy + 12 * rs, 42 * rs, 0, TAU);
+    ctx.fill();
+
+    // volumetric cone
+    const cone = ctx.createLinearGradient(hx, hy, hx, groundY);
+    cone.addColorStop(0, `rgba(255,226,178,${0.26 * flick})`);
+    cone.addColorStop(0.55, `rgba(255,208,150,${0.10 * flick})`);
+    cone.addColorStop(1, 'rgba(255,195,130,0.02)');
+    ctx.fillStyle = cone;
+    ctx.beginPath();
+    ctx.moveTo(hx - 20 * rs, hy + 8 * rs);
+    ctx.lineTo(hx + 20 * rs, hy + 8 * rs);
+    ctx.lineTo(hx + 200 * rs, groundY + 20 * rs);
+    ctx.lineTo(hx - 210 * rs, groundY + 20 * rs);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // ---------- robot ----------
+  function metal(g, x0, y0, x1, y1, a, b, c) {
+    const gr = g.createLinearGradient(x0, y0, x1, y1);
+    gr.addColorStop(0, a);
+    gr.addColorStop(0.5, b);
+    gr.addColorStop(1, c);
+    return gr;
+  }
+
+  function limb(g, pts, w, fill, rim) {
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    g.strokeStyle = fill;
+    g.lineWidth = w;
+    g.beginPath();
+    g.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
+    g.stroke();
+    // rim light
+    g.strokeStyle = rim;
+    g.lineWidth = w * 0.34;
+    g.stroke();
+  }
+
+  function drawRobot(g, t, weldFlick) {
+    const bob = Math.sin(t * 1.6) * 1.6;
+    const sway = Math.sin(t * 0.9) * 1.2;
+    g.save();
+    g.translate(0, bob);
+
+    const steelDark = '#39424f';
+    const steelMid = '#6a7787';
+    const steelLite = '#a9b7c8';
+    const accent = '#ff8a2b';
+    const hazard = '#ffcf3f';
+    const rimC = 'rgba(120,225,255,0.55)';
+    const rimW = 'rgba(255,190,120,0.5)';
+
+    // ground shadow
+    g.save();
+    g.fillStyle = 'rgba(0,0,0,0.5)';
+    g.beginPath();
+    g.ellipse(0, 4, 58, 11, 0, 0, TAU);
+    g.fill();
+    g.restore();
+
+    // ---- legs ----
+    const gL = metal(g, -34, 0, -8, 0, steelMid, steelDark, '#232a34');
+    g.strokeStyle = gL;
+    limb(g, [[-26, -86], [-30, -46], [-27, -12]], 26, gL, rimW);
+    limb(g, [[26, -86], [30, -46], [27, -12]], 26, gL, rimC);
+
+    // knees / joints
+    g.fillStyle = steelLite;
+    for (const p of [[-30, -46], [30, -46]]) {
+      g.beginPath(); g.arc(p[0], p[1], 8, 0, TAU); g.fill();
+      g.fillStyle = '#2a313b'; g.beginPath(); g.arc(p[0], p[1], 3.4, 0, TAU); g.fill();
+      g.fillStyle = steelLite;
+    }
+    // boots
+    for (const sx of [-27, 27]) {
+      const bg2 = metal(g, sx - 20, -14, sx + 20, 2, '#8b98a8', '#4a5462', '#252b34');
+      g.fillStyle = bg2;
+      roundRect(g, sx - 19, -15, 38, 15, 6);
+      g.fill();
+      g.fillStyle = 'rgba(255,180,120,0.25)';
+      roundRect(g, sx - 19, -15, 38, 4, 3); g.fill();
+    }
+
+    // ---- hips ----
+    g.fillStyle = '#2b323c';
+    roundRect(g, -34, -96, 68, 24, 10); g.fill();
+    g.fillStyle = accent;
+    roundRect(g, -34, -78, 68, 6, 3); g.fill();
+
+    // ---- torso ----
+    const torso = metal(g, -40, -170, 40, -95, steelLite, steelMid, '#2f3742');
+    g.fillStyle = torso;
+    roundRect(g, -40, -172, 80, 90, 18); g.fill();
+    g.strokeStyle = 'rgba(12,16,22,0.9)'; g.lineWidth = 2;
+    roundRect(g, -40, -172, 80, 90, 18); g.stroke();
+
+    // chest plate
+    g.fillStyle = '#1a2029';
+    roundRect(g, -30, -164, 60, 56, 10); g.fill();
+
+    // chest core glow
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    const pulse = 0.6 + Math.sin(t * 3.4) * 0.18;
+    const cg = g.createRadialGradient(0, -136, 1, 0, -136, 34);
+    cg.addColorStop(0, `rgba(150,245,255,${0.95 * pulse})`);
+    cg.addColorStop(0.5, `rgba(56,200,255,${0.5 * pulse})`);
+    cg.addColorStop(1, 'rgba(56,180,255,0)');
+    g.fillStyle = cg;
+    g.beginPath(); g.arc(0, -136, 34, 0, TAU); g.fill();
+    g.restore();
+    g.fillStyle = `rgba(210,250,255,${pulse})`;
+    g.beginPath(); g.arc(0, -136, 7, 0, TAU); g.fill();
+    // vent slits
+    g.strokeStyle = 'rgba(120,200,240,0.45)';
+    g.lineWidth = 2;
+    for (let i = 0; i < 3; i++) {
+      g.beginPath();
+      g.moveTo(-18, -112 + i * 6);
+      g.lineTo(18, -112 + i * 6);
+      g.stroke();
+    }
+
+    // hazard stripes belly band
+    g.save();
+    g.beginPath(); roundRect(g, -38, -112, 76, 12, 3); g.clip();
+    g.fillStyle = hazard;
+    g.fillRect(-40, -112, 80, 12);
+    g.fillStyle = '#1a1c22';
+    for (let i = -3; i < 5; i++) {
+      g.save();
+      g.translate(i * 18, -112);
+      g.transform(1, 0, -0.6, 1, 0, 0);
+      g.fillRect(0, 0, 8, 12);
+      g.restore();
+    }
+    g.restore();
+
+    // shoulder bolts
+    g.fillStyle = steelLite;
+    for (const sx of [-36, 36]) { g.beginPath(); g.arc(sx, -160, 4, 0, TAU); g.fill(); }
+
+    // ---- head ----
+    const hx = 0, hy = -196 + Math.sin(t * 1.1) * 1.2;
+    g.save();
+    g.translate(sway * 0.4, 0);
+
+    // neck
+    g.strokeStyle = '#2a313b'; g.lineWidth = 14; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(0, -172); g.lineTo(0, hy + 14); g.stroke();
+
+    // helmet
+    const hg = metal(g, -30, hy - 30, 30, hy + 26, '#c3d0de', '#6f7d8e', '#2b323d');
+    g.fillStyle = hg;
+    g.beginPath();
+    g.arc(hx, hy, 31, Math.PI, 0);
+    g.lineTo(hx + 31, hy + 12);
+    g.quadraticCurveTo(hx, hy + 26, hx - 31, hy + 12);
+    g.closePath();
+    g.fill();
+    g.strokeStyle = '#12171f'; g.lineWidth = 2; g.stroke();
+
+    // brim
+    g.fillStyle = accent;
+    roundRect(g, hx - 34, hy + 6, 68, 8, 4); g.fill();
+
+    // visor
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    const vg = g.createLinearGradient(hx - 26, hy - 14, hx + 26, hy + 6);
+    vg.addColorStop(0, 'rgba(90,255,235,0.95)');
+    vg.addColorStop(0.6, 'rgba(56,220,255,0.9)');
+    vg.addColorStop(1, 'rgba(40,150,255,0.85)');
+    g.fillStyle = vg;
+    roundRect(g, hx - 25, hy - 16, 50, 20, 9);
+    g.fill();
+    g.restore();
+    g.fillStyle = 'rgba(255,255,255,0.9)';
+    roundRect(g, hx - 18, hy - 12, 8, 5, 2.5); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.5)';
+    roundRect(g, hx + 2, hy - 4, 14, 4, 2); g.fill();
+
+    // antenna + beacon
+    g.strokeStyle = '#4c5766'; g.lineWidth = 2.4; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(hx + 16, hy - 26); g.lineTo(hx + 26, hy - 46); g.stroke();
+    const blink = Math.sin(t * 5.2) > 0.25 ? 1 : 0.25;
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    const bl = g.createRadialGradient(hx + 26, hy - 48, 1, hx + 26, hy - 48, 16);
+    bl.addColorStop(0, `rgba(255,90,90,${blink})`);
+    bl.addColorStop(1, 'rgba(255,60,60,0)');
+    g.fillStyle = bl;
+    g.beginPath(); g.arc(hx + 26, hy - 48, 16, 0, TAU); g.fill();
+    g.restore();
+    g.fillStyle = `rgba(255,120,110,${blink})`;
+    g.beginPath(); g.arc(hx + 26, hy - 48, 4, 0, TAU); g.fill();
+
+    // ear pads
+    g.fillStyle = steelMid;
+    g.beginPath(); g.arc(hx - 30, hy + 2, 7, 0, TAU); g.fill();
+    g.beginPath(); g.arc(hx + 30, hy + 2, 7, 0, TAU); g.fill();
+    g.restore();
+
+    // ---- left arm (holding wrench, rests) ----
+    const gArm = metal(g, -60, -100, -20, -160, steelMid, '#39424f', '#20262f');
+    limb(g, [[-44, -156], [-62, -120], [-48, -92]], 20, gArm, rimW);
+    // wrench
+    g.save();
+    g.translate(-50, -90);
+    g.rotate(0.25 + Math.sin(t * 1.3) * 0.04);
+    g.fillStyle = steelLite;
+    roundRect(g, -3, -34, 6, 40, 3); g.fill();
+    g.fillStyle = '#c9d6e5';
+    g.beginPath();
+    g.arc(0, -38, 8, 0, TAU); g.fill();
+    g.fillStyle = '#1a2029';
+    g.beginPath(); g.arc(0, -38, 3.4, 0, TAU); g.fill();
+    g.restore();
+
+    // ---- right arm (welding, reaches to pipe) ----
+    const arm2 = metal(g, 40, -110, 90, -160, steelLite, '#5c6877', '#2a313b');
+    limb(g, [[44, -156], [70, -132], [84, -152]], 20, arm2, rimC);
+    // gloved hand
+    g.fillStyle = '#8b5a2b';
+    g.beginPath(); g.arc(86, -152, 9, 0, TAU); g.fill();
+    g.fillStyle = 'rgba(255,190,120,0.4)';
+    g.beginPath(); g.arc(84, -155, 4, 0, TAU); g.fill();
+
+    // torch
+    g.save();
+    g.translate(88, -156);
+    g.rotate(-0.55);
+    g.fillStyle = '#3b4552';
+    roundRect(g, -5, -6, 22, 12, 4); g.fill();
+    g.fillStyle = '#8f9db0';
+    roundRect(g, 14, -3.5, 10, 7, 2); g.fill();
+    g.restore();
+
+    // hose from torch back to torso
+    g.strokeStyle = 'rgba(30,38,48,0.95)';
+    g.lineWidth = 4; g.lineCap = 'round';
+    g.beginPath();
+    g.moveTo(88, -150);
+    g.quadraticCurveTo(60, -128, 30, -150);
+    g.stroke();
+
+    // ---- weld light ----
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    const wg = g.createRadialGradient(104, -158, 1, 104, -158, 60 * (0.9 + weldFlick * 0.5));
+    wg.addColorStop(0, `rgba(255,255,235,${0.9 * weldFlick})`);
+    wg.addColorStop(0.25, `rgba(180,235,255,${0.5 * weldFlick})`);
+    wg.addColorStop(0.6, `rgba(120,180,255,${0.18 * weldFlick})`);
+    wg.addColorStop(1, 'rgba(80,140,255,0)');
+    g.fillStyle = wg;
+    g.beginPath(); g.arc(104, -158, 62, 0, TAU); g.fill();
+    g.restore();
+
+    // torch flame spark core
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    g.fillStyle = `rgba(255,255,220,${weldFlick})`;
+    g.beginPath();
+    g.ellipse(104, -158, 5 + weldFlick * 3, 4 + weldFlick * 2, 0, 0, TAU);
+    g.fill();
+    g.restore();
+
+    g.restore();
+  }
+
+  // ---------- pipe / conduit ----------
+  function drawPipe(g, t) {
+    const top = ry - 268 * rs;
+    const w = 26 * rs;
+    const x = pipeX - w / 2;
+
+    g.save();
+    // wall mount bracket
+    g.fillStyle = '#101823';
+    roundRect(g, pipeX + w * 0.6, top + 20 * rs, 46 * rs, 14 * rs, 4); g.fill();
+
+    // pipe body
+    const pgrad = g.createLinearGradient(x, 0, x + w, 0);
+    pgrad.addColorStop(0, '#2b333e');
+    pgrad.addColorStop(0.28, '#8d9cae');
+    pgrad.addColorStop(0.5, '#5b6673');
+    pgrad.addColorStop(0.78, '#39424e');
+    pgrad.addColorStop(1, '#1a2029');
+    g.fillStyle = pgrad;
+    roundRect(g, x, top, w, groundY - top + 6, 5 * rs); g.fill();
+    g.strokeStyle = 'rgba(10,14,20,0.9)'; g.lineWidth = 2;
+    roundRect(g, x, top, w, groundY - top + 6, 5 * rs); g.stroke();
+
+    // cyan rim on left edge
+    g.strokeStyle = 'rgba(120,220,255,0.4)';
+    g.lineWidth = 2;
+    g.beginPath();
+    g.moveTo(x + 2, top + 6); g.lineTo(x + 2, groundY); g.stroke();
+
+    // flanges
+    for (const fy of [top + 34 * rs, top + 150 * rs, top + 232 * rs]) {
+      g.fillStyle = '#454f5d';
+      roundRect(g, x - 6 * rs, fy, w + 12 * rs, 12 * rs, 3 * rs); g.fill();
+      g.fillStyle = 'rgba(180,210,240,0.25)';
+      roundRect(g, x - 6 * rs, fy, w + 12 * rs, 3 * rs, 2 * rs); g.fill();
+    }
+
+    // crack / broken joint near weld
+    g.strokeStyle = 'rgba(0,0,0,0.75)';
+    g.lineWidth = 2.4;
+    g.beginPath();
+    g.moveTo(x + 3, weldY - 4 * rs);
+    g.lineTo(x + w * 0.5, weldY + 3 * rs);
+    g.lineTo(x + w - 3, weldY - 6 * rs);
+    g.stroke();
+
+    // glowing hot seam while welding
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    const seam = g.createRadialGradient(x + w, weldY, 1, x + w, weldY, 34 * rs);
+    seam.addColorStop(0, 'rgba(255,240,200,0.75)');
+    seam.addColorStop(0.4, 'rgba(255,150,60,0.30)');
+    seam.addColorStop(1, 'rgba(255,120,40,0)');
+    g.fillStyle = seam;
+    g.beginPath(); g.arc(x + w, weldY, 34 * rs, 0, TAU); g.fill();
+    g.restore();
+
+    // dripping water from pipe
+    g.strokeStyle = 'rgba(180,220,255,0.35)';
+    g.lineWidth = 1.4;
+    const dy = ((t * 90) % 70);
+    g.beginPath();
+    g.moveTo(x + 4, top + 60 * rs + dy); g.lineTo(x + 4, top + 66 * rs + dy);
+    g.stroke();
+
+    g.restore();
+  }
+
+  // ---------- sparks ----------
+  function emitSparks(dt, active) {
+    if (!active) return;
+    const n = Math.random() < 0.85 ? Math.floor(rr(1, 4)) : 0;
+    for (let i = 0; i < n; i++) {
+      sparks.push({
+        x: weldX + rr(-3, 3),
+        y: weldY + rr(-4, 4),
+        vx: rr(20, 190),
+        vy: rr(-40, 130),
+        life: 1, decay: rr(1.2, 2.6),
+        r: rr(0.8, 2.3),
+        hue: rr(20, 55)
+      });
+    }
+  }
+
+  function updateSparks(dt) {
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      const s = sparks[i];
+      s.vy += 380 * dt;
+      s.vx *= 0.985;
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+      s.life -= s.decay * dt;
+      if (s.y > groundY) { s.y = groundY; s.vy *= -0.4; s.vx *= 0.7; }
+      if (s.life <= 0) sparks.splice(i, 1);
+    }
+  }
+
+  function drawSparks() {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    for (const s of sparks) {
+      const a = clamp(s.life, 0, 1);
+      ctx.strokeStyle = `hsla(${s.hue},100%,${60 + a * 30}%,${a})`;
+      ctx.lineWidth = s.r;
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(s.x - s.vx * 0.014, s.y - s.vy * 0.014);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ---------- lightning ----------
+  let flash = 0, bolt = null, boltT = -1, nextBolt = 3;
+
+  function triggerBolt() {
+    bolt = [];
+    let x = rr(W * 0.1, W * 0.9), y = -20;
+    while (y < groundY * rr(0.55, 0.85)) {
+      bolt.push([x, y]);
+      x += rr(-46, 46);
+      y += rr(24, 62);
+    }
+    boltT = 0;
+    flash = 1;
+  }
+
+  function drawBolt(dt) {
+    if (!bolt) return;
+    boltT += dt;
+    const a = clamp(1 - boltT * 2.6, 0, 1);
+    if (a <= 0) { bolt = null; return; }
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(200,225,255,${a})`;
+    ctx.shadowColor = '#bcd8ff';
+    ctx.shadowBlur = 18;
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.moveTo(bolt[0][0], bolt[0][1]);
+    for (const p of bolt) ctx.lineTo(p[0], p[1]);
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = `rgba(255,255,255,${a})`;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // ---------- grain ----------
+  const grain = document.createElement('canvas');
+  (function () {
+    grain.width = grain.height = 160;
+    const gg = grain.getContext('2d');
+    const img = gg.createImageData(160, 160);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 120 + Math.random() * 135;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+    gg.putImageData(img, 0, 0);
+  })();
+  let grainPat = null;
+
+  function drawGrain(t) {
+    if (!grainPat) grainPat = ctx.createPattern(grain, 'repeat');
+    ctx.save();
+    ctx.globalAlpha = 0.045;
+    ctx.globalCompositeOperation = 'overlay';
+    const ox = -Math.floor(Math.random() * 60);
+    const oy = -Math.floor(Math.random() * 60) + (t * 40 % 60);
+    ctx.translate(ox, oy);
+    ctx.fillStyle = grainPat;
+    ctx.fillRect(-60, -60, W + 120, H + 120);
+    ctx.restore();
+  }
+
+  function drawVignette() {
+    const g = ctx.createRadialGradient(W * 0.55, H * 0.5, Math.min(W, H) * 0.22,
+                                       W * 0.55, H * 0.5, Math.max(W, H) * 0.78);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(0.7, 'rgba(2,5,12,0.45)');
+    g.addColorStop(1, 'rgba(1,3,9,0.9)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // ---------- scene composite ----------
+  function drawSceneContent(t, weldFlick) {
+    drawPipe(ctx, t);
+    ctx.save();
+    ctx.translate(rx, ry);
+    ctx.scale(rs, rs);
+    drawRobot(ctx, t, weldFlick);
+    ctx.restore();
+  }
+
+  function frame(now) {
+    const t = now / 1000;
+    const dt = Math.min(0.05, last ? (now - last) / 1000 : 0.016);
+    last = now;
+
+    // welding intensity: bursts
+    const burst = Math.pow(Math.max(0, Math.sin(t * 2.1) * 0.5 + Math.sin(t * 5.7) * 0.5), 2);
+    const weldFlick = clamp(0.55 + burst * 0.75 + Math.random() * 0.25, 0, 1.6);
+
+    // lightning scheduling
+    nextBolt -= dt;
+    if (nextBolt <= 0) { triggerBolt(); nextBolt = rr(4.5, 11); }
+    flash = Math.max(0, flash - dt * 2.4);
+    drawBolt(dt);
+
+    updateRain(dt, t);
+    emitSparks(dt, weldFlick > 0.85);
+
+    // ---- background ----
+    ctx.drawImage(bg, 0, 0, W, H);
+    // lightning brightens sky
+    if (flash > 0.01) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = `rgba(120,160,230,${flash * 0.30})`;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
+
+    drawNeon(t);
+    drawRain(false);       // far rain
+    drawGround(t);
+    drawLamp(t);
+
+    // ---- reflections (wet asphalt) ----
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, groundY, W, H - groundY); ctx.clip();
+    ctx.translate(0, groundY * 2);
+    ctx.scale(1, -1);
+    ctx.globalAlpha = 0.40;
+    // wobble via horizontal skew
+    ctx.transform(1, 0, 0.02 * Math.sin(t), 1, 0, 0);
+    drawSceneContent(t, weldFlick);
+    ctx.globalAlpha = 0.22;
+    ctx.filter = 'blur(2px)';
+    drawSceneContent(t + 0.3, weldFlick);
+    ctx.filter = 'none';
+    ctx.restore();
+
+    // weld illumination on ground already covered; add ripple pass
+    drawRipples();
+
+    // ---- foreground scene ----
+    // soft mist near ground
+    const mist = ctx.createLinearGradient(0, groundY - 60, 0, groundY + 40);
+    mist.addColorStop(0, 'rgba(24,48,84,0)');
+    mist.addColorStop(1, 'rgba(30,60,100,0.20)');
+    ctx.fillStyle = mist;
+    ctx.fillRect(0, groundY - 60, W, 100);
+
+    drawSceneContent(t, weldFlick);
+    updateSparks(dt);
+    drawSparks();
+
+    drawRain(true);        // near rain
+    drawVignette();
+    drawGrain(t);
+
+    // weld-caused ambient light on robot / pipe already additive; add screen flash on burst
+    if (weldFlick > 1.15) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = `rgba(150,200,255,${(weldFlick - 1.15) * 0.16})`;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  let last = 0;
+
+  window.addEventListener('resize', layout);
+  layout();
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Вечерняя арифметика</title>
+<style>
+  :root{
+    --ink:#f7e7d3;
+    --dim:#d3a68b;
+    --gold:#ffc98a;
+    --mono: ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:#08050e;overflow:hidden}
+  body{
+    font-family: Georgia, "Times New Roman", serif;
+    color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+    cursor: crosshair;
+  }
+  #stage{position:fixed;inset:0;opacity:0;animation:stageIn 1.8s ease-out .1s forwards}
+  @keyframes stageIn{to{opacity:1}}
+  canvas#c{position:absolute;inset:0;width:100%;height:100%;display:block}
+
+  .frame{position:absolute;inset:clamp(10px,1.4vw,18px);border:1px solid rgba(247,231,211,.13);pointer-events:none;z-index:6}
+  .frame i{position:absolute;width:9px;height:9px;border:1px solid rgba(247,231,211,.38)}
+  .frame i:nth-child(1){left:-1px;top:-1px;border-right:0;border-bottom:0}
+  .frame i:nth-child(2){right:-1px;top:-1px;border-left:0;border-bottom:0}
+  .frame i:nth-child(3){left:-1px;bottom:-1px;border-right:0;border-top:0}
+  .frame i:nth-child(4){right:-1px;bottom:-1px;border-left:0;border-top:0}
+
+  .hud{
+    position:absolute;z-index:7;pointer-events:none;
+    font-family:var(--mono);font-size:clamp(8px,0.72vw,10.5px);
+    letter-spacing:.24em;text-transform:uppercase;
+    color:rgba(247,231,211,.55);line-height:1.9;
+  }
+  .hud b{font-weight:400;color:rgba(247,231,211,.88)}
+  .hud .gold{color:var(--gold)}
+  .tl{left:clamp(26px,3.6vw,54px);top:clamp(28px,4.4vh,52px)}
+  .tl .rule{display:block;width:84px;height:1px;background:rgba(247,231,211,.4);margin:9px 0 9px}
+  .tr{right:clamp(26px,3.6vw,54px);top:clamp(28px,4.4vh,52px);text-align:right}
+  .tr .row{display:flex;gap:12px;justify-content:flex-end;align-items:baseline}
+  .tr .num{font-variant-numeric:tabular-nums;min-width:3.4em;display:inline-block;text-align:right;color:rgba(255,201,138,.92)}
+
+  .title{position:absolute;left:clamp(26px,5vw,72px);bottom:clamp(58px,8.5vh,104px);z-index:7;pointer-events:none}
+  .title h1{
+    margin:0;font-weight:400;
+    font-size:clamp(27px,5.2vw,68px);
+    line-height:.96;letter-spacing:.135em;
+    text-transform:uppercase;
+  }
+  .title h1 .l2{display:block;color:var(--gold);opacity:.94;margin-top:.1em}
+  .title .sub{
+    margin:clamp(14px,2.2vh,24px) 0 0;font-family:var(--mono);
+    font-size:clamp(8.5px,0.78vw,11px);letter-spacing:.42em;text-transform:uppercase;
+    color:rgba(247,231,211,.6);
+  }
+
+  .note{
+    position:absolute;right:clamp(26px,5vw,72px);bottom:clamp(58px,8.5vh,104px);
+    z-index:7;pointer-events:none;width:min(30ch,25vw);
+    font-size:clamp(11px,0.92vw,13.5px);line-height:1.75;color:rgba(247,231,211,.72);
+    text-align:right;font-style:italic;
+  }
+  .note .hint{
+    display:block;margin-top:14px;font-style:normal;font-family:var(--mono);
+    font-size:clamp(7.5px,0.68vw,10px);letter-spacing:.22em;text-transform:uppercase;
+    color:rgba(255,201,138,.55);
+  }
+
+  .foot{
+    position:absolute;left:clamp(26px,5vw,72px);bottom:clamp(22px,3vh,34px);z-index:7;
+    font-family:var(--mono);font-size:clamp(7.5px,0.65vw,9.5px);
+    letter-spacing:.28em;text-transform:uppercase;color:rgba(247,231,211,.3);
+    pointer-events:none;
+  }
+
+  #sound{
+    position:absolute;right:clamp(26px,5vw,72px);bottom:clamp(20px,2.6vh,30px);z-index:8;
+    font-family:var(--mono);font-size:clamp(7.5px,0.65vw,9.5px);letter-spacing:.26em;
+    text-transform:uppercase;color:rgba(247,231,211,.42);background:none;
+    border:1px solid rgba(247,231,211,.16);padding:7px 11px 6px;cursor:pointer;
+    transition:color .3s,border-color .3s;border-radius:0;
+  }
+  #sound:hover{color:var(--gold);border-color:rgba(255,201,138,.4)}
+
+  .reveal{opacity:0;animation:rise 1.9s cubic-bezier(.16,.72,.18,1) forwards}
+  @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+  .d1{animation-delay:.6s}.d2{animation-delay:.95s}.d3{animation-delay:1.25s}
+  .d4{animation-delay:1.55s}.d5{animation-delay:1.85s}
+
+  @media (max-width:820px){
+    .note{display:none}
+    .title{bottom:clamp(48px,7vh,80px)}
+    .tr{font-size:8px}
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c" aria-label="Мурмурация птиц над водой на закате"></canvas>
+
+  <div class="frame"><i></i><i></i><i></i><i></i></div>
+
+  <div class="hud tl reveal d1">
+    Поле 07 · станция «Марш»<span class="rule"></span>
+    наблюдение 19:47
+  </div>
+
+  <div class="hud tr reveal d2">
+    <div class="row"><span>особей</span><b class="num" id="count">1148</b></div>
+    <div class="row"><span>ветер</span><b class="num"><span id="wind">3.2</span> м/с</b></div>
+    <div class="row"><span>курс</span><b class="num" id="course">ЗСЗ</b></div>
+  </div>
+
+  <div class="title">
+    <h1 class="reveal d3">Вечерняя<span class="l2">арифметика</span></h1>
+    <p class="sub reveal d4">мурмурация над затопленным лугом</p>
+  </div>
+
+  <div class="note reveal d4">
+    Тысяча птиц держит форму, которую держит ветер.
+    К вечеру форма становится важнее самой стаи.
+    <span class="hint">веди мышью — разгоняй · клик — порыв</span>
+  </div>
+
+  <div class="foot reveal d5">живое счисление · без единого кадра</div>
+  <button id="sound" type="button" class="reveal d5">звук: выкл</button>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const stage = document.getElementById("stage");
+
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const rand = (a, b) => a + Math.random() * (b - a);
+
+  let W = 0, H = 0, DPR = 1;
+  let horizon = 0, sun = { x: 0, y: 0, r: 0 };
+  let vortex = { x: 0, y: 0 };
+  let startT = performance.now();
+  let t = 0;
+  let intro = 0;
+
+  let bg = null;          // pre-rendered sky / land
+  let bgW = 0, bgH = 0;
+  let vig = null;         // pre-rendered vignette
+  let grain = null;       // noise tile
+
+  const birds = [];
+  const pulses = [];
+  const motes = [];
+  let farReeds = [], nearReeds = [];
+
+  const pointer = { x: -9999, y: -9999, active: false };
+  const par = { x: 0, y: 0, tx: 0, ty: 0 };
+
+  /* ---------- static scene ---------- */
+
+  function buildBackground() {
+    bgW = W + 36; bgH = H + 36;
+    bg = document.createElement("canvas");
+    bg.width = Math.ceil(bgW * DPR); bg.height = Math.ceil(bgH * DPR);
+    const g = bg.getContext("2d");
+    g.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    const hz = horizon + 18;
+    const sx = sun.x + 18, sy = sun.y + 18;
+
+    // sky
+    const sky = g.createLinearGradient(0, 18, 0, hz);
+    sky.addColorStop(0.00, "#0a0613");
+    sky.addColorStop(0.16, "#170b26");
+    sky.addColorStop(0.33, "#32103a");
+    sky.addColorStop(0.50, "#5e1a3f");
+    sky.addColorStop(0.63, "#8f2c3d");
+    sky.addColorStop(0.76, "#c85437");
+    sky.addColorStop(0.88, "#ee8c48");
+    sky.addColorStop(0.96, "#f8b768");
+    sky.addColorStop(1.00, "#ffd79c");
+    g.fillStyle = sky;
+    g.fillRect(0, 0, bgW, bgH);
+
+    // faint stars high above
+    for (let i = 0; i < 130; i++) {
+      const y = Math.pow(Math.random(), 1.7) * H * 0.42;
+      g.globalAlpha = rand(0.05, 0.5) * (1 - y / (H * 0.45));
+      g.fillStyle = Math.random() < 0.25 ? "#ffd9b0" : "#e6e6ff";
+      g.fillRect(rand(0, bgW), y + 10, 1, 1);
+    }
+    g.globalAlpha = 1;
+
+    // cloud strata
+    for (let i = 0; i < 11; i++) {
+      const cx = rand(-100, bgW + 100);
+      const cy = rand(H * 0.05, hz * 0.9);
+      const rx = rand(bgW * 0.12, bgW * 0.5);
+      const ry = rand(8, H * 0.045);
+      const warm = clamp(1 - (hz - cy) / (hz * 0.85), 0, 1);
+      const grad = g.createRadialGradient(cx, cy, 0, cx, cy, rx);
+      grad.addColorStop(0, `rgba(${Math.round(lerp(60, 255, warm))},${Math.round(lerp(24, 165, warm))},${Math.round(lerp(66, 120, warm))},${rand(0.05, 0.17)})`);
+      grad.addColorStop(1, "rgba(60,20,60,0)");
+      g.save();
+      g.translate(cx, cy); g.scale(1, ry / rx); g.translate(-cx, -cy);
+      g.fillStyle = grad; g.beginPath(); g.arc(cx, cy, rx, 0, TAU); g.fill();
+      g.restore();
+    }
+    // dark bands
+    for (let i = 0; i < 6; i++) {
+      const cy = rand(H * 0.08, hz * 0.7);
+      const hh = rand(3, 14);
+      g.fillStyle = `rgba(28,8,34,${rand(0.1, 0.26)})`;
+      g.beginPath();
+      g.ellipse(rand(-80, bgW + 80), cy, rand(bgW * 0.16, bgW * 0.55), hh, 0, 0, TAU);
+      g.fill();
+    }
+
+    // sun halo
+    const halo = g.createRadialGradient(sx, sy, sun.r * 0.3, sx, sy, sun.r * 7.5);
+    halo.addColorStop(0, "rgba(255,186,110,0.5)");
+    halo.addColorStop(0.22, "rgba(255,150,86,0.24)");
+    halo.addColorStop(0.55, "rgba(255,120,80,0.09)");
+    halo.addColorStop(1, "rgba(255,110,70,0)");
+    g.fillStyle = halo;
+    g.fillRect(0, 0, bgW, hz + 2);
+
+    // flare bar
+    g.save();
+    g.globalCompositeOperation = "lighter";
+    const bar = g.createLinearGradient(sx - sun.r * 4, 0, sx + sun.r * 4, 0);
+    bar.addColorStop(0, "rgba(255,170,110,0)");
+    bar.addColorStop(0.5, "rgba(255,205,140,0.35)");
+    bar.addColorStop(1, "rgba(255,170,110,0)");
+    g.fillStyle = bar;
+    g.beginPath(); g.ellipse(sx, sy, sun.r * 4, sun.r * 0.16, 0, 0, TAU); g.fill();
+    g.restore();
+
+    // sun disc
+    const disc = g.createRadialGradient(sx, sy - sun.r * 0.15, sun.r * 0.1, sx, sy, sun.r);
+    disc.addColorStop(0, "#fffdf0");
+    disc.addColorStop(0.45, "#ffeebe");
+    disc.addColorStop(0.82, "#ffc879");
+    disc.addColorStop(1, "rgba(255,158,86,0.85)");
+    g.fillStyle = disc;
+    g.beginPath(); g.arc(sx, sy, sun.r, 0, TAU); g.fill();
+
+    // haze at the waterline
+    const haze = g.createLinearGradient(0, hz - H * 0.06, 0, hz + 18);
+    haze.addColorStop(0, "rgba(255,200,140,0)");
+    haze.addColorStop(1, "rgba(255,214,158,0.5)");
+    g.fillStyle = haze;
+    g.fillRect(0, hz - H * 0.06, bgW, H * 0.06 + 18);
+
+    // land silhouettes
+    const bands = [
+      { base: hz - H * 0.012, amp: H * 0.03, color: "rgba(58,30,52,0.85)", step: 7, seed: 1.3 },
+      { base: hz - H * 0.004, amp: H * 0.02, color: "rgba(34,17,34,0.92)", step: 6, seed: 4.1 },
+      { base: hz + 2, amp: H * 0.012, color: "rgba(16,8,18,0.97)", step: 5, seed: 7.7 }
+    ];
+    for (const b of bands) {
+      g.fillStyle = b.color;
+      g.beginPath();
+      g.moveTo(0, bgH);
+      for (let x = 0; x <= bgW; x += b.step) {
+        const y = b.base
+          - Math.sin(x * 0.0042 + b.seed) * b.amp
+          - Math.sin(x * 0.0131 + b.seed * 2.3) * b.amp * 0.35
+          - Math.sin(x * 0.031 + b.seed * 5.1) * b.amp * 0.12;
+        g.lineTo(x, y);
+      }
+      g.lineTo(bgW, bgH);
+      g.closePath();
+      g.fill();
+    }
+
+    // tiny distant trees / stakes on the far bank
+    g.fillStyle = "rgba(12,6,14,0.9)";
+    for (let i = 0; i < 40; i++) {
+      const x = rand(0, bgW);
+      const h = rand(3, 13);
+      g.fillRect(x, hz - h, rand(0.6, 1.6), h);
+    }
+  }
+
+  function buildVignette() {
+    vig = document.createElement("canvas");
+    vig.width = Math.max(1, Math.round(W * DPR));
+    vig.height = Math.max(1, Math.round(H * DPR));
+    const g = vig.getContext("2d");
+    g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const r = Math.hypot(W, H) * 0.62;
+    const grd = g.createRadialGradient(W * 0.56, H * 0.48, r * 0.3, W * 0.56, H * 0.48, r);
+    grd.addColorStop(0, "rgba(8,4,14,0)");
+    grd.addColorStop(0.62, "rgba(8,4,14,0.24)");
+    grd.addColorStop(1, "rgba(6,3,11,0.82)");
+    g.fillStyle = grd; g.fillRect(0, 0, W, H);
+    const top = g.createLinearGradient(0, 0, 0, H * 0.22);
+    top.addColorStop(0, "rgba(6,3,11,0.5)");
+    top.addColorStop(1, "rgba(6,3,11,0)");
+    g.fillStyle = top; g.fillRect(0, 0, W, H * 0.22);
+  }
+
+  function buildGrain() {
+    grain = document.createElement("canvas");
+    grain.width = 128; grain.height = 128;
+    const g = grain.getContext("2d");
+    const img = g.createImageData(128, 128);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 128 + (Math.random() * 2 - 1) * 60;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+  }
+
+  function buildReeds() {
+    farReeds = []; nearReeds = [];
+    const make = (n, hMin, hMax, wMin, wMax) => {
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const side = Math.random();
+        let x;
+        if (side < 0.42) x = rand(-20, W * 0.3);
+        else if (side < 0.84) x = rand(W * 0.72, W + 20);
+        else x = rand(0, W);
+        const h = rand(hMin, hMax) * (H / 900);
+        out.push({
+          x, h: Math.max(20, h),
+          bend: rand(-0.32, 0.32) * h,
+          w: rand(wMin, wMax),
+          ph: rand(0, TAU),
+          amp: rand(3, 13),
+          head: Math.random() < 0.55
+        });
+      }
+      return out.sort((a, b) => a.h - b.h);
+    };
+    farReeds = make(70, 55, 190, 0.7, 1.4);
+    nearReeds = make(46, 140, 470, 1.4, 3.4);
+  }
+
+  /* ---------- resize ---------- */
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    horizon = H * 0.665;
+    sun.r = Math.min(W, H) * 0.118;
+    sun.x = W * 0.665;
+    sun.y = horizon - sun.r * 0.34;
+    vortex.x = W * 0.605;
+    vortex.y = H * 0.455;
+
+    buildBackground();
+    buildVignette();
+    buildReeds();
+
+    const target = clamp(Math.round((W * H) / 1350), 420, 1500);
+    while (birds.length < target) spawnBird(true);
+    if (birds.length > target) birds.length = target;
+
+    motes.length = 0;
+    const mn = Math.round(clamp(W / 26, 26, 80));
+    for (let i = 0; i < mn; i++) {
+      motes.push({ x: rand(0, W), y: rand(horizon + 10, H), r: rand(0.5, 1.5), ph: rand(0, TAU), sp: rand(0.1, 0.45), a: rand(0.08, 0.4) });
+    }
+  }
+
+  function spawnBird(scatter) {
+    const a = rand(0, TAU);
+    const rad = scatter ? rand(0, Math.min(W, H) * 0.24) : 0;
+    birds.push({
+      x: vortex.x + Math.cos(a) * rad,
+      y: vortex.y + Math.sin(a) * rad,
+      vx: Math.cos(a + 1.4) * 1.6,
+      vy: Math.sin(a + 1.4) * 1.6,
+      s: rand(0.55, 1.35),
+      ph: rand(0, TAU),
+      rk: rand(0.72, 1.3),
+      wander: rand(0.6, 1.4)
+    });
+  }
+
+  /* ---------- audio ---------- */
+
+  let audio = null, soundOn = false;
+  const soundBtn = document.getElementById("sound");
+
+  function initAudio() {
+    if (audio) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const ac = new AC();
+    const master = ac.createGain();
+    master.gain.value = 0.0001;
+    master.connect(ac.destination);
+
+    const len = Math.floor(ac.sampleRate * 4);
+    const buf = ac.createBuffer(1, len, ac.sampleRate);
+    const d = buf.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < len; i++) {
+      const w = Math.random() * 2 - 1;
+      last = last * 0.965 + w * 0.035;
+      d[i] = last * 5.2;
+    }
+    const src = ac.createBufferSource();
+    src.buffer = buf; src.loop = true;
+    const lp = ac.createBiquadFilter();
+    lp.type = "lowpass"; lp.frequency.value = 380; lp.Q.value = 0.8;
+    const wg = ac.createGain(); wg.gain.value = 0.2;
+    src.connect(lp).connect(wg).connect(master);
+    src.start();
+
+    const lfo = ac.createOscillator();
+    lfo.frequency.value = 0.06;
+    const lg = ac.createGain(); lg.gain.value = 210;
+    lfo.connect(lg).connect(lp.frequency);
+    lfo.start();
+
+    audio = { ac, master, nextChirp: ac.currentTime + 2.2 };
+  }
+
+  function chirp() {
+    if (!audio || !soundOn) return;
+    const { ac, master } = audio;
+    const now = ac.currentTime;
+    const o = ac.createOscillator();
+    const g = ac.createGain();
+    const p = ac.createStereoPanner ? ac.createStereoPanner() : null;
+    const f0 = rand(1800, 3400);
+    o.type = "sine";
+    o.frequency.setValueAtTime(f0, now);
+    o.frequency.exponentialRampToValueAtTime(f0 * rand(0.55, 0.8), now + 0.14);
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(rand(0.02, 0.06), now + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + rand(0.1, 0.2));
+    o.connect(g);
+    if (p) { p.pan.value = rand(-0.85, 0.85); g.connect(p).connect(master); }
+    else g.connect(master);
+    o.start(now); o.stop(now + 0.25);
+  }
+
+  soundBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!audio) initAudio();
+    if (!audio) return;
+    soundOn = !soundOn;
+    if (audio.ac.state === "suspended") audio.ac.resume();
+    audio.master.gain.cancelScheduledValues(audio.ac.currentTime);
+    audio.master.gain.linearRampToValueAtTime(soundOn ? 0.55 : 0.0001, audio.ac.currentTime + 0.6);
+    soundBtn.textContent = soundOn ? "звук: вкл" : "звук: выкл";
+    soundBtn.style.color = soundOn ? "rgba(255,201,138,.95)" : "";
+  });
+
+  /* ---------- flock ---------- */
+
+  const GRID = 32;
+
+  function updateFlock(dt) {
+    const count = birds.length;
+    const grid = new Map();
+    for (let i = 0; i < count; i++) {
+      const b = birds[i];
+      const k = ((b.x / GRID) | 0) + ":" + ((b.y / GRID) | 0);
+      let arr = grid.get(k);
+      if (!arr) { arr = []; grid.set(k, arr); }
+      arr.push(b);
+    }
+
+    const breath = 1 + 0.17 * Math.sin(t * 0.44) + 0.07 * Math.sin(t * 1.19 + 1.7);
+    const expand = 0.16 + 0.84 * intro;
+    const baseR = Math.min(W, H) * 0.235 * expand * breath;
+    const cx = vortex.x + Math.sin(t * 0.11) * W * 0.016;
+    const cy = vortex.y + Math.cos(t * 0.15) * H * 0.014;
+    const topLimit = H * 0.085;
+    const botLimit = horizon - H * 0.03;
+    const maxSpeed = 1.1 + 2.0 * intro;
+
+    for (let i = 0; i < count; i++) {
+      const b = birds[i];
+      const bx = (b.x / GRID) | 0, by = (b.y / GRID) | 0;
+      let sepX = 0, sepY = 0, aliX = 0, aliY = 0, cohX = 0, cohY = 0, n = 0;
+      const start = (Math.random() * 9) | 0;
+
+      for (let k = 0; k < 9 && n < 14; k++) {
+        const j = (k + start) % 9;
+        const arr = grid.get((bx + (j % 3) - 1) + ":" + (by + ((j / 3) | 0) - 1));
+        if (!arr) continue;
+        for (let m = 0; m < arr.length && n < 14; m++) {
+          const o = arr[m];
+          if (o === b) continue;
+          const dx = b.x - o.x, dy = b.y - o.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 > 1800 || d2 < 0.01) continue;
+          const d = Math.sqrt(d2);
+          sepX += (dx / d) / d; sepY += (dy / d) / d;
+          aliX += o.vx; aliY += o.vy;
+          cohX += o.x; cohY += o.y;
+          n++;
+        }
+      }
+
+      let ax = 0, ay = 0;
+
+      if (n > 0) {
+        ax += sepX * 16;
+        ay += sepY * 16;
+        ax += (aliX / n - b.vx) * 0.06;
+        ay += (aliY / n - b.vy) * 0.06;
+        ax += (cohX / n - b.x) * 0.0018;
+        ay += (cohY / n - b.y) * 0.0018;
+      }
+
+      // vortex steering
+      const dx = cx - b.x, dy = cy - b.y;
+      const r = Math.hypot(dx, dy) || 1;
+      const nx = dx / r, ny = dy / r;
+      const tx = -ny, ty = nx;
+      const targetR = baseR * b.rk;
+      const radialErr = clamp((targetR - r) * 0.02, -1.7, 1.7);
+      const tangSpeed = (0.55 + 1.9 * clamp(r / (baseR * 2.1), 0, 1)) * (0.3 + 0.7 * intro);
+      const desX = tx * tangSpeed + nx * radialErr;
+      const desY = ty * tangSpeed + ny * radialErr;
+      ax += (desX - b.vx) * 0.075;
+      ay += (desY - b.vy) * 0.075;
+
+      // wander
+      ax += Math.sin(t * 1.7 * b.wander + b.ph) * 0.035;
+      ay += Math.cos(t * 1.4 * b.wander + b.ph * 1.7) * 0.035;
+
+      // pointer
+      if (pointer.active) {
+        const px = b.x - pointer.x, py = b.y - pointer.y;
+        const pd = Math.hypot(px, py);
+        if (pd < 180 && pd > 0.5) {
+          const f = (1 - pd / 180) * 2.1;
+          ax += (px / pd) * f;
+          ay += (py / pd) * f;
+        }
+      }
+
+      // pulses
+      for (let p = 0; p < pulses.length; p++) {
+        const pu = pulses[p];
+        const px = b.x - pu.x, py = b.y - pu.y;
+        const pd = Math.hypot(px, py) || 1;
+        if (pd < pu.r) {
+          const f = (1 - pd / pu.r) * 4.2 * pu.life;
+          ax += (px / pd) * f;
+          ay += (py / pd) * f;
+        }
+      }
+
+      // bounds
+      if (b.y < topLimit) ay += (topLimit - b.y) * 0.035;
+      if (b.y > botLimit) ay -= (b.y - botLimit) * 0.05;
+      if (b.x < 16) ax += (16 - b.x) * 0.04;
+      if (b.x > W - 16) ax -= (b.x - W + 16) * 0.04;
+
+      b.vx += ax * dt;
+      b.vy += ay * dt;
+
+      const sp = Math.hypot(b.vx, b.vy) || 0.001;
+      const cap = maxSpeed * (0.85 + b.s * 0.3);
+      if (sp > cap) { b.vx = (b.vx / sp) * cap; b.vy = (b.vy / sp) * cap; }
+      else if (sp < 0.45) { b.vx = (b.vx / sp) * 0.45; b.vy = (b.vy / sp) * 0.45; }
+
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+    }
+
+    for (let p = pulses.length - 1; p >= 0; p--) {
+      const pu = pulses[p];
+      pu.r += pu.grow * dt;
+      pu.life -= 0.018 * dt;
+      if (pu.life <= 0) pulses.splice(p, 1);
+    }
+  }
+
+  /* ---------- rendering ---------- */
+
+  function drawWater() {
+    const wet = ctx.createLinearGradient(0, horizon, 0, H);
+    wet.addColorStop(0, "#c0603d");
+    wet.addColorStop(0.08, "#8f3a37");
+    wet.addColorStop(0.28, "#56213a");
+    wet.addColorStop(0.6, "#281129");
+    wet.addColorStop(1, "#0a0610");
+    ctx.fillStyle = wet;
+    ctx.fillRect(0, horizon, W, H - horizon);
+
+    // reflection column
+    const topY = horizon;
+    const rows = Math.round(clamp((H - horizon) / 5, 40, 130));
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = 0; i < rows; i++) {
+      const f = i / rows;
+      const y = topY + Math.pow(f, 1.45) * (H - horizon) * 1.02;
+      const wob = Math.sin(y * 0.09 + t * 1.6) * 0.5 + Math.sin(y * 0.031 - t * 0.9) * 0.5;
+      const w = sun.r * (2.5 - f * 1.55) * (0.72 + 0.3 * wob) * (0.7 + 0.5 * Math.sin(y * 0.21 + t * 2.3));
+      const a = (1 - f) * (1 - f) * 0.42 * (0.55 + 0.45 * Math.abs(wob));
+      if (a <= 0.004) continue;
+      ctx.fillStyle = `rgba(255,199,133,${a})`;
+      const x = sun.x + Math.sin(y * 0.05 + t * 0.7) * sun.r * 0.5 + wob * sun.r * 0.12;
+      ctx.fillRect(x - w * 0.5, y, w, Math.max(1, 1.1 + f * 2.4));
+    }
+    ctx.globalCompositeOperation = "source-over";
+
+    // horizon seam
+    const seam = ctx.createLinearGradient(0, horizon - 6, 0, horizon + 14);
+    seam.addColorStop(0, "rgba(255,228,178,0.0)");
+    seam.addColorStop(0.35, "rgba(255,228,178,0.4)");
+    seam.addColorStop(1, "rgba(90,40,50,0)");
+    ctx.fillStyle = seam;
+    ctx.fillRect(0, horizon - 6, W, 20);
+  }
+
+  function drawReeds(list, color, widthMul, swayPhase) {
+    ctx.strokeStyle = color;
+    ctx.lineCap = "round";
+    for (const r of list) {
+      const sway = Math.sin(t * 0.85 + r.ph + swayPhase) * r.amp;
+      ctx.beginPath();
+      ctx.moveTo(r.x, H + 12);
+      ctx.quadraticCurveTo(r.x + r.bend * 0.3 + sway * 0.3, H - r.h * 0.58, r.x + r.bend + sway, H - r.h);
+      ctx.lineWidth = r.w * widthMul;
+      ctx.stroke();
+    }
+    ctx.fillStyle = color;
+    for (const r of list) {
+      if (!r.head) continue;
+      const sway = Math.sin(t * 0.85 + r.ph + swayPhase) * r.amp;
+      ctx.beginPath();
+      ctx.ellipse(r.x + r.bend + sway, H - r.h - 2, r.w * 0.85 * widthMul, r.w * 2.6 * widthMul, 0, 0, TAU);
+      ctx.fill();
+    }
+  }
+
+  function drawMotes() {
+    ctx.globalCompositeOperation = "lighter";
+    for (const m of motes) {
+      m.x += (0.18 + m.sp) * Math.sin(t * 0.4 + m.ph) * 0.6;
+      const y = m.y + Math.sin(t * 0.7 + m.ph) * 5;
+      ctx.fillStyle = `rgba(255,206,150,${m.a * (0.5 + 0.5 * Math.sin(t * 1.3 + m.ph))})`;
+      ctx.fillRect(m.x, y, m.r, m.r);
+    }
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  function drawFlock() {
+    const buckets = [[], [], [], [], []];
+    const glow = [];
+    const rMax = sun.r * 9;
+
+    for (let i = 0; i < birds.length; i++) {
+      const b = birds[i];
+      const sp = Math.hypot(b.vx, b.vy);
+      if (sp < 0.12) continue;
+      const inv = 1 / sp;
+      const nx = b.vx * inv, ny = b.vy * inv;
+      const flap = Math.abs(Math.sin(t * (7 + b.s * 3) + b.ph));
+      const L = (2.5 + sp * 1.05) * b.s;
+      const Wd = (0.75 + flap * 0.7) * b.s;
+      const tx = b.x - nx * L * 0.5, ty = b.y - ny * L * 0.5;
+
+      const dSun = Math.hypot(b.x - sun.x, b.y - sun.y);
+      const warmth = 1 - clamp(dSun / rMax, 0, 1);
+      const idx = clamp(4 - Math.round(warmth * 4), 0, 4);
+      const p = buckets[idx];
+
+      p.push(b.x + nx * L, b.y + ny * L,
+             tx - ny * Wd, ty + nx * Wd,
+             b.x - nx * L * 0.22, b.y - ny * L * 0.22,
+             tx + ny * Wd, ty - nx * Wd);
+
+      if (warmth > 0.55) glow.push({ x: b.x, y: b.y, nx, ny, L, Wd, a: (warmth - 0.55) * 0.5 });
+    }
+
+    const alphas = [0.2, 0.34, 0.5, 0.64, 0.76];
+    const colors = ["#241019", "#21101a", "#1d0c15", "#1a0a12", "#150810"];
+
+    for (let k = 0; k < 5; k++) {
+      const arr = buckets[k];
+      if (!arr.length) continue;
+      ctx.beginPath();
+      for (let i = 0; i < arr.length; i += 8) {
+        ctx.moveTo(arr[i], arr[i + 1]);
+        ctx.lineTo(arr[i + 2], arr[i + 3]);
+        ctx.lineTo(arr[i + 4], arr[i + 5]);
+        ctx.lineTo(arr[i + 6], arr[i + 7]);
+        ctx.closePath();
+      }
+      ctx.fillStyle = colors[k];
+      ctx.globalAlpha = alphas[k];
+      ctx.fill();
+    }
+
+    // warm rim near the sun
+    ctx.globalCompositeOperation = "lighter";
+    ctx.fillStyle = "#ffd7a0";
+    for (const g of glow) {
+      const tx = g.x - g.nx * g.L * 0.5, ty = g.y - g.ny * g.L * 0.5;
+      ctx.beginPath();
+      ctx.moveTo(g.x + g.nx * g.L, g.y + g.ny * g.L);
+      ctx.lineTo(tx - g.ny * g.Wd * 1.5, ty + g.nx * g.Wd * 1.5);
+      ctx.lineTo(tx + g.ny * g.Wd * 1.5, ty - g.nx * g.Wd * 1.5);
+      ctx.closePath();
+      ctx.globalAlpha = g.a;
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+  }
+
+  function drawPulses() {
+    for (const p of pulses) {
+      ctx.globalCompositeOperation = "lighter";
+      ctx.strokeStyle = `rgba(255,214,160,${0.34 * p.life})`;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, p.r, p.r * 0.6, 0, 0, TAU);
+      ctx.stroke();
+      ctx.globalCompositeOperation = "source-over";
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawGrain() {
+    if (!grain) return;
+    ctx.globalCompositeOperation = "overlay";
+    ctx.globalAlpha = 0.055;
+    const pat = ctx.createPattern(grain, "repeat");
+    if (pat) {
+      ctx.save();
+      ctx.translate(-rand(0, 128), -rand(0, 128));
+      ctx.fillStyle = pat;
+      ctx.fillRect(0, 0, W + 128, H + 128);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  function render() {
+    ctx.fillStyle = "#08050e";
+    ctx.fillRect(0, 0, W, H);
+
+    // background with subtle horizontal parallax
+    ctx.drawImage(bg, -18 + par.x, -18, bgW, bgH);
+
+    // breathing light around the sun
+    ctx.globalCompositeOperation = "lighter";
+    const pulseA = 0.05 + 0.035 * Math.sin(t * 0.7);
+    const glow = ctx.createRadialGradient(sun.x, sun.y, sun.r * 0.6, sun.x, sun.y, sun.r * 3.6);
+    glow.addColorStop(0, `rgba(255,200,130,${pulseA})`);
+    glow.addColorStop(1, "rgba(255,160,90,0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, W, horizon);
+    ctx.globalCompositeOperation = "source-over";
+
+    drawWater();
+    drawMotes();
+    drawReeds(farReeds, "rgba(38,18,32,0.9)", 1, 0.0);
+    drawFlock();
+    drawPulses();
+    drawReeds(nearReeds, "rgba(9,5,12,0.96)", 1, 1.9);
+
+    ctx.drawImage(vig, 0, 0, W, H);
+    drawGrain();
+  }
+
+  /* ---------- readouts ---------- */
+
+  const countEl = document.getElementById("count");
+  const windEl = document.getElementById("wind");
+  const courseEl = document.getElementById("course");
+  let readoutT = 0;
+
+  function readouts() {
+    readoutT++;
+    if (readoutT % 14) return;
+    countEl.textContent = String(birds.length - ((Math.sin(t * 0.6) + 1) * 9 | 0));
+    let sum = 0;
+    for (let i = 0; i < birds.length; i += 9) sum += Math.hypot(birds[i].vx, birds[i].vy);
+    windEl.textContent = (sum / Math.ceil(birds.length / 9) * 1.55 + 0.6).toFixed(1);
+    const dirs = ["ЗСЗ", "З", "СЗ", "СЗЗ", "ЗЮЗ"];
+    courseEl.textContent = dirs[(t / 9 | 0) % dirs.length];
+  }
+
+  /* ---------- loop ---------- */
+
+  let last = performance.now();
+
+  function frame(now) {
+    const dt = clamp((now - last) / 16.667, 0.05, 2.4);
+    last = now;
+    t += dt * 0.016 * (reduceMotion ? 0.55 : 1);
+    intro = clamp((now - startT - 350) / 3600, 0, 1);
+    intro = 1 - Math.pow(1 - intro, 3);
+
+    par.tx = pointer.active ? clamp((pointer.x / W - 0.5) * -14, -14, 14) : 0;
+    par.x = lerp(par.x, par.tx, 0.05);
+
+    updateFlock(dt);
+    render();
+    readouts();
+
+    if (audio && soundOn && audio.ac.currentTime > audio.nextChirp) {
+      chirp();
+      audio.nextChirp = audio.ac.currentTime + rand(2.4, 6.5);
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------- input ---------- */
+
+  function pointFrom(e) {
+    pointer.x = e.clientX;
+    pointer.y = e.clientY;
+    pointer.active = true;
+  }
+
+  window.addEventListener("pointermove", pointFrom, { passive: true });
+  window.addEventListener("pointerdown", (e) => {
+    pointFrom(e);
+    pulses.push({ x: e.clientX, y: e.clientY, r: 12, grow: 11, life: 1 });
+    if (pulses.length > 6) pulses.shift();
+  }, { passive: true });
+  window.addEventListener("pointerleave", () => { pointer.active = false; });
+  window.addEventListener("blur", () => { pointer.active = false; });
+
+  let rzT = 0;
+  window.addEventListener("resize", () => {
+    clearTimeout(rzT);
+    rzT = setTimeout(resize, 180);
+  });
+
+  window.__dbg = { birds, sun, vortex, get t(){return t;}, get intro(){return intro;} };
+
+  /* ---------- boot ---------- */
+
+  resize();
+  birds.length = 0;
+  const N0 = clamp(Math.round((W * H) / 1350), 420, 1500);
+  for (let i = 0; i < N0; i++) spawnBird(true);
+  requestAnimationFrame((n) => { last = n; frame(n); });
+})();
+</script>
+</body>
+</html>

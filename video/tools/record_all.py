@@ -25,12 +25,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 import media_status  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-ART = ROOT / "reports" / "comparison-deepseek-1017" / "_showcase"
+ART = ROOT / "reports" / "comparison-deepseek-1021" / "_showcase"
 OUT = ROOT / "video" / "public" / "clips"
 TOOL = Path(__file__).with_name("record_clip.py")
 RUNS = ROOT / "runs"
 
-MODELS = ["deepseek-v4.1-flash-unc", "deepseek-v4.1-flash-unc-1017"]
+MODELS = ["deepseek-v4.1-flash-unc-1021", "deepseek-v4.1-flash-unc-1017-1021"]
 SCENES = [f"K-{i}" for i in range(1, 21)] + [f"L-{i}" for i in range(1, 30)]
 
 
@@ -66,12 +66,12 @@ def job(pair: tuple[str, str], secs: float, warmup: float, force: bool = False) 
 
 
 LABELS = {
-    "deepseek-v4.1-flash-unc": "DeepSeek 4.1 Flash · стенд A",
-    "deepseek-v4.1-flash-unc-1017": "DeepSeek 4.1 Flash · стенд 1017",
+    "deepseek-v4.1-flash-unc-1021": "DeepSeek 4.1 Flash · стенд A",
+    "deepseek-v4.1-flash-unc-1017-1021": "DeepSeek 4.1 Flash · стенд 1017",
 }
 ACCENTS = {
-    "deepseek-v4.1-flash-unc": "#4cc2ff",
-    "deepseek-v4.1-flash-unc-1017": "#ffb45c",
+    "deepseek-v4.1-flash-unc-1021": "#4cc2ff",
+    "deepseek-v4.1-flash-unc-1017-1021": "#ffb45c",
 }
 
 
@@ -83,6 +83,16 @@ def _write_showcase() -> list[dict]:
     """
     scenes = json.loads((ROOT / "video/src/data/scenes.json").read_text(encoding="utf-8"))
     status = media_status.scan(OUT, [sc["id"] for sc in scenes], MODELS, RUNS)
+    # Клипа нет и маркера нет, а страницы тоже нет: причина — не «нет медиа».
+    for sc in scenes:
+        for m in MODELS:
+            key = (m, sc["id"])
+            if status[key] != "media_missing":
+                continue
+            if (ART / m / "pages" / f"{sc['id']}.html").is_file():
+                continue  # живая страница, клип ещё не снят
+            reason = media_status.task_status(m, sc["id"], RUNS)
+            status[key] = "model_failed" if reason in (None, "ok") else reason
     rnd = random.Random(20261005)
     rows = []
     for sc in scenes:

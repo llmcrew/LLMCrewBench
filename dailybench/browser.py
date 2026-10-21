@@ -86,6 +86,11 @@ STALL_S = 0.05
 #: the whole budget, e.g. a page without ``__ready``) still gets this much time
 #: to answer, so a working probe is not cut off together with the timeout.
 HOOK_CONTINUATION_S = 3.0
+#: Absolute cap on top of the render deadline. Screenshot stages budget
+#: ``SCREENSHOT_TIMEOUT_MS`` each, so a Chromium that stops answering could
+#: otherwise extend one render far beyond the announced deadline; this cap is
+#: the point where the worker is killed regardless of stage.
+HARD_GRACE_S = 20.0
 #: Stage ids shared with the parent so it knows what it is waiting on.
 STAGE_IDLE, STAGE_SETUP, STAGE_NAV, STAGE_HOOK, STAGE_SHOT = 0, 1, 2, 3, 4
 #: Browser launch and context creation are infrastructure, not page work: a
@@ -864,6 +869,10 @@ def _call_worker(job: dict[str, Any], deadline: float) -> RenderResult | None:
     expired_at: float | None = None
     while True:
         now = time.monotonic()
+        if now >= deadline + HARD_GRACE_S:
+            # No stage may extend a render past the absolute cap: a Chromium
+            # that stopped answering is infrastructure, not a slow page.
+            return None
         key = (stage.value, progress.value)
         if key != seen:
             seen = key

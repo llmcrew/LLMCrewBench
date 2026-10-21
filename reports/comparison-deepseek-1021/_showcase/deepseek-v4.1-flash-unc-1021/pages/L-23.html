@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Космическая заправка под дождём</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#05030d; }
+  body{ display:block; }
+  #stage{ position:fixed; inset:0; display:block; touch-action:none; }
+  .hud{
+    position:fixed; left:22px; bottom:18px; z-index:2;
+    font:12px/1.5 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    letter-spacing:.22em; text-transform:uppercase; color:#8fe9ff;
+    text-shadow:0 0 8px #1ca6c8, 0 0 24px #0a5f7a; opacity:.85;
+    pointer-events:none; user-select:none;
+  }
+  .hud b{ color:#ff6fc4; text-shadow:0 0 10px #ff2f9e; font-weight:600; }
+  .hud .dim{ color:#6b6f9a; letter-spacing:.16em; }
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="Космическая заправка под дождём"></canvas>
+<div class="hud">Орбитальная станция <b>«Топливо-7»</b> · сектор K-13 · ливень<br>
+<span class="dim">стыковка активна · выравнивание давления …</span></div>
+
+<script>
+(() => {
+"use strict";
+
+/* ------------------------------------------------------------------ *
+ *  «КОСМИЧЕСКАЯ ЗАПРАВКА ПОД ДОЖДЁМ»
+ *  Всё рисуется процедурно на Canvas 2D в виртуальном пространстве
+ *  1600x900, которое вписывается в экран по принципу cover.
+ * ------------------------------------------------------------------ */
+
+const VW = 1600, VH = 900;
+const cvs = document.getElementById('stage');
+const ctx = cvs.getContext('2d', { alpha:false });
+
+let DPR = 1, sc = 1, ox = 0, oy = 0;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  const w = window.innerWidth, h = window.innerHeight;
+  cvs.width  = Math.max(1, Math.round(w * DPR));
+  cvs.height = Math.max(1, Math.round(h * DPR));
+  sc = Math.max(w / VW, h / VH);
+  ox = (w - VW * sc) * 0.5;
+  oy = (h - VH * sc) * 0.5;
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ---------------- палитра ----------------------------------------- */
+const NEON = {
+  cyan:   [ 60, 235, 255],
+  magenta:[255,  60, 176],
+  amber:  [255, 176,  70],
+  green:  [110, 255, 165],
+  violet: [168, 120, 255]
+};
+const rgb = (c, a=1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+
+/* ---------------- утилиты ----------------------------------------- */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const R = mulberry32(20240613);
+
+function glow(x, y, r, color, a=1){
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0,   rgb(color, a));
+  g.addColorStop(0.35,rgb(color, a * 0.55));
+  g.addColorStop(1,   rgb(color, 0));
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+}
+function vGlow(x, y, rx, ry, color, a=1){        // вытянутое пятно (отражение)
+  const g = ctx.createRadialGradient(x, y, 0, x, y, ry);
+  g.addColorStop(0,   rgb(color, a));
+  g.addColorStop(0.4, rgb(color, a * 0.4));
+  g.addColorStop(1,   rgb(color, 0));
+  ctx.save(); ctx.translate(x, y); ctx.scale(rx / ry, 1);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, ry, 0, 7); ctx.fill();
+  ctx.restore();
+}
+
+/* ---------------- слои, карта сцены ------------------------------- */
+const HORIZON = 560;      // линия горизонта
+const PLAT_Y  = 610;      // верх плиты-астероида
+const STATION = { x: 560, canopyY: 268, w: 470 };
+const SHIP    = { x: 1150, y: 452 };
+const PAD     = { cx: 800, half: 650 };   // широкая посадочная плита
+
+/* ---------------- фон: звёзды и туманность (статика) -------------- */
+const bg = document.createElement('canvas');
+bg.width = VW; bg.height = VH;
+(function paintBackdrop(){
+  const b = bg.getContext('2d');
+
+  // глубина космоса
+  let g = b.createLinearGradient(0, 0, 0, VH);
+  g.addColorStop(0.00, '#05030f');
+  g.addColorStop(0.45, '#0a0724');
+  g.addColorStop(0.62, '#150b2e');
+  g.addColorStop(1.00, '#07040f');
+  b.fillStyle = g; b.fillRect(0, 0, VW, VH);
+
+  // мягкие туманности
+  const neb = [
+    [ 300, 180, 430, 0.30, [ 70, 30, 120]],
+    [ 870, 120, 520, 0.26, [160, 40, 110]],
+    [1350, 330, 460, 0.22, [ 30, 90, 150]],
+    [ 620, 430, 380, 0.16, [ 40,150,170]]
+  ];
+  for (const [x,y,r,a,c] of neb){
+    const ng = b.createRadialGradient(x, y, 0, x, y, r);
+    ng.addColorStop(0, rgb(c, a));
+    ng.addColorStop(0.55, rgb(c, a * 0.35));
+    ng.addColorStop(1, rgb(c, 0));
+    b.fillStyle = ng; b.beginPath(); b.arc(x, y, r, 0, 7); b.fill();
+  }
+
+  // звёзды трёх «глубин»
+  for (let i = 0; i < 620; i++){
+    const x = R() * VW, y = R() * VH * 0.92;
+    const d = R();
+    const r = d < 0.85 ? 0.6 + R() * 0.7 : 1.2 + R() * 1.5;
+    const a = 0.15 + R() * (d < 0.9 ? 0.4 : 0.7);
+    b.fillStyle = rgb(d < 0.7 ? [200,220,255] : (R()<0.5?[255,190,230]:[190,255,240]), a);
+    b.beginPath(); b.arc(x, y, r, 0, 7); b.fill();
+  }
+  // пара крупных светил с ореолом
+  for (const [x,y,r,c] of [[250,150,34,[190,220,255]],[1420,210,26,[255,210,240]]]){
+    const hg = b.createRadialGradient(x, y, 0, x, y, r * 7);
+    hg.addColorStop(0, rgb(c, 0.9));
+    hg.addColorStop(0.12, rgb(c, 0.5));
+    hg.addColorStop(1, rgb(c, 0));
+    b.fillStyle = hg; b.beginPath(); b.arc(x, y, r * 7, 0, 7); b.fill();
+    b.fillStyle = '#fff'; b.beginPath(); b.arc(x, y, r * 0.35, 0, 7); b.fill();
+  }
+
+  // дальние силуэты станций-соседей
+  b.fillStyle = 'rgba(12,10,30,0.85)';
+  const sil = [[110,470,70,90],[200,455,40,110],[1330,480,90,70],[1430,462,50,95]];
+  for (const [x,y,w,h] of sil){
+    b.fillRect(x, y, w, h);
+    b.fillStyle = rgb(NEON.cyan, 0.5);
+    b.fillRect(x, y - 2, w, 2);
+    b.fillStyle = 'rgba(12,10,30,0.85)';
+  }
+})();
+
+/* ---------------- дождь ------------------------------------------- */
+const drops = [];
+const DR = 300;
+for (let i = 0; i < DR; i++){
+  const layer = i < 90 ? 0 : (i < 190 ? 1 : 2);   // 0 дальний → 2 передний
+  drops.push({
+    x: R() * (VW + 420) - 210,
+    y: R() * VH,
+    layer,
+    len: 8 + layer * 9 + R() * (10 + layer * 12),
+    vy: 420 + layer * 380 + R() * 240,
+    wind: 0.16 + layer * 0.12,
+    a: (0.10 + layer * 0.12) * (0.6 + R() * 0.8),
+    w: 0.6 + layer * 0.5
+  });
+}
+const splashes = [];
+function spawnSplash(x, y, scale, color){
+  if (splashes.length > 220) return;
+  const n = 3 + (R() * 3 | 0);
+  for (let i = 0; i < n; i++){
+    splashes.push({
+      x, y, vx: (R() - 0.5) * 90 * scale,
+      vy: -(40 + R() * 90) * scale,
+      life: 0.3 + R() * 0.35, t: 0,
+      r: (0.7 + R() * 1.4) * scale,
+      color
+    });
+  }
+}
+
+/* ---------------- вспышки молний ---------------------------------- */
+const storm = { flash: 0, next: 3.5, bolt: null, boltT: 0 };
+
+/* ---------------- слоистая лужа: отражённые огни ------------------ */
+/* список светящихся источников, которые «отражаются» на мокром полу */
+function reflect(x, y, color, w, hgt, a){
+  const gy = HORIZON + (y - HORIZON) * 0.10;    // проекция
+  vGlow(x, HORIZON + 26 + (PLAT_Y - y) * 0.05, w, hgt, color, a);
+}
+
+/* =================================================================== *
+ *  РИСОВАНИЕ СЦЕНЫ
+ * =================================================================== */
+function drawStation(t){
+  const r = mulberry32(777);          // стабильный шум для деталей станции
+  const string_   = NEON.cyan;
+  const flicker   = 0.82 + 0.18 * Math.sin(t * 9.3) * Math.sin(t * 2.1);
+  const signFlick = (Math.sin(t * 13.0) > -0.7 ? 1 : 0.35) * (0.9 + 0.1*Math.sin(t*40));
+
+  ctx.save();
+
+  /* ---- плита-астероид ------------------------------------------- */
+  ctx.beginPath();
+  ctx.moveTo(PAD.cx - PAD.half,          PLAT_Y + 40);
+  ctx.lineTo(PAD.cx - PAD.half + 60,     PLAT_Y - 14);
+  ctx.lineTo(PAD.cx + PAD.half - 60,     PLAT_Y - 14);
+  ctx.lineTo(PAD.cx + PAD.half,          PLAT_Y + 40);
+  ctx.lineTo(PAD.cx + PAD.half - 90,     PLAT_Y + 160);
+  ctx.lineTo(PAD.cx - 40,                PLAT_Y + 205);
+  ctx.lineTo(PAD.cx - PAD.half + 80,     PLAT_Y + 130);
+  ctx.closePath();
+  let pg = ctx.createLinearGradient(0, PLAT_Y - 14, 0, PLAT_Y + 215);
+  pg.addColorStop(0, '#1a1430');
+  pg.addColorStop(0.5, '#0d0a1c');
+  pg.addColorStop(1, '#050310');
+  ctx.fillStyle = pg; ctx.fill();
+  ctx.strokeStyle = rgb(string_, 0.35); ctx.lineWidth = 2; ctx.stroke();
+
+  // мокрая глянцевая поверхность верхней грани
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(PAD.cx - PAD.half + 60, PLAT_Y - 14);
+  ctx.lineTo(PAD.cx + PAD.half - 60, PLAT_Y - 14);
+  ctx.lineTo(PAD.cx + PAD.half,      PLAT_Y + 46);
+  ctx.lineTo(PAD.cx - PAD.half,      PLAT_Y + 46);
+  ctx.closePath(); ctx.clip();
+  let wet = ctx.createLinearGradient(0, PLAT_Y - 14, 0, PLAT_Y + 46);
+  wet.addColorStop(0, rgb(NEON.cyan, 0.16));
+  wet.addColorStop(0.55, rgb(NEON.violet, 0.06));
+  wet.addColorStop(1, rgb([0,0,0], 0.0));
+  ctx.fillStyle = wet; ctx.fillRect(PAD.cx - PAD.half, PLAT_Y - 14, PAD.half * 2, 64);
+  for (let i = 0; i < 34; i++){
+    ctx.strokeStyle = rgb([180, 230, 255], 0.05 + r() * 0.06);
+    ctx.lineWidth = 1;
+    const yy = PLAT_Y - 10 + r() * 50;
+    const x0 = PAD.cx - PAD.half + 30 + r() * (PAD.half * 2 - 240);
+    ctx.beginPath(); ctx.moveTo(x0, yy); ctx.lineTo(x0 + 90 + r() * 160, yy); ctx.stroke();
+  }
+  ctx.restore();
+
+  // грунтовые прожилки
+  ctx.save();
+  ctx.clip();
+  for (let i = 0; i < 60; i++){
+    const x = PAD.cx - PAD.half + 40 + r() * (PAD.half * 2 - 80), y = PLAT_Y + r() * 180;
+    ctx.strokeStyle = rgb(r() < 0.5 ? NEON.violet : NEON.cyan, 0.10 + r() * 0.12);
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, y);
+    ctx.lineTo(x + (r()-0.5) * 90, y + 24 + r() * 40); ctx.stroke();
+  }
+  ctx.restore();
+
+  // кромка с маркерами и огнями
+  ctx.strokeStyle = rgb(string_, 0.8); ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(PAD.cx - PAD.half + 60, PLAT_Y - 14);
+  ctx.lineTo(PAD.cx + PAD.half - 60, PLAT_Y - 14); ctx.stroke();
+  for (let i = -8; i <= 8; i++){
+    const lx = PAD.cx + i * 80;
+    if (Math.abs(lx - STATION.x) < 250) continue;
+    const pulse = 0.5 + 0.5 * Math.sin(t * 3 - i * 0.7);
+    glow(lx, PLAT_Y - 15, 12, NEON.amber, 0.35 + pulse * 0.5);
+    ctx.fillStyle = rgb(NEON.amber, 0.85); ctx.beginPath(); ctx.arc(lx, PLAT_Y - 15, 2.4, 0, 7); ctx.fill();
+  }
+
+  /* ---- посадочные маркеры и стапель под кораблём --------------- */
+  ctx.save();
+  ctx.setLineDash([14, 12]);
+  ctx.strokeStyle = rgb(NEON.cyan, 0.28); ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.ellipse(SHIP.x, PLAT_Y + 42, 210, 46, 0, 0, 7); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = rgb(NEON.magenta, 0.22); ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.ellipse(SHIP.x, PLAT_Y + 42, 150, 33, 0, 0, 7); ctx.stroke();
+  ctx.fillStyle = rgb(NEON.cyan, 0.22);
+  ctx.font = '700 40px ui-monospace, Menlo, monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('H', SHIP.x, PLAT_Y + 40);
+  ctx.restore();
+
+  // стапель-манипулятор, ведущий к кораблю
+  const armY = PLAT_Y + 6;
+  ctx.strokeStyle = rgb([120, 140, 190], 0.55); ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.moveTo(370, armY + 10);
+  ctx.lineTo(430, PLAT_Y - 150); ctx.stroke();
+  ctx.strokeStyle = rgb(string_, 0.35); ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(370, armY + 10); ctx.lineTo(430, PLAT_Y - 150); ctx.stroke();
+  ctx.fillStyle = '#0e0b22';
+  ctx.beginPath(); ctx.roundRect(410, PLAT_Y - 190, 42, 46, 5); ctx.fill();
+  ctx.strokeStyle = rgb(NEON.cyan, 0.5); ctx.lineWidth = 1.5; ctx.stroke();
+  glow(431, PLAT_Y - 192, 16, NEON.amber, 0.4);
+
+  /* ---- опорные колонны навеса ----------------------------------- */
+  const cL = STATION.x - 205, cR = STATION.x + 205;
+  for (const cx of [cL, cR]){
+    const g = ctx.createLinearGradient(cx - 8, 0, cx + 8, 0);
+    g.addColorStop(0, '#0c0a1e'); g.addColorStop(0.5, '#211a3e'); g.addColorStop(1, '#0a0818');
+    ctx.fillStyle = g; ctx.fillRect(cx - 8, STATION.canopyY + 30, 16, PLAT_Y - STATION.canopyY - 40);
+    ctx.strokeStyle = rgb(string_, 0.5); ctx.lineWidth = 1.4;
+    ctx.strokeRect(cx - 8, STATION.canopyY + 30, 16, PLAT_Y - STATION.canopyY - 40);
+    // полоса подсветки на колонне
+    glow(cx, STATION.canopyY + 80, 26, NEON.magenta, 0.22);
+    ctx.strokeStyle = rgb(NEON.magenta, 0.6);
+    ctx.beginPath(); ctx.moveTo(cx, STATION.canopyY + 36); ctx.lineTo(cx, PLAT_Y - 20); ctx.stroke();
+  }
+
+  /* ---- навес ---------------------------------------------------- */
+  const cy = STATION.canopyY;
+  ctx.beginPath();
+  ctx.moveTo(STATION.x - 240, cy + 34);
+  ctx.lineTo(STATION.x - 215, cy - 10);
+  ctx.lineTo(STATION.x + 215, cy - 10);
+  ctx.lineTo(STATION.x + 240, cy + 34);
+  ctx.closePath();
+  const cg = ctx.createLinearGradient(0, cy - 10, 0, cy + 40);
+  cg.addColorStop(0, '#241c44'); cg.addColorStop(1, '#0b0820');
+  ctx.fillStyle = cg; ctx.fill();
+  ctx.strokeStyle = rgb(string_, 0.7); ctx.lineWidth = 2; ctx.stroke();
+
+  // неоновые трубки под навесом
+  for (let i = -3; i <= 3; i++){
+    const lx = STATION.x + i * 62;
+    const p = 0.55 + 0.45 * flicker;
+    glow(lx, cy + 20, 34, NEON.cyan, 0.30 * p);
+    ctx.strokeStyle = rgb(NEON.cyan, 0.85 * p); ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(lx - 22, cy + 20); ctx.lineTo(lx + 22, cy + 20); ctx.stroke();
+  }
+  // световой конус вниз
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const cone = ctx.createLinearGradient(0, cy + 20, 0, PLAT_Y + 20);
+  cone.addColorStop(0, rgb(NEON.cyan, 0.16 * flicker));
+  cone.addColorStop(1, rgb(NEON.cyan, 0.0));
+  ctx.fillStyle = cone;
+  ctx.beginPath();
+  ctx.moveTo(STATION.x - 210, cy + 24);
+  ctx.lineTo(STATION.x + 210, cy + 24);
+  ctx.lineTo(STATION.x + 300, PLAT_Y + 30);
+  ctx.lineTo(STATION.x - 300, PLAT_Y + 30);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  /* ---- вывеска -------------------------------------------------- */
+  ctx.save();
+  ctx.translate(STATION.x, cy - 30);
+  const sw = 300, sh = 74;
+  ctx.fillStyle = 'rgba(8,6,22,0.92)';
+  ctx.strokeStyle = rgb(NEON.magenta, 0.9); ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.roundRect(-sw/2, -sh/2, sw, sh, 8); ctx.fill(); ctx.stroke();
+  glow(0, 0, 210, NEON.magenta, 0.20 * signFlick);
+  ctx.font = '700 40px ui-monospace, Menlo, Consolas, monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.shadowColor = rgb(NEON.magenta, 1); ctx.shadowBlur = 26 * signFlick;
+  ctx.fillStyle = rgb([255, 190, 235], 0.7 + 0.3 * signFlick);
+  ctx.fillText('ЗАПРАВКА', 0, -2);
+  ctx.font = '600 17px ui-monospace, Menlo, Consolas, monospace';
+  ctx.shadowBlur = 14 * signFlick;
+  ctx.fillStyle = rgb(NEON.cyan, 0.75);
+  ctx.fillText('FUEL · О₂ · H₂O', 0, 22);
+  ctx.restore();
+
+  /* ---- топливные колонки ---------------------------------------- */
+  const pumps = [STATION.x - 118, STATION.x + 34];
+  pumps.forEach((px, idx) => {
+    const bx = px, by = PLAT_Y - 118;
+    // корпус
+    ctx.fillStyle = '#100c26';
+    ctx.strokeStyle = rgb(string_, 0.55); ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.roundRect(bx - 26, by, 52, 118, 6); ctx.fill(); ctx.stroke();
+    // экран
+    const on = 0.6 + 0.4 * Math.sin(t * 2.4 + idx * 2);
+    ctx.fillStyle = rgb(NEON.green, 0.14 + 0.16 * on);
+    ctx.fillRect(bx - 18, by + 14, 36, 26);
+    glow(bx, by + 27, 30, NEON.green, 0.3 * on);
+    // бегущие цифры
+    ctx.fillStyle = rgb(NEON.green, 0.9);
+    ctx.font = '700 13px ui-monospace, Menlo, monospace';
+    ctx.textAlign = 'center';
+    const val = (12.4 + (t * 0.7 % 9)).toFixed(2);
+    ctx.fillText(val, bx, by + 32);
+    // полоса-индикатор
+    for (let i = 0; i < 5; i++){
+      const lit = ((t * 6 + i) | 0) % 5 <= (idx === 0 ? 2 : 3);
+      ctx.fillStyle = rgb(lit ? NEON.amber : [60,50,80], lit ? 0.9 : 0.5);
+      ctx.fillRect(bx - 18, by + 52 + i * 10, 36, 5);
+    }
+    // огонёк сверху
+    glow(bx, by - 6, 22, idx ? NEON.violet : NEON.amber, 0.35 + 0.3 * on);
+    ctx.fillStyle = '#0b0820'; ctx.beginPath(); ctx.arc(bx, by - 6, 5, 0, 7); ctx.fill();
+    ctx.fillStyle = rgb(idx ? NEON.violet : NEON.amber, 0.9); ctx.beginPath(); ctx.arc(bx, by - 6, 3, 0, 7); ctx.fill();
+  });
+
+  /* ---- шланг с бегущим топливом --------------------------------- */
+  const h0 = { x: pumps[1], y: PLAT_Y - 70 };
+  const h1 = { x: SHIP.x - 118, y: SHIP.y + 62 };
+  const mid = { x: (h0.x + h1.x) / 2, y: Math.min(h0.y, h1.y) + 118 };
+  function hosePath(){
+    ctx.beginPath();
+    ctx.moveTo(h0.x, h0.y);
+    ctx.quadraticCurveTo(mid.x, mid.y, h1.x, h1.y);
+  }
+  ctx.lineCap = 'round';
+  hosePath(); ctx.strokeStyle = '#0a0818'; ctx.lineWidth = 12; ctx.stroke();
+  hosePath(); ctx.strokeStyle = rgb(NEON.amber, 0.55); ctx.lineWidth = 3.4; ctx.stroke();
+  // поток
+  ctx.save();
+  ctx.setLineDash([12, 22]); ctx.lineDashOffset = -t * 90;
+  hosePath(); ctx.strokeStyle = rgb([255,240,180], 0.95); ctx.lineWidth = 2.6; ctx.stroke();
+  ctx.restore();
+
+  ctx.restore();
+}
+
+/* ---------------- корабль на дозарядке ---------------------------- */
+function drawShip(t){
+  const bob = Math.sin(t * 1.15) * 7 + Math.sin(t * 3.1) * 2;
+  const x = SHIP.x, y = SHIP.y + bob;
+  ctx.save();
+  ctx.translate(x, y);
+
+  // тень/свет на полу
+  vGlow(0, PLAT_Y + 150 - y + 30, 210, 46, NEON.cyan, 0.10);
+  vGlow(0, PLAT_Y + 150 - y + 34, 150, 34, NEON.magenta, 0.08);
+
+  // двигатели — импульс
+  const th = 0.55 + 0.45 * Math.sin(t * 6.5);
+  for (const ex of [-70, 70]){
+    glow(ex, 66, 46 + th * 18, NEON.cyan, 0.55 * th + 0.2);
+    glow(ex, 74, 22, [255,255,255], 0.6 * th);
+  }
+  // корпус
+  ctx.beginPath();
+  ctx.moveTo(-150, 0);
+  ctx.quadraticCurveTo(-96, -52, 0, -54);
+  ctx.quadraticCurveTo(112, -54, 162, -6);
+  ctx.quadraticCurveTo(120, 46, 20, 52);
+  ctx.quadraticCurveTo(-86, 50, -150, 0);
+  ctx.closePath();
+  const sg = ctx.createLinearGradient(0, -54, 0, 52);
+  sg.addColorStop(0, '#2a2450');
+  sg.addColorStop(0.45, '#151031');
+  sg.addColorStop(1, '#080615');
+  ctx.fillStyle = sg; ctx.fill();
+  ctx.strokeStyle = rgb(NEON.cyan, 0.55); ctx.lineWidth = 1.8; ctx.stroke();
+
+  // остекление кабины
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(30, -18, 60, 24, -0.08, 0, 7);
+  ctx.fillStyle = rgb(NEON.magenta, 0.22); ctx.fill();
+  ctx.strokeStyle = rgb(NEON.magenta, 0.8); ctx.lineWidth = 2; ctx.stroke();
+  glow(24, -18, 54, NEON.magenta, 0.30);
+  ctx.restore();
+
+  // обшивочные линии и огни
+  ctx.strokeStyle = rgb(NEON.violet, 0.35); ctx.lineWidth = 1;
+  for (let i = 0; i < 4; i++){
+    ctx.beginPath(); ctx.moveTo(-120 + i * 26, -34 + i * 8);
+    ctx.lineTo(10 + i * 30, -34 + i * 8); ctx.stroke();
+  }
+  for (let i = 0; i < 6; i++){
+    const p = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * 5 - i));
+    glow(120 - i * 12, 24, 8, NEON.amber, 0.5 * p);
+  }
+
+  // приёмный порт (куда идёт шланг)
+  glow(-118, 62, 20, NEON.amber, 0.45);
+  ctx.fillStyle = '#0b0820';
+  ctx.beginPath(); ctx.arc(-118, 62, 7, 0, 7); ctx.fill();
+  ctx.strokeStyle = rgb(NEON.amber, 0.85); ctx.lineWidth = 2; ctx.stroke();
+
+  ctx.restore();
+}
+
+/* ---------------- сам слой дождя ---------------------------------- */
+function drawRainLayer(dt, t, layer){
+  const wind = 0.42 + 0.16 * Math.sin(t * 0.7) + 0.08 * Math.sin(t * 2.3);
+  ctx.save();
+  ctx.lineCap = 'round';
+  for (const d of drops){
+    if (d.layer !== layer) continue;
+    d.y += d.vy * dt;
+    d.x += d.vy * wind * d.wind * dt;
+    if (d.y > VH + 60){ d.y = -40 - R() * 260; d.x = R() * (VW + 500) - 250; }
+    if (d.x > VW + 260) d.x -= VW + 520;
+    if (d.x < -260) d.x += VW + 520;
+
+    const tipY = d.y - d.len * 0.9;
+    const tipX = d.x - d.len * wind * d.wind * 0.9;
+    const isFront = layer === 2;
+    ctx.strokeStyle = isFront
+      ? rgb([190, 225, 255], d.a)
+      : rgb([150, 200, 240], d.a);
+    ctx.lineWidth = d.w;
+    ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.lineTo(tipX, tipY); ctx.stroke();
+
+    // редкие брызги от попадания на передний план
+    if (isFront && d.y > HORIZON + 40 && R() < 0.02){
+      spawnSplash(d.x, d.y, 1.3, [180, 220, 255]);
+    }
+  }
+  ctx.restore();
+}
+
+function drawSplashes(dt){
+  ctx.save();
+  ctx.lineCap = 'round';
+  for (let i = splashes.length - 1; i >= 0; i--){
+    const s = splashes[i];
+    s.t += dt;
+    if (s.t > s.life){ splashes.splice(i, 1); continue; }
+    s.vy += 420 * dt;
+    s.x += s.vx * dt; s.y += s.vy * dt;
+    const k = 1 - s.t / s.life;
+    ctx.fillStyle = rgb(s.color, 0.5 * k);
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r * (0.6 + k * 0.6), 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* ---------------- капли, стекающие с козырька --------------------- */
+const drips = [];
+for (let i = 0; i < 26; i++){
+  drips.push({ x: STATION.x - 236 + R() * 472, y: STATION.canopyY + 34 + R() * 4,
+               v: 60 + R() * 90, len: 6 + R() * 12, d: 1 });
+}
+function drawDrips(dt, t){
+  ctx.save();
+  for (const d of drips){
+    d.d += dt * d.v;
+    if (d.y + d.len > PLAT_Y + 30){ spawnSplash(d.x, PLAT_Y + 30, 0.8, NEON.cyan); d.y = STATION.canopyY + 34; d.d = 0; }
+    if (d.d > 220){ // пауза
+      const h = d.d - 220;
+      if (h > 60){ d.d = 0; d.y = STATION.canopyY + 34; }
+    }
+    if (d.d <= 220){
+      d.y += d.v * dt * 0.9;
+      ctx.strokeStyle = rgb([170, 230, 255], 0.4);
+      ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.lineTo(d.x, d.y + d.len); ctx.stroke();
+      glow(d.x, d.y + d.len, 4, [200, 240, 255], 0.25);
+    }
+  }
+  ctx.restore();
+}
+
+/* ---------------- отражения огней на мокром полу ------------------ */
+function drawReflections(t){
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  // под навесом
+  vGlow(STATION.x, HORIZON + 70, 340, 96, NEON.cyan, 0.10);
+  vGlow(STATION.x, HORIZON + 96, 230, 74, NEON.magenta, 0.07);
+  // колонны
+  vGlow(STATION.x - 205, HORIZON + 90, 34, 110, NEON.magenta, 0.07);
+  vGlow(STATION.x + 205, HORIZON + 90, 34, 110, NEON.magenta, 0.07);
+  // колонки
+  vGlow(STATION.x - 118, HORIZON + 74, 44, 92, NEON.green, 0.10);
+  vGlow(STATION.x + 34,  HORIZON + 74, 44, 92, NEON.violet, 0.09);
+  // корабль
+  vGlow(SHIP.x - 70, HORIZON + 120, 60, 130, NEON.cyan, 0.10);
+  vGlow(SHIP.x + 70, HORIZON + 120, 60, 130, NEON.cyan, 0.10);
+  vGlow(SHIP.x, HORIZON + 100, 190, 92, NEON.magenta, 0.06);
+  // рябь: горизонтальные штрихи
+  ctx.restore();
+}
+
+/* ---------------- «дышащий» туман у пола -------------------------- */
+function drawFog(t){
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 5; i++){
+    const p = (t * 0.03 + i * 0.2) % 1;
+    const x = STATION.x - 260 + p * 620;
+    vGlow(x, PLAT_Y + 120 + Math.sin(t + i) * 8, 200, 26, NEON.violet, 0.05);
+  }
+  vGlow(SHIP.x, PLAT_Y + 210, 220, 30, NEON.cyan, 0.045);
+  ctx.restore();
+}
+
+/* ---------------- молния ------------------------------------------ */
+function drawStorm(dt, t){
+  storm.next -= dt;
+  if (storm.next <= 0){
+    storm.flash = 1;
+    storm.next = 4 + R() * 7;
+    // ломаная молния между облаками
+    const pts = []; let x = 200 + R() * 1200, y = 20;
+    while (y < 300){ pts.push([x, y]); x += (R() - 0.5) * 150; y += 20 + R() * 45; }
+    storm.bolt = pts; storm.boltT = 0.55;
+  }
+  if (storm.flash > 0){
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = rgb([150, 190, 255], 0.22 * storm.flash);
+    ctx.fillRect(0, 0, VW, VH);
+    if (storm.bolt && storm.boltT > 0){
+      ctx.beginPath();
+      storm.bolt.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+      ctx.strokeStyle = rgb([220, 235, 255], 0.9 * storm.boltT);
+      ctx.lineWidth = 2; ctx.stroke();
+      ctx.strokeStyle = rgb([160, 200, 255], 0.4 * storm.boltT);
+      ctx.lineWidth = 6; ctx.stroke();
+      storm.boltT -= dt;
+    }
+    ctx.restore();
+    storm.flash = Math.max(0, storm.flash - dt * 2.2);
+  }
+}
+
+/* ---------------- виньетка/сканлайны ------------------------------ */
+function drawOverlay(t){
+  const g = ctx.createRadialGradient(VW/2, VH*0.48, VH*0.28, VW/2, VH*0.5, VH*0.95);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(3,2,10,0.72)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, VW, VH);
+
+  ctx.save();
+  ctx.globalAlpha = 0.05; ctx.fillStyle = '#9fd8ff';
+  for (let y = 0; y < VH; y += 4) ctx.fillRect(0, y, VW, 1);
+  ctx.restore();
+
+  // тонкая «линза» дождя
+  ctx.save();
+  ctx.globalAlpha = 0.06;
+  const lg = ctx.createLinearGradient(0, 0, VW, VH);
+  lg.addColorStop(0, '#7fd0ff'); lg.addColorStop(0.5, '#ffffff'); lg.addColorStop(1, '#ff9fe0');
+  ctx.fillStyle = lg; ctx.fillRect(0, 0, VW, VH);
+  ctx.restore();
+}
+
+/* =================================================================== *
+ *  ГЛАВНЫЙ ЦИКЛ
+ * =================================================================== */
+let last = performance.now() / 1000, tt = 0;
+
+// небольшой буфер для свечения
+const bloom = document.createElement('canvas');
+bloom.width = 400; bloom.height = 225;
+const bctx = bloom.getContext('2d');
+
+function frame(now){
+  now /= 1000;
+  let dt = now - last; last = now;
+  if (dt > 0.05) dt = 0.05;
+  tt += dt;
+
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, cvs.width, cvs.height);
+  ctx.setTransform(sc * DPR, 0, 0, sc * DPR, ox * DPR, oy * DPR);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, 0, VW, VH); ctx.clip();
+
+  // фон
+  ctx.drawImage(bg, 0, 0);
+  drawStorm(dt, tt);
+
+  // дальний дождь
+  drawRainLayer(dt, tt, 0);
+
+  // сцена
+  drawStation(tt);
+
+  // отражения огней на мокрой поверхности площадки
+  drawReflections(tt);
+  drawFog(tt);
+
+  drawShip(tt);
+  drawDrips(dt, tt);
+
+  // средний и передний дождь
+  drawRainLayer(dt, tt, 1);
+  drawRainLayer(dt, tt, 2);
+  drawSplashes(dt);
+
+  // свечение (bloom)
+  bctx.clearRect(0, 0, bloom.width, bloom.height);
+  bctx.drawImage(cvs, 0, 0, bloom.width, bloom.height);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.42;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(bloom, 0, 0, VW, VH);
+  ctx.globalAlpha = 0.22;
+  ctx.drawImage(bloom, 0, 0, VW, VH);
+  ctx.restore();
+
+  drawOverlay(tt);
+  ctx.restore();
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
