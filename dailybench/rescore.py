@@ -91,10 +91,13 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
         expected = saved_fingerprints.get(str(task_id))
         if expected:
             current = suite_digest([task])["per_task"][0]
+            # Old suite rows recorded only the prompt hash: an absent key means
+            # "not recorded then", not "changed now", so it must not make every
+            # legacy task look drifted.
             drift = [
                 key
                 for key in ("prompt_sha256", "dialogue_sha256", "workspace_sha256", "tools_sha256")
-                if expected.get(key) != current.get(key)
+                if key in expected and expected.get(key) != current.get(key)
             ]
             if drift:
                 scores.append(core.Score.from_dict(entry["score"]))
