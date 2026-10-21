@@ -597,6 +597,39 @@ def test_rescore_replays_a_saved_run_without_changes(endpoint, tmp_path: Path, c
     assert "изменений 0" in capsys.readouterr().out
 
 
+def test_rescore_legacy_rows_without_extra_hashes_still_replay(endpoint, tmp_path: Path, capsys):
+    """An old suite.json recorded the prompt hash only.
+
+    Absent dialogue/workspace/tools keys mean "not recorded then"; they must not
+    make every task look drifted and turn the re-score into a no-op.
+    """
+    base_url, _ = endpoint
+    assert _run(base_url, tmp_path, "--only", "IF-2", "--limit", "1", "--name", "smoke") == 0
+    out = tmp_path / "smoke"
+    suite = _read(out / "suite.json")
+    suite["per_task"] = [
+        {key: row[key] for key in ("id", "category", "prompt_sha256")} for row in suite["per_task"]
+    ]
+    (out / "suite.json").write_text(json.dumps(suite), encoding="utf-8")
+
+    assert cli.main(["rescore", str(out)]) == 0
+    marker = _read(out / "rescored.json")
+    assert marker["changed"] == [], "отсутствие новых ключей — это не дрейф фикстуры"
+
+
+def test_rescore_keeps_the_score_when_the_recorded_prompt_drifted(endpoint, tmp_path: Path, capsys):
+    base_url, _ = endpoint
+    assert _run(base_url, tmp_path, "--only", "IF-2", "--limit", "1", "--name", "smoke") == 0
+    out = tmp_path / "smoke"
+    suite = _read(out / "suite.json")
+    suite["per_task"][0]["prompt_sha256"] = "0" * 64
+    (out / "suite.json").write_text(json.dumps(suite), encoding="utf-8")
+
+    assert cli.main(["rescore", str(out)]) == 0
+    marker = _read(out / "rescored.json")
+    assert marker["changed"] and "prompt_sha256" in marker["changed"][0]["status"]
+
+
 # --------------------------------------------------------------------------- #
 # selfcheck / configs / speed / preflight
 # --------------------------------------------------------------------------- #
