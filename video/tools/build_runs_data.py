@@ -23,8 +23,8 @@ from dailybench import core, report  # noqa: E402
 RUNS = ROOT / "runs"
 DIRS = ["deepseek-v4.1-flash-unc-1021", "deepseek-v4.1-flash-unc-1017-1021"]
 LABELS = {
-    "deepseek-v4.1-flash-unc-1021": "DeepSeek 4.1 Flash · стенд A",
-    "deepseek-v4.1-flash-unc-1017-1021": "DeepSeek 4.1 Flash · стенд 1017",
+    "deepseek-v4.1-flash-unc-1021": "DeepSeek-V4.1-Flash",
+    "deepseek-v4.1-flash-unc-1017-1021": "DeepSeek-V4.1-Flash 1017",
 }
 ACCENTS = {
     "deepseek-v4.1-flash-unc-1021": "#4cc2ff",
@@ -57,7 +57,7 @@ def transcript(value: dict[str, Any]) -> core.Transcript:
 def spend_of(tasks: list[dict[str, Any]]) -> dict[str, Any]:
     """Расход прогона одной семантикой с `core.Transcript.spend()`.
 
-    Неизвестное остаётся `None`: нет tasks/transcripts или у turn нет usage —
+    Неизвестное остаётся `None`: нет tasks/transcripts или у turn нет usage -
     это не ноль. `answer` уже без reasoning (completion − reasoning).
     """
     answer = 0
@@ -92,7 +92,6 @@ def spend_of(tasks: list[dict[str, Any]]) -> dict[str, Any]:
 
 def model_row(directory: str) -> dict:
     run = report.load_run(RUNS / directory)
-    labels = run.get("config", {}).get("label") or LABELS[directory]
     totals = {
         cat: {
             "earned": sum(s["earned"] for s in run["scores"] if s["category"] == cat),
@@ -106,11 +105,11 @@ def model_row(directory: str) -> dict:
     return {
         "dir": directory,
         "label": LABELS[directory],
-        "title": labels,
+        "title": LABELS[directory],
         "accent": ACCENTS[directory],
-        "quant": config.get("quant") or "—",
+        "quant": config.get("quant") or "-",
         "context": int(config.get("context_window") or 0),
-        # `score` — число для сортировки и пропорций, `verdict` — строка отчёта.
+        # `score` - число для сортировки и пропорций, `verdict` - строка отчёта.
         "score": round(sum(t["earned"] for cat, t in totals.items() if cat in core.SCORED_CATEGORIES), 3),
         "verdict": summary["verdict"],
         "errors": sum(1 for s in run["scores"] if s.get("error")),

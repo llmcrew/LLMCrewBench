@@ -1,8 +1,8 @@
 [
  {
   "dir": "deepseek-v4.1-flash-unc-1021",
-  "label": "DeepSeek 4.1 Flash · стенд A",
-  "title": "DeepSeek 4.1 Flash · стенд A",
+  "label": "DeepSeek-V4.1-Flash",
+  "title": "DeepSeek-V4.1-Flash",
   "accent": "#4cc2ff",
   "quant": "bf16/fp8",
   "context": 32768,
@@ -69,8 +69,8 @@
  },
  {
   "dir": "deepseek-v4.1-flash-unc-1017-1021",
-  "label": "DeepSeek 4.1 Flash · стенд 1017",
-  "title": "DeepSeek 4.1 Flash · стенд 1017",
+  "label": "DeepSeek-V4.1-Flash 1017",
+  "title": "DeepSeek-V4.1-Flash 1017",
   "accent": "#ffb45c",
   "quant": "bf16/fp8",
   "context": 32768,

@@ -1,0 +1,234 @@
+{
+  "seconds": 20.0,
+  "fps": 120,
+  "clips": 5,
+  "passed": 5,
+  "notes": "Unchanged imagery can be a valid static result; it is reported, never silently treated as a capture failure. Bitrate varies with scene complexity under CRF encoding.",
+  "results": [
+    {
+      "file": "deepseek-v4.1-flash-unc-1021__L-15.mp4",
+      "ok": true,
+      "errors": [],
+      "seconds": 20.0,
+      "fps": 120,
+      "decoded_frames": 2400,
+      "bit_rate": 2806745,
+      "bytes": 7030626,
+      "sha256": "a52b61cd1aad34a3b57ed38bfcedf133222b54d3e5389f89cd148f4341de4cf6",
+      "distinct_thumbnails": 2400,
+      "longest_unchanged_seconds": 0.0083,
+      "sample_hashes": [
+        "15076be1a530bef2a6774b8840a467e4",
+        "4066e6395fa7ca352676d3fa0ca6eed7",
+        "a3674e734a86932e7eeffab99643080d"
+      ],
+      "model": "deepseek-v4.1-flash-unc-1021",
+      "scene": "L-15",
+      "media_status": "ok",
+      "capture": {
+        "clip": "deepseek-v4.1-flash-unc-1021__L-15.mp4",
+        "status": "ok",
+        "source_sha256": "1b8813fdfd574ab5811a6ebd0f29473dc8abc8ff3ee62923fba0ac958d7aa09d",
+        "seconds": 20.0,
+        "fps": 120,
+        "frames": 2400,
+        "captured_frames": 2400,
+        "crf": 16,
+        "preset": "medium",
+        "input_format": "png",
+        "clock_modes": [
+          "native-raf"
+        ],
+        "clock_start_ms": 600,
+        "clock_end_ms": 20591.666666666668,
+        "clock_discontinuities": 0,
+        "distinct_png_frames": 2400,
+        "sample_hashes": {
+          "0": "52f0174e9c10387111deccfe1c023576d4b14baf8c43a2d1bdaf4b3e39404d18",
+          "1200": "adacb8eac3045794e59506369b56ab71b895ed66a583f75111b21428dee314ad",
+          "2399": "97c301abfae808f242a8158180afb076546c5ab4655113fa4c945546d2a884df"
+        }
+      }
+    },
+    {
+      "file": "deepseek-v4.1-flash-unc-1021__L-18.mp4",
+      "ok": true,
+      "errors": [],
+      "seconds": 20.0,
+      "fps": 120,
+      "decoded_frames": 2400,
+      "bit_rate": 10900501,
+      "bytes": 27281269,
+      "sha256": "9dc63b3ff2f869b3fc6bce42eb39f719028e15364f9f3e893fe18fc6c67b8589",
+      "distinct_thumbnails": 2400,
+      "longest_unchanged_seconds": 0.0083,
+      "sample_hashes": [
+        "fec39bfad366efd18acd6ade4c195b69",
+        "285f455c24bb5f19ebc43ec2bcb4429b",
+        "a020074467e8c44d63ec248d85743cc4"
+      ],
+      "model": "deepseek-v4.1-flash-unc-1021",
+      "scene": "L-18",
+      "media_status": "ok",
+      "capture": {
+        "clip": "deepseek-v4.1-flash-unc-1021__L-18.mp4",
+        "status": "ok",
+        "source_sha256": "ef4d43b4629fa693c286d3190f99d0eea7bc1d85b9e11febf3dbc036a219413a",
+        "seconds": 20.0,
+        "fps": 120,
+        "frames": 2400,
+        "captured_frames": 2400,
+        "crf": 16,
+        "preset": "medium",
+        "input_format": "png",
+        "clock_modes": [
+          "native-raf"
+        ],
+        "clock_start_ms": 600,
+        "clock_end_ms": 20591.666666666668,
+        "clock_discontinuities": 0,
+        "distinct_png_frames": 2400,
+        "sample_hashes": {
+          "0": "ce417ea6f8e7366158e614c6ce5c172a855ebdb62f4e31c9fc870cb2c5fc100c",
+          "1200": "c4a6d3727b97bf28eff364c35303d3d751a526f07d0a0f8169ccc9ebc2c80116",
+          "2399": "909067eabb0cb2d21f78bec3e8aa0b616a596872c3ad99376fee7be2a5799d62"
+        }
+      }
+    },
+    {
+      "file": "deepseek-v4.1-flash-unc-1021__L-19.mp4",
+      "ok": true,
+      "errors": [],
+      "seconds": 20.0,
+      "fps": 120,
+      "decoded_frames": 2400,
+      "bit_rate": 21653003,
+      "bytes": 54162867,
+      "sha256": "1e0276c58335edd823792268c37d29e5fb7a2997b71ff1adcb20ad27efad7452",
+      "distinct_thumbnails": 2400,
+      "longest_unchanged_seconds": 0.0083,
+      "sample_hashes": [
+        "19d793966f7d7eadaca7718f3feb4065",
+        "5fe8ba9ef71d0d4dbb0fae06f68edeae",
+        "dee69bb7f2c79784a317ff3de5978945"
+      ],
+      "model": "deepseek-v4.1-flash-unc-1021",
+      "scene": "L-19",
+      "media_status": "ok",
+      "capture": {
+        "clip": "deepseek-v4.1-flash-unc-1021__L-19.mp4",
+        "status": "ok",
+        "source_sha256": "ecaa97da155a6df8fc49219c5081f1ba73c949886fbcfbb81f7c0796fd923055",
+        "seconds": 20.0,
+        "fps": 120,
+        "frames": 2400,
+        "captured_frames": 2400,
+        "crf": 16,
+        "preset": "medium",
+        "input_format": "png",
+        "clock_modes": [
+          "native-raf"
+        ],
+        "clock_start_ms": 600,
+        "clock_end_ms": 20591.666666666668,
+        "clock_discontinuities": 0,
+        "distinct_png_frames": 2400,
+        "sample_hashes": {
+          "0": "8610f42997fa4b5777b14f274eb8dc79d998c288ed68e3718eee13dd746cbddb",
+          "1200": "ec9786b79b430539ecfae00919f76c2246b29e122eb0bfd6eb24361665cb953c",
+          "2399": "968f132e3387f076b972241d5ffe39ac4f8e15a383fe9cf2040b0a78f8ea1c5c"
+        }
+      }
+    },
+    {
+      "file": "deepseek-v4.1-flash-unc-1021__L-24.mp4",
+      "ok": true,
+      "errors": [],
+      "seconds": 20.0,
+      "fps": 120,
+      "decoded_frames": 2400,
+      "bit_rate": 16807925,
+      "bytes": 42050068,
+      "sha256": "cc719593c1971b91de8dbcf9d7c54b7ff85699e986af91fe9eee5b682f744559",
+      "distinct_thumbnails": 2400,
+      "longest_unchanged_seconds": 0.0083,
+      "sample_hashes": [
+        "c70ddb405da48d8ad8104ee092df4ce8",
+        "fed8f595a8c88bfe2a68dd5133babaf0",
+        "90dbd429d88252db1a6ef589bd50ad42"
+      ],
+      "model": "deepseek-v4.1-flash-unc-1021",
+      "scene": "L-24",
+      "media_status": "ok",
+      "capture": {
+        "clip": "deepseek-v4.1-flash-unc-1021__L-24.mp4",
+        "status": "ok",
+        "source_sha256": "b0a8079a81c73e30d08b1a31d4458172d1484bb494ca210d69fd9d3ca28afeb4",
+        "seconds": 20.0,
+        "fps": 120,
+        "frames": 2400,
+        "captured_frames": 2400,
+        "crf": 16,
+        "preset": "medium",
+        "input_format": "png",
+        "clock_modes": [
+          "native-raf"
+        ],
+        "clock_start_ms": 600,
+        "clock_end_ms": 20591.666666666668,
+        "clock_discontinuities": 0,
+        "distinct_png_frames": 2400,
+        "sample_hashes": {
+          "0": "ddbae02099d3198834d3e50e1e521cf0622a42270ac306a87459bae1270494e6",
+          "1200": "022801d135d9f323b2ac1c1343e4477900fa62c5a6e4e2c8cfa21dc920cb68e6",
+          "2399": "8797074a6933be7d78ef6047714db43f58b94fd2c316da323a4e28f926e05ebd"
+        }
+      }
+    },
+    {
+      "file": "deepseek-v4.1-flash-unc-1021__L-4.mp4",
+      "ok": true,
+      "errors": [],
+      "seconds": 20.0,
+      "fps": 120,
+      "decoded_frames": 2400,
+      "bit_rate": 14659640,
+      "bytes": 36679217,
+      "sha256": "dc844df0cef2159be61084f743f8bce678cff254f9b4b838ff93b2f537f06512",
+      "distinct_thumbnails": 2400,
+      "longest_unchanged_seconds": 0.0083,
+      "sample_hashes": [
+        "7d07396f8e52c89202fbf23437bedbd1",
+        "2546d5f0aff3d542293c13b6ffaa1dd4",
+        "c394cf42ec5f6f1e85b1734c7661fa30"
+      ],
+      "model": "deepseek-v4.1-flash-unc-1021",
+      "scene": "L-4",
+      "media_status": "ok",
+      "capture": {
+        "clip": "deepseek-v4.1-flash-unc-1021__L-4.mp4",
+        "status": "ok",
+        "source_sha256": "ef9a630dff298b16deba26740af216e9f24ce75951bc70df3a387f42dc1fcda8",
+        "seconds": 20.0,
+        "fps": 120,
+        "frames": 2400,
+        "captured_frames": 2400,
+        "crf": 16,
+        "preset": "medium",
+        "input_format": "png",
+        "clock_modes": [
+          "native-raf"
+        ],
+        "clock_start_ms": 600,
+        "clock_end_ms": 20591.666666666668,
+        "clock_discontinuities": 0,
+        "distinct_png_frames": 2400,
+        "sample_hashes": {
+          "0": "f2af5d7ba12ffe2f61b2633c17d7602d1c3f65af1b9421ac8294024b99a61edc",
+          "1200": "416a0ac6d5b354d31de03c6eb9903e7e3bdce8075ca60e88c387f6e0fac35c9e",
+          "2399": "792bc78994ecba329a9c55bc78019d8f7f3cb7629085f6eb03ec626d3ad4e8b0"
+        }
+      }
+    }
+  ]
+}

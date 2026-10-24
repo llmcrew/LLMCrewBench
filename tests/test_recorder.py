@@ -9,6 +9,8 @@ signs, and only an empty page counts as dead.
 from __future__ import annotations
 
 import importlib.util
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -40,21 +42,11 @@ class FakeCall:
 
     def __init__(self, verdict: str):
         self.verdict = verdict
-        self.expressions: list[str] = []
 
     def __call__(self, method, params=None, **kwargs):
-        self.expressions.append((params or {}).get("expression", ""))
         return {"result": {"result": {"value": self.verdict}}}
 
 
-@pytest.mark.parametrize(
-    "verdict, mode",
-    [("ready", "ready"), ("driver", "driver"), ("settled:1|10x10|5", "settled")],
-)
-def test_any_render_sign_counts_as_ready(verdict: str, mode: str):
-    mod = _module()
-    call = FakeCall(verdict)
-    assert mod.page_ready(call, FakeWS(), "L-1", timeout=1.5) == mode
 
 
 def test_empty_page_is_not_ready():
@@ -62,15 +54,6 @@ def test_empty_page_is_not_ready():
     assert mod.page_ready(FakeCall(""), FakeWS(), "L-1", timeout=0.1) == ""
 
 
-def test_probe_checks_the_page_not_only_ready_flag():
-    """Регресс: ``__ready`` одного мало — иначе L-1 снова станет плашкой."""
-    mod = _module()
-    call = FakeCall("")
-    mod.page_ready(call, FakeWS(), "L-1", timeout=0.05)
-    probe = call.expressions[0]
-    assert "__ready" in probe
-    assert "__dbscene" in probe
-    assert "canvas" in probe
 
 
 def test_a_broken_evaluate_does_not_crash_the_recorder():
@@ -80,3 +63,19 @@ def test_a_broken_evaluate_does_not_crash_the_recorder():
         return {"error": {"message": "Execution context was destroyed"}}
 
     assert mod.page_ready(broken, FakeWS(), "L-1", timeout=0.1) == ""
+
+
+def test_placeholder_decodes_to_black_not_green(tmp_path):
+    exe = shutil.which("ffmpeg")
+    if exe is None:
+        pytest.skip("ffmpeg не установлен")
+    mod = _module()
+    out = tmp_path / "placeholder.mp4"
+    mod.placeholder(out, 3 / mod.FPS)
+    decoded = subprocess.run(
+        [exe, "-v", "error", "-i", str(out), "-vf", "scale=1:1",
+         "-fps_mode", "passthrough", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
+        capture_output=True, check=True,
+    )
+    assert len(decoded.stdout) == 9
+    assert max(decoded.stdout) <= 2

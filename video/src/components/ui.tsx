@@ -1,8 +1,8 @@
-// Мелкие UI-примитивы ролика: появления, панели, чипы, счётчики.
+// UI-примитивы первого ролика: появления, фон и заголовки.
 
 import type {CSSProperties, ReactNode} from 'react';
 import {AbsoluteFill, interpolate, useCurrentFrame} from 'remotion';
-import {C, FONT_MONO, FONT_SANS} from '../video/theme';
+import {C, FONT_SANS} from '../video/theme';
 
 export const fadeIn = (frame: number, start: number, dur = 12): number =>
   interpolate(frame, [start, start + dur], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
@@ -49,43 +49,3 @@ export const Title: React.FC<{children: ReactNode; size?: number; delay?: number
   );
 };
 
-export const Pill: React.FC<{children: ReactNode; tone?: string; delay?: number; size?: number}> = ({
-  children,
-  tone = C.accent,
-  delay = 0,
-  size = 18,
-}) => {
-  const frame = useCurrentFrame();
-  return (
-    <div
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        padding: '6px 14px',
-        borderRadius: 999,
-        border: `1px solid ${tone}55`,
-        background: `${tone}14`,
-        color: tone,
-        font: `600 ${size}px/1 ${FONT_MONO}`,
-        ...riseIn(frame, delay, 10, 12),
-      }}
-    >
-      {children}
-    </div>
-  );
-};
-
-export const Chip: React.FC<{children: ReactNode; style?: CSSProperties}> = ({children, style}) => (
-  <span
-    style={{
-      font: `500 15px/1 ${FONT_MONO}`,
-      color: C.muted,
-      border: `1px solid ${C.line}`,
-      borderRadius: 999,
-      padding: '6px 12px',
-      ...style,
-    }}
-  >
-    {children}
-  </span>
-);

@@ -1,32 +1,10 @@
-// Данные ролика: сцены таймлайна, реплики, шапки блоков.
+// Монтаж под записанную речь. edit.json — единый источник абсолютных кадров.
+import edit from '../data/edit.json';
 
-/**
- * Частота ролика. Клипы витрины сняты той же частотой: запись кладёт на клип
- * кадр страницы на кадр, и расхождение с `FPS` в `tools/record_*.py` играло бы
- * клип рывками. Смена значения здесь и там — парой.
- *
- * 120 — потолок диапазона: при раскрытии полосы клип переигрывается с первого
- * кадра за 8 с, и запас кадров держит это движение плавным.
- */
-export const FPS = 120;
-/** Витрина: на каждой сцене по очереди раскрываются ВСЕ решения. */
-export const OPEN_SECONDS = 8;
-/**
- * Длительность клипа витрины. Запись (`tools/record_clip.py`) укладывает в неё
- * всё окно движения сцены; в полосе ролик растягивает клип на сцену целиком,
- * а на раскрытии переигрывает его с нуля за OPEN_SECONDS (ускорение ≈2,8×),
- * поэтому смена значения здесь и в `record_*.py` должна идти парой.
- */
-export const CLIP_SECONDS = 23;
-export const SHOWCASE_LEAD = 0.75;
-export const SHOWCASE_SCENES = 49;
-export const SHOWCASE_MODELS = 2;
-/** Одно выступление: раскрытие OPEN_SECONDS + анимации выезда/возврата. */
-export const SHOWCASE_TURN_SECONDS = OPEN_SECONDS + SHOWCASE_LEAD * 2;
-/** Сцена целиком: по выступлению на каждую сторону. */
-export const SHOWCASE_SCENE_SECONDS = SHOWCASE_TURN_SECONDS * SHOWCASE_MODELS;
-export const WIDTH = 1920;
-export const HEIGHT = 1080;
+/** Мастер-клипы 120 fps показываются без ускорения в композиции 60 fps. */
+export const FPS = edit.fps;
+export const WIDTH = edit.width;
+export const HEIGHT = edit.height;
 
 export type SceneId =
   | 'intro'
@@ -34,6 +12,7 @@ export type SceneId =
   | 'suite'
   | 'models'
   | 'board'
+  | 'showcase-intro'
   | 'hero'
   | 'showcase'
   | 'verdict'
@@ -47,102 +26,27 @@ export type SceneSpec = {
   lines: string[];
 };
 
-export const SCENES: SceneSpec[] = [
-  {
-    id: 'intro',
-    seconds: 16,
-    tc: '0:00–0:16',
-    frame: 'Титр: «DailyBench-16» → подзаголовок и две плашки стендов',
-    lines: [
-      'Одна модель, два стенда, один сьют, сто баллов. Сейчас — что именно измеряет DailyBench и что меняется, когда чинят бэкенд, а не модель.',
-    ],
-  },
-  {
-    id: 'harness',
-    seconds: 30,
-    tc: '0:16–0:46',
-    frame: 'Схема цикла агента: запрос → контекст → модель → инструмент → среда → история',
-    lines: [
-      'Бенчмарк мерит не «ум» модели, а работу агента: как модель принимает решения, вызывает инструменты и доводит задачу до проверяемого результата.',
-      'Это и есть harness-цикл: сборка контекста, вызов модели, исполнение инструмента, возврат результата в историю. Слабый harness топит сильную модель; здесь всё зафиксировано одной политикой.',
-    ],
-  },
-  {
-    id: 'suite',
-    seconds: 34,
-    tc: '0:46–1:20',
-    frame: 'Карточки категорий A–J и визуальных K/L с числом заданий и баллами',
-    lines: [
-      'Сьют — десять категорий и сто баллов: следование инструкциям, рассуждение, код, вызовы инструментов, длинный контекст, галлюцинации, структурированный вывод, диалог, поиск по файлам, ревью.',
-      'Отдельно — визуальные блоки: 20 симуляций на Three.js и 29 арт-сцен. Они показываются, но в сто баллов не входят: балл не должен зависеть от сборки браузера.',
-    ],
-  },
-  {
-    id: 'models',
-    seconds: 40,
-    tc: '1:20–2:00',
-    frame: 'Две карточки одного стенда: контекст, квант, итог и расход',
-    lines: [
-      'Две конфигурации: DeepSeek-V4.1-Flash на старом стенде и та же модель на стенде 1017.',
-      'Модель, квант и сид — одни и те же; меняются ingress и правки harness. Разница в баллах — это разница стендов.',
-    ],
-  },
-  {
-    id: 'board',
-    seconds: 38,
-    tc: '2:00–2:38',
-    frame: 'Сводная таблица сравнения и графики',
-    lines: [
-      'Сводка: суммы по категориям, токены, время, вызовы инструментов, ошибки прогонов.',
-      'Ниже — там, где это показательно, по разнице видно, что решает категорию: дисциплина инструментов, длина reasoning или аккуратность вывода.',
-    ],
-  },
-  {
-    id: 'hero',
-    seconds: 14,
-    tc: '2:38–2:52',
-    frame: 'Одна сцена раскрыта на весь экран: K-1 у стенда 1017',
-    lines: ['Прежде чем включать витрину — одна сцена целиком, как она есть.'],
-  },
-  {
-    id: 'showcase',
-    seconds: SHOWCASE_SCENES * SHOWCASE_SCENE_SECONDS,
-    tc: '2:52–…',
-    frame: 'Две вертикальные полосы со стендами; сцена раскрывается на весь экран и возвращается',
-    lines: [
-      'Все сорок девять сцен: две полосы, у каждой — свой стенд. Сцена, которая раскрывается, на восемь секунд занимает весь экран и всегда начинается с первого кадра.',
-      'Полосы живые: это не кадры, а исполняющиеся страницы, снятые покадрово.',
-    ],
-  },
-  {
-    id: 'verdict',
-    seconds: 26,
-    tc: '…',
-    frame: 'Итог: где именно разошлись стенды',
-    lines: [
-      'Итог: 100 из 100 на стенде A, 99,5 на 1017 — разница в одном чеке T-2. Вне D — паритет: 86 из 86. K: 78 против 79; арт-блок доставлен частично (23 и 16 из 29) и сравнивается покрытием.',
-    ],
-  },
-  {
-    id: 'outro',
-    seconds: 12,
-    tc: '…',
-    frame: 'Титр: репозиторий, артефакт, команды',
-    lines: ['Артефакт с живыми сценами и отчётом — в репозитории. Спасибо за просмотр.'],
-  },
-];
+export const timecode = (frame: number): string => {
+  const seconds = Math.floor(frame / FPS);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+};
 
-/** Кадры сцены. */
-export const sceneFrames = (s: SceneSpec): number => Math.round(s.seconds * FPS);
+export const SCENES: SceneSpec[] = edit.scenes.map((scene) => ({
+  id: scene.id as SceneId,
+  seconds: scene.duration / FPS,
+  tc: `${timecode(scene.from)}–${timecode(scene.from + scene.duration)}`,
+  frame: scene.title,
+  lines: edit.narration.filter((item) => item.scene === scene.id).map((item) => item.text),
+}));
 
-/** Абсолютные начала всех сцен. */
-export function sceneStarts(): {id: SceneId; from: number; duration: number; label: string}[] {
-  let at = 0;
-  return SCENES.map((s) => {
-    const from = at;
-    at += sceneFrames(s);
-    return {id: s.id, from, duration: sceneFrames(s), label: `${s.tc} · ${s.id}`};
-  });
-}
+export const sceneFrames = (scene: SceneSpec): number => Math.round(scene.seconds * FPS);
 
-export const totalFrames = (): number => SCENES.reduce((n, s) => n + sceneFrames(s), 0);
+export const sceneStarts = (): {id: SceneId; from: number; duration: number; label: string}[] =>
+  edit.scenes.map((scene) => ({
+    id: scene.id as SceneId,
+    from: scene.from,
+    duration: scene.duration,
+    label: `${timecode(scene.from)} · ${scene.title}`,
+  }));
+
+export const totalFrames = (): number => edit.totalFrames;

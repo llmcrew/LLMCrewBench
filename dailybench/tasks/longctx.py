@@ -13,7 +13,7 @@ import re
 from typing import Any
 
 from .. import core, text
-from ..config import RunConfig
+from ..config import DEFAULT_CONTEXT_WINDOW, RunConfig
 
 
 CHARS_PER_TOKEN = 3.2
@@ -157,14 +157,14 @@ def _target(cfg: RunConfig, legacy: int, share: float) -> int:
     and the scenarios keep their bites of the context instead of shrinking to a
     tenth of it.
     """
-    window = int(getattr(cfg, "context_window", 32768) or 32768)
+    window = int(getattr(cfg, "context_window", DEFAULT_CONTEXT_WINDOW) or DEFAULT_CONTEXT_WINDOW)
     if window <= 32768:
         return legacy
     return int(round(window * share))
 
 
 def _base_meta(cfg: RunConfig, target_tokens: int, estimated_tokens: int, prompt_chars: int) -> dict[str, Any]:
-    runtime_window = int(getattr(cfg, "n_ctx", getattr(cfg, "context_window", 32768)))
+    runtime_window = int(getattr(cfg, "n_ctx", getattr(cfg, "context_window", DEFAULT_CONTEXT_WINDOW)))
     configured_window = int(getattr(cfg, "context_window", runtime_window))
     window = min(runtime_window, configured_window)
     max_new = int(getattr(cfg, "max_new_tokens", 4096))

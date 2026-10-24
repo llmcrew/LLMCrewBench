@@ -1,83 +1,83 @@
 [
  {
   "scene": "K-1",
-  "title": "K-1 — баллистика: три снаряда под гравитацией",
+  "title": "K-1 - баллистика: три снаряда под гравитацией",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-1.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-1.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "K-2",
-  "title": "K-2 — груз на пружине",
+  "title": "K-2 - груз на пружине",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-2.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-2.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "K-3",
-  "title": "K-3 — затухающий маятник",
+  "title": "K-3 - затухающий маятник",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-3.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-3.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "K-4",
-  "title": "K-4 — упругие соударения на прямой",
+  "title": "K-4 - упругие соударения на прямой",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-4.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-4.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -85,20 +85,20 @@
  },
  {
   "scene": "K-5",
-  "title": "K-5 — цепочка из трёх грузов на пружинах",
+  "title": "K-5 - цепочка из трёх грузов на пружинах",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-5.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-5.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -106,20 +106,20 @@
  },
  {
   "scene": "K-6",
-  "title": "K-6 — свободное вращение твёрдого тела",
+  "title": "K-6 - свободное вращение твёрдого тела",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-6.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-6.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -127,20 +127,20 @@
  },
  {
   "scene": "K-7",
-  "title": "K-7 — фонтан частиц",
+  "title": "K-7 - фонтан частиц",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-7.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-7.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -148,20 +148,20 @@
  },
  {
   "scene": "K-8",
-  "title": "K-8 — броуновское движение",
+  "title": "K-8 - броуновское движение",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-8.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-8.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -169,125 +169,125 @@
  },
  {
   "scene": "K-9",
-  "title": "K-9 — стая (boids)",
+  "title": "K-9 - стая (boids)",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-9.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-9.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "K-10",
-  "title": "K-10 — частицы в коробке с гравитацией",
+  "title": "K-10 - частицы в коробке с гравитацией",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-10.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-10.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "K-11",
-  "title": "K-11 — частицы в заданном поле скоростей",
+  "title": "K-11 - частицы в заданном поле скоростей",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-11.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-11.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "K-12",
-  "title": "K-12 — диффузия тепла на пластине 32x32",
+  "title": "K-12 - диффузия тепла на пластине 32x32",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-12.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-12.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "K-13",
-  "title": "K-13 — лесной пожар 40x40",
+  "title": "K-13 - лесной пожар 40x40",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-13.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-13.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "K-14",
-  "title": "K-14 — игра «Жизнь» 24x24",
+  "title": "K-14 - игра «Жизнь» 24x24",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-14.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-14.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -295,20 +295,20 @@
  },
  {
   "scene": "K-15",
-  "title": "K-15 — волновое уравнение на струне",
+  "title": "K-15 - волновое уравнение на струне",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-15.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-15.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -316,20 +316,20 @@
  },
  {
   "scene": "K-16",
-  "title": "K-16 — терраин из сеяного вэлью-шума",
+  "title": "K-16 - терраин из сеяного вэлью-шума",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-16.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-16.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -337,167 +337,167 @@
  },
  {
   "scene": "K-17",
-  "title": "K-17 — 3D-гистограмма: высоты столбцов равны данным",
+  "title": "K-17 - 3D-гистограмма: высоты столбцов равны данным",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-17.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-17.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "K-18",
-  "title": "K-18 — оррерия: углы и координаты трёх планет",
+  "title": "K-18 - оррерия: углы и координаты трёх планет",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-18.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-18.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "K-19",
-  "title": "K-19 — обратная кинематика: схват попадает в цель",
+  "title": "K-19 - обратная кинематика: схват попадает в цель",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-19.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-19.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "K-20",
-  "title": "K-20 — спектр сигнала: амплитуды ДПФ на заданных бинах",
+  "title": "K-20 - спектр сигнала: амплитуды ДПФ на заданных бинах",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__K-20.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__K-20.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "L-1",
-  "title": "L-1 — закат над морем",
+  "title": "L-1 - закат над морем",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-1.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-1.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "L-2",
-  "title": "L-2 — неоновая сетка (synthwave)",
+  "title": "L-2 - неоновая сетка (synthwave)",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-2.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-2.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "L-3",
-  "title": "L-3 — мандала",
+  "title": "L-3 - мандала",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-3.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-3.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "L-4",
-  "title": "L-4 — ночной город",
+  "title": "L-4 - ночной город",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-4.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-4.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -505,20 +505,20 @@
  },
  {
   "scene": "L-5",
-  "title": "L-5 — мост в изометрии",
+  "title": "L-5 - мост в изометрии",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-5.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-5.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -526,18 +526,18 @@
  },
  {
   "scene": "L-6",
-  "title": "L-6 — галактика из частиц",
+  "title": "L-6 - галактика из частиц",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-6.mp4",
     "status": "model_failed",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-6.mp4",
     "status": "model_failed",
     "accent": "#ffb45c"
@@ -547,18 +547,18 @@
  },
  {
   "scene": "L-7",
-  "title": "L-7 — фейерверк",
+  "title": "L-7 - фейерверк",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-7.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-7.mp4",
     "status": "model_failed",
     "accent": "#ffb45c"
@@ -568,20 +568,20 @@
  },
  {
   "scene": "L-8",
-  "title": "L-8 — аврора",
+  "title": "L-8 - аврора",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-8.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-8.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -589,60 +589,60 @@
  },
  {
   "scene": "L-9",
-  "title": "L-9 — звёздное небо над горами",
+  "title": "L-9 - звёздное небо над горами",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-9.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-9.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "L-10",
-  "title": "L-10 — фрактал Мандельброта (фрагментный шейдер)",
+  "title": "L-10 - фрактал Мандельброта (фрагментный шейдер)",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-10.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-10.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "L-11",
-  "title": "L-11 — жидкий металл и стекло (MeshPhysicalMaterial)",
+  "title": "L-11 - жидкий металл и стекло (MeshPhysicalMaterial)",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-11.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-11.mp4",
     "status": "model_failed",
     "accent": "#ffb45c"
@@ -652,20 +652,20 @@
  },
  {
   "scene": "L-12",
-  "title": "L-12 — бесконечный туннель (туман в шейдере)",
+  "title": "L-12 - бесконечный туннель (туман в шейдере)",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-12.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-12.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -673,20 +673,20 @@
  },
  {
   "scene": "L-13",
-  "title": "L-13 — лавовая лампа",
+  "title": "L-13 - лавовая лампа",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-13.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-13.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -694,20 +694,20 @@
  },
  {
   "scene": "L-14",
-  "title": "L-14 — водная поверхность",
+  "title": "L-14 - водная поверхность",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-14.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-14.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -715,41 +715,41 @@
  },
  {
   "scene": "L-15",
-  "title": "L-15 — поток частиц",
+  "title": "L-15 - поток частиц",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-15.mp4",
-    "status": "media_missing",
+    "status": "model_failed",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-15.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "L-16",
-  "title": "L-16 — следы сфер",
+  "title": "L-16 - следы сфер",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-16.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-16.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -757,18 +757,18 @@
  },
  {
   "scene": "L-17",
-  "title": "L-17 — комната с дождём за окном",
+  "title": "L-17 - комната с дождём за окном",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-17.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-17.mp4",
     "status": "model_failed",
     "accent": "#ffb45c"
@@ -778,18 +778,18 @@
  },
  {
   "scene": "L-18",
-  "title": "L-18 — неоновая лапшичная под дождём",
+  "title": "L-18 - неоновая лапшичная под дождём",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-18.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-18.mp4",
     "status": "model_failed",
     "accent": "#ffb45c"
@@ -799,18 +799,18 @@
  },
  {
   "scene": "L-19",
-  "title": "L-19 — трамвай сквозь дождливый город",
+  "title": "L-19 - трамвай сквозь дождливый город",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-19.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-19.mp4",
     "status": "model_failed",
     "accent": "#ffb45c"
@@ -820,18 +820,18 @@
  },
  {
   "scene": "L-20",
-  "title": "L-20 — оранжерея на станции под метеорным дождём",
+  "title": "L-20 - оранжерея на станции под метеорным дождём",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-20.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-20.mp4",
     "status": "model_failed",
     "accent": "#ffb45c"
@@ -841,18 +841,18 @@
  },
  {
   "scene": "L-21",
-  "title": "L-21 — аналоговая рубка с дождём за стеклом",
+  "title": "L-21 - аналоговая рубка с дождём за стеклом",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-21.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-21.mp4",
     "status": "model_failed",
     "accent": "#ffb45c"
@@ -862,18 +862,18 @@
  },
  {
   "scene": "L-22",
-  "title": "L-22 — робот-ремонтник под дождём",
+  "title": "L-22 - робот-ремонтник под дождём",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-22.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-22.mp4",
     "status": "model_failed",
     "accent": "#ffb45c"
@@ -883,18 +883,18 @@
  },
  {
   "scene": "L-23",
-  "title": "L-23 — космическая заправка под дождём",
+  "title": "L-23 - космическая заправка под дождём",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-23.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-23.mp4",
     "status": "model_failed",
     "accent": "#ffb45c"
@@ -904,18 +904,18 @@
  },
  {
   "scene": "L-24",
-  "title": "L-24 — автобусная остановка в неоне",
+  "title": "L-24 - автобусная остановка в неоне",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-24.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-24.mp4",
     "status": "model_failed",
     "accent": "#ffb45c"
@@ -925,18 +925,18 @@
  },
  {
   "scene": "L-25",
-  "title": "L-25 — ядерные взрывы на Земле из космоса",
+  "title": "L-25 - ядерные взрывы на Земле из космоса",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-25.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-25.mp4",
     "status": "model_failed",
     "accent": "#ffb45c"
@@ -946,20 +946,20 @@
  },
  {
   "scene": "L-26",
-  "title": "L-26 — метеорит входит в атмосферу",
+  "title": "L-26 - метеорит входит в атмосферу",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-26.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-26.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -967,20 +967,20 @@
  },
  {
   "scene": "L-27",
-  "title": "L-27 — столкновение двух планет",
+  "title": "L-27 - столкновение двух планет",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-27.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-27.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
@@ -988,41 +988,41 @@
  },
  {
   "scene": "L-28",
-  "title": "L-28 — цепная реакция обломков",
+  "title": "L-28 - цепная реакция обломков",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-28.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-28.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],
-  "open": 0
+  "open": 1
  },
  {
   "scene": "L-29",
-  "title": "L-29 — станция уходит, Земля позади",
+  "title": "L-29 - станция уходит, Земля позади",
   "runs": [
    {
     "model": "deepseek-v4.1-flash-unc-1021",
-    "label": "DeepSeek 4.1 Flash · стенд A",
+    "label": "DeepSeek-V4.1-Flash",
     "clip": "clips/deepseek-v4.1-flash-unc-1021__L-29.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#4cc2ff"
    },
    {
     "model": "deepseek-v4.1-flash-unc-1017-1021",
-    "label": "DeepSeek 4.1 Flash · стенд 1017",
+    "label": "DeepSeek-V4.1-Flash 1017",
     "clip": "clips/deepseek-v4.1-flash-unc-1017-1021__L-29.mp4",
-    "status": "media_missing",
+    "status": "ok",
     "accent": "#ffb45c"
    }
   ],

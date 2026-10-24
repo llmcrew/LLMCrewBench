@@ -2,16 +2,23 @@
   "name": "dailybench-video",
   "version": "1.0.0",
   "private": true,
-  "description": "Видео DailyBench-16: разбор бенчмарка, четыре модели, витрина визуальных решений",
+  "type": "module",
+  "description": "DailyBench-16: DeepSeek-V4.1-Flash и DeepSeek-V4.1-Flash 1017",
   "scripts": {
     "studio": "remotion studio",
     "preflight": "python3 tools/preflight.py",
-    "render": "python3 tools/preflight.py && remotion render DailyBench out/dailybench.mp4",
-    "typecheck": "tsc --noEmit"
+    "render": "node tools/render-edit.mjs",
+    "render:showcase": "node tools/render-showcase.mjs",
+    "audio": "python tools/build_audio.py",
+    "timeline:resolve": "python tools/install_resolve_timeline.py",
+    "typecheck": "tsc --noEmit",
+    "test:showcase": "node --test tests/showcase-timing.test.mts"
   },
   "dependencies": {
+    "@remotion/bundler": "4.0.532",
     "@remotion/cli": "4.0.532",
     "@remotion/google-fonts": "^4.0.532",
+    "@remotion/renderer": "4.0.532",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "remotion": "4.0.532"

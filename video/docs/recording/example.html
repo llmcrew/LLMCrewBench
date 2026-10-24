@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<title>Пример сцены для записи</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b1020; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<body>
+<canvas id="c" width="800" height="600"></canvas>
+<script>
+// Минимальная сцена под контракт: __ready, __step, __probe.
+// Движение детерминировано: шаг - чистая функция от состояния.
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const balls = Array.from({ length: 3 }, (_, i) => ({
+  x: -2 + i * 2, y: 4, vx: 0.8 + i * 0.2, vy: 4.9 + i * 0.2,
+}));
+
+function draw() {
+  ctx.fillStyle = '#101828';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#2b3a4a';
+  ctx.fillRect(0, canvas.height - 60, canvas.width, 60);
+  ctx.fillStyle = '#ff8a3d';
+  for (const ball of balls) {
+    const px = canvas.width / 2 + ball.x * 40;
+    const py = canvas.height - 60 - ball.y * 40;
+    ctx.beginPath();
+    ctx.arc(px, py, 8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+window.__step = (dt) => {
+  for (const ball of balls) {
+    ball.vy -= 3.71 * dt;
+    ball.y += ball.vy * dt;
+    ball.x += ball.vx * dt;
+    if (ball.y < 0) { ball.y = 0; ball.vy = 0; }
+  }
+};
+
+window.__probe = () => {
+  draw(); // рендер здесь: без драйвера запись зовёт probe после шага
+  return { balls: balls.map((b) => ({ x: +b.x.toFixed(4), y: +b.y.toFixed(4) })) };
+};
+
+draw();
+window.__ready = true;
+</script>
+</body>
+</html>

@@ -1,37 +1,29 @@
 #!/usr/bin/env python3
-"""Запись живого клипа сцены: страница решения реально исполняется в Chrome.
+"""Record a model-generated scene with a controlled frame clock.
 
-Драйвер страницы (STEP_HOOK галереи) сам замеряет окно движения сцены и
-разворачивает его на показ; клип снимает то же окно покадрово через
-``__dbscene.seek(t)`` — кадр клипа равен кадру показа, движение не проскакивает.
-Окно длиннее клипа играется в несколько заходов, между заходами страница
-перезагружается: сброса у сцены нет, перезагрузка возвращает её в начало.
-Живые кадры, не стоп-кадры.
-
-Использование:
+Usage:
   python3 record_clip.py <model> <scene> <out_dir> [seconds] [warmup_s]
+      [--force] [--source-root PATH] [--startup-timeout SECONDS] [--fps 120]
+      [--crf 16] [--preset medium] [--chrome EXECUTABLE]
 
-Источник — артефакт `reports/comparison/_showcase/<model>/pages/<scene>.html`
-(отдаётся локальным http-сервером, `_vendor` рядом). Нет страницы — пишем
-плашку (тёмный клип), причину кладём в маркер: `not_run`, если задачи нет в
-прогоне, иначе `model_failed`; текст рисует Remotion. Коды выхода: 0 — клип,
-3 — страница не дошла до кадра (`model_failed`), 4 — сбой записи
-(`capture_failed`; страница при этом может быть жива).
-
-Все клипы: 1920x1080, 120 fps, h264, 23 с (окно движения сцены целиком).
-Частота выше частоты показа (120 против 60): при раскрытии полосы клип
-переигрывается с первого кадра ускоренно (23 с клипа за 8 с показа), и запас
-кадров держит это движение плавным.
-Страницы K (canvas 800x600) вписываются в кадр целиком, а пустые поля по
-сторонам заливаются растянутыми краями сцены — кадр идёт без рамки и полос.
+Source pages default to ``reports/comparison-deepseek-1021/_showcase``. To
+record a repaired copy, pass ``--source-root
+reports/comparison-deepseek-1021/_repairs``. Source files are never modified.
+Frames are lossless PNG at 1920x1080, encoded at 120 fps. Missing or
+pre-frame-failing pages produce typed media-status placeholders; capture and
+encoding failures return a non-zero infrastructure code.
 """
 from __future__ import annotations
 
+import argparse
 import base64
 import functools
+import hashlib
 import http.server
 import json
+import math
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -43,41 +35,40 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
+ROOT = Path(__file__).resolve().parents[2]
+VIDEO = ROOT / "video"
 sys.path.insert(0, str(Path(__file__).parent))
 import media_status  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[2]
-VIDEO = ROOT / "video"
-#: Источник страниц — последнее сравнение (два ingress'а одной модели).
-ART = ROOT / "reports" / "comparison-deepseek-1017"
+REPORTS = ROOT / "reports" / "comparison-deepseek-1021"
 OUT = VIDEO / "public" / "clips"
 MODELS = ("deepseek-v4.1-flash-unc-1021", "deepseek-v4.1-flash-unc-1017-1021")
 SCENES = tuple(f"K-{i}" for i in range(1, 21)) + tuple(f"L-{i}" for i in range(1, 30))
 
-#: Частота клипа. Пара с `FPS` в `src/video/data.ts`: клип снят покадрово, и
-#: расхождение играло бы его рывками (кадр клипа не ложился бы на кадр ролика).
-#: Шагов сцены на клип ровно `secs * FPS` — с ростом частоты шаг мельче.
+#: Native rendering is disabled for the page. Every driven frame advances this
+#: clock by exactly one FPS interval, regardless of the host's elapsed time.
 FPS = 120
-#: Шаг страницы без драйвера (`window.__step`): один кадр клипа — один шаг,
-#: как в её живом показе (там тот же шаг зовётся из rAF).
+CRF = 16
+PRESET = "medium"
 DT = 1 / FPS
 W, H = 1920, 1080
+DEFAULT_SECS = 20.0
+DEFAULT_WARMUP = 0.6
+STARTUP_TIMEOUT = 180.0
 
-#: Коды выхода: 0 — клип снят, 3 — страница не дошла до кадра, 4 — сбой записи.
+#: 0 - clip recorded, 3 - model page failed before its first frame,
+#: 4 - capture/encoding infrastructure failed.
 EXIT = {"ok": 0, "model_failed": 3, "capture_failed": 4}
 
 
-def _find(name: str, *preferred: str, verify: bool = False) -> Path | None:
-    """Бинарник: сначала кандидаты платформы (macOS), затем PATH.
 
-    ``verify`` отсеивает бинарник чужой платформы: комплектный macOS-arm ffmpeg
-    на Linux иначе выбран бы и упал на exec format.
-    """
+def _find(name: str, *preferred: str, verify: bool = False) -> Path | None:
+    """Find a platform binary, rejecting bundled executables for another OS."""
     for candidate in (*preferred, shutil.which(name) or ""):
         if not candidate:
             continue
         path = Path(candidate)
-        if not (path.is_file() and os.access(path, os.X_OK)):
+        if not path.is_file():
             continue
         if verify:
             try:
@@ -94,7 +85,7 @@ def _find(name: str, *preferred: str, verify: bool = False) -> Path | None:
 def ffmpeg() -> Path:
     path = _find("ffmpeg", str(VIDEO / "bin" / "ffmpeg"), verify=True)
     if path is None:
-        raise SystemExit("ffmpeg не найден: положите его в PATH или в video/bin/")
+        raise RuntimeError("ffmpeg not found: install it in PATH or video/bin/")
     return path
 
 
@@ -105,18 +96,26 @@ def ffprobe() -> Path:
     return path
 
 
-def chrome() -> Path:
+def chrome(binary: str | Path | None = None) -> Path:
+    if binary is not None:
+        name = str(binary)
+        candidate = Path(name).expanduser()
+        preferred = str(candidate.resolve()) if candidate.is_file() else name
+        path = _find(name, preferred)
+        if path is None:
+            raise RuntimeError(f"Chrome executable {name!r} was not found")
+        return path
     path = _find(
         "google-chrome",
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         str(VIDEO / "bin" / "chrome"),
-        verify=True,
-    ) or _find("chromium", verify=True) or _find("chromium-browser", verify=True) or _find(
-        "google-chrome-stable", verify=True
-    )
+        str(VIDEO / "bin" / "chrome.exe"),
+    ) or _find("chromium") or _find("chromium-browser") or _find(
+        "google-chrome-stable"
+    ) or _find("chrome")
     if path is None:
-        raise SystemExit("Chrome не найден: поставьте Google Chrome или chromium в PATH")
+        raise RuntimeError("Chrome not found: install Google Chrome or Chromium in PATH")
     return path
 
 
@@ -126,152 +125,244 @@ def run_bin(exe: Path, args: list[str], **kwargs) -> subprocess.CompletedProcess
 
 
 def check_target(model: str, scene: str, out_dir: Path) -> Path:
-    """Containment аргументов CLI: модель/сцена по схеме, OUT только в public/clips."""
+    """Validate model/scene and contain output under video/out or video/public."""
     if model not in MODELS:
-        raise SystemExit(f"неизвестная модель {model!r}: {', '.join(MODELS)}")
+        raise SystemExit(f"unknown model {model!r}: {', '.join(MODELS)}")
     if scene not in SCENES:
-        raise SystemExit(f"неизвестная сцена {scene!r}: K-1..K-20, L-1..L-29")
-    target = out_dir.resolve()
-    try:
-        target.relative_to(OUT.resolve())
-    except ValueError:
-        raise SystemExit(f"OUT {target} вне {OUT}") from None
+        raise SystemExit(f"unknown scene {scene!r}: K-1..K-20, L-1..L-29")
+    target = out_dir.expanduser().resolve()
+    allowed = (VIDEO / "out").resolve(), (VIDEO / "public").resolve()
+    if not any(target == root or root in target.parents for root in allowed):
+        choices = " or ".join(str(root) for root in allowed)
+        raise SystemExit(f"OUT {target} must be under {choices}")
     return target
 
 
-#: Плашки страницы (модель · сцена · клавиши) в видео не нужны: подписи свои,
-#: а плашка перекрывает сцену. Перезагрузка посреди клипа сносит DOM, поэтому
-#: блок применяется после каждой загрузки.
-#: NB: обёртка — IIFE: Runtime.evaluate исполняет ВЫРАЖЕНИЕ, и без вызова
-#: `() => {...}` остаётся функцией, которая никогда не выполнится.
-STYLE_JS = """
+FRAME_CLOCK_JS = r"""
 (() => {
-  for (const d of document.body.children) {
-    if (d.tagName !== 'DIV' && d.tagName !== 'SPAN') continue;
-    const st = getComputedStyle(d);
-    if (st.position !== 'fixed' && st.position !== 'absolute') continue;
-    if (!d.querySelector('canvas')) d.style.display = 'none';
-  }
+  if (window.__recordClock) return;
+  const FPS = 120;
+  const STEP_MS = 1000 / FPS;
+  const EPOCH = 946684800000;
+  let frame = -1;
+  let now = 0;
+  let nextId = 1;
+  let renderCount = 0;
+  let lastRender = null;
+  const rafs = new Map();
+  const timers = new Map();
+  const animationOrigins = new WeakMap();
+  const unsupported = new Set();
 
-  // Поля кадра. canvas вписывается целиком (K рисует 800x600, арт-сцены —
-  // какую выбрала модель), а пустые поля заливаются растянутыми краями сцены:
-  // у 800x600-страниц поле было белым (body страницы), у тёмных — своим цветом
-  // с резкой границей у канваса, и кадр шёл в рамке. Тянутый край продолжает
-  // сцену за её границей. Замер на пилотах: перепад на границе 0-1/255, у
-  // заливки полей одним средним цветом — 48/255 (край сцены не одноцветный).
-  let bg = document.getElementById('__bgfill');
-  if (!bg) {
-    bg = document.createElement('canvas');
-    bg.id = '__bgfill';
-    bg.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:0;pointer-events:none';
-    document.body.appendChild(bg);
-  }
-  const g = bg.getContext('2d');
-  // Образец краёв — отдельным канвасом в половину разрешения: средний цвет
-  // ставится фоном html/body, под подложку (запасной слой на случай, если
-  // подложка не отрисуется). Читать пиксели — только с CPU-канваса.
-  const probe = document.createElement('canvas');
-  const pg = probe.getContext('2d', {willReadFrequently: true});
-  document.documentElement.style.colorScheme = 'dark';
-  document.documentElement.style.background = '#000';
-  document.body.style.background = 'transparent';
-
-  // Перерисовка подложки: зовётся тем же evaluate, что и шаг сцены, — кадр
-  // клипа снимается сразу после, и подложка обязана быть уже свежей.
-  window.__refill = () => {
-    // Именно canvas сцены: `querySelector('canvas')` вернул бы подложку, если
-    // страница добавит свой canvas позже (её appendChild идёт после нашего).
-    // Среди нескольких canvas сцены берём последний: `renderer.domElement`
-    // страница всегда добавляет после своей разметки, а пустой canvas-декой
-    // разметки (qwen36/L-2: `<canvas id="c">` в теле, сцена — в новом canvas,
-    // добавленном ниже) иначе попадает в кадр пустым и сжимает сцену в половину
-    // кадра. Остальные canvas-декои прячем, чтобы они не делили место в body.
-    const cs = [...document.querySelectorAll('canvas')].filter((el) => el !== bg);
-    const c = cs[cs.length - 1];
-    if (!c || !c.width || !c.height) return false;
-    for (const el of cs) el.style.display = el === c ? 'block' : 'none';
-    const k = Math.min(1920 / c.width, 1080 / c.height);
-    c.style.width = `${Math.round(c.width * k)}px`;
-    c.style.height = `${Math.round(c.height * k)}px`;
-    c.style.position = 'relative';
-    c.style.zIndex = '1';
-    const r = c.getBoundingClientRect();
-    const x = Math.round(r.x), y = Math.round(r.y), w = Math.round(r.width), h = Math.round(r.height);
-    const vw = Math.round(window.innerWidth), vh = Math.round(window.innerHeight);
-    if (bg.width !== vw || bg.height !== vh) { bg.width = vw; bg.height = vh; }
-    g.clearRect(0, 0, vw, vh);
-    // Края сцены (полоса в 1 пиксель) тянутся в поля и в углы: сцена
-    // продолжается, стыка не видно ни по бокам, ни сверху и снизу.
-    if (x > 0) g.drawImage(c, 0, 0, 1, c.height, 0, 0, x, vh);
-    if (x + w < vw) g.drawImage(c, c.width - 1, 0, 1, c.height, x + w, 0, vw - x - w, vh);
-    if (y > 0) g.drawImage(c, 0, 0, c.width, 1, x, 0, w, y);
-    if (y + h < vh) g.drawImage(c, 0, c.height - 1, c.width, 1, x, y + h, w, vh - y - h);
-    g.drawImage(c, x, y, w, h);
-
-    const pw = Math.max(1, Math.round(c.width / 2)), ph = Math.max(1, Math.round(c.height / 2));
-    if (probe.width !== pw || probe.height !== ph) { probe.width = pw; probe.height = ph; }
-    pg.drawImage(c, 0, 0, pw, ph);
-    let sr = 0, sg = 0, sb = 0, sn = 0;
-    const bands = [pg.getImageData(0, 0, 1, ph).data, pg.getImageData(pw - 1, 0, 1, ph).data,
-                   pg.getImageData(0, 0, pw, 1).data, pg.getImageData(0, ph - 1, pw, 1).data];
-    for (const band of bands) {
-      for (let i = 0; i < band.length; i += 28) { sr += band[i]; sg += band[i + 1]; sb += band[i + 2]; sn++; }
-    }
-    const col = `rgb(${Math.round(sr / sn)},${Math.round(sg / sn)},${Math.round(sb / sn)})`;
-    if (col !== window.__bgsolid) {
-      window.__bgsolid = col;
-      document.documentElement.style.background = col;
-    }
-    return true;
+  const schedule = (callback, delay, interval, args) => {
+    const id = nextId++;
+    const wait = Math.max(interval ? 1 : 0, Number(delay) || 0);
+    timers.set(id, {callback, args, due: now + wait, interval: interval ? wait : 0});
+    return id;
   };
+  const invokeTimer = (timer) => {
+    if (typeof timer.callback === 'function') {
+      timer.callback.apply(window, timer.args);
+    } else {
+      (0, eval)(String(timer.callback));
+    }
+  };
+  const runTimers = (through) => {
+    let count = 0;
+    while (true) {
+      let dueId = 0;
+      let dueAt = Infinity;
+      for (const [id, timer] of timers) {
+        if (timer.due < dueAt) { dueId = id; dueAt = timer.due; }
+      }
+      if (!dueId || dueAt > through) break;
+      if (++count > 10000) throw new Error('recording clock timer runaway');
+      const timer = timers.get(dueId);
+      now = dueAt;
+      if (timer.interval) timer.due += timer.interval;
+      else timers.delete(dueId);
+      invokeTimer(timer);
+    }
+    now = through;
+  };
+  const syncAnimations = () => {
+    if (typeof document.getAnimations !== 'function') return;
+    for (const animation of document.getAnimations()) {
+      try {
+        if (!animationOrigins.has(animation)) {
+          animationOrigins.set(animation, now);
+          animation.pause();
+          animation.currentTime = 0;
+        } else {
+          animation.pause();
+          animation.currentTime = now - animationOrigins.get(animation);
+        }
+      } catch (_) {
+        unsupported.add('a Web Animations animation could not be driven by the recording clock');
+      }
+    }
+  };
+  const advanceFrame = () => {
+    frame += 1;
+    now = frame * STEP_MS;
+    runTimers(now);
+    syncAnimations();
+    const callbacks = Array.from(rafs.values());
+    rafs.clear();
+    for (const callback of callbacks) callback(now);
+    runTimers(now);
+    syncAnimations();
+    if (document.querySelector('video') &&
+        typeof HTMLVideoElement !== 'undefined' &&
+        HTMLVideoElement.prototype.requestVideoFrameCallback) {
+      unsupported.add('video-frame callbacks follow the browser media clock');
+    }
+    return rafs.size > 0;
+  };
+  const wrapRenderer = (three) => {
+    const Original = three && three.WebGLRenderer;
+    if (typeof Original !== 'function' || Original.__recordClipWrapped) return;
+    const Wrapped = function (...args) {
+      const instance = Reflect.construct(
+        Original, args, new.target === Wrapped ? Original : new.target
+      );
+      const render = instance.render;
+      if (typeof render === 'function') {
+        instance.render = function (...renderArgs) {
+          lastRender = {instance: this, args: renderArgs};
+          renderCount += 1;
+          return Reflect.apply(render, this, renderArgs);
+        };
+      }
+      return instance;
+    };
+    Wrapped.prototype = Original.prototype;
+    Object.setPrototypeOf(Wrapped, Original);
+    Wrapped.__recordClipWrapped = true;
+    try { three.WebGLRenderer = Wrapped; }
+    catch (_) { unsupported.add('a renderer constructor could not be hooked for redraw'); }
+  };
+  try {
+    let three = window.THREE;
+    Object.defineProperty(window, 'THREE', {
+      configurable: true,
+      enumerable: true,
+      get: () => three,
+      set: (value) => { three = value; wrapRenderer(value); }
+    });
+    wrapRenderer(three);
+  } catch (_) {
+    unsupported.add('the global THREE renderer could not be hooked for redraw');
+  }
 
-  document.body.style.margin = '0';
-  document.body.style.overflow = 'hidden';
-  document.body.style.display = 'flex';
-  document.body.style.alignItems = 'center';
-  document.body.style.justifyContent = 'center';
-  // Страница может задать body жёсткую ширину (у minimax `body{width:800px}`):
-  // без растягивания body увеличенный canvas обрезается её размером.
-  document.body.style.width = '100vw';
-  document.body.style.height = '100vh';
-  document.body.style.maxWidth = 'none';
-  document.body.style.maxHeight = 'none';
-  document.documentElement.style.zoom = '';
-  window.__refill();
-  return true;
-})()"""
+  const RealDate = Date;
+  function RecordingDate(...args) {
+    if (!new.target) return new RealDate(EPOCH + now).toString();
+    return Reflect.construct(RealDate, args.length ? args : [EPOCH + now], new.target);
+  }
+  RecordingDate.prototype = RealDate.prototype;
+  Object.setPrototypeOf(RecordingDate, RealDate);
+  RecordingDate.now = () => EPOCH + now;
+  RecordingDate.parse = RealDate.parse;
+  RecordingDate.UTC = RealDate.UTC;
+  try { window.Date = RecordingDate; }
+  catch (_) { unsupported.add('the page Date constructor could not be controlled'); }
+  try {
+    Object.defineProperty(performance, 'now', {configurable: true, value: () => now});
+  } catch (_) {
+    try {
+      Object.defineProperty(Object.getPrototypeOf(performance), 'now', {
+        configurable: true, value: () => now
+      });
+    } catch (_) {
+      unsupported.add('performance.now could not be controlled');
+    }
+  }
+  try { Object.defineProperty(performance, 'timeOrigin', {configurable: true, value: EPOCH}); }
+  catch (_) {}
 
-#: Ждём, пока драйвер страницы закончит замер окна движения: замер кончается
-#: перезагрузкой страницы, поэтому ждать приходится через неё.
-SCENE_READY = """
-new Promise((res) => {
-  const t0 = performance.now();
-  const t = setInterval(() => {
-    const s = window.__dbscene;
-    if (s && s.mode && s.mode !== 'measuring') { clearInterval(t); res(true); return; }
-    if (!s && performance.now() - t0 > 8000) { clearInterval(t); res(false); return; }
-    if (performance.now() - t0 > 90000) { clearInterval(t); res(false); }
-  }, 25);
-})
+  window.requestAnimationFrame = (callback) => {
+    if (typeof callback !== 'function') throw new TypeError('requestAnimationFrame callback must be callable');
+    const id = nextId++;
+    rafs.set(id, callback);
+    return id;
+  };
+  window.cancelAnimationFrame = (id) => { rafs.delete(id); };
+  window.setTimeout = (callback, delay, ...args) => schedule(callback, delay, 0, args);
+  window.setInterval = (callback, delay, ...args) => schedule(callback, delay, 1, args);
+  window.clearTimeout = (id) => { timers.delete(id); };
+  window.clearInterval = window.clearTimeout;
+  window.requestIdleCallback = (callback, options = {}) =>
+    schedule(() => callback({didTimeout: false, timeRemaining: () => 0}), options.timeout || 0, 0, []);
+  window.cancelIdleCallback = window.clearTimeout;
+
+  window.__recordClock = {
+    get time() { return now; },
+    get frame() { return frame; },
+    warmup: (count) => { for (let i = 0; i < count; i++) advanceFrame(); },
+    capture: (dt) => {
+      const beforeRender = renderCount;
+      const selfRaf = advanceFrame();
+      if (!selfRaf && typeof window.__step === 'function') window.__step(dt);
+      if (typeof window.__probe === 'function') window.__probe();
+      syncAnimations();
+      if (renderCount === beforeRender && lastRender) {
+        const {instance, args} = lastRender;
+        instance.render(...args);
+      }
+      return {selfRaf, frame, time: now, mode: selfRaf ? 'native-raf' : typeof window.__step === 'function' ? 'explicit-step' : 'static-or-css'};
+    },
+    warnings: () => Array.from(unsupported)
+  };
+})();
 """
 
 
-def page_ready(call, ws, scene: str, timeout: float = 12.0) -> str:
-    """Дошла ли страница до кадра; ``''`` — нет, иначе способ готовности.
+class PageJavaScriptError(RuntimeError):
+    """A page exception before its first captured frame."""
 
-    K детерминированы и обязаны выставить ``__ready``/``__dbscene``. L хуков не
-    обещают: там ждём settled-состояние — документ догружен, разметка перестала
-    меняться, а на странице есть непустой текст/canvas/svg. ``__ready`` и драйвер
-    принимаются и на L: свободная страница может их иметь.
 
-    Поллим короткими evaluate: драйвер перезагружает вкладку и сносит контекст,
-    висящий промис при этом обрывается. Упавшая страница не даст ни признака.
-    """
+def _javascript_error(ws) -> str:
+    lock = getattr(ws, "lock", None)
+    if lock is None:
+        events = list(getattr(ws, "events", ()))
+    else:
+        with lock:
+            events = list(ws.events)
+    events = [event for event in events if event.get("method") == "Runtime.exceptionThrown"]
+    if not events:
+        return ""
+    details = (events[0].get("params") or {}).get("exceptionDetails") or {}
+    exception = details.get("exception") or {}
+    text = exception.get("description") or details.get("text") or "JavaScript exception"
+    line = details.get("lineNumber")
+    url = details.get("url")
+    where = f"{url}:{line + 1}" if url and isinstance(line, int) else ""
+    return f"{where}: {text}" if where else str(text)
+
+
+def _evaluate(call, expression: str, *, timeout: float = 60) -> dict:
+    response = call("Runtime.evaluate", {
+        "expression": expression,
+        "returnByValue": True,
+        "awaitPromise": False,
+    }, timeout=timeout)
+    result = response.get("result") or {}
+    details = result.get("exceptionDetails")
+    if details:
+        exception = details.get("exception") or {}
+        message = exception.get("description") or details.get("text") or "JavaScript exception"
+        raise PageJavaScriptError(str(message))
+    return response
+
+
+def page_ready(call, ws, scene: str, timeout: float = STARTUP_TIMEOUT) -> str:
+    """Wait for a ready marker or stable, rendered page without advancing its clock."""
     probe = """
 (() => {
   if (window.__ready === true) return 'ready';
   const s = window.__dbscene;
-  if (s && s.mode) return s.mode === 'measuring' ? '' : 'driver';
+  if (s && s.mode && s.mode !== 'measuring') return 'driver';
   if (document.readyState !== 'complete') return '';
   const c = document.querySelector('canvas');
   const live = (c && c.width > 1 && c.height > 1) ||
@@ -285,18 +376,19 @@ def page_ready(call, ws, scene: str, timeout: float = 12.0) -> str:
   ].join('|');
 })()"""
     deterministic = scene.startswith("K-")
-    deadline = time.time() + (timeout * 2 if not deterministic else timeout)
+    deadline = time.time() + timeout
     settled_at: float | None = None
     last = ""
     while time.time() < deadline:
-        if any(e.get("method") == "Runtime.exceptionThrown" for e in ws.events):
-            # Исключение до кадра — вердикт, ждать больше нечего.
+        if _javascript_error(ws):
             return ""
         try:
-            r = call("Runtime.evaluate", {"expression": probe, "returnByValue": True}, timeout=5)
-        except TimeoutError:
+            response = _evaluate(call, probe, timeout=5)
+        except (TimeoutError, PageJavaScriptError):
+            if _javascript_error(ws):
+                return ""
             continue
-        value = ((r.get("result") or {}).get("result") or {}).get("value") or ""
+        value = ((response.get("result") or {}).get("result") or {}).get("value") or ""
         if value == "ready":
             return "ready"
         if value == "driver":
@@ -307,40 +399,21 @@ def page_ready(call, ws, scene: str, timeout: float = 12.0) -> str:
                 if settled_at is None:
                     settled_at = time.time()
                 elif not deterministic and time.time() - settled_at >= 0.9:
-                    # K обязан выставить протокол: settled без хука — не K-кадр.
                     return "settled"
             else:
                 last = mark
                 settled_at = None
-        if not deterministic and not value:
+        else:
             last = ""
             settled_at = None
         time.sleep(0.05)
     return ""
 
 
-def wait_scene(call, deadline: float = 100.0) -> bool:
-    """Дождаться драйвера страницы; True — сцена играет своим ходом.
-
-    Перезагрузка между замером и показом сносит контекст вместе с висящим
-    awaitPromise, поэтому вызов повторяем, а не падаем.
-    """
-    limit = time.time() + deadline
-    while time.time() < limit:
-        try:
-            r = call("Runtime.evaluate", {"expression": SCENE_READY, "awaitPromise": True,
-                                          "returnByValue": True}, timeout=max(5.0, limit - time.time()))
-        except TimeoutError:
-            return False
-        if "error" in r:
-            time.sleep(0.05)
-            continue
-        return bool(((r.get("result") or {}).get("result") or {}).get("value"))
-    return False
 
 
-def apply_styles(call) -> None:
-    call("Runtime.evaluate", {"expression": STYLE_JS, "returnByValue": True})
+
+
 
 
 class WS:
@@ -363,6 +436,7 @@ class WS:
         buf = b""
         while b"\r\n\r\n" not in buf:
             buf += self.sock.recv(4096)
+        self.sock.settimeout(None)
         self._id = 0
         self.lock = threading.Lock()
         #: Тексты показанных страницей диалогов (для маркера).
@@ -411,7 +485,7 @@ class WS:
             pass
 
     def dialog_note(self) -> str:
-        """Последний показанный диалог; ``''`` — их не было."""
+        """Последний показанный диалог; ``''`` - их не было."""
         with self.lock:
             return self.dialogs[-1] if self.dialogs else ""
 
@@ -453,206 +527,478 @@ def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
-
-
-def cdp_ws(port: int) -> str:
-    for _ in range(200):
+def cdp_ws(port: int, timeout: float = STARTUP_TIMEOUT) -> str:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         try:
-            data = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2).read())
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/json/version", timeout=2
+            ) as response:
+                data = json.loads(response.read())
             return data["webSocketDebuggerUrl"]
         except Exception:
             time.sleep(0.15)
-    raise SystemExit("CDP не поднялся")
+    raise TimeoutError(f"Chrome CDP did not start within {timeout:g}s")
 
 
-def html_server() -> tuple[http.server.ThreadingHTTPServer, str]:
-    class Quiet(http.server.SimpleHTTPRequestHandler):
-        def log_message(self, *a):  # noqa: D102
+def locate_source(
+    model: str, scene: str, source_root: Path = REPORTS
+) -> tuple[Path | None, Path]:
+    """Resolve a page only within the explicitly selected source root."""
+    root = Path(source_root).expanduser().resolve()
+    relative = Path(model) / "pages" / f"{scene}.html"
+    if root.name == "_showcase":
+        page = root / relative
+    elif root.name == "pages":
+        page = root / f"{scene}.html"
+    else:
+        page = root / "_showcase" / relative
+    server_root = root.parent if root.name in ("_repairs", "_showcase") else root
+    if root == REPORTS.resolve():
+        server_root = root
+    if page.is_file():
+        try:
+            page.relative_to(REPORTS.resolve())
+            server_root = REPORTS.resolve()
+        except ValueError:
             pass
-    handler = functools.partial(Quiet, directory=str(ART))
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+        return page, server_root
+    return None, server_root
 
 
-def encode(frames: Path, out: Path) -> None:
-    exe = ffmpeg()
-    run_bin(exe, ["-hide_banner", "-loglevel", "error", "-framerate", str(FPS),
-                  "-i", str(frames / "%06d.jpg"),
-                  "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,scale={W}:{H}",
-                  "-r", str(FPS), "-c:v", "libx264", "-preset", "medium", "-crf", "21",
-                  "-pix_fmt", "yuv420p", "-y", str(out)])
+def _served_html(page: Path) -> str:
+    """Remove only the known gallery driver from the HTTP-served copy."""
+    source = page.read_text(encoding="utf-8")
+    # Published reports can contain an older driver revision. Identify our
+    # injected script by its stable header, not by today's full driver text.
+    return re.sub(
+        r"<script>\s*// Сцена играет сама: драйвер измеряет окно движения\b.*?</script>",
+        "", source, flags=re.DOTALL,
+    )
+
+
+def html_server(
+    directory: Path = REPORTS,
+    overlay_page: Path | None = None,
+    overlay_html: str | None = None,
+) -> tuple[http.server.ThreadingHTTPServer, str]:
+    root = Path(directory).resolve()
+    overlay_route = None
+    overlay_bytes = None
+    if overlay_page is not None and overlay_html is not None:
+        overlay_route = overlay_page.resolve().relative_to(root).as_posix()
+        overlay_bytes = overlay_html.encode("utf-8")
+
+    class Quiet(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            route = urlparse(self.path).path.lstrip("/")
+            if overlay_route is not None and route == overlay_route:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(overlay_bytes)))
+                self.end_headers()
+                self.wfile.write(overlay_bytes)
+                return
+            super().do_GET()
+
+        def log_message(self, *args):  # noqa: D102
+            pass
+
+    handler = functools.partial(Quiet, directory=str(root))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def _frame_count(seconds: float, *, allow_zero: bool = False) -> int:
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError("duration must be a finite, non-negative number")
+    count = round(seconds * FPS)
+    if (not math.isclose(count / FPS, seconds, rel_tol=0, abs_tol=1e-9)
+            or (count == 0 and not allow_zero)):
+        raise ValueError(f"duration must be a positive multiple of 1/{FPS} second")
+    return count
+
+
+def _atomic_output(out: Path, args: list[str]) -> None:
+    target = out.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(f".{target.name}.{os.getpid()}.part.mp4")
+    partial.unlink(missing_ok=True)
+    try:
+        run_bin(ffmpeg(), [*args, "-y", str(partial)])
+        if not partial.is_file() or partial.stat().st_size == 0:
+            raise RuntimeError("ffmpeg produced no output")
+        partial.replace(target)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+def encode(frames: Path, out: Path, frame_count: int | None = None) -> None:
+    """Encode a lossless PNG sequence as a fast-start 120-fps H.264 clip."""
+    if frame_count is not None and frame_count <= 0:
+        raise ValueError("frame_count must be positive")
+    args = [
+        "-hide_banner", "-loglevel", "error",
+        "-framerate", str(FPS), "-start_number", "0",
+        "-i", str((frames / "%06d.png").resolve()),
+    ]
+    if frame_count is not None:
+        args += ["-frames:v", str(frame_count)]
+    args += [
+        "-an", "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF),
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+    ]
+    _atomic_output(out, args)
 
 
 def placeholder(out: Path, secs: float) -> None:
-    exe = ffmpeg()
-    run_bin(exe, ["-hide_banner", "-loglevel", "error",
-                  # В комплектном ffmpeg нет фильтра `color`: берём nullsrc.
-                  "-f", "lavfi", "-i", f"nullsrc=s={W}x{H}:r={FPS}:d={secs}",
-                  "-c:v", "libx264", "-preset", "medium", "-crf", "21",
-                  "-pix_fmt", "yuv420p", "-y", str(out)])
+    """Write a fixed-rate dark placeholder of exactly the requested duration."""
+    count = _frame_count(secs)
+    _atomic_output(out, [
+        "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", f"color=c=black:s={W}x{H}:r={FPS}",
+        "-frames:v", str(count), "-an",
+        "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF),
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+    ])
 
 
-def record(model: str, scene: str, out_dir: Path, secs: float, warmup: float, base_url: str) -> tuple[str, str]:
-    """Снять клип: ``("статус", причина)``. Сбой инфраструктуры — исключение.
+def _write_capture_metadata(out: Path, source: Path | None, seconds: float,
+                            status: str, details: dict | None = None) -> None:
+    source_hash = None
+    if source is not None and source.is_file():
+        with source.open("rb") as original:
+            source_hash = hashlib.file_digest(original, "sha256").hexdigest()
+    data = {
+        "clip": out.name, "status": status, "source_sha256": source_hash,
+        "seconds": seconds, "fps": FPS, "frames": _frame_count(seconds),
+        "captured_frames": 0, "crf": CRF, "preset": PRESET,
+        "input_format": "png" if status == "ok" else "generated-placeholder",
+        **(details or {}),
+    }
+    target = out.with_suffix(".capture.json")
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(target)
 
-    Причина — текст JS-диалога страницы, если он был: диалоги принимаются
-    автоматически, но их след остаётся для маркера.
-    """
-    src = ART / "_showcase" / model / "pages" / f"{scene}.html"
-    frames = out_dir / "_frames" / f"{model}__{scene}"
-    shutil.rmtree(frames, ignore_errors=True)
-    frames.mkdir(parents=True)
-    port = free_port()
-    exe = chrome()
-    profile = Path(tempfile.mkdtemp(prefix="rec-chrome-"))
-    proc = subprocess.Popen(
-        [str(exe), "--headless=new", f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
-         "--no-first-run", "--no-default-browser-check",
-         "--use-angle=metal", "--disable-gpu-sandbox",
-         "--hide-scrollbars", f"--window-size={W},{H}",
-         "--force-device-scale-factor=1", "--use-mock-keychain", "--password-store=basic",
-         "--disable-background-timer-throttling", "--disable-lcd-text",
-         f"file://{src.resolve()}"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def _stop_chrome(proc: subprocess.Popen | None) -> None:
+    if proc is None or proc.poll() is not None:
+        return
     try:
-
-        ws = WS(cdp_ws(port))
-        tgt = ws.call("Target.createTarget", {"url": "about:blank"})
-        sid = ws.call("Target.attachToTarget", {"targetId": tgt["result"]["targetId"], "flatten": True})["result"]["sessionId"]
-        call = lambda m, p=None, **kw: ws.call(m, p, session_id=sid, **kw)  # noqa: E731
-        url = f"{base_url}/_showcase/{model}/pages/{scene}.html"
-        call("Page.enable")
-        call("Runtime.enable")
-        call("Emulation.setDeviceMetricsOverride", {"width": W, "height": H, "deviceScaleFactor": 1, "mobile": False})
-        call("Page.navigate", {"url": url})
-        # Готовность — по режиму сцены, без единого требования `__ready` к L.
-        # Страница, упавшая до первого кадра, честно получает model_failed:
-        # тот же вердикт, что у harness (0 баллов), а не чёрный клип.
-        ready = page_ready(call, ws, scene)
-        if not ready:
-            note = ws.dialog_note()
-            shutil.rmtree(frames, ignore_errors=True)
-            return "model_failed", (f"диалог: {note}" if note else "")
-        # Драйвер страницы замеряет окно движения и перезагружается — только
-        # после перезагрузки сцена стоит в начале (шаг 0). Паузу шлём тем же
-        # evaluate, что застал драйвер живым: без лишнего round-trip, за который
-        # автоплей успел бы уйти вперёд (seek назад не ходит).
-        has_driver = ready == "driver"
-        if not has_driver:
-            has_driver = bool(((call("Runtime.evaluate", {
-                "expression": "!!(window.__dbscene && window.__dbscene.mode)",
-                "returnByValue": True})).get("result") or {}).get("result", {}).get("value"))
-        has_driver = has_driver and wait_scene(call)
-        base = 0
-        if has_driver:
-            r = call("Runtime.evaluate", {"expression": """
-(() => {
-  const s = window.__dbscene;
-  if (!s) return -1;
-  window.postMessage('pause', '*');
-  return s.step | 0;
-})()""", "returnByValue": True}, timeout=90)
-            base = max(0, int((r.get("result") or {}).get("result", {}).get("value") or 0))
-        apply_styles(call)
-        time.sleep(warmup)
-
-        # Окно движения укладывается в клип целиком: последний кадр — конец
-        # окна, движение идёт все `secs` секунд. Живая страница тратит на тот
-        # же шаг ~0.1 с (SPAN_PER_STEP), так что темп клипа и показа совпадают
-        # на окнах от ~230 шагов и слегка медленнее на коротких — видимая
-        # разница только на сценах, которые на живом показе пролетают за 4 с.
-        info = call("Runtime.evaluate", {
-            "expression": """
-(() => {
-  const s = window.__dbscene;
-  if (!s || !s.freeze) return JSON.stringify({steps: 0});
-  return JSON.stringify({steps: s.freeze});
-})()""", "returnByValue": True})
-        info = json.loads((info.get("result") or {}).get("result", {}).get("value") or "{}")
-        steps = int(info.get("steps") or 0)
-        n = int(round(secs * FPS))
-        for k in range(n):
-            if has_driver:
-                # steps=0 (статичная сцена): seek(0) гарантирует первый кадр.
-                # max(base, ...) — floor по шагам, которые автоплей сделал до
-                # паузы: seek назад не ходит.
-                t = max(base, round(k * steps / max(1, n - 1))) if steps else base
-                js = f"window.__dbscene.seek({t});"
-            else:
-                # Страница без драйвера: шагаем сами, один кадр клипа — один
-                # шаг её живого показа (шаг зовётся из rAF через DT). Следом —
-                # кадр: у части страниц рендер живёт только в __probe, так их
-                # зовёт живая витрина; без вызова клип остаётся чёрным
-                # (qwen36/L-4: __step лишь копит время, render — в __probe).
-                js = (f"try{{window.__step({DT});}}catch(e){{}} "
-                      "try{window.__probe&&window.__probe();}catch(e){}")
-            # Подложка полей перерисовывается тем же evaluate: между шагом и
-            # кадром нет round-trip, за который буфер отрисовки мог бы остаться
-            # от прежнего шага.
-            call("Runtime.evaluate", {"expression": js + " window.__refill && window.__refill();",
-                                      "returnByValue": False}, timeout=60)
-            shot = call("Page.captureScreenshot", {"format": "jpeg", "quality": 90, "optimizeForSpeed": True}, timeout=120)
-            data = shot.get("result", {}).get("data", "")
-            if not data:
-                raise RuntimeError(f"пустой кадр {k}: {json.dumps(shot)[:200]}")
-            (frames / f"{k:06d}.jpg").write_bytes(base64.b64decode(data))
-    finally:
         proc.terminate()
-        shutil.rmtree(profile, ignore_errors=True)
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        proc.wait(timeout=10)
+
+
+def _failure_note(ws, fallback: str = "") -> str:
+    error = _javascript_error(ws) if ws is not None else ""
+    if error:
+        return error[:200]
+    dialog = ws.dialog_note() if ws is not None else ""
+    if dialog:
+        return f"JavaScript dialog: {dialog}"[:200]
+    return fallback[:200]
+
+
+def record(
+    model: str,
+    scene: str,
+    out_dir: Path,
+    secs: float,
+    warmup: float,
+    base_url: str,
+    *,
+    source_root: Path = REPORTS,
+    startup_timeout: float = STARTUP_TIMEOUT,
+    chrome_binary: str | Path | None = None,
+) -> tuple[str, str]:
+    """Record a page; return (status, reason), raising on capture infrastructure errors."""
+    src, server_root = locate_source(model, scene, source_root)
+    if src is None:
+        return "model_failed", "source page missing"
+    if startup_timeout <= 0 or not math.isfinite(startup_timeout):
+        raise ValueError("startup timeout must be finite and positive")
+    count = _frame_count(secs)
+    warmup_frames = _frame_count(warmup, allow_zero=True)
+    route = src.relative_to(server_root).as_posix()
+    url = f"{base_url}/{route}"
     out = out_dir / f"{model}__{scene}.mp4"
-    encode(frames, out)
-    shutil.rmtree(frames, ignore_errors=True)
+    port = free_port()
+    exe = chrome(chrome_binary)
+    profile = Path(tempfile.mkdtemp(prefix="record-chrome-"))
+    proc = None
+    ws = None
+    captured = 0
+    sample_hashes: dict[str, str] = {}
+    distinct_hashes: set[str] = set()
+    clock_modes: set[str] = set()
+    first_clock_ms = None
+    last_clock_ms = None
+
+    with tempfile.TemporaryDirectory(prefix=f"record-{scene}-") as temp:
+        frames = Path(temp)
+        try:
+            chrome_args = [
+                str(exe), "--headless=new", f"--remote-debugging-port={port}",
+                f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
+                "--hide-scrollbars", f"--window-size={W},{H}",
+                "--force-device-scale-factor=1", "--password-store=basic",
+                "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
+                "--disable-lcd-text",
+            ]
+            if sys.platform == "darwin":
+                chrome_args.append("--use-angle=metal")
+            elif sys.platform.startswith("linux"):
+                chrome_args.append("--disable-dev-shm-usage")
+                if hasattr(os, "geteuid") and os.geteuid() == 0:
+                    chrome_args.append("--no-sandbox")
+            proc = subprocess.Popen(
+                chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            ws = WS(cdp_ws(port, startup_timeout))
+            target = ws.call("Target.createTarget", {"url": "about:blank"})
+            target_id = target["result"]["targetId"]
+            attached = ws.call(
+                "Target.attachToTarget", {"targetId": target_id, "flatten": True}
+            )
+            session_id = attached["result"]["sessionId"]
+            call = lambda method, params=None, **kwargs: ws.call(  # noqa: E731
+                method, params, session_id=session_id, **kwargs
+            )
+            call("Page.enable")
+            call("Runtime.enable")
+            call("Page.addScriptToEvaluateOnNewDocument", {"source": FRAME_CLOCK_JS})
+            call("Emulation.setDeviceMetricsOverride", {
+                "width": W, "height": H, "deviceScaleFactor": 1, "mobile": False,
+            })
+            call("Page.navigate", {"url": url})
+            ready = page_ready(call, ws, scene, timeout=startup_timeout)
+            if not ready:
+                return "model_failed", _failure_note(ws, "page did not become ready")
+
+            note = _javascript_error(ws)
+            if note:
+                return "model_failed", note[:200]
+            print(f"[rec] {model}/{scene}: ready={ready}; warming {warmup_frames} frames", flush=True)
+            if warmup_frames:
+                try:
+                    _evaluate(call, f"window.__recordClock.warmup({warmup_frames})", timeout=120)
+                except PageJavaScriptError as exc:
+                    return "model_failed", _failure_note(ws, str(exc))
+            note = _javascript_error(ws)
+            if note:
+                return "model_failed", note[:200]
+
+            for index in range(count):
+                note = _javascript_error(ws)
+                if note:
+                    if captured == 0:
+                        return "model_failed", note[:200]
+                    raise RuntimeError(f"page JavaScript failed during capture: {note[:200]}")
+                try:
+                    state_response = _evaluate(call, f"window.__recordClock.capture({DT!r})", timeout=120)
+                    clock_state = state_response["result"]["result"]["value"]
+                    expected_frame = warmup_frames + index
+                    if clock_state["frame"] != expected_frame or not math.isclose(
+                        clock_state["time"], expected_frame * 1000 / FPS, abs_tol=1e-7,
+                    ):
+                        raise RuntimeError(f"recording clock discontinuity at frame {index}: {clock_state}")
+                except PageJavaScriptError as exc:
+                    if captured == 0:
+                        return "model_failed", _failure_note(ws, str(exc))
+                    raise RuntimeError(f"page JavaScript failed during capture: {exc}") from exc
+                note = _javascript_error(ws)
+                if note:
+                    if captured == 0:
+                        return "model_failed", note[:200]
+                    raise RuntimeError(f"page JavaScript failed during capture: {note[:200]}")
+
+                screenshot = call(
+                    "Page.captureScreenshot",
+                    {"format": "png", "fromSurface": True, "captureBeyondViewport": False, "optimizeForSpeed": True},
+                    timeout=120,
+                )
+                if "error" in screenshot:
+                    raise RuntimeError(f"captureScreenshot failed: {screenshot['error']}")
+                encoded = (screenshot.get("result") or {}).get("data") or ""
+                if not encoded:
+                    raise RuntimeError(f"empty PNG frame {index}: {json.dumps(screenshot)[:200]}")
+                png = base64.b64decode(encoded, validate=True)
+                if (not png.startswith(b"\x89PNG\r\n\x1a\n") or len(png) < 24
+                        or int.from_bytes(png[16:20], "big") != W
+                        or int.from_bytes(png[20:24], "big") != H):
+                    raise RuntimeError(f"frame {index} is not a {W}x{H} PNG")
+                (frames / f"{index:06d}.png").write_bytes(png)
+                captured += 1
+                if captured == 1 or captured % FPS == 0:
+                    print(f"[rec] {model}/{scene}: captured {captured}/{count}", flush=True)
+                digest = hashlib.sha256(png).hexdigest()
+                distinct_hashes.add(digest)
+                if index in (0, count // 2, count - 1):
+                    sample_hashes[str(index)] = digest
+                clock_modes.add(clock_state["mode"])
+                if first_clock_ms is None:
+                    first_clock_ms = clock_state["time"]
+                last_clock_ms = clock_state["time"]
+            note = _javascript_error(ws)
+            if note:
+                if captured == 0:
+                    return "model_failed", note[:200]
+                raise RuntimeError(f"page JavaScript failed during capture: {note[:200]}")
+
+            warnings = _evaluate(call, "window.__recordClock.warnings()")
+            warning_list = ((warnings.get("result") or {}).get("result") or {}).get("value") or []
+            if warning_list:
+                raise RuntimeError("recording clock cannot control: " + "; ".join(warning_list))
+        finally:
+            try:
+                if ws is not None:
+                    ws.sock.close()
+            except OSError:
+                pass
+            finally:
+                try:
+                    _stop_chrome(proc)
+                finally:
+                    shutil.rmtree(profile, ignore_errors=True)
+
+        if captured != count:
+            raise RuntimeError(f"captured {captured} of {count} requested frames")
+        encode(frames, out, count)
+        _write_capture_metadata(out, src, secs, "ok", {
+            "captured_frames": captured, "clock_modes": sorted(clock_modes),
+            "clock_start_ms": first_clock_ms, "clock_end_ms": last_clock_ms,
+            "clock_discontinuities": 0, "distinct_png_frames": len(distinct_hashes),
+            "sample_hashes": sample_hashes,
+        })
     return "ok", ""
 
 
-def main() -> int:
-    if len(sys.argv) < 4:
-        print(__doc__)
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("model", choices=MODELS)
+    parser.add_argument("scene", choices=SCENES)
+    parser.add_argument("out_dir", type=Path)
+    parser.add_argument("seconds", type=float, nargs="?", default=DEFAULT_SECS)
+    parser.add_argument("warmup_s", type=float, nargs="?", default=DEFAULT_WARMUP)
+    parser.add_argument("--force", action="store_true", help="replace an existing clip")
+    parser.add_argument("--source-root", type=Path, default=REPORTS)
+    parser.add_argument("--fps", type=int, default=FPS)
+    parser.add_argument("--crf", type=int, default=CRF)
+    parser.add_argument("--preset", default=PRESET)
+    parser.add_argument("--chrome")
+    parser.add_argument(
+        "--startup-timeout", type=float, default=STARTUP_TIMEOUT,
+        help="maximum browser/page startup wait in seconds (default: 180)",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    out_dir = check_target(args.model, args.scene, args.out_dir)
+    try:
+        _frame_count(args.seconds)
+        _frame_count(args.warmup_s, allow_zero=True)
+    except ValueError as exc:
+        print(f"[rec] invalid duration: {exc}", file=sys.stderr)
         return 2
-    model, scene = sys.argv[1], sys.argv[2]
-    out_dir = check_target(model, scene, Path(sys.argv[3]))
-    secs = float(sys.argv[4]) if len(sys.argv) > 4 else 23.0
-    warmup = float(sys.argv[5]) if len(sys.argv) > 5 else 0.6
-    force = "--force" in sys.argv
+    if (args.fps, args.crf, args.preset) != (FPS, CRF, PRESET):
+        print(
+            f"[rec] encoding is fixed at {FPS} fps, CRF {CRF}, preset {PRESET}",
+            file=sys.stderr,
+        )
+        return 2
+    if args.startup_timeout <= 0 or not math.isfinite(args.startup_timeout):
+        print("[rec] startup timeout must be finite and positive", file=sys.stderr)
+        return 2
+
     out_dir.mkdir(parents=True, exist_ok=True)
-    runs_root = ROOT / "runs"
-    src = ART / "_showcase" / model / "pages" / f"{scene}.html"
+    model, scene = args.model, args.scene
     out = out_dir / f"{model}__{scene}.mp4"
-    if out.is_file() and not force:
-        print(f"[rec] {model}/{scene}: уже есть")
+    if out.is_file() and not args.force:
+        print(f"[rec] {model}/{scene}: already recorded")
         return 0
-    if not src.is_file():
-        # Отсутствие страницы — не всегда вина модели: задачи могло не быть в
-        # прогоне. Причину пишем в маркер, а не общее `1`.
-        reason = media_status.task_status(model, scene, runs_root) or "model_failed"
+
+    src, server_root = locate_source(model, scene, args.source_root)
+    if src is None:
+        reason = media_status.task_status(model, scene, ROOT / "runs") or "model_failed"
         if reason == "ok":
             reason = "model_failed"
-        placeholder(out, secs)
-        media_status.write_marker(out_dir, model, scene, reason)
-        print(f"[rec] {model}/{scene}: нет страницы -> плашка ({reason})")
-        return EXIT["model_failed"]
-    srv, base = html_server()
-    try:
-        t0 = time.time()
-        note = ""
         try:
-            status, note = record(model, scene, out_dir, secs, warmup, base)
-        except Exception as exc:  # noqa: BLE001 — сбой записи, а не вердикт модели
+            placeholder(out, args.seconds)
+        except Exception as exc:
+            media_status.write_marker(out_dir, model, scene, "capture_failed", str(exc))
+            print(f"[rec] {model}/{scene}: placeholder failed: {exc}", file=sys.stderr, flush=True)
+            return EXIT["capture_failed"]
+        media_status.write_marker(out_dir, model, scene, reason)
+        _write_capture_metadata(out, None, args.seconds, reason, {"reason": "source page missing"})
+        print(f"[rec] {model}/{scene}: source missing -> placeholder ({reason})")
+        return EXIT["model_failed"]
+
+    server = None
+    started = time.monotonic()
+    status = "ok"
+    note = ""
+    try:
+        try:
+            server, base_url = html_server(server_root, src, _served_html(src))
+            status, note = record(
+                model, scene, out_dir, args.seconds, args.warmup_s, base_url,
+                source_root=args.source_root, startup_timeout=args.startup_timeout,
+                chrome_binary=args.chrome,
+            )
+        except Exception as exc:  # noqa: BLE001 - capture/encoding, not model verdict
             status = "capture_failed"
-            print(f"[rec] {model}/{scene}: сбой записи: {exc}", file=sys.stderr, flush=True)
+            note = str(exc)
+            print(f"[rec] {model}/{scene}: capture failed: {exc}", file=sys.stderr, flush=True)
+
         if status != "ok":
-            # Плашка вместо черноты; маркер объясняет причину и не даёт ретраю
-            # переснимать сцену зря.
-            placeholder(out, secs)
+            if status == "capture_failed":
+                media_status.write_marker(out_dir, model, scene, status, note)
+                return EXIT[status]
+            try:
+                placeholder(out, args.seconds)
+            except Exception as exc:
+                status = "capture_failed"
+                note = f"{note}; placeholder failed: {exc}" if note else str(exc)
+                print(f"[rec] {model}/{scene}: placeholder failed: {exc}", file=sys.stderr, flush=True)
             media_status.write_marker(out_dir, model, scene, status, note)
-            print(f"[rec] {model}/{scene}: плашка ({status}{', ' + note if note else ''})")
+            _write_capture_metadata(out, src, args.seconds, status, {"reason": note})
+            print(f"[rec] {model}/{scene}: placeholder ({status}{': ' + note if note else ''})")
             return EXIT[status]
+
         media_status.clear_marker(out_dir, model, scene)
-        print(f"[rec] {model}/{scene}: {out.stat().st_size/1e6:.1f} МБ за {time.time()-t0:.0f}с")
+        elapsed = time.monotonic() - started
+        print(f"[rec] {model}/{scene}: {out.stat().st_size / 1e6:.1f} MB in {elapsed:.0f}s")
+        return EXIT["ok"]
     finally:
-        srv.shutdown()
-    return 0
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 if __name__ == "__main__":

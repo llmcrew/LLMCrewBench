@@ -10,6 +10,7 @@ from pathlib import Path
 from .core import DEFAULT_PROFILE, PROFILES
 
 DEFAULT_SEED = 20260915
+DEFAULT_CONTEXT_WINDOW = 262144
 
 #: Neutral system text, identical in wording for every model. The chat template
 #: itself is the runtime's own; this only fixes the shared framing.
@@ -84,7 +85,7 @@ class RunConfig:
 
     max_total_tokens: int = 16384
     max_tool_calls: int = 12
-    context_window: int = 32768
+    context_window: int = DEFAULT_CONTEXT_WINDOW
     request_timeout: float = 1800.0
     request_wall_clock: float = 600.0
     """Hard ceiling per request, identical for every model.
@@ -144,7 +145,7 @@ class RunConfig:
     """
     weights_sha256: str = ""
     weights_path: str = ""
-    n_ctx: int = 32768
+    n_ctx: int = DEFAULT_CONTEXT_WINDOW
     kv_type: str = ""
     offload: str = "none"
     reference: str = ""

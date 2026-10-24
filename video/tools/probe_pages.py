@@ -3,8 +3,8 @@
 
 Страница, упавшая до первого кадра, снимается плашкой: витрине честнее
 показать причину, чем черноту. Проверка ставит/снимает маркер
-`<модель>__<сцена>.missing` — тот же, что у страниц, которых нет вовсе;
-манифест читает его как плашку. Причина в маркере — `model_failed` (задача
+`<модель>__<сцена>.missing` - тот же, что у страниц, которых нет вовсе;
+манифест читает его как плашку. Причина в маркере - `model_failed` (задача
 есть, страница не ожила); отсутствие задачи в прогоне даёт `not_run` ещё при
 записи.
 
@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import shutil
 import subprocess
 import sys
@@ -24,14 +25,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import media_status  # noqa: E402
-from record_all import MODELS, OUT, SCENES, _write_showcase  # noqa: E402
-from record_clip import ART, H, W, WS, cdp_ws, chrome, free_port, html_server, page_ready  # noqa: E402
+from record_all import DEFAULT_REPORT_ROOT, MODELS, OUT, SCENES, _write_showcase, source_page_path  # noqa: E402
+from record_clip import H, W, WS, cdp_ws, chrome, free_port, html_server, locate_source, page_ready  # noqa: E402
 
 READY_MS = 12000
 
 
-def probe(model: str, scene: str, base: str) -> tuple[str, str, bool, str]:
-    if not (ART / "_showcase" / model / "pages" / f"{scene}.html").is_file():
+def probe(model: str, scene: str, base: str,
+          report_root: Path = DEFAULT_REPORT_ROOT) -> tuple[str, str, bool, str]:
+    source, server_root = locate_source(model, scene, report_root)
+    if source is None:
         return model, scene, False, "нет страницы"
     port = free_port()
     profile = Path(tempfile.mkdtemp(prefix="probe-chrome-"))
@@ -52,14 +55,15 @@ def probe(model: str, scene: str, base: str) -> tuple[str, str, bool, str]:
         call("Page.enable")
         call("Runtime.enable")
         call("Emulation.setDeviceMetricsOverride", {"width": W, "height": H, "deviceScaleFactor": 1, "mobile": False})
-        call("Page.navigate", {"url": f"{base}/_showcase/{model}/pages/{scene}.html"})
+        page = source.relative_to(server_root).as_posix()
+        call("Page.navigate", {"url": f"{base}/{page}"})
         ready = bool(page_ready(call, ws, scene, timeout=READY_MS / 1000))
         with ws.lock:
             errs = [e for e in ws.events if e.get("method") == "Runtime.exceptionThrown"]
         desc = (errs[0]["params"]["exceptionDetails"].get("exception", {}).get("description", "")
                 .split("\n")[0] if errs else "")
         # Диалог сам по себе не приговор (он принят автоматически), но если
-        # страница всё же не ожила, его текст — лучшая улика.
+        # страница всё же не ожила, его текст - лучшая улика.
         note = ws.dialog_note()
         if note:
             desc = f"диалог: {note}" if not desc else f"{desc} (диалог: {note})"
@@ -70,25 +74,37 @@ def probe(model: str, scene: str, base: str) -> tuple[str, str, bool, str]:
 
 
 def main() -> int:
-    workers = int(sys.argv[1]) if len(sys.argv) > 1 else 6
-    pairs = [(m, s) for s in SCENES for m in MODELS
-             if (ART / "_showcase" / m / "pages" / f"{s}.html").is_file()]
-    srv, base = html_server()
+    parser = argparse.ArgumentParser(description="Проверить readiness страниц витрины")
+    parser.add_argument("workers", nargs="?", type=int, default=6)
+    parser.add_argument("--report-root", type=Path, default=DEFAULT_REPORT_ROOT,
+                        help="каталог отчёта; для ремонта укажите корень _repairs")
+    args = parser.parse_args()
+    report_root = args.report_root.expanduser().resolve()
+    pairs = [(model, scene) for scene in SCENES for model in MODELS
+             if source_page_path(report_root, model, scene).is_file()]
+    _, server_root = locate_source(pairs[0][0], pairs[0][1], report_root) if pairs else (None, report_root)
+    srv, base = html_server(server_root)
+    publish_original_status = report_root == DEFAULT_REPORT_ROOT.resolve()
     broken: list[str] = []
     try:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            for model, scene, ready, desc in pool.map(lambda p: probe(*p, base), pairs):
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            for model, scene, ready, desc in pool.map(
+                    lambda pair: probe(pair[0], pair[1], base, report_root), pairs):
                 if ready:
-                    media_status.clear_marker(OUT, model, scene)
+                    if publish_original_status:
+                        media_status.clear_marker(OUT, model, scene)
                 else:
-                    media_status.write_marker(OUT, model, scene, "model_failed", desc)
-                    broken.append(f"{model}/{scene}: {desc or 'страница не дошла до кадра'}")
-                    print(f"[probe] {model}/{scene}: упала -> плашка ({desc or 'нет кадра'})", flush=True)
+                    reason = desc or "страница не дошла до первого кадра"
+                    if publish_original_status:
+                        media_status.write_marker(OUT, model, scene, "model_failed", reason)
+                    broken.append(f"{model}/{scene}: {reason}")
+                    print(f"[probe] {model}/{scene}: упала -> плашка ({reason})", flush=True)
     finally:
         srv.shutdown()
-    # Маркеры — источник, манифесты обязаны сразу следовать за ними.
-    _write_showcase()
-    print(f"[probe] готово: упавших {len(broken)} из {len(pairs)}")
+    # Repaired/custom-root probes are diagnostic only; keep the original
+    # model-status markers and showcase source unchanged.
+    if publish_original_status:
+        _write_showcase(OUT, report_root)
     return 0
 
 

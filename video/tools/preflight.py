@@ -2,12 +2,12 @@
 """Preflight медиа витрины: проверить манифест, маркеры и сами клипы до render.
 
 Проверки:
-  * showcase.json полон по scenes.json, статусы допустимы, clips.json — его
+  * showcase.json полон по scenes.json, статусы допустимы, clips.json - его
     производная;
   * статус согласован с маркером и файлом (ok без маркера, плашка с маркером,
     media_missing без клипа);
   * not_run/model_failed согласованы со scores прогона;
-  * каждый клип декодируется ffprobe: h264, 1920×1080, 120 fps, 23 с,
+  * каждый клип декодируется ffprobe: h264, 1920×1080, 120 fps, 20 с,
     ожидаемое число кадров, читаются первый и последний кадр.
 
 Ошибка печатается до Studio/render и даёт ненулевой код: битое медиа не должно
@@ -37,7 +37,7 @@ VIDEO = OUT.parents[1]
 SHOWCASE = VIDEO / "src" / "data" / "showcase.json"
 CLIPS_JSON = OUT.parent / "clips.json"
 SCENES_JSON = VIDEO / "src" / "data" / "scenes.json"
-SECONDS = 23.0
+SECONDS = 20.0
 DURATION_TOL = 0.25
 FRAMES = int(round(SECONDS * FPS))
 
@@ -148,7 +148,7 @@ def validate(rows: list, scenes: list[str], errors: list[str], warnings: list[st
         errors.append("showcase.json: набор/порядок сцен не совпадает с scenes.json")
     # Свежее дерево до первой записи: клипов нет вообще, причины плашек придут
     # из прогона и превратятся в маркеры при записи. Это предупреждения, а не
-    # ошибки; на записанном дереве те же расхождения — ошибки.
+    # ошибки; на записанном дереве те же расхождения - ошибки.
     pre_record = not any(
         media_status.clip_path(OUT, run.get("model", "?"), row.get("scene", "?")) .is_file()
         for row in rows for run in row.get("runs") or []
@@ -246,7 +246,7 @@ def main() -> int:
     for line in warnings:
         print(f"preflight: предупреждение: {line}", file=sys.stderr)
     if errors:
-        print(f"preflight: {len(errors)} ошибок — исправьте до Studio/render", file=sys.stderr)
+        print(f"preflight: {len(errors)} ошибок - исправьте до Studio/render", file=sys.stderr)
         return 1
     if decode:
         exe = find_ffprobe()
@@ -264,7 +264,7 @@ def main() -> int:
             return 1
     mode = "декодирование проверено" if decode else (
         "клипы не проверялись" if not clips else "без декодирования")
-    print(f"preflight: ok — {len(rows)} сцен, {len(rows) * len(MODELS)} клипов, {mode}")
+    print(f"preflight: ok - {len(rows)} сцен, {len(rows) * len(MODELS)} клипов, {mode}")
     return 0
 
 

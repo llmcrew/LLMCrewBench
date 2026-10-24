@@ -2,7 +2,7 @@
 
 `dailybench-video.zip` (1,5 ГБ, клипы 120 fps) разбит на части по 90 МБ и лежит на машине
 записи, а не в git: клипы и записи не публикуются. Части получит тот, кому
-передан `video/archive/`. Архив самодостаточен — клипы уже сняты, пересъёмка
+передан `video/archive/`. Архив самодостаточен - клипы уже сняты, пересъёмка
 не нужна.
 
 ```bash
@@ -22,14 +22,14 @@ shasum -a 256 dailybench-video.zip
 unzip -t dailybench-video.zip
 ```
 
-Распаковка и рендер — по `video/RENDER.md` (рядом с архивом, после распаковки
+Распаковка и рендер - по `video/RENDER.md` (рядом с архивом, после распаковки
 окажется в корне `dailybench-video/`).
 
 Состав: `src/` (ролик), `docs/` (текст диктора, RENDER.md, фреймворк записи
-`recording/`), `tools/` (пересъёмка), `public/clips/` — 196 клипов, из них 169
+`recording/`), `tools/` (пересъёмка), `public/clips/` - 196 клипов, из них 169
 живых и 27 плашек. `node_modules`, `out`, `dist`, сам `archive/` не входят.
 
-Если архив понадобится обновить — из каталога `video/`:
+Если архив понадобится обновить - из каталога `video/`:
 
 ```bash
 rsync -a --delete --exclude node_modules --exclude out --exclude dist \

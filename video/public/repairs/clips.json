@@ -1,0 +1,27 @@
+[
+  {
+    "model": "deepseek-v4.1-flash-unc-1021",
+    "scene": "L-4",
+    "status": "ok"
+  },
+  {
+    "model": "deepseek-v4.1-flash-unc-1021",
+    "scene": "L-18",
+    "status": "ok"
+  },
+  {
+    "model": "deepseek-v4.1-flash-unc-1021",
+    "scene": "L-19",
+    "status": "ok"
+  },
+  {
+    "model": "deepseek-v4.1-flash-unc-1021",
+    "scene": "L-24",
+    "status": "ok"
+  },
+  {
+    "model": "deepseek-v4.1-flash-unc-1021",
+    "scene": "L-15",
+    "status": "ok"
+  }
+]

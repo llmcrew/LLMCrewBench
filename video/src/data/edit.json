@@ -1,0 +1,337 @@
+{
+  "version": 1,
+  "fps": 60,
+  "width": 1920,
+  "height": 1080,
+  "totalFrames": 132168,
+  "source": {
+    "project": "flashVS1017",
+    "timeline": "Timeline 1",
+    "fps": 24,
+    "backup": "out/resolve/flashVS1017-before-audio-edit.drp",
+    "note": "Original Resolve timeline and all capture files preserved; clean continuations recovered from the same media pool."
+  },
+  "scenes": [
+    {
+      "id": "intro",
+      "from": 0,
+      "duration": 1488,
+      "title": "Вступление: две конфигурации и репозиторий",
+      "motionRanges": [
+        [
+          0,
+          300
+        ]
+      ]
+    },
+    {
+      "id": "harness",
+      "from": 1488,
+      "duration": 1905,
+      "title": "Агентный цикл Pi и общая политика",
+      "motionRanges": [
+        [
+          0,
+          240
+        ],
+        [
+          1148,
+          1210
+        ]
+      ]
+    },
+    {
+      "id": "suite",
+      "from": 3393,
+      "duration": 1830,
+      "title": "47 заданий A–J и отдельные визуальные блоки",
+      "motionRanges": [
+        [
+          0,
+          210
+        ]
+      ]
+    },
+    {
+      "id": "models",
+      "from": 5223,
+      "duration": 1740,
+      "title": "Условия исторических прогонов и релиз 1017",
+      "motionRanges": [
+        [
+          0,
+          180
+        ],
+        [
+          1247,
+          1308
+        ]
+      ]
+    },
+    {
+      "id": "board",
+      "from": 6963,
+      "duration": 1665,
+      "title": "Результаты и расходы",
+      "motionRanges": [
+        [
+          0,
+          240
+        ]
+      ]
+    },
+    {
+      "id": "showcase-intro",
+      "from": 8628,
+      "duration": 1020,
+      "title": "Подводка к просмотру работ",
+      "motionRanges": [
+        [
+          0,
+          180
+        ]
+      ]
+    },
+    {
+      "id": "hero",
+      "from": 9648,
+      "duration": 1200,
+      "title": "K-1 · баллистика крупным планом",
+      "motionRanges": [
+        [
+          0,
+          1200
+        ]
+      ]
+    },
+    {
+      "id": "showcase",
+      "from": 10848,
+      "duration": 114780,
+      "title": "49 тестов · только музыка",
+      "motionRanges": [
+        [
+          0,
+          114780
+        ]
+      ]
+    },
+    {
+      "id": "verdict",
+      "from": 125628,
+      "duration": 5250,
+      "title": "Выводы автора: качество и стабильность",
+      "motionRanges": [
+        [
+          0,
+          240
+        ],
+        [
+          875,
+          935
+        ],
+        [
+          1855,
+          1916
+        ],
+        [
+          2798,
+          2859
+        ],
+        [
+          4413,
+          4474
+        ]
+      ]
+    },
+    {
+      "id": "outro",
+      "from": 130878,
+      "duration": 1290,
+      "title": "Сообщество LLMCrew: канал и чат",
+      "motionRanges": [
+        [
+          0,
+          180
+        ]
+      ]
+    }
+  ],
+  "narration": [
+    {
+      "id": "voice-01",
+      "scene": "intro",
+      "src": "audio/voice/Audio 1_143_2IDWX7.wav",
+      "sourceStartSeconds": 1.0,
+      "durationSeconds": 23.95,
+      "from": 15,
+      "text": "Привет, интернет! Сегодня сравним DeepSeek 4.1 Flash с его новой версией DeepSeek 4.1 Flash 1017. Всё будет тестироваться на одном наборе задач, с одинаковыми правилами, а также единым окружением. Посмотрим, как модели умеют в код, в симуляции и графику.",
+      "originalTake": 143
+    },
+    {
+      "id": "voice-02",
+      "scene": "harness",
+      "src": "audio/voice/Audio 1_144_2IDWY3.wav",
+      "sourceStartSeconds": 1.0,
+      "durationSeconds": 18.8,
+      "from": 1503,
+      "text": "Модели будут запускаться через агентный harness Pi. Pi передаёт контекст, даёт доступ к инструментам и возвращает результат их выполнения. Модель сама решает, что читать, когда менять код и когда отдавать результат.",
+      "originalTake": 144
+    },
+    {
+      "id": "voice-03",
+      "scene": "harness",
+      "src": "audio/voice/Audio 1_146_2IDWZM.wav",
+      "sourceStartSeconds": 1.0,
+      "durationSeconds": 11.7,
+      "from": 2652,
+      "text": "После каждой задачи контекст сбрасывается. Поэтому сравниваем конкретные прогоны с единой политикой, а не только удачный ответ из чата.",
+      "originalTake": 146
+    },
+    {
+      "id": "voice-04",
+      "scene": "suite",
+      "src": "audio/voice/Audio 1_149_2IDX2E.wav",
+      "sourceStartSeconds": 1.0,
+      "durationSeconds": 22.0,
+      "from": 3408,
+      "text": "С последнего теста бенчмарк чуть-чуть расширился. Основная часть — 47 заданий в 10 категориях, максимум 100 баллов: инструменты, рассуждения, работа с кодом, вызовы инструментов, длинный контекст и устойчивость к галлюцинациям.",
+      "originalTake": 149
+    },
+    {
+      "id": "voice-05",
+      "scene": "suite",
+      "src": "audio/voice/Audio 1_151_2IDX46.wav",
+      "sourceStartSeconds": 1.58,
+      "durationSeconds": 6.85,
+      "from": 4740,
+      "text": "Структурированный вывод, умения в диалоге, а также поиск и ревью в проектах.",
+      "originalTake": 151
+    },
+    {
+      "id": "voice-06",
+      "scene": "models",
+      "src": "audio/voice/Audio 1_162_2IDXOQ.wav",
+      "sourceStartSeconds": 1.0,
+      "durationSeconds": 9.12,
+      "from": 5241,
+      "text": "В прогонах контекст был ограничен до 32 тысяч, формат весов у обеих моделей — BF16/FP8.",
+      "originalTake": 162
+    },
+    {
+      "id": "voice-07",
+      "scene": "models",
+      "src": "audio/voice/Audio 1_163_2IDXP3.wav",
+      "sourceStartSeconds": 1.0,
+      "durationSeconds": 10.95,
+      "from": 5808,
+      "text": "Новый DeepSeek 4.1 Flash 1017 запускался на идентичной инфраструктуре с идентичным конфигом, что и DeepSeek 4.1 Flash.",
+      "originalTake": 163
+    },
+    {
+      "id": "voice-08",
+      "scene": "board",
+      "src": "audio/voice/Audio 1_169_2IDXSX.wav",
+      "sourceStartSeconds": 1.0,
+      "durationSeconds": 8.6,
+      "from": 6981,
+      "text": "По основной части — 100 из 100 у обычного DeepSeek Flash и 99,5 у DeepSeek 1017.",
+      "originalTake": 169
+    },
+    {
+      "id": "voice-09",
+      "scene": "board",
+      "src": "audio/voice/Audio 1_169_2IDXSX.wav",
+      "sourceStartSeconds": 12.7,
+      "durationSeconds": 2.72,
+      "from": 7512,
+      "text": "Но разница была в инструментах.",
+      "originalTake": 169
+    },
+    {
+      "id": "voice-10",
+      "scene": "board",
+      "src": "audio/voice/Audio 1_170_2IDXTJ.wav",
+      "sourceStartSeconds": 1.0,
+      "durationSeconds": 9.0,
+      "from": 7692,
+      "text": "По записанному времени агента у 1017 около 54 минут против 141 у обычного Flash.",
+      "originalTake": 170
+    },
+    {
+      "id": "voice-11",
+      "scene": "board",
+      "src": "audio/voice/Audio 1_170_2IDXTJ.wav",
+      "sourceStartSeconds": 10.625,
+      "durationSeconds": 4.833333333333333,
+      "from": 8244,
+      "text": "При этом ответных токенов больше, а вызовов инструментов меньше.",
+      "originalTake": 170
+    },
+    {
+      "id": "voice-12",
+      "scene": "showcase-intro",
+      "src": "audio/voice/Audio 1_171_2IDXWV.wav",
+      "sourceStartSeconds": 1.0,
+      "durationSeconds": 15.95,
+      "from": 8649,
+      "text": "Далее идёт серия симуляций и их сравнений. Всё идёт по таймкодам. Надеюсь, в этот раз YouTube их не ограничит, как в прошлые разы. После чего сделаем итоги и обсудим, что получилось.",
+      "originalTake": 171
+    },
+    {
+      "id": "voice-13",
+      "scene": "verdict",
+      "src": "audio/voice/Audio 1_174_2IDXZH.wav",
+      "sourceStartSeconds": 1.0,
+      "durationSeconds": 45.95,
+      "from": 125649,
+      "text": "Теперь перейдём к результатам. По основным проверкам разница минимальна: 100 против 99,5. У 1017 меньше зафиксированного времени агента и на балл больше в симуляциях. По оценке автора, 1017 качественнее умеет в визуализацию. При этом 1017 менее стабилен: меньше арт-сцен прошли исходную проверку запуска. И ладно, если проблема была бы лишь с тем, что он что-то напутал или не отдавал HTML.",
+      "originalTake": 174
+    },
+    {
+      "id": "voice-14",
+      "scene": "verdict",
+      "src": "audio/voice/Audio 1_175_2IDY1S.wav",
+      "sourceStartSeconds": 1.0,
+      "durationSeconds": 39.5,
+      "from": 128427,
+      "text": "Где-то из-за бесконечного reasoning он забывал записать файл, а где-то вместо указанного Three.js использовал другие фреймворки без бандла, и ничего не запускалось. Это удивляет на фоне заявлений о сложных длительных автономных задачах. В бенчах автора обычный Flash оказался стабильнее новой версии. Возможно, автор что-то делал не так, но получилось так.",
+      "originalTake": 175
+    },
+    {
+      "id": "voice-15",
+      "scene": "outro",
+      "src": "audio/voice/Audio 1_176_2IDY39.wav",
+      "sourceStartSeconds": 1.0,
+      "durationSeconds": 19.25,
+      "from": 130905,
+      "text": "На этом всё. Спасибо! Вопросы и предложения — в чат и комментарии на YouTube. Заходите в сообщество: мы вас ждём, вы нам очень нужны. Спасибо!",
+      "originalTake": 176
+    }
+  ],
+  "cues": {
+    "introCards": 72,
+    "harnessScreenshot": 1149,
+    "modelsScreenshot": 1248,
+    "modelsLaunchConfig": 1291,
+    "verdictQuality": 876,
+    "verdictStability": 1856,
+    "verdictFailures": 2799,
+    "verdictSummary": 4414
+  },
+  "musicCues": [
+    {
+      "id": "showcase-K",
+      "from": 10848
+    },
+    {
+      "id": "showcase-L",
+      "from": 66048
+    }
+  ],
+  "audio": {
+    "narration": "audio/narration.wav",
+    "music": "audio/music.wav",
+    "mix": "audio/mix.m4a"
+  }
+}

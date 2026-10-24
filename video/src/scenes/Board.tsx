@@ -1,8 +1,8 @@
-// Сводная таблица результатов по двум стендам — из данных прогонов (без выдумки).
+// Таблица сравнения и панели расходов в оформлении первого ролика.
 
 import {AbsoluteFill, useCurrentFrame} from 'remotion';
 import {C, FONT_MONO, FONT_SANS} from '../video/theme';
-import {Backdrop, Title, riseIn} from '../components/ui';
+import {Backdrop, riseIn} from '../components/ui';
 import models from '../data/runs.json';
 
 type ModelRow = {
@@ -33,100 +33,88 @@ const CATS: [string, string][] = [
   ['J', 'Ревью'],
 ];
 
-const Cell: React.FC<{value: number; tone?: string}> = ({value, tone = C.ink}) => (
-  <span style={{font: `600 24px/1 ${FONT_MONO}`, color: value >= 90 ? C.green : value >= 60 ? tone : C.amber}}>
-    {value.toFixed(0)}
+const BOARD_COLUMNS = `300px repeat(${CATS.length}, minmax(0, 1fr)) 120px 120px 140px`;
+
+const Cell: React.FC<{value?: number}> = ({value}) => (
+  <span style={{
+    font: `700 24px/1 ${FONT_MONO}`,
+    color: value == null ? C.muted : value >= 90 ? C.green : value >= 60 ? C.amber : C.red,
+  }}>
+    {value == null ? '-' : `${value.toLocaleString('ru-RU', {maximumFractionDigits: 1})}%`}
   </span>
 );
 
 export const Board: React.FC = () => {
   const frame = useCurrentFrame();
   return (
-    <AbsoluteFill style={{backgroundColor: C.bg, color: C.ink}}>
+    <AbsoluteFill style={{backgroundColor: C.bg, color: C.ink, fontFamily: FONT_SANS}}>
       <Backdrop />
-      <div style={{position: 'absolute', top: 66, left: 96, ...riseIn(frame, 6)}}>
-        <Title size={52}>Результаты по категориям, % от максимума</Title>
-        <Title sub delay={16}>Одна модель, один сид: разница строк — это разница стендов, а не моделей</Title>
+      <div style={{position: 'absolute', top: 76, left: 72, font: `700 66px/1.15 ${FONT_SANS}`, ...riseIn(frame, 6)}}>Результаты и расходы</div>
+      <div style={{position: 'absolute', top: 166, left: 72, font: `400 25px/1.4 ${FONT_SANS}`, color: C.muted, ...riseIn(frame, 12)}}>
+        A-J: % от максимума · K: баллы симуляций · L: доставка HTML · итог: /100
       </div>
-
-      <div style={{position: 'absolute', top: 236, left: 84, right: 84}}>
-        <div style={{display: 'grid', gridTemplateColumns: `260px repeat(${CATS.length}, 1fr) 110px`, gap: 8, alignItems: 'center'}}>
-          <span />
+      <div style={{position: 'absolute', top: 244, left: 72, right: 72}}>
+        <div style={{display: 'grid', gridTemplateColumns: BOARD_COLUMNS, gap: 6, alignItems: 'end', paddingBottom: 18}}>
+          <div style={{font: `500 18px/1 ${FONT_MONO}`, color: C.muted}}>КОНФИГУРАЦИЯ</div>
           {CATS.map(([key, name]) => (
             <div key={key} style={{textAlign: 'center'}}>
               <div style={{font: `700 20px/1 ${FONT_MONO}`, color: C.accent}}>{key}</div>
-              <div style={{font: `400 13px/1.3 ${FONT_SANS}`, color: C.faint}}>{name}</div>
+              <div style={{font: `500 17px/1.2 ${FONT_SANS}`, color: C.muted, marginTop: 8}}>{name}</div>
             </div>
           ))}
-          <div style={{textAlign: 'right', font: `600 14px/1 ${FONT_MONO}`, color: C.muted}}>Итог</div>
+          <div style={{textAlign: 'center', borderLeft: `1px solid ${C.line}`}}>
+            <div style={{font: `700 20px/1 ${FONT_MONO}`, color: C.accent2}}>K</div>
+            <div style={{font: `500 17px/1.2 ${FONT_SANS}`, color: C.muted, marginTop: 8}}>Симуляции</div>
+          </div>
+          <div style={{textAlign: 'center'}}>
+            <div style={{font: `700 20px/1 ${FONT_MONO}`, color: C.accent2}}>L</div>
+            <div style={{font: `500 17px/1.2 ${FONT_SANS}`, color: C.muted, marginTop: 8}}>HTML</div>
+          </div>
+          <div style={{textAlign: 'right', font: `700 20px/1 ${FONT_MONO}`, color: C.accent}}>ИТОГ</div>
         </div>
-
-        {MODELS.map((m, row) => (
-          <div
-            key={m.dir}
-            style={{
-              display: 'grid',
-              gridTemplateColumns: `260px repeat(${CATS.length}, 1fr) 110px`,
-              gap: 8,
-              alignItems: 'center',
-              // Две строки на кадр: даём им высоту, чтобы таблица не висела
-              // полоской в пустом кадре.
-              padding: '76px 0',
-              borderTop: `1px solid ${C.line}`,
-              ...riseIn(frame, 30 + row * 18),
-            }}
-          >
-            <div style={{display: 'flex', alignItems: 'center', gap: 10}}>
-              <span style={{width: 8, height: 30, borderRadius: 3, background: m.accent ?? C.accent}} />
-              <span style={{font: `500 24px/1.2 ${FONT_SANS}`}}>{m.label}</span>
+        {MODELS.map((model, row) => (
+          <div key={model.dir} style={{display: 'grid', gridTemplateColumns: BOARD_COLUMNS, gap: 6, alignItems: 'stretch', padding: '22px 0', borderTop: `1px solid ${C.line}`, ...riseIn(frame, 30 + row * 18)}}>
+            <div style={{display: 'flex', alignItems: 'center', gap: 12, minWidth: 0}}>
+              <span style={{width: 8, height: 48, flexShrink: 0, background: model.accent}} />
+              <span style={{font: `600 22px/1.3 ${FONT_SANS}`, overflowWrap: 'anywhere'}}>{model.label}</span>
             </div>
             {CATS.map(([key]) => {
-              const t = m.totals[key] ?? {earned: 0, possible: 1};
-              const pct = t.possible ? (t.earned / t.possible) * 100 : 0;
+              const total = model.totals[key];
+              const pct = total?.possible ? total.earned / total.possible * 100 : undefined;
               return (
-                <div
-                  key={key}
-                  style={{
-                    textAlign: 'center',
-                    padding: '8px 0',
-                    borderRadius: 6,
-                    background: pct >= 90 ? `${C.green}18` : pct >= 60 ? `${C.panelHi}` : `${C.amber}18`,
-                  }}
-                >
+                <div key={key} style={{display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 66, borderRadius: 6, background: pct == null ? C.panel : pct >= 90 ? `${C.green}18` : pct >= 60 ? `${C.amber}18` : `${C.red}18`}}>
                   <Cell value={pct} />
                 </div>
               );
             })}
-            <div style={{textAlign: 'right', font: `700 34px/1 ${FONT_SANS}`, color: m.accent ?? C.accent}}>
-              {m.verdict || m.score.toFixed(0)}
+            {(['K', 'L'] as const).map((key) => (
+              <div key={key} style={{display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.panel, borderLeft: key === 'K' ? `1px solid ${C.line}` : undefined, font: `700 24px/1 ${FONT_MONO}`}}>
+                {model[key].e}/{model[key].p}
+              </div>
+            ))}
+            <div style={{display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 8, borderLeft: `2px solid ${model.accent}`, background: C.bgSoft, font: `700 24px/1 ${FONT_MONO}`, color: model.accent, whiteSpace: 'nowrap'}}>
+              {model.score.toLocaleString('ru-RU')}/100
             </div>
           </div>
         ))}
       </div>
-
-      <div style={{position: 'absolute', bottom: 60, left: 96, right: 96, display: 'flex', gap: 20}}>
-        {MODELS.map((m, i) => (
-          <div
-            key={m.dir}
-            style={{
-              flex: 1,
-              padding: '16px 18px',
-              borderRadius: 10,
-              border: `1px solid ${C.line}`,
-              background: C.panel,
-              ...riseIn(frame, 130 + i * 10),
-            }}
-          >
-            <div style={{font: `500 14px/1 ${FONT_MONO}`, color: C.faint}}>токены ответа</div>
-            <div style={{font: `600 22px/1.2 ${FONT_MONO}`, marginTop: 6}}>
-              {m.spend.answer == null ? 'н/д' : `${Math.round(m.spend.answer / 1000)}K`}
+      <div style={{position: 'absolute', top: 600, bottom: 64, left: 72, right: 72, display: 'flex', gap: 24}}>
+        {MODELS.map((model, i) => (
+          <div key={model.dir} style={{flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: '28px 32px', border: `1px solid ${C.line}`, background: C.panel, ...riseIn(frame, 100 + i * 10)}}>
+            <div style={{display: 'flex', alignItems: 'center', gap: 14, paddingBottom: 20, borderBottom: `1px solid ${C.line}`}}>
+              <span style={{width: 8, height: 30, background: model.accent}} />
+              <span style={{font: `600 27px/1.2 ${FONT_SANS}`}}>{model.label}</span>
             </div>
-            <div style={{font: `500 14px/1 ${FONT_MONO}`, color: C.faint, marginTop: 10}}>вызовы инструментов</div>
-            <div style={{font: `600 22px/1.2 ${FONT_MONO}`, marginTop: 6}}>{m.spend.tools}</div>
-            <div style={{font: `500 14px/1 ${FONT_MONO}`, color: C.faint, marginTop: 10}}>минут генерации</div>
-            <div style={{font: `600 22px/1.2 ${FONT_MONO}`, marginTop: 6}}>
-              {m.spend.minutes == null ? 'н/д' : Math.round(m.spend.minutes)}
-            </div>
+            {[
+              ['Токены ответа', model.spend.answer?.toLocaleString('ru-RU') ?? 'н/д'],
+              ['Вызовы инструментов', model.spend.tools.toLocaleString('ru-RU')],
+              ['Время работы агента', model.spend.minutes == null ? 'н/д' : `${model.spend.minutes.toLocaleString('ru-RU')} мин`],
+            ].map(([label, value]) => (
+              <div key={label} style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24}}>
+                <span style={{font: `400 25px/1.3 ${FONT_SANS}`, color: C.muted}}>{label}</span>
+                <span style={{font: `700 32px/1 ${FONT_MONO}`, whiteSpace: 'nowrap'}}>{value}</span>
+              </div>
+            ))}
           </div>
         ))}
       </div>
