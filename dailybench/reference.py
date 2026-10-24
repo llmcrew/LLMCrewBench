@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import core
-from .config import RunConfig
+from .config import DEFAULT_CONTEXT_WINDOW, RunConfig
 from .measure import VramSampler, gpu_inventory, weights_sha256
 from .providers import OpenAICompatibleProvider, ProviderError, Provider
 from .tasks.tools import schemas as tool_schemas
@@ -54,7 +54,7 @@ POLICY: dict[str, Any] = {
                              "each request gets no more than the remaining time"),
     "max_total_tokens": 16384,
     "max_tool_calls": 12,
-    "context_window": 262144,
+    "context_window": DEFAULT_CONTEXT_WINDOW,
     "prompt_cache": "each measured prompt carries a fresh nonce, so no run is served from another run's prompt cache",
     "offload": "none — weights and KV cache fully on the GPU; partial offload is a different configuration",
     "rope_scaling": "none — no YaRN/linear scaling, the model must be run inside its trained window",
@@ -162,7 +162,7 @@ MODELS: list[dict[str, Any]] = [
     {"id": "gemma-4-12b-agentic", "label": "Gemma 4 12B agentic · Q8_0", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF", "quant": "Q8_0", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": "probe", "tools": "probe"}, "notes": ["Другое семейство и заявленная agentic-настройка: проверяет, что сьют не подогнан под Qwen.", "Sliding-window attention у Gemma снижает реальный размер KV: пик VRAM измеряется, а не считается."]},
     {"id": "qwen3-14b-uncensored-q5km", "label": "Qwen3 14B Uncensored · Q5_K_M", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "mradermacher/Qwen3-14B-Uncensored-GGUF", "quant": "Q5_K_M", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": "probe", "tools": "probe"}, "notes": ["Меньшая модель того же семейства: показывает цену размера, а не кванта.", "Квант крупнее (Q5_K_M) при меньшем числе параметров — сравнение с 27B IQ3-класса особенно показательно для вывода про VRAM."]},
     {"id": "qwen3.8-27b-uncensored-iq3xs", "label": "Qwen3.8 27B Uncensored (MTP) · IQ3_XS", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF", "quant": "IQ3_XS", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": True, "tools": "probe"}, "notes": ["Третий квант того же размера: IQ3_XS против UD-Q3_K_XL и GSQ-RCO IQ3_XXS.", "MTP-сборка: если speculative decoding включён загрузчиком, это меняет скорость — фиксировать в отчёте."]},
-    {"id": "generic-gguf", "label": "Шаблон для любой другой GGUF-модели", "runtime": "unsloth-studio", "base_url": "http://127.0.0.1:8888/v1", "model": "<model-name>", "quant": "<quant>", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": "probe", "tools": "probe"}, "notes": ["Скопировать запись, заполнить model/quant/weights, прогнать preflight --full.", "Менять только эти поля: политика одинакова для всех, её изменение обесценивает сравнение."]},
+    {"id": "generic-gguf", "label": "Шаблон для любой другой GGUF-модели", "runtime": "unsloth-studio", "base_url": "http://127.0.0.1:8888/v1", "model": "<model-name>", "quant": "<quant>", "weights": "", "context_window": DEFAULT_CONTEXT_WINDOW, "kv_type": "q8_0", "capabilities": {"thinking": "probe", "tools": "probe"}, "notes": ["Скопировать запись, заполнить model/quant/weights, прогнать preflight --full.", "Менять только эти поля: политика одинакова для всех, её изменение обесценивает сравнение."]},
 ]
 
 
@@ -218,7 +218,7 @@ class ReferenceConfig:
             .replace("<weights.gguf>", str(self.entry.get("weights") or "<weights.gguf>"))
             .replace("<quant>", str(self.entry.get("quant", "Q4_K_M")))
             .replace("<kv>", str(self.entry.get("kv_type", "q8_0")))
-            .replace("<window>", str(self.entry.get("context_window") or self.policy.get("context_window", 32768)))
+            .replace("<window>", str(self.entry.get("context_window") or self.policy.get("context_window", DEFAULT_CONTEXT_WINDOW)))
             .replace("<reasoning-budget>", str(self.policy.get("reasoning_budget", 2048)))
             .replace("<answer-budget>", str(self.policy.get("answer_budget_default", 4096)))
             .replace("<model>", str(self.entry.get("model", "")))

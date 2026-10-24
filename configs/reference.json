@@ -320,7 +320,7 @@
       "model": "<model-name>",
       "quant": "<quant>",
       "weights": "",
-      "context_window": 32768,
+      "context_window": 262144,
       "kv_type": "q8_0",
       "capabilities": {
         "thinking": "probe",

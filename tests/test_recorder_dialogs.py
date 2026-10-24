@@ -43,12 +43,12 @@ def mod():
     module = _module()
     try:
         module.chrome()
-    except SystemExit:
+    except (SystemExit, RuntimeError):
         pytest.skip("Chrome не установлен")
     return module
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def page(mod):
     """Открытая вкладка с проверяемой страницей; диалоги принимаются клиентом."""
     port = mod.free_port()
@@ -56,7 +56,7 @@ def page(mod):
     proc = subprocess.Popen(
         [str(mod.chrome()), "--headless=new", f"--remote-debugging-port={port}",
          f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
-         "--use-angle=metal", "--disable-gpu-sandbox", "--force-device-scale-factor=1",
+         "--force-device-scale-factor=1",
          "about:blank"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     ws = None
@@ -109,3 +109,39 @@ def test_the_dialog_message_is_kept_for_the_marker(page):
     call, ws = page
     call("Runtime.evaluate", {"expression": "window.__step(1 / 60)", "returnByValue": True}, timeout=8)
     assert "boom" in ws.dialog_note()
+
+
+@pytest.mark.parametrize("native_raf", [False, True])
+def test_capture_clock_preserves_authored_animation_without_report_driver(page, mod, tmp_path, native_raf):
+    call, ws = page
+    program = (
+        "function tick(){p.textContent=++n;requestAnimationFrame(tick)}requestAnimationFrame(tick);"
+        if native_raf else
+        "window.__step=()=>{p.textContent=++n};"
+    )
+    source = tmp_path / "scene.html"
+    source.write_text(
+        "<p id='frame'>0</p><script>"
+        "const p=document.getElementById('frame');let n=0;" + program +
+        "</script><script>\n"
+        "// Сцена играет сама: драйвер измеряет окно движения\n"
+        "// A different published driver revision must not interfere.\n"
+        "document.getElementById('frame').textContent='report-driver-ran';"
+        "</script>", encoding="utf-8",
+    )
+    call("Page.addScriptToEvaluateOnNewDocument", {"source": mod.FRAME_CLOCK_JS})
+    call("Page.navigate", {"url": "data:text/html," + quote(mod._served_html(source))})
+    assert mod.page_ready(call, ws, "L-1", timeout=3)
+
+    def visible_frame():
+        result = call("Runtime.evaluate", {
+            "expression": "document.getElementById('frame').textContent", "returnByValue": True,
+        })
+        return result["result"]["result"]["value"]
+
+    time.sleep(0.05)
+    assert visible_frame() == "0"
+    for expected in ("1", "2"):
+        call("Runtime.evaluate", {"expression": f"window.__recordClock.capture({mod.DT!r})"})
+        time.sleep(0.05)
+        assert visible_frame() == expected

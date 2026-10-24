@@ -123,6 +123,7 @@ pi-agent/
 # Клипы витрины (834 МБ) и комплектный ffmpeg пересобираются записью: в git не
 # нужны, для рендера берутся из архива (video/archive, см. video/RENDER.md).
 video/public/clips/
+/video/public/repairs/clips/
 /video/bin/
 # Записи и архив — вне git. В архиве лежит только описание состава, склейки и
 # хеш (RESTORE.md, SHA256); сами 828 МБ получаются записью или сборкой.

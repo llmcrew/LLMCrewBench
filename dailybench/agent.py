@@ -66,7 +66,7 @@ from pathlib import Path
 from typing import Any
 
 from . import core
-from .config import RunConfig
+from .config import DEFAULT_CONTEXT_WINDOW, RunConfig
 
 #: Environment variable with the ``pi`` binary, for a machine where it is not on
 #: ``PATH`` (a user-local install, a CI image).
@@ -295,7 +295,7 @@ def config_dir(root: Path, cfg: RunConfig, *, budget: int | None = None) -> Path
                         "id": cfg.model,
                         "name": cfg.model,
                         "reasoning": True,
-                        "contextWindow": int(cfg.context_window or 32768),
+                        "contextWindow": int(cfg.context_window or DEFAULT_CONTEXT_WINDOW),
                         "maxTokens": int(budget or cfg.max_new_tokens),
                         # Decoding policy of the benchmark: temperature 0, no
                         # nucleus truncation. ``pi`` has no CLI flag for these,

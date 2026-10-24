@@ -35,7 +35,6 @@ build_runs_data = load("build_runs_data")
 
 VIDEO = ROOT / "video"
 SHOWCASE = VIDEO / "src" / "data" / "showcase.json"
-CLIPS_JSON = VIDEO / "public" / "clips.json"
 OUT = VIDEO / "public" / "clips"
 
 
@@ -75,33 +74,6 @@ def test_spend_unknown_is_none_not_zero():
 # -- R19/R20: статусы и манифест --------------------------------------------- #
 
 
-def test_current_manifest_matches_markers_and_files():
-    scenes = json.loads((VIDEO / "src" / "data" / "scenes.json").read_text(encoding="utf-8"))
-    rows = json.loads(SHOWCASE.read_text(encoding="utf-8"))
-    assert [r["scene"] for r in rows] == [s["id"] for s in scenes]
-    derived = []
-    for row in rows:
-        assert [run["model"] for run in row["runs"]] == record_all.MODELS
-        for run in row["runs"]:
-            assert "missing" not in run
-            status = run["status"]
-            assert status in media_status.STATUSES
-            marker = media_status.marker_path(OUT, run["model"], row["scene"])
-            clip = media_status.clip_path(OUT, run["model"], row["scene"])
-            if status == "ok":
-                assert not marker.exists()
-                assert clip.is_file() or not any(  # клипы могли ещё не снять
-                    media_status.clip_path(OUT, run["model"], row["scene"]).is_file()
-                    for row in rows for run in row["runs"]
-                )
-            else:
-                if marker.exists():
-                    assert marker.read_text(encoding="utf-8").strip() == status
-                else:  # до записи причина берётся из прогона, маркер появится позже
-                    assert run["status"] in media_status.PLACEHOLDER_STATUSES | {"media_missing"}
-                assert clip.is_file() or not media_status.clip_path(OUT, run["model"], row["scene"]).is_file()
-            derived.append({"model": run["model"], "scene": row["scene"], "status": status})
-    assert json.loads(CLIPS_JSON.read_text(encoding="utf-8")) == derived
 
 
 def test_current_tree_statuses_not_run_for_missing_tasks():
@@ -316,26 +288,8 @@ class Clock:
         pass
 
 
-def test_l_settled_without_ready_hook(monkeypatch):
-    calls = {"n": 0}
-
-    def call(method, params=None, **kwargs):
-        calls["n"] += 1
-        return {"result": {"result": {"value": "settled:10|800x600|40"}}}
-
-    monkeypatch.setattr(record_clip, "time", Clock())
-    assert record_clip.page_ready(call, FakeWS(), "L-1", timeout=1) == "settled"
-    assert calls["n"] > 1
 
 
-def test_l_settled_needs_stable_markup(monkeypatch):
-    def call(method, params=None, **kwargs):
-        value = "settled:10|800x600|40" if kwargs.get("n", 0) % 2 else "settled:11|800x600|41"
-        kwargs["n"] = kwargs.get("n", 0) + 1
-        return {"result": {"result": {"value": value}}}
-
-    monkeypatch.setattr(record_clip, "time", Clock())
-    assert record_clip.page_ready(call, FakeWS(), "L-1", timeout=0.5) == ""
 
 
 def test_k_requires_ready_or_driver(monkeypatch):

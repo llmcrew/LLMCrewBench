@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import core, generation, reference, schema
-from .config import DEFAULT_SEED, RunConfig
+from .config import DEFAULT_CONTEXT_WINDOW, DEFAULT_SEED, RunConfig
 from .measure import (
     SpeedResult,
     gpu_inventory,
@@ -68,7 +68,7 @@ def _config_from(args: argparse.Namespace) -> RunConfig:
         quant=getattr(args, "quant", "") or "",
         runtime=getattr(args, "runtime", "") or "",
         weights_path=getattr(args, "weights", "") or "",
-        n_ctx=getattr(args, "context_window", 32768),
+        n_ctx=getattr(args, "context_window", DEFAULT_CONTEXT_WINDOW),
         kv_type=getattr(args, "kv_type", "") or "",
         offload=getattr(args, "offload", "none"),
         sql_backend=args.sql_backend,
@@ -1022,7 +1022,10 @@ def build_parser() -> argparse.ArgumentParser:
             target.add_argument("--runtime", default="", help="runtime и версия, напр. llama.cpp b4321")
             target.add_argument("--kv-type", default="", help="формат KV-cache, напр. q8_0")
             target.add_argument("--offload", default="none", help="описание offload (none — обязательный зачёт)")
-            target.add_argument("--context-window", type=int, default=32768)
+            target.add_argument(
+                "--context-window", type=int, default=DEFAULT_CONTEXT_WINDOW,
+                help="окно контекста в токенах (по умолчанию 262144; --config задаёт своё окно)",
+            )
             target.add_argument("--max-new-tokens", type=int, default=4096)
             target.add_argument("--weights", default="", help="путь к файлу весов для SHA-256")
             target.add_argument("--no-system-prompt", action="store_true")

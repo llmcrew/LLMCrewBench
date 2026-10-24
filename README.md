@@ -40,7 +40,7 @@ zero.
 | B | Reasoning | 15 | 15 | One exact value per task (integers, fractions, orders, makespan) |
 | C | Coding | 20 | 3 | Built by the agent in a working copy; hidden tests decide: Python repo patch, Go concurrency, SQL result sets |
 | D | Tool calling | 14 | 7 | Tool-call log, file diffs after the run, no destructive action |
-| E | Long context | 10 | 5 | One value retrieved from a 8K–28K-token document, admission measured |
+| E | Long context | 10 | 5 | Retrieval and state tracking over documents sized to 25–84 % of the configured window, admission measured |
 | F | Hallucination resistance | 8 | 1 | 10 questions: 5 answerable, 5 not — each invention loses that question's points |
 | G | Structured output | 8 | 4 | JSON-Schema conformance (types, enums, bounds, no extra keys) |
 | H | Multi-turn dialogue | 6 | 3 | A correction applied mid-conversation, earlier constraints kept |
@@ -115,6 +115,18 @@ bytes); display pages and clips are derived and identified by path. A display
 page or a preview never substitutes the original evidence.
 
 ## The answer limit is the window, not a laboratory ceiling
+
+New runs against an endpoint default to **262,144 tokens (256K)**, including the
+Pi context for C/K/L. `--context-window` selects another size. The endpoint must
+actually support and be configured for that window: this flag does not resize
+an externally managed server.
+
+An explicit `--config` keeps the window declared by that reference entry;
+existing 32K/128K hardware profiles are not silently upgraded. The `generic-gguf`
+template defaults to 256K. For a new reference-based comparison, declare the new
+window in its entry and verify the loaded server with `preflight --full`.
+Saved results are unchanged; use the original `--context-window` when resuming
+an older endpoint run rather than mixing 32K and 256K measurements.
 
 A run does not cap generation with a separate budget: the limit is the model's
 window minus the prompt (`unbounded_budget`). A model that spent 100 KB on

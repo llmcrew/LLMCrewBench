@@ -1,0 +1,14 @@
+[
+  {
+    "model": "deepseek-v4.1-flash-unc-1021",
+    "scene": "L-15",
+    "original_status": "failed",
+    "original": "reports/comparison-deepseek-1021/_showcase/deepseek-v4.1-flash-unc-1021/pages/L-15.html",
+    "repaired": "reports/comparison-deepseek-1021/_repairs/_showcase/deepseek-v4.1-flash-unc-1021/pages/L-15.html",
+    "source_sha256": "b36e7f63257fe484dc1a7358953a717425e26be4a29fa776259c3a32a93c42c1",
+    "repaired_sha256": "1b8813fdfd574ab5811a6ebd0f29473dc8abc8ff3ee62923fba0ac958d7aa09d",
+    "change": "Изолированная область видимости для исходного арт-кода: добавлены только открывающая и закрывающая фигурные скобки. Устраняются конфликты имён WebGLRenderer/aspect со встроенной Three.js; весь исходный графический код сохранён.",
+    "original_score_unchanged": true,
+    "graphics_unchanged": true
+  }
+]

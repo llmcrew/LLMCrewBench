@@ -90,19 +90,19 @@ def test_longctx_accepts_the_documented_spellings_only() -> None:
     tasks = generate(task_rng(11, "E"), RunConfig())
     lc1, lc5 = tasks[0], tasks[4]
 
-    plain = evaluate(lc1, _transcript(lc1, lc1.oracle["answer"], prompt_tokens=8000))
+    plain = evaluate(lc1, _transcript(lc1, lc1.oracle["answer"], prompt_tokens=lc1.meta["target_tokens"]))
     assert plain.admission is True and plain.earned == 2.0
 
-    prefixed = evaluate(lc1, _transcript(lc1, f"sha256:{lc1.oracle['answer']}", prompt_tokens=8000))
+    prefixed = evaluate(lc1, _transcript(lc1, f"sha256:{lc1.oracle['answer']}", prompt_tokens=lc1.meta["target_tokens"]))
     assert prefixed.earned == 2.0, "префикс поля не несёт информации о качестве поиска"
 
-    wrong = evaluate(lc1, _transcript(lc1, "sha256:deadbeef", prompt_tokens=8000))
+    wrong = evaluate(lc1, _transcript(lc1, "sha256:deadbeef", prompt_tokens=lc1.meta["target_tokens"]))
     assert wrong.earned == 0.0
 
     # The sibling service is a deliberate distractor and must never be accepted.
-    distractor = evaluate(lc5, _transcript(lc5, str(lc5.oracle["distractor_answer"]), prompt_tokens=27000))
+    distractor = evaluate(lc5, _transcript(lc5, str(lc5.oracle["distractor_answer"]), prompt_tokens=lc5.meta["target_tokens"]))
     assert distractor.earned == 0.0
-    labeled = evaluate(lc5, _transcript(lc5, f"service {lc5.oracle['answer']}", prompt_tokens=27000))
+    labeled = evaluate(lc5, _transcript(lc5, f"service {lc5.oracle['answer']}", prompt_tokens=lc5.meta["target_tokens"]))
     assert labeled.earned == 2.0
 
 
@@ -152,7 +152,6 @@ def test_lc6_events_are_unique_and_both_statuses_occur() -> None:
         statuses.add(task.oracle["status"])
         assert len(task.oracle["events"]) == 10
         assert len({event["id"] for event in task.oracle["events"]}) == 10
-        assert task.oracle["reference"] == task.oracle["reference"]
         assert _score(task, task.oracle["reference"]).earned == 2.0
         document = task.prompt.split("\n\nQUESTION:", 1)[0]
         for fact in task.oracle["target_facts"]:
@@ -186,8 +185,9 @@ def test_lc7_graph_is_unique_sized_and_seeded() -> None:
         first = _task(cfg, seed, "LC-7")
         second = _task(cfg, seed, "LC-7")
         assert first.prompt == second.prompt and first.oracle == second.oracle
-        assert 24_000 <= first.meta["target_tokens"] <= 30_000
-        assert 24_000 <= first.meta["estimated_tokens"] <= 30_000
+        target = first.meta["target_tokens"]
+        assert round(cfg.context_window * 0.73) <= target <= round(cfg.context_window * 0.86)
+        assert target * 0.75 <= first.meta["estimated_tokens"] <= target * 1.25
         document = first.prompt.split("\n\nQUESTION:", 1)[0]
         for fact in first.oracle["target_facts"]:
             assert document.count(fact) == 1

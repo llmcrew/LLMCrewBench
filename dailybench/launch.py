@@ -21,6 +21,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .config import DEFAULT_CONTEXT_WINDOW
+
 ROOT = Path(__file__).resolve().parent.parent
 LOGS = ROOT / "runs" / "_servers"
 STUDIO_LOG = LOGS / "studio.log"
@@ -94,7 +96,7 @@ def ensure_server(base_url: str, entry: dict[str, Any]) -> str:
         UNSLOTH, "studio", "run",
         "--model", str(entry["model"]),
         "--gguf-variant", str(entry["quant"]),
-        "--max-seq-length", str(entry.get("context_window") or 32768),
+        "--max-seq-length", str(entry.get("context_window") or DEFAULT_CONTEXT_WINDOW),
     ]
     flags = 0
     if sys.platform == "win32":
@@ -119,7 +121,7 @@ def load_entry(base_url: str, key: str, entry: dict[str, Any], timeout_s: float 
     payload = {
         "model_path": model,
         "gguf_variant": str(entry["quant"]),
-        "max_seq_length": int(entry.get("context_window") or 32768),
+        "max_seq_length": int(entry.get("context_window") or DEFAULT_CONTEXT_WINDOW),
         "n_parallel": 1,
         "gpu_memory_mode": "auto",
         "cache_type_kv": str(entry.get("kv_type") or "q8_0"),
