@@ -653,16 +653,30 @@ def encode(frames: Path, out: Path, frame_count: int | None = None) -> None:
     _atomic_output(out, args)
 
 
+#: 2x2 чёрный PNG: комплектный ffmpeg собран без исходника lavfi ``color``,
+#: поэтому кадр берём из картинки и растягиваем; так плашка собирается любым
+#: сборкой, у которой есть image2/mjpeg и scale.
+_BLACK_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAC0lEQVR4nGNgQAYAAA4AAamRc7EAAAAASUVORK5CYII="
+)
+
+
 def placeholder(out: Path, secs: float) -> None:
     """Write a fixed-rate dark placeholder of exactly the requested duration."""
     count = _frame_count(secs)
-    _atomic_output(out, [
-        "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", f"color=c=black:s={W}x{H}:r={FPS}",
-        "-frames:v", str(count), "-an",
-        "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF),
-        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-    ])
+    frame = out.with_suffix(".plate.png")
+    frame.write_bytes(_BLACK_PNG)
+    try:
+        _atomic_output(out, [
+            "-hide_banner", "-loglevel", "error",
+            "-loop", "1", "-i", str(frame.resolve()),
+            "-vf", f"scale={W}:{H}", "-r", str(FPS),
+            "-frames:v", str(count), "-an",
+            "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF),
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+        ])
+    finally:
+        frame.unlink(missing_ok=True)
 
 
 def _write_capture_metadata(out: Path, source: Path | None, seconds: float,
