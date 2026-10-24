@@ -638,7 +638,9 @@ def test_rescore_keeps_the_score_when_the_recorded_prompt_drifted(endpoint, tmp_
     assert _run(base_url, tmp_path, "--only", "IF-2", "--limit", "1", "--name", "smoke") == 0
     out = tmp_path / "smoke"
     suite = _read(out / "suite.json")
-    suite["per_task"][0]["prompt_sha256"] = "0" * 64
+    # The digest covers the whole profile; damage the row of the saved task.
+    row = next(item for item in suite["per_task"] if item["id"] == "IF-2")
+    row["prompt_sha256"] = "0" * 64
     (out / "suite.json").write_text(json.dumps(suite), encoding="utf-8")
 
     assert cli.main(["rescore", str(out)]) == 0
