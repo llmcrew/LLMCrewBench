@@ -22,6 +22,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import sandbox_run  # noqa: E402
 
+from dailybench import isolation  # noqa: E402
+
 pytestmark = pytest.mark.skipif(
     not sandbox_run.docker_available(), reason="Docker daemon is not reachable"
 )
@@ -498,13 +500,14 @@ def test_the_container_is_removed_after_a_timeout(image: str, task_dir: Path):
 
 
 def test_the_isolation_module_mounts_the_fixture_and_the_config_only(
-    image: str, task_dir: Path, tmp_path: Path
+    image: str, task_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The module the runner uses: workspace rw, ``/agent`` ro, nothing else."""
-    from dailybench import isolation
-
+    """The module the runner uses: workspace rw, ``/agent`` ro, plus the CA."""
     agent_dir = tmp_path / "pi-agent"
     agent_dir.mkdir()
+    bundle = tmp_path / "ca.pem"
+    bundle.write_text("# test bundle\n", encoding="utf-8")
+    monkeypatch.setattr(isolation, "default_ca_bundle", lambda: bundle)
     box = isolation.Sandbox(work_dir=task_dir, agent_dir=agent_dir, image=image)
     report = box.run_command(["python", "-c", "print('ok')"], host_env={})
 
@@ -512,8 +515,173 @@ def test_the_isolation_module_mounts_the_fixture_and_the_config_only(
     assert [(m["dst"], m["readonly"]) for m in report["mounts"]] == [
         ("/workspace", False),
         ("/agent", False),
+        (isolation.CONTAINER_CA, True),
     ]
     recorded = box.record()
     assert recorded["executor_status"] == "container_run"
     assert recorded["cgroups"]["pids_limit"] == 256
     assert recorded["rootfs"] == "read_only"
+
+
+# --------------------------------------------------------------------------- #
+# The corporate CA: mounted read-only, named by container paths, recorded
+# --------------------------------------------------------------------------- #
+
+
+def _box(tmp_path: Path, **kwargs: object) -> isolation.Sandbox:
+    work = tmp_path / "work"
+    work.mkdir()
+    return isolation.Sandbox(
+        work_dir=work,
+        image="dailybench/runner-python:fake",
+        base_url="https://host.docker.internal:8443/v1",
+        **kwargs,
+    )
+
+
+def test_ca_bundle_precedence_and_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    explicit = tmp_path / "explicit.pem"
+    curl = tmp_path / "curl.pem"
+    default = tmp_path / "default.pem"
+    for path in (explicit, curl, default):
+        path.write_text("ca\n", encoding="utf-8")
+    monkeypatch.setattr(isolation, "default_ca_bundle", lambda: default)
+
+    assert isolation.ca_bundle(
+        {"SSL_CERT_FILE": str(explicit), "CURL_CA_BUNDLE": str(curl)}
+    ) == explicit.resolve()
+    assert isolation.ca_bundle({"CURL_CA_BUNDLE": str(curl)}) == curl.resolve()
+    # A named file that does not exist falls through instead of failing.
+    assert isolation.ca_bundle({"SSL_CERT_FILE": str(tmp_path / "gone.pem")}) == (
+        default.resolve()
+    )
+    default.unlink()
+    assert isolation.ca_bundle({}) is None
+
+
+def test_a_host_ca_is_mounted_read_only_and_named_by_a_container_path(
+    fake_docker: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The bundle reaches the container, the host path does not."""
+    monkeypatch.setenv(
+        "PATH", str(fake_docker) + os.pathsep + os.environ.get("PATH", "")
+    )
+    bundle = tmp_path / "ca.pem"
+    bundle.write_text("ca\n", encoding="utf-8")
+    box = _box(tmp_path)
+    host_env = {"SSL_CERT_FILE": str(bundle)}
+
+    env = box.env(host_env)
+    for name in isolation.CA_ENV:
+        assert env[name] == isolation.CONTAINER_CA
+    assert str(bundle.resolve()) not in env.values()
+
+    report = box.run_command(["true"], host_env=host_env)
+    assert report["status"] == "ok", report.get("output")
+    assert [
+        (m["src"], m["dst"], m["readonly"])
+        for m in report["mounts"]
+        if m["dst"] == isolation.CONTAINER_CA
+    ] == [(str(bundle.resolve()), isolation.CONTAINER_CA, True)]
+    assert str(bundle.resolve()) not in [str(value) for value in env.values()]
+    assert set(isolation.CA_ENV) <= set(report["env"])
+
+    recorded = box.record()
+    assert recorded["ca_mounted"] is True
+    assert recorded["ca_bundle"] == str(bundle)
+    assert recorded["ca_container_path"] == isolation.CONTAINER_CA
+    assert recorded["ca_reason"] == ""
+
+
+def test_a_missing_ca_is_recorded_not_fatal(
+    fake_docker: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Without a bundle the run continues; the record says TLS is unverified."""
+    monkeypatch.setenv(
+        "PATH", str(fake_docker) + os.pathsep + os.environ.get("PATH", "")
+    )
+    monkeypatch.setattr(isolation, "default_ca_bundle", lambda: tmp_path / "none.pem")
+    box = _box(tmp_path)
+
+    env = box.env({})
+    assert not set(isolation.CA_ENV) & set(env)
+    report = box.run_command(["true"], host_env={})
+    assert report["status"] == "ok", report.get("output")
+    assert isolation.CONTAINER_CA not in [m["dst"] for m in report["mounts"]]
+    assert not set(isolation.CA_ENV) & set(report["env"])
+
+    recorded = box.record()
+    assert recorded["executor_status"] == "container_run"
+    assert recorded["ca_mounted"] is False
+    assert recorded["ca_reason"] == isolation.CA_MISSING_REASON
+
+
+@pytest.fixture
+def tls_ca(tmp_path: Path) -> tuple[Path, Path]:
+    """A throwaway CA/key pair naming the gateway; skips without OpenSSL."""
+    if shutil.which("openssl") is None:
+        pytest.skip("openssl is not available")
+    cert, key = tmp_path / "ca.pem", tmp_path / "ca.key"
+    proc = subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+            "-keyout", str(key), "-out", str(cert),
+            "-subj", "/CN=host.docker.internal",
+            "-addext", "subjectAltName=DNS:host.docker.internal,DNS:localhost,IP:127.0.0.1",
+            "-addext", "basicConstraints=critical,CA:TRUE",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:  # pragma: no cover - ancient OpenSSL
+        pytest.skip(f"openssl cannot mint a SAN certificate: {proc.stderr[-300:]}")
+    return cert, key
+
+
+def test_https_endpoint_is_verified_through_the_mounted_ca(
+    image: str, task_dir: Path, tls_ca: tuple[Path, Path]
+):
+    """The live defect: a CA-less container cannot verify the https endpoint."""
+    import ssl
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    cert, key = tls_ca
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - stdlib naming
+            body = b"ca-ok"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(str(cert), str(key))
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_port
+    try:
+        box = isolation.Sandbox(
+            work_dir=task_dir, image=image, base_url=f"https://127.0.0.1:{port}/"
+        )
+        script = (
+            "import urllib.request;"
+            f"print(urllib.request.urlopen("
+            f"'https://host.docker.internal:{port}/', timeout=30).read().decode())"
+        )
+        report = box.run_command(
+            ["python", "-c", script], host_env={"SSL_CERT_FILE": str(cert)}
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert report["status"] == "ok", report.get("output") or report.get("error")
+    assert "ca-ok" in str(report["output"])

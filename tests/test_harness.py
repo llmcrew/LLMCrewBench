@@ -2170,6 +2170,67 @@ def test_a_reported_usage_confirms_the_budget():
     assert run.transcript.extra.get("usage_unconfirmed") is None
 
 
+def test_the_total_budget_defaults_to_at_least_the_answer_budget():
+    """J-5: the total was a fixed 16384 and clamped every larger answer.
+
+    Nobody chose it, so it must follow the answer budget; an explicit value
+    (reference policy, ``--max-total-tokens``) is kept as chosen.
+    """
+    assert RunConfig().max_total_tokens == 16384
+    assert RunConfig(max_new_tokens=65536).max_total_tokens == 65536
+    assert RunConfig(max_new_tokens=65536, max_total_tokens=20000).max_total_tokens == 20000
+
+
+def test_a_length_cut_without_visible_text_is_not_ok():
+    """J-5: all 16384 tokens went into thinking, the answer never started.
+
+    ``finish_reason=length`` with an empty visible text was scored ``ok`` at
+    ``0/5``: the row has to say the budget ran out before the answer.
+    """
+    task = _tool_task("T-1")
+    reply = core.ModelReply(
+        text="",
+        reasoning="долго думал и не начал отвечать",
+        completion_tokens=16384,
+        reasoning_tokens=16384,
+        finish_reason="length",
+    )
+    run = Runner(RunConfig(), ScriptedProvider([reply])).run_task(task)
+
+    assert "бюджет исчерпан до ответа" in (run.transcript.error or "")
+    assert run.transcript.extra["failure"] == "resource_exhausted"
+    assert run.score.status == "error"
+    assert core.outcome_of(run.score) == "resource_exhausted"
+
+
+def test_reasoning_in_the_text_channel_counts_as_no_answer():
+    task = _tool_task("T-1")
+    reply = core.ModelReply(
+        text="долго думал",
+        reasoning="долго думал",
+        completion_tokens=16384,
+        reasoning_tokens=16384,
+        finish_reason="length",
+    )
+    run = Runner(RunConfig(), ScriptedProvider([reply])).run_task(task)
+
+    assert "бюджет исчерпан до ответа" in (run.transcript.error or "")
+    assert run.score.status == "error"
+
+
+def test_a_length_cut_before_tool_calls_stays_ok():
+    """A truncated reply that still carries calls continues the loop."""
+    task = _tool_task("T-1")
+    cut = _call(1, "read_file", {"path": "README.md"})
+    cut.finish_reason = "length"
+    cut.completion_tokens = 100
+    reply = core.ModelReply(text="готово", completion_tokens=5, finish_reason="stop")
+    run = Runner(RunConfig(), ScriptedProvider([cut, reply])).run_task(task)
+
+    assert run.transcript.error is None
+    assert run.score.status == "ok"
+
+
 def test_max_new_tokens_is_an_upper_bound_on_the_window_branch():
     """H09: ``--max-new-tokens 32`` reached the config but not the request.
 
@@ -3877,6 +3938,125 @@ def test_a_broken_container_falls_back_to_the_host_and_is_marked(monkeypatch, tm
     assert "контейнере" in record["executor_reason"]
     assert run.transcript.extra["agent"]["exit_ok"] is True
     assert run.transcript.workspace_after.get("fell-back.txt", "").strip() == "host"
+
+
+# --------------------------------------------------------------------------- #
+# A missing image is built once, and a failed build is not a silent host run
+# --------------------------------------------------------------------------- #
+
+_FAKE_DOCKER_AUTOBUILD = """#!/bin/sh
+# ``docker`` stand-in for the auto-build path: every call is logged and the
+# image only resolves after a successful ``build``.
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+case "$1" in
+  info) printf '{"runc": {"path": "runc"}}\\n' ;;
+  image)
+    if [ -f "$FAKE_DOCKER_IMAGE" ]; then
+      printf '|sha256:%064d\\n' 1
+    else
+      echo "no such image" >&2
+      exit 1
+    fi
+    ;;
+  build)
+    if [ "${FAKE_BUILD_EXIT:-0}" != "0" ]; then
+      echo "build blew up" >&2
+      exit "$FAKE_BUILD_EXIT"
+    fi
+    : > "$FAKE_DOCKER_IMAGE"
+    ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+@pytest.fixture
+def sandbox_build(monkeypatch, tmp_path):
+    """Fake docker whose image appears only after a build; returns (module, log)."""
+    from dailybench import isolation
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(_FAKE_DOCKER_AUTOBUILD, encoding="utf-8")
+    docker.chmod(0o755)
+    log = tmp_path / "docker.log"
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setenv("DAILYBENCH_SANDBOX_IMAGE", "dailybench/runner-python:autobuild")
+    monkeypatch.setenv("FAKE_DOCKER_LOG", str(log))
+    monkeypatch.setenv("FAKE_DOCKER_IMAGE", str(tmp_path / "image.built"))
+    isolation.forget_build_state()
+    yield isolation, log
+    isolation.forget_build_state()
+
+
+def _builds(log: Path) -> int:
+    return sum(1 for line in log.read_text().splitlines() if line.startswith("build "))
+
+
+def test_a_missing_image_is_built_once_and_the_answer_reused(sandbox_build):
+    """The old silent host fallback: no image means no container, without a word."""
+    isolation, log = sandbox_build
+
+    usable, reason, status = isolation.prepare()
+    assert usable, reason
+    assert status == ""
+    assert _builds(log) == 1
+
+    usable, reason, status = isolation.prepare()
+    assert usable and status == ""
+    assert _builds(log) == 1, "второй задачи не полагается вторая сборка"
+
+
+def test_a_failed_build_keeps_the_executor_unverified(sandbox_build, monkeypatch):
+    isolation, log = sandbox_build
+    monkeypatch.setenv("FAKE_BUILD_EXIT", "1")
+
+    usable, reason, status = isolation.prepare()
+    assert not usable
+    assert status == "executor_unverified"
+    assert "сборка не удалась" in reason and "autobuild" in reason
+
+    assert isolation.prepare()[2] == "executor_unverified"
+    assert _builds(log) == 1, "провал сборки тоже не повторяется"
+
+
+def test_the_unverified_status_survives_into_the_sandbox_record(tmp_path):
+    from dailybench import isolation
+
+    box = isolation.Sandbox(work_dir=tmp_path, image="img")
+    box.fallback("образ не собран: boom", status="executor_unverified")
+    record = box.record()
+    assert record["executor_status"] == "executor_unverified"
+    assert "не собран" in record["executor_reason"]
+    assert "mounts" not in record
+
+
+def test_a_failed_build_marks_the_task_record(monkeypatch):
+    from dailybench import agent, isolation
+
+    monkeypatch.setattr(
+        isolation,
+        "prepare",
+        lambda **kwargs: (False, "образ не собран: boom", "executor_unverified"),
+    )
+    calls: dict = {}
+    monkeypatch.setattr(agent, "run", _fake_agent_run(agent, calls))
+    task, cfg = _coding_task()
+
+    run = Runner(cfg, ScriptedProvider([])).run_task(task)
+
+    record = run.transcript.extra["sandbox"]
+    assert record["executor_status"] == "executor_unverified"
+    assert "не собран" in record["executor_reason"]
+
+
+def test_preflight_sandbox_is_a_command(sandbox_build, capsys):
+    from dailybench import cli
+
+    assert cli.main(["preflight", "sandbox"]) == 0
+    assert "песочница готова" in capsys.readouterr().out
+
 
 
 # --------------------------------------------------------------------------- #

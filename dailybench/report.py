@@ -661,6 +661,12 @@ def _environment(record: dict[str, Any]) -> list[str]:
         + " |",
         f"| SOURCE_DATE_EPOCH | {record.get('source_date_epoch', '—')} |",
     ]
+    if record.get("ca_mounted"):
+        lines.append(
+            f"| CA | смонтирован в контейнер (`{record.get('ca_container_path') or '—'}`) |"
+        )
+    elif record.get("ca_reason"):
+        lines.append(f"| CA | {record['ca_reason']} |")
     packages = [str(item) for item in record.get("sbom") or []]
     if packages:
         digest = sha256("\n".join(packages).encode("utf-8")).hexdigest()

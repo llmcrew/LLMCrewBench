@@ -297,6 +297,9 @@ without it the block is reported as unverified rather than failing. Authoring ru
 | `dailybench rescore <dir>` | re-score saved transcripts with the current evaluators — no model call; a fixture that drifted keeps its old score and is flagged (a legacy `suite.json` without per-task rows is compared by whole-suite hash) |
 | `scripts/sweep.py` | load every reference configuration in turn and run the whole suite |
 
+`--max-total-tokens` defaults to the larger of `--max-new-tokens` and 16384;
+set it explicitly for thinking models with a big answer budget.
+
 `--profile baseline-20261020` is the frozen ranked suite (47 A–J, 100 points).
 `pilot` shows only the scenarios not admitted to the ranking (see *Profiles*) and
 is not collapsed into a new `/100`; its A–J tasks keep the module weights.

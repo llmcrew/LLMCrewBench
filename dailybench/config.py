@@ -18,6 +18,13 @@ from .core import DEFAULT_PROFILE, PROFILES
 DEFAULT_SEED = 20260915
 DEFAULT_CONTEXT_WINDOW = 262144
 
+#: Lower bound of the per-task generation ceiling when none was chosen.
+#:
+#: It used to be the ceiling itself, which silently cut an enlarged answer
+#: budget: ``--max-new-tokens 65536`` under the default total still sent 16384,
+#: because the window branch clamped every answer to the remaining total.
+DEFAULT_TOTAL_TOKENS = 16384
+
 #: Smallest answer the harness still calls an answer. Below it the scenario is
 #: over the window rather than merely tight, which is why the floor is reported.
 BUDGET_FLOOR = 256
@@ -146,6 +153,9 @@ class RunConfig:
     free window is a *measurement*, the cap is a *choice*, and the smaller wins.
     """
 
+    extra_body: dict = field(default_factory=dict)
+    """Extra JSON merged into every request payload (server-specific flags)."""
+
     agent: bool = True
     """Solve the agentic categories with the ``pi`` coding agent, not a chat loop.
 
@@ -174,7 +184,15 @@ class RunConfig:
     purpose.
     """
 
-    max_total_tokens: int = 16384
+    max_total_tokens: int | None = None
+    """Total generation ceiling for one task, identical for every model.
+
+    ``None`` means "nobody chose one": :meth:`__post_init__` resolves it to at
+    least :data:`DEFAULT_TOTAL_TOKENS` and never below :attr:`max_new_tokens`,
+    so an enlarged answer budget is not clamped back by the remaining total. A
+    reference policy or an explicit ``--max-total-tokens`` sets the value and is
+    kept as chosen.
+    """
     max_tool_calls: int = 12
     context_window: int = DEFAULT_CONTEXT_WINDOW
     request_timeout: float = 1800.0
@@ -269,6 +287,10 @@ class RunConfig:
         for field_name, (env_name, fallback) in self._ENV_DEFAULTS.items():
             if not getattr(self, field_name):
                 setattr(self, field_name, _env(env_name) or fallback)
+        if self.max_total_tokens is None:
+            # Nobody chose a total: keep the historical floor, but never below
+            # the answer budget that was asked for.
+            self.max_total_tokens = max(int(self.max_new_tokens), DEFAULT_TOTAL_TOKENS)
         if self.profile not in PROFILES:
             raise ValueError(
                 f"неизвестный профиль {self.profile!r}; допустимы: {', '.join(PROFILES)}"

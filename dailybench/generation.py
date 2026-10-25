@@ -228,8 +228,9 @@ def environment(
     ``unverified`` instead of pretending the host run matched the image.
 
     ``container_ran`` comes from the caller's pre-flight probe
-    (``isolation.ready()``), which is what the runner itself uses: the record and
-    the execution therefore agree on whether a container will be started.
+    (``isolation.prepare()``, which also builds a missing image), the same probe
+    the runner uses: the record and the execution therefore agree on whether a
+    container will be started.
     """
     image = image or os.environ.get("DAILYBENCH_SANDBOX_IMAGE") or DEFAULT_IMAGE
     runtime = runtime or os.environ.get("DAILYBENCH_SANDBOX_RUNTIME") or "runc"
@@ -298,6 +299,14 @@ _ENVIRONMENT_KEYS = (
     "reason",
     "executor_status",
     "executor_reason",
+    # The CA handed into the container is part of the TLS conditions: a resume
+    # on a host whose bundle appeared or vanished is another environment. Without
+    # the keys here the *saved* side kept them (a nested record is used whole)
+    # while the fresh side dropped them, and every resume was refused.
+    "ca_bundle",
+    "ca_container_path",
+    "ca_mounted",
+    "ca_reason",
 )
 
 

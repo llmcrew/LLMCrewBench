@@ -105,6 +105,10 @@ PI_MIN_VERSION = "1.0.0"
 #: First release that accepts ``--`` before positional messages.
 PI_SEPARATOR_VERSION = "1.0.0"
 
+#: The screenshot wrapper staged into every visual working copy (K/L). It lives
+#: next to the module so it is the single source; AGENTS.md points at it.
+SHOT_SCRIPT = Path(__file__).with_name("shot.sh")
+
 #: Version of the pinned ``settings.json`` document. Bumped whenever the
 #: document changes shape or numbers, so a transcript names the exact policy
 #: that ran instead of inheriting the release's defaults.
@@ -1654,8 +1658,17 @@ def run(
     )
     if returncode != 0:
         tail = result.stderr_tail.strip().splitlines()
-        result.error = f"агент завершился с кодом {returncode}" + (f": {tail[-1][:200]}" if tail else "")
-        result.failure = _failure_of(result.error + "\n" + result.stderr_tail)
+        if returncode < 0:
+            # A negative code is a signal, not the agent's own verdict: the
+            # kernel (OOM killer, watchdog, a human) ended it. Reading that as
+            # ``model_failure`` blamed the model for a resource limit.
+            result.error = f"агент убит сигналом {-returncode}" + (
+                f": {tail[-1][:200]}" if tail else ""
+            )
+            result.failure = "candidate_resource_exhausted"
+        else:
+            result.error = f"агент завершился с кодом {returncode}" + (f": {tail[-1][:200]}" if tail else "")
+            result.failure = _failure_of(result.error + "\n" + result.stderr_tail)
         result.ok = False
     elif not events:
         result.error = "агент не выдал ни одного события"
@@ -1726,6 +1739,9 @@ def _stage_assets(root: Path, task: core.TaskInstance) -> None:
         except OSError:  # pragma: no cover - filesystem without symlinks
             shutil.copyfile(source, target)
     (root / "AGENTS.md").write_text(_assets_readme(task), encoding="utf-8")
+    shot = root / "shot.sh"
+    shot.write_bytes(SHOT_SCRIPT.read_bytes())
+    shot.chmod(0o755)
 
 
 def _assets_readme(task: core.TaskInstance) -> str:
@@ -1745,9 +1761,12 @@ def _assets_readme(task: core.TaskInstance) -> str:
     if task.category in ("K", "L"):
         lines += [
             "",
-            "Скриншот страницы: `chromium --headless=new --no-sandbox "
-            "--user-data-dir=$(mktemp -d) --screenshot=...` — свой профиль на "
-            "вызов, иначе параллельные браузеры делят singleton и зависают.",
+            "Скриншот страницы: `./shot.sh <url> out.png` — обёртка над headless "
+            "Chromium с собственным профилем, размером кадра 1280x800 и "
+            "watchdog'ом на 25 с. По таймауту она убивает браузер и выходит с "
+            "кодом 124: это значит «не дождались», а не «страница пустая» — "
+            "сними ещё раз или упрости сцену. Прямой `chromium` без обёртки "
+            "зависает на общем профиле.",
         ]
     return "\n".join(lines) + "\n"
 
