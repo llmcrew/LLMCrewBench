@@ -32,15 +32,25 @@ from . import schema
 DEFAULT_PROFILE = "baseline-20261020"
 """Frozen suite version every old artefact belongs to."""
 
-PROFILES: tuple[str, ...] = (DEFAULT_PROFILE, "pilot", "stretch-v1")
+PROFILES: tuple[str, ...] = (DEFAULT_PROFILE, "pilot", "stretch-v1", "research-v1")
 """Accepted profile names.
 
 ``baseline`` is the published 47-scenario suite; ``pilot`` carries only the
 scenarios that are not admitted to the ranking yet; ``stretch`` adds tasks to
 the baseline and redistributes the same category totals inside it, so the
 A–J denominator stays 100 while ``pilot`` is read per task instead of as a
-/new total.
+/new total. ``research-v1`` is deliberately narrow: nine admitted research
+scenarios across seven categories, so its denominator is 71 and it is not
+comparable with the baseline per category.
 """
+
+BASELINE_INCOMPARABLE_PROFILES = frozenset({"research-v1"})
+"""Profiles whose category set is a subset: their numbers are read on their own."""
+
+
+def comparable_with_baseline(profile: str = DEFAULT_PROFILE) -> bool:
+    """Whether a profile may be ranked next to baseline runs."""
+    return profile not in BASELINE_INCOMPARABLE_PROFILES
 
 
 def profile_of(cfg: Any) -> str:
@@ -97,6 +107,7 @@ SHOWCASE_POINTS: dict[str, dict[str, float]] = {
     },
     "pilot": {"K": 12.0, "L": 29.0},
     "stretch-v1": {"K": 120.0, "L": 39.0},
+    "research-v1": {},
 }
 """Categories that are measured and reported but never enter the verdict.
 
@@ -133,22 +144,75 @@ VISUAL_CATEGORIES = SHOWCASE_CATEGORIES + ART_CATEGORIES
 PROFILE_POINTS: dict[str, dict[str, float]] = {
     "pilot": dict(CATEGORY_POINTS),
     "stretch-v1": dict(CATEGORY_POINTS),
+    # Only the seven categories the research wave reaches exist in this profile;
+    # B, G and H have no scenario at all, so their totals are absent rather than
+    # zero and the denominator is 71.
+    "research-v1": {"A": 10.0, "C": 20.0, "D": 14.0, "E": 10.0, "F": 8.0, "I": 4.0, "J": 5.0},
 }
 """Category totals per profile where they differ from the baseline.
 
 ``pilot`` carries a single admitted scenario per category, so the full category
 total rides on that one task; ``stretch`` keeps the A–J total at 100 and only
-enlarges the visual showcase (see ``SHOWCASE_POINTS``). The totals are
-distributed evenly over the tasks of the profile by ``suite.build_suite``, so
-the denominator stays independent of how many new scenarios a category
-received.
+enlarges the visual showcase (see ``SHOWCASE_POINTS``); ``research-v1`` names
+only the categories it carries and so drops the rest from its denominator. The
+totals are distributed evenly over the tasks of the profile by
+``suite.build_suite``, so the denominator stays independent of how many new
+scenarios a category received.
 """
 
 
 #: Bumped whenever the evaluator contract changes: the meaning of a check, the
 #: shape of ``Score.checks``, or how points map to checks. The suite digest
 #: folds it in, so a resume can never mix scores produced under two contracts.
-EVALUATOR_CONTRACT = 1
+EVALUATOR_CONTRACT = 3
+
+#: Why a task did not produce a scored answer. A wrong answer is not in here:
+#: only outcomes that are not a capability verdict belong to the taxonomy.
+#: The split decides whether a run may be ranked at all.
+FAILURE_KINDS = (
+    "provider_unavailable",
+    "transport_unavailable",
+    "evaluator_unavailable",
+    "model_protocol_failure",
+    "candidate_resource_exhausted",
+    "incomplete_scenario",
+)
+
+FAILURE_LABELS = {
+    "provider_unavailable": "провайдер недоступен",
+    "transport_unavailable": "транспорт оборвался",
+    "evaluator_unavailable": "evaluator недоступен",
+    "model_protocol_failure": "сбой протокола модели",
+    "candidate_resource_exhausted": "исчерпан объявленный ресурс кандидата",
+    "incomplete_scenario": "сценарий не предъявлен до конца",
+}
+
+#: Failures that make the measurement incomplete: they say nothing about the
+#: model, so a run carrying them must not be ranked. A candidate that ran out
+#: of its declared budget *is* a verdict and stays in the denominator.
+INFRA_FAILURES = frozenset({"provider_unavailable", "transport_unavailable", "evaluator_unavailable"})
+
+
+def failure_label(kind: str | None) -> str:
+    """Human-readable label of a taxonomy kind, or an empty string."""
+    return FAILURE_LABELS.get(str(kind or ""), "")
+
+
+def is_infra_failure(kind: str | None) -> bool:
+    return str(kind or "") in INFRA_FAILURES
+
+
+def showcase_points(profile: str = DEFAULT_PROFILE) -> dict[str, float]:
+    """Showcase totals of a profile; an empty declared map means no showcase."""
+    return SHOWCASE_POINTS.get(profile, SHOWCASE_POINTS[DEFAULT_PROFILE])
+
+
+def scored_categories(profile: str = DEFAULT_PROFILE) -> tuple[str, ...]:
+    """Scored categories the profile carries, in declaration order."""
+    override = PROFILE_POINTS.get(profile)
+    if override is None:
+        return SCORED_CATEGORIES
+    return tuple(key for key in CATEGORY_POINTS if key in override)
 
 
 def points_for(key: str, profile: str = DEFAULT_PROFILE) -> float | None:
@@ -156,20 +220,29 @@ def points_for(key: str, profile: str = DEFAULT_PROFILE) -> float | None:
 
     The art block's number is informational: it is drawn, not scored into the
     verdict. A profile may override the total of a category (the stretch
-    showcase); the baseline constants stay untouched.
+    showcase) or drop categories from its set entirely (``research-v1``); the
+    baseline constants stay untouched.
     """
-    override = PROFILE_POINTS.get(profile) or {}
-    if key in override:
-        return override[key]
+    override = PROFILE_POINTS.get(profile)
+    if override is not None:
+        if key in override:
+            return override[key]
+        if key in CATEGORY_POINTS:
+            return None
+        return showcase_points(profile).get(key)
     if key in CATEGORY_POINTS:
         return CATEGORY_POINTS[key]
-    showcase = SHOWCASE_POINTS.get(profile) or SHOWCASE_POINTS[DEFAULT_PROFILE]
-    return showcase.get(key)
+    return SHOWCASE_POINTS[DEFAULT_PROFILE].get(key)
+
+
+def scored_total(profile: str = DEFAULT_PROFILE) -> float:
+    """Sum of the scored category totals of a profile (the showcase is extra)."""
+    return sum(points_for(key, profile) or 0.0 for key in scored_categories(profile))
 
 
 def profile_total(profile: str = DEFAULT_PROFILE) -> float:
     """Full denominator of a profile, independent of filters or a partial run."""
-    keys = set(CATEGORY_POINTS) | set(SHOWCASE_POINTS.get(profile) or SHOWCASE_POINTS[DEFAULT_PROFILE])
+    keys = set(scored_categories(profile)) | set(showcase_points(profile))
     return sum(points_for(key, profile) or 0.0 for key in keys)
 
 
@@ -466,6 +539,12 @@ class Score:
     still managed to make are objectively passed, and an artefact written
     before the agent hit its wall clock is graded from disk like any other."""
 
+    failure: str | None = None
+    """Taxonomy kind of why the task produced no verdict, one of
+    :data:`FAILURE_KINDS`. ``error`` names *that* something broke; this names
+    *what*, so infrastructure failures can be told apart from a model that ran
+    out of its declared budget. ``None`` for a wrong answer."""
+
     max_points: float | None = None
     """Fixed budget of the task as the harness knows it.
 
@@ -479,7 +558,7 @@ class Score:
         """Machine-readable state of the row: ``ok``, ``skipped`` or ``error``."""
         if self.skipped:
             return "skipped"
-        if self.error:
+        if self.error or self.failure:
             return "error"
         return "ok"
 
@@ -543,6 +622,7 @@ class Score:
             "admission": self.admission,
             "skipped": self.skipped,
             "error": self.error,
+            "failure": self.failure,
             "notes": self.notes,
             "checks": [c.as_dict() for c in self.checks],
         }
@@ -558,6 +638,7 @@ class Score:
             admission=data.get("admission"),
             skipped=data.get("skipped"),
             error=data.get("error"),
+            failure=data.get("failure"),
             max_points=data.get("max_points"),
         )
 

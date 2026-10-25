@@ -2,15 +2,66 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import platform
+import shutil
+import sqlite3
+import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .core import DEFAULT_PROFILE, PROFILES
 
 DEFAULT_SEED = 20260915
 DEFAULT_CONTEXT_WINDOW = 262144
+
+#: Smallest answer the harness still calls an answer. Below it the scenario is
+#: over the window rather than merely tight, which is why the floor is reported.
+BUDGET_FLOOR = 256
+
+#: How the decoding conditions are fixed; see ``RunConfig.generation_mode``.
+GENERATION_MODES = ("fixed", "native")
+
+
+#: Human label for the provenance of the prompt size in the budget reason.
+BUDGET_SOURCES = {
+    "tokenizer": "точный токенизатор",
+    "task-coefficient": "сохранённый коэффициент",
+    "estimate": "оценка по 2.5 символа",
+}
+
+
+@dataclass(frozen=True)
+class AnswerBudget:
+    """One answer budget decision, kept in the transcript with its reason."""
+
+    tokens: int
+    policy: str
+    """Which limit policy produced the number: ``window`` or ``fixed``.
+
+    Not to be confused with the wire ``mode`` (``fixed``/``native``), which says
+    whether the request pins sampling and thinking at all.
+    """
+    reason: str
+    source: str
+    """Where the prompt size came from: ``tokenizer``, ``task-coefficient``,
+    ``estimate`` or a caller note."""
+    floor: bool = False
+    capped_by: str = ""
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "tokens": self.tokens,
+            "policy": self.policy,
+            "reason": self.reason,
+            "source": self.source,
+            "floor": self.floor,
+            "capped_by": self.capped_by,
+        }
+
 
 #: Neutral system text, identical in wording for every model. The chat template
 #: itself is the runtime's own; this only fixes the shared framing.
@@ -48,6 +99,27 @@ class RunConfig:
     # --- decoding budgets (identical for every model) ---------------------- #
     temperature: float = 0.0
     top_p: float = 1.0
+    generation_mode: str = "fixed"
+    """How the decoding conditions are fixed: ``fixed`` or ``native``.
+
+    ``fixed`` sends the whole contract (sampling, seed, answer limit, reasoning
+    budget, stop) on every request, so two models meet identical conditions and
+    the request itself is the evidence. ``native`` leaves sampling and thinking
+    to the server's own defaults and only bounds the answer; it is a different
+    measurement and a run says which one it was.
+    """
+    reasoning_budget: int = 2048
+    """Server-side cap on thinking tokens (``reasoning_budget``).
+
+    Without it the stand decides: Studio forced 2048 for one client and vLLM
+    left its own default, so the same declared configuration produced different
+    modes. Sent in ``fixed`` mode only; a stand that rejects the field drops it
+    once and the transcript records the drop.
+    """
+    stop_sequences: tuple[str, ...] = ()
+    """Stop sequences sent with every request; empty means the template's own."""
+    template_version: str = ""
+    """Declared chat-template version, recorded next to the probed digest."""
     max_new_tokens: int = 4096
     """Answer budget per response, thinking included. Applies to every model."""
     #: Artefact categories (a whole file, a frame) need room for the artefact
@@ -64,7 +136,15 @@ class RunConfig:
     comparison stays fair while a thinking model is not starved of the answer.
     """
     unbounded_budget: bool = True
-    """Answer limit = what fits in the window (see :meth:`budget_for`)."""
+    """Answer limit = what fits in the window (see :meth:`plan_answer`)."""
+
+    answer_cap: int = 0
+    """Explicit upper bound on one answer, ``0`` = the window is the only limit.
+
+    ``--max-new-tokens`` sets it. It was ignored by the window branch, so the
+    flag changed the config and 259834 went out instead of the requested 32: the
+    free window is a *measurement*, the cap is a *choice*, and the smaller wins.
+    """
 
     agent: bool = True
     """Solve the agentic categories with the ``pi`` coding agent, not a chat loop.
@@ -81,6 +161,17 @@ class RunConfig:
 
     Spelled out rather than "every artefact category": adding a category later
     must not silently move it to the other harness.
+    """
+
+    sandbox: bool = True
+    """Run the agent in a container that mounts the task fixture and nothing else.
+
+    The agent is a candidate, so the environment it sees is part of the
+    measurement: no repository, no ``task.oracle``, no neighbouring working copy,
+    an allowlisted environment and no network beyond the endpoint. When Docker or
+    the image is unavailable the run falls back to the host and the transcript
+    says ``host_run`` with the reason; ``sandbox=False`` asks for the host on
+    purpose.
     """
 
     max_total_tokens: int = 16384
@@ -151,7 +242,16 @@ class RunConfig:
     reference: str = ""
     """Reference-configuration id this run was launched from (see configs/reference.json)."""
     launch: str = ""
-    """The exact server launch line, echoed into the report as provenance."""
+    """The declared launch *template* — for reproduction, not a record of what ran."""
+    launch_executed: dict[str, Any] = field(default_factory=dict)
+    """The request actually sent to the loader (method + body). Empty when the
+    endpoint was already serving and nothing was launched."""
+    observed: dict[str, Any] = field(default_factory=dict)
+    """What the runtime reported about the loaded server (``/props``).
+
+    A field the runtime did not report stays ``unknown``; nothing is filled in
+    from the declared entry, so the report can show where the server differs.
+    """
     unsupported: tuple[str, ...] = ()
     """Categories this configuration declares as not applicable.
 
@@ -173,6 +273,11 @@ class RunConfig:
             raise ValueError(
                 f"неизвестный профиль {self.profile!r}; допустимы: {', '.join(PROFILES)}"
             )
+        if self.generation_mode not in GENERATION_MODES:
+            raise ValueError(
+                f"неизвестный generation_mode {self.generation_mode!r}; "
+                f"допустимы: {', '.join(GENERATION_MODES)}"
+            )
 
     #: Space kept between prompt + answer and the declared window, so a request
     #: is never rejected for exceeding the context by a handful of tokens.
@@ -192,26 +297,62 @@ class RunConfig:
     #: масштабируется вместе с промптом и закрывает эту вилку.
     context_reserve_share: float = 0.02
 
-    def budget_for(self, category: str, prompt_tokens: int | None = None) -> int:
-        """Answer budget for one task.
+    def plan_answer(
+        self,
+        category: str,
+        prompt_tokens: int | None = None,
+        *,
+        source: str = "estimate",
+    ) -> "AnswerBudget":
+        """The answer budget, with the reason it came out that way.
 
-        Two regimes, identical for every model:
+        One policy for both harnesses, identical for every model:
 
-        * ``unbounded_budget`` — the window itself is the limit: as many tokens
-          as fit after the prompt. The model is not cut off by a laboratory
-          ceiling, only by physics, and what it spent is documented instead of
-          being silently truncated;
-        * otherwise, the per-category table (the old behaviour), kept so a
+        * ``unbounded_budget`` — the window is the limit: as many tokens as fit
+          after the prompt, capped by :attr:`answer_cap` when one was chosen.
+          The model is not cut off by a laboratory ceiling, only by physics and
+          by the explicit cap;
+        * otherwise the per-category table (the old behaviour), kept so a
           published run stays comparable.
+
+        The returned record is persisted: what was sent and why. The floor is
+        reported instead of hiding an over-filled context behind a plausible
+        number — a 256-token answer for a 31K prompt is a finding, not a budget.
         """
+        basis = f" [вход: {BUDGET_SOURCES.get(source, source)}]"
         if not self.unbounded_budget:
-            return int(self.max_new_tokens_by_category.get(category, self.max_new_tokens))
+            value = int(self.max_new_tokens_by_category.get(category, self.max_new_tokens))
+            return AnswerBudget(
+                value, "fixed", f"таблица категорий: {category} → {value}{basis}", source
+            )
         window = int(self.context_window or 0)
         if window <= 0:
-            return int(self.max_new_tokens_by_category.get(category, self.max_new_tokens))
+            value = int(self.max_new_tokens_by_category.get(category, self.max_new_tokens))
+            return AnswerBudget(
+                value, "fixed", f"окно не задано, взята таблица категорий{basis}", source
+            )
         prompt = int(prompt_tokens or 0)
         reserve = int(self.context_reserve) + int(prompt * self.context_reserve_share)
-        return max(256, window - prompt - reserve)
+        free = window - prompt - reserve
+        cap = int(self.answer_cap or 0)
+        if cap and free > cap:
+            return AnswerBudget(
+                cap, "window", f"max_new_tokens {cap} ниже свободного места {free}{basis}", source,
+                capped_by="max_new_tokens",
+            )
+        if free < BUDGET_FLOOR:
+            return AnswerBudget(
+                BUDGET_FLOOR, "window", f"свободного места {free} < floor {BUDGET_FLOOR}{basis}",
+                source, floor=True, capped_by="floor",
+            )
+        return AnswerBudget(
+            free, "window", f"окно {window} − промпт {prompt} − резерв {reserve}{basis}", source,
+            capped_by="window",
+        )
+
+    def budget_for(self, category: str, prompt_tokens: int | None = None) -> int:
+        """The number alone, for callers that do not persist the record."""
+        return self.plan_answer(category, prompt_tokens).tokens
 
     def to_json(self) -> str:
         data = asdict(self)
@@ -231,3 +372,62 @@ class RunConfig:
         if "only" in data and data["only"] is not None:
             data["only"] = tuple(data["only"])
         return cls(**data)
+
+
+# --------------------------------------------------------------------------- #
+# Toolchain provenance
+# --------------------------------------------------------------------------- #
+
+
+def _version_line(argv: list[str]) -> str:
+    """First line of ``argv --version``, or an empty string when unavailable.
+
+    The evaluators run on the host toolchain (Go, node, Chromium, SQLite), so
+    that toolchain is part of the grading contract: the same hidden test on
+    another runtime is another measurement. A missing binary is recorded as an
+    empty string rather than failing the digest.
+    """
+    executable = shutil.which(argv[0])
+    if not executable:
+        return ""
+    try:
+        proc = subprocess.run(
+            [executable, *argv[1:]], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    text = (proc.stdout or proc.stderr or "").strip()
+    return text.splitlines()[0].strip() if text else ""
+
+
+def _chromium_version() -> str:
+    """Build string of the Chromium the visual block actually launches."""
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as pw:
+            executable = Path(pw.chromium.executable_path)
+    except Exception:  # pragma: no cover - depends on the machine
+        return ""
+    if not executable.is_file():
+        return ""
+    return _version_line([str(executable), "--version"])
+
+
+@functools.lru_cache(maxsize=1)
+def toolchain_identity() -> dict[str, str]:
+    """Versions of every runtime an evaluator executes.
+
+    Cached: the values are process constants and probing Chromium starts a
+    driver. Callers treat an empty value as "not available here", the same rule
+    the evaluators use for a missing toolchain.
+    """
+    return {
+        "python": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "go": _version_line(["go", "version"]),
+        "node": _version_line(["node", "--version"]),
+        "sqlite": sqlite3.sqlite_version,
+        "chromium": _chromium_version(),
+    }
+

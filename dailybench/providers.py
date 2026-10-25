@@ -17,7 +17,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Protocol
 
 from .core import ModelReply
@@ -53,11 +53,93 @@ class Provider(Protocol):
         seed: int | None = None,
         stream: bool = True,
         wall_clock: float | None = None,
+        tool_choice: str | None = None,
+        contract: "WireContract | None" = None,
     ) -> ModelReply: ...
 
     def tokenize(self, text: str) -> int | None: ...
 
     def describe(self) -> dict[str, Any]: ...
+
+
+#: Fields the harness owns per request. ``fixed`` sends them all and verifies
+#: them on the final payload; ``native`` leaves sampling and thinking to the
+#: server and keeps only the answer limit, which the window still has to fit.
+WIRE_REQUIRED = ("model", "messages", "max_tokens", "stream")
+WIRE_FIXED = ("temperature", "top_p")
+
+
+@dataclass(frozen=True)
+class WireContract:
+    """What a request is allowed to decide for itself — and what it must say.
+
+    The declared sampling/reasoning used to live only in the config: the pi
+    adapter dropped temperature and top_p, the chat path never sent a reasoning
+    budget, and a report could not tell a fixed measurement from the server's
+    defaults. The contract is built once per task, sent on the wire, verified
+    against the final payload (``extra_body`` included) and recorded next to it.
+    """
+
+    mode: str = "fixed"
+    temperature: float = 0.0
+    top_p: float = 1.0
+    seed: int | None = None
+    output_limit: int = 4096
+    reasoning_budget: int | None = None
+    stop: tuple[str, ...] = ()
+    template_version: str = ""
+    template_sha256: str | None = None
+    reasoning_dropped: bool = False
+    """The stand refused ``reasoning_budget``; the retry went without it."""
+
+    def payload_fields(self, *, include_limit: bool = True) -> dict[str, Any]:
+        """The keys this contract owns, ready to merge into the body.
+
+        ``include_limit=False`` is for pi, which carries the answer limit as
+        ``maxTokens`` on the model definition and turns it into ``max_tokens``
+        itself.
+        """
+        fields: dict[str, Any] = {"max_tokens": int(self.output_limit)} if include_limit else {}
+        if self.stop:
+            fields["stop"] = list(self.stop)
+        if self.mode != "fixed":
+            return fields
+        fields.update({"temperature": float(self.temperature), "top_p": float(self.top_p)})
+        if self.seed is not None:
+            fields["seed"] = int(self.seed)
+        if self.reasoning_budget is not None:
+            fields["reasoning_budget"] = int(self.reasoning_budget)
+        return fields
+
+    def required(self) -> tuple[str, ...]:
+        keys = list(WIRE_REQUIRED)
+        if self.mode == "fixed":
+            keys.extend(WIRE_FIXED)
+            if self.reasoning_budget is not None:
+                keys.append("reasoning_budget")
+            if self.seed is not None:
+                keys.append("seed")
+            if self.stop:
+                keys.append("stop")
+        return tuple(keys)
+
+    def missing(self, payload: dict[str, Any]) -> list[str]:
+        return [key for key in self.required() if key not in payload]
+
+    def as_dict(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The record kept in the transcript: declared, then what really went out."""
+        record: dict[str, Any] = {
+            "mode": self.mode,
+            "output_limit": int(self.output_limit),
+            "stop": list(self.stop),
+            "template_version": self.template_version,
+            "template_sha256": self.template_sha256,
+            "reasoning_dropped": self.reasoning_dropped,
+            "verified": "payload" if payload is not None else "declared",
+        }
+        for key in ("temperature", "top_p", "seed", "reasoning_budget"):
+            record[key] = payload.get(key) if payload is not None else getattr(self, key)
+        return record
 
 
 # --------------------------------------------------------------------------- #
@@ -92,6 +174,32 @@ class OpenAICompatibleProvider:
         if path.startswith(("http://", "https://")):
             return path
         return self.base_url.rstrip("/") + path
+
+    @property
+    def root_url(self) -> str:
+        """The server root — management paths live above ``/v1``.
+
+        llama.cpp serves ``/props`` (and every other management path) at the
+        root, so joining it to ``base_url`` would ask ``/v1/props`` and 404.
+        """
+        root = self.base_url.rstrip("/")
+        return root[: -len("/v1")] if root.endswith("/v1") else root
+
+    def props_url(self) -> str:
+        return self.root_url + "/props"
+
+    def props(self) -> dict[str, Any] | None:
+        """``GET /props`` at the root: what the server actually loaded.
+
+        ``None`` when the runtime does not expose it; the caller then reports
+        the window as unverified rather than assuming the declared value.
+        """
+        try:
+            with self._request(self.props_url(), None, method="GET") as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
 
     def _request(
         self,
@@ -161,41 +269,66 @@ class OpenAICompatibleProvider:
         seed: int | None = None,
         stream: bool = True,
         wall_clock: float | None = None,
+        tool_choice: str | None = None,
+        contract: WireContract | None = None,
     ) -> ModelReply:
+        contract = contract or WireContract(
+            temperature=temperature,
+            top_p=top_p,
+            seed=seed,
+            output_limit=max_new_tokens,
+        )
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "temperature": temperature,
-            "top_p": top_p,
-            "max_tokens": max_new_tokens,
             "stream": stream,
         }
+        payload.update(contract.payload_fields())
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        if seed is not None:
-            payload["seed"] = seed
+            payload["tool_choice"] = tool_choice or "auto"
         if stream and self.include_usage:
             payload["stream_options"] = {"include_usage": True}
         payload.update(self.extra_body)
 
+        # The final body is the contract: a field that silently failed to reach
+        # it (an adapter dropping it, ``extra_body`` overwriting it) turns the
+        # declared conditions into an unverified claim, so it is a protocol error
+        # rather than a quietly different measurement.
+        missing = contract.missing(payload)
+        if missing:
+            raise ProviderError(
+                f"wire payload без полей контракта: {', '.join(missing)}", infra=False
+            )
+
+        # Elapsed metrics may use ``perf_counter``; every absolute deadline is
+        # in the ``monotonic`` domain, because ``_left``/``_arm`` compare
+        # against it. Mixing the two origins made a short ceiling last as long
+        # as the platform's clock offset.
         started = time.perf_counter()
-        deadline = (started + wall_clock) if wall_clock else None
+        deadline = (time.monotonic() + wall_clock) if wall_clock else None
         try:
             if stream:
-                reply = self._chat_stream(payload, started, deadline, wall_clock)
+                reply = self._chat_stream(payload, started, deadline, wall_clock, contract)
             else:
-                reply = self._chat_blocking(payload, started, deadline, wall_clock)
+                reply = self._chat_blocking(payload, started, deadline, wall_clock, contract)
         except urllib.error.HTTPError as exc:
             body = ""
             with contextlib.suppress(Exception):
                 body = exc.read().decode("utf-8", "replace")[:600]
+            retry: WireContract | None = None
             if self.include_usage and "stream_options" in body:
                 # The runtime does not know the option: drop it and retry once.
                 # The retry is a *new* request but not a new budget: it gets
                 # only the time left on this call's deadline, so a rejected
                 # first attempt cannot silently double the task's wall clock.
                 self.include_usage = False
+                retry = contract
+            elif contract.reasoning_budget is not None and "reasoning_budget" in body:
+                # A stand without the field keeps its own thinking cap; the
+                # transcript records that the fixed budget was refused.
+                retry = replace(contract, reasoning_budget=None, reasoning_dropped=True)
+            if retry is not None:
                 retry_budget = wall_clock
                 if deadline is not None:
                     retry_budget = deadline - time.monotonic()
@@ -206,12 +339,10 @@ class OpenAICompatibleProvider:
                 return self.chat(
                     messages,
                     tools,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    seed=seed,
                     stream=stream,
                     wall_clock=retry_budget,
+                    tool_choice=tool_choice,
+                    contract=retry,
                 )
             raise ProviderError(
                 f"HTTP {exc.code} from {self._url('/chat/completions')}: {body}",
@@ -239,6 +370,7 @@ class OpenAICompatibleProvider:
         started: float,
         deadline: float | None,
         wall_clock: float | None,
+        contract: WireContract,
     ) -> ModelReply:
         chunks: list[bytes] = []
         received = 0
@@ -261,7 +393,7 @@ class OpenAICompatibleProvider:
             data = json.loads(b"".join(chunks).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ProviderError(f"ответ не является JSON: {exc}") from exc
-        return self._parse_completion(data, time.perf_counter() - started)
+        return self._parse_completion(data, time.perf_counter() - started, contract, payload)
 
     def _chat_stream(
         self,
@@ -269,9 +401,11 @@ class OpenAICompatibleProvider:
         started: float,
         deadline: float | None,
         wall_clock: float | None,
+        contract: WireContract,
     ) -> ModelReply:
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
+        reasoning_key: str | None = None
         tool_calls: dict[int, dict[str, Any]] = {}
         ttft: float | None = None
         usage: dict[str, Any] = {}
@@ -280,7 +414,7 @@ class OpenAICompatibleProvider:
 
         def _event(raw_line: bytes) -> bool:
             """Consume one SSE line; ``True`` when the stream is complete."""
-            nonlocal usage, finish_reason, ttft
+            nonlocal usage, finish_reason, ttft, reasoning_key
             line = raw_line.decode("utf-8", "replace").strip()
             if not line or not line.startswith("data:"):
                 return False
@@ -312,10 +446,12 @@ class OpenAICompatibleProvider:
                         if ttft is None:
                             ttft = time.perf_counter() - started
                         text_parts.append(piece)
-                    think = delta.get("reasoning_content") or delta.get("reasoning")
+                    key = "reasoning_content" if "reasoning_content" in delta else "reasoning"
+                    think = delta.get(key)
                     if think:
                         if ttft is None:
                             ttft = time.perf_counter() - started
+                        reasoning_key = key
                         reasoning_parts.append(think)
                     for tc in delta.get("tool_calls") or []:
                         if ttft is None:
@@ -365,17 +501,26 @@ class OpenAICompatibleProvider:
                 f"SSE-поток оборвался без finish_reason ({received} символов получено)"
             )
         total = time.perf_counter() - started
+        reasoning = "".join(reasoning_parts) or None
+        # The reasoning goes back on the next assistant tool message under the
+        # key the stand used: DeepSeek rejects the continuation without it.
+        protocol = {reasoning_key: reasoning} if reasoning and reasoning_key else {}
         return self._finish_reply(
             "".join(text_parts),
-            "".join(reasoning_parts) or None,
+            reasoning,
             [tool_calls[i] for i in sorted(tool_calls)],
             usage,
             ttft,
             total,
             finish_reason,
+            payload,
+            contract,
+            protocol,
         )
 
-    def _parse_completion(self, data: dict[str, Any], total: float) -> ModelReply:
+    def _parse_completion(
+        self, data: dict[str, Any], total: float, contract: WireContract, payload: dict[str, Any]
+    ) -> ModelReply:
         choices = data.get("choices") or []
         if not choices or not isinstance(choices[0], dict):
             raise ProviderError(f"ответ без choices: {json.dumps(data, ensure_ascii=False)[:300]}")
@@ -391,6 +536,11 @@ class OpenAICompatibleProvider:
             tool_calls.append(
                 {"id": tc.get("id", ""), "name": fn.get("name", ""), "arguments": fn.get("arguments", "")}
             )
+        protocol = {
+            key: value
+            for key, value in message.items()
+            if key not in ("role", "content", "tool_calls") and isinstance(value, str) and value
+        }
         return self._finish_reply(
             message.get("content") or "",
             message.get("reasoning_content") or message.get("reasoning"),
@@ -399,6 +549,9 @@ class OpenAICompatibleProvider:
             None,
             total,
             choice.get("finish_reason"),
+            payload,
+            contract,
+            protocol,
         )
 
     def _finish_reply(
@@ -410,6 +563,9 @@ class OpenAICompatibleProvider:
         ttft: float | None,
         total: float,
         finish_reason: str | None,
+        payload: dict[str, Any],
+        contract: WireContract,
+        protocol: dict[str, Any],
     ) -> ModelReply:
         details = usage.get("completion_tokens_details") or {}
         return ModelReply(
@@ -422,7 +578,11 @@ class OpenAICompatibleProvider:
             ttft_s=ttft,
             total_s=total,
             finish_reason=finish_reason,
-            raw={"usage": usage},
+            raw={
+                "usage": usage,
+                "wire": contract.as_dict(payload),
+                "protocol": protocol,
+            },
         )
 
     # -- tokenizer --------------------------------------------------------- #
@@ -521,6 +681,8 @@ class CallableProvider:
         seed: int | None = None,
         stream: bool = True,
         wall_clock: float | None = None,
+        tool_choice: str | None = None,
+        contract: WireContract | None = None,
     ) -> ModelReply:
         self.calls.append([dict(m) for m in messages])
         started = time.perf_counter()

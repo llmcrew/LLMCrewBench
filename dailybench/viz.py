@@ -317,6 +317,9 @@ def classify(score: Mapping[str, Any]) -> str:
     """
     if score.get("skipped"):
         return "not_run"
+    failure = str(score.get("failure") or "")
+    if failure == "evaluator_unavailable":
+        return "evaluator_unavailable"
     error = str(score.get("error") or "")
     if error:
         low = error.lower()

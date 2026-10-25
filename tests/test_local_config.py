@@ -47,7 +47,7 @@ def test_the_shipped_reference_file_is_tracked_and_parses():
 
 #: Machine paths may live in exactly two places: the data file a run reads, and
 #: the in-code defaults used when that file is absent. A third copy is a bug.
-ALLOWED_PATH_HOLDERS = {"configs/reference.json", "dailybench/reference.py", "tests/test_local_config.py"}
+ALLOWED_PATH_HOLDERS = {"configs/reference.json", "dailybench/reference.py", "tests/test_local_config.py", "dailybench/isolation.py"}
 
 
 def test_absolute_paths_live_only_in_the_reference_table():

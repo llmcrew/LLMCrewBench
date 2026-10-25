@@ -9,6 +9,7 @@ reported as a failure with an explicit reason rather than a silent pass.
 from __future__ import annotations
 
 import json
+import os
 import random
 import shutil
 import subprocess
@@ -318,25 +319,116 @@ func TestInflightContextCancelled(t *testing.T) {
 \t}
 }
 
-func TestNoHangWhenConsumerStops(t *testing.T) {
-\tctx, cancel := context.WithCancel(context.Background())
-\tjobs := make(chan Job, 50)
-\tfor i := 0; i < 50; i++ {
-\t\tjobs <- Job{ID: i, Run: func(ctx context.Context) error { time.Sleep(time.Millisecond); return nil }}
+// awaitQuiescence waits until the goroutine count falls back to the baseline: a
+// pool goroutine parked on an unread output channel never gets there, while an
+// unrelated timer always does. Two spare goroutines absorb runtime noise; one
+// stalled worker (plus the closer it keeps waiting) already exceeds it.
+func awaitQuiescence(t *testing.T, baseline int, message string) {
+\tt.Helper()
+\tdeadline := time.Now().Add(5 * time.Second)
+\tfor time.Now().Before(deadline) {
+\t\truntime.GC()
+\t\tif runtime.NumGoroutine() <= baseline+2 {
+\t\t\treturn
+\t\t}
+\t\ttime.Sleep(20 * time.Millisecond)
 \t}
-\tclose(jobs)
+\tt.Fatalf("%s: baseline %d, now %d", message, baseline, runtime.NumGoroutine())
+}
 
-\t_ = Process(ctx, jobs, 3)
+// settledGoroutines returns the goroutine count once it stops moving: a
+// goroutine still winding down from an earlier test is not part of the
+// baseline then and cannot be spent as slack.
+func settledGoroutines(t *testing.T) int {
+\tt.Helper()
+\tcount := runtime.NumGoroutine()
+\tstable := 0
+\tfor i := 0; i < 100; i++ {
+\t\ttime.Sleep(20 * time.Millisecond)
+\t\truntime.GC()
+\t\tcurrent := runtime.NumGoroutine()
+\t\tif current == count {
+\t\t\tstable++
+\t\t\tif stable >= 5 {
+\t\t\t\treturn count
+\t\t\t}
+\t\t\tcontinue
+\t\t}
+\t\tcount, stable = current, 0
+\t}
+\treturn count
+}
+
+func TestNoHangWhenConsumerStops(t *testing.T) {
+\tbaseline := settledGoroutines(t)
+\tctx, cancel := context.WithCancel(context.Background())
+\tdefer cancel()
+
+\t// The input is unbuffered, so the producer itself is parked on a send: a
+\t// pool that only unblocks by draining the input would leave it there.
+\tjobs := make(chan Job)
+\tinside := make(chan struct{}, 4)
+\trelease := make(chan struct{})
+\trun := func(context.Context) error {
+\t\tselect {
+\t\tcase inside <- struct{}{}:
+\t\tdefault:
+\t\t}
+\t\t<-release
+\t\treturn nil
+\t}
+\tproducerStarted := make(chan struct{})
+\tproducerDone := make(chan struct{})
+\tgo func() {
+\t\tdefer close(producerDone)
+\t\tclose(producerStarted)
+\t\tfor i := 0; i < 1000; i++ {
+\t\t\tselect {
+\t\t\tcase jobs <- Job{ID: i, Run: run}:
+\t\t\tcase <-ctx.Done():
+\t\t\t\treturn
+\t\t\t}
+\t\t}
+\t\tclose(jobs)
+\t}()
+
+\t<-producerStarted
+\tout := Process(ctx, jobs, 2)
+\tif out == nil {
+\t\tt.Fatal("Process returned a nil channel")
+\t}
+\t// Both workers must be confirmed inside Run before the consumer stops; the
+\t// output is never read after that.
+\tfor i := 0; i < 2; i++ {
+\t\tselect {
+\t\tcase <-inside:
+\t\tcase <-time.After(5 * time.Second):
+\t\t\tt.Fatalf("only %d of 2 workers reached Run", i)
+\t\t}
+\t}
+
 \tcancel()
-\ttime.Sleep(200 * time.Millisecond)
-\t// The test passes when the process is still able to run: no producer
-\t// goroutine may be blocked forever on an unread output channel.
-\tdone := make(chan struct{})
-\tgo func() { time.Sleep(50 * time.Millisecond); close(done) }()
+\tclose(release)
+\tawaitQuiescence(t, baseline, "pool goroutines outlived the cancellation with an unread output")
 \tselect {
-\tcase <-done:
+\tcase <-producerDone:
 \tcase <-time.After(5 * time.Second):
-\t\tt.Fatal("test process is stuck")
+\t\tt.Fatal("producer goroutine outlived the cancellation")
+\t}
+
+\t// Only now is the output read again: it has to be closed by then.
+\tclosed := make(chan int, 1)
+\tgo func() {
+\t\tcount := 0
+\t\tfor range out {
+\t\t\tcount++
+\t\t}
+\t\tclosed <- count
+\t}()
+\tselect {
+\tcase <-closed:
+\tcase <-time.After(5 * time.Second):
+\t\tt.Fatal("output channel never closed after the consumer stopped")
 \t}
 }
 
@@ -407,15 +499,7 @@ func TestNoLeakAfterCompletion(t *testing.T) {
 \t\tjobs := jobsOf(40, func(ctx context.Context) error { return nil })
 \t\tdrain(Process(context.Background(), jobs, 3))
 \t}
-\tdeadline := time.Now().Add(5 * time.Second)
-\tfor time.Now().Before(deadline) {
-\t\truntime.GC()
-\t\tif runtime.NumGoroutine() <= baseline+2 {
-\t\t\treturn
-\t\t}
-\t\ttime.Sleep(50 * time.Millisecond)
-\t}
-\tt.Fatalf("goroutine leak: baseline %d, now %d", baseline, runtime.NumGoroutine())
+\tawaitQuiescence(t, baseline, "goroutine leak")
 }
 '''
 
@@ -530,6 +614,94 @@ def _json_events(output: str) -> "Iterator[dict]":
 _ACTIONS = ("run", "pass", "fail", "skip")
 
 
+def _parse_events(
+    output: str, names: dict[str, str]
+) -> "tuple[dict[str, tuple[bool, str]], dict[str, list[str]], bool, bool]":
+    """Turn the ``-json`` stream into per-test verdicts.
+
+    Returns ``(verdicts, logs, package_pass, build_failed)``. Only events the
+    toolchain labels with an action count — a test2json-shaped line *inside* an
+    ``Output`` field (which is what a candidate can print from ``init``) creates
+    nothing. A test's terminal action is accepted only after its own ``run``
+    event, and the package-level ``pass`` is tracked separately: a forged or
+    truncated stream that never reached either state cannot pass for a run.
+    """
+    results: dict[str, tuple[bool, str]] = {}
+    logs: dict[str, list[str]] = {}
+    started: set[str] = set()
+    package_pass = False
+    build_failed = False
+    for event in _json_events(output):
+        test = str(event.get("Test", ""))
+        action = event.get("Action")
+        if not test:
+            if action == "pass":
+                package_pass = True
+            elif action == "build-fail":
+                build_failed = True
+            continue
+        if action == "output":
+            if test in names:
+                logs.setdefault(test, []).append(str(event.get("Output", "")))
+            continue
+        if action not in _ACTIONS or test not in names:
+            continue
+        name = names[test]
+        if action == "run":
+            started.add(name)
+            results.pop(name, None)  # a rerun invalidates an earlier verdict
+            continue
+        if name not in started:
+            results[name] = (False, f"событие {action} без предшествующего run")
+        elif action == "pass":
+            results[name] = (True, "ok")
+        elif action == "skip":
+            # A skip is not a pass: the check was never exercised.
+            results[name] = (False, "skipped")
+        else:
+            results[name] = (False, _failure_detail(logs.get(test, [])) or "тест упал")
+    return results, logs, package_pass, build_failed
+
+
+def _verdicts(
+    output: str, order: tuple[tuple[str, str], ...], returncode: int
+) -> dict[str, tuple[bool, str]]:
+    """The final per-check verdicts for one finished ``go test`` run."""
+    names = {test: name for name, test in order}
+    results, _logs, package_pass, build_failed = _parse_events(output, names)
+
+    # A non-zero status means the package did not finish cleanly — a panic in
+    # ``init`` may come after perfectly plausible output. Nothing unconfirmed by
+    # a terminal test event survives it.
+    if returncode != 0:
+        cause = f"go test завершился с кодом {returncode}"
+        tail = _last_meaningful_line(output)
+        for name, test in order:
+            if name not in results:
+                results[name] = (False, f"{cause}: {tail}" if tail else f"{cause} ({test})")
+    elif not package_pass:
+        # Individual ``pass`` actions without the package-level one are exactly
+        # what a forged stream produces.
+        for name, _ in order:
+            if name not in results or results[name][0]:
+                results[name] = (False, "go test не подтвердил успех пакета: нет события pass")
+
+    if build_failed:
+        tail = _last_meaningful_line(output)
+        for name, _ in order:
+            if name not in results or results[name][0]:
+                results[name] = (
+                    False,
+                    f"сборка пакета не удалась: {tail}" if tail else "сборка пакета не удалась",
+                )
+
+    fallback = "сборка пакета не удалась" if _looks_like_build_failure(output) else "тест не выполнился"
+    tail = _last_meaningful_line(output)
+    for name, test in order:
+        results.setdefault(name, (False, f"{fallback}: {tail}" if tail else f"{fallback} ({test})"))
+    return results
+
+
 def _run_go_tests(
     repo: Path, timeout: int = 300, order: tuple[tuple[str, str], ...] = CHECK_ORDER
 ) -> tuple[dict[str, tuple[bool, str]], str]:
@@ -546,7 +718,7 @@ def _run_go_tests(
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            env=_go_env(),
+            env=_go_env(repo),
         )
     except subprocess.TimeoutExpired:
         return {name: (False, "go test превысил 300 с") for name, _ in order}, "timeout"
@@ -554,44 +726,7 @@ def _run_go_tests(
         return {name: (False, f"не удалось запустить go test: {exc}") for name, _ in order}, str(exc)
 
     output = (proc.stdout or "") + (proc.stderr or "")
-    names = {test: name for name, test in order}
-    results: dict[str, tuple[bool, str]] = {}
-    logs: dict[str, list[str]] = {}
-    for event in _json_events(output):
-        test = str(event.get("Test", ""))
-        action = event.get("Action")
-        if not test:
-            continue
-        if action == "output":
-            logs.setdefault(test, []).append(str(event.get("Output", "")))
-            continue
-        if action not in _ACTIONS or test not in names:
-            continue
-        name = names[test]
-        if action == "run":
-            results.pop(name, None)  # a rerun invalidates an earlier verdict
-        elif action == "pass":
-            results[name] = (True, "ok")
-        elif action == "skip":
-            # A skip is not a pass: the check was never exercised.
-            results[name] = (False, "skipped")
-        else:
-            results[name] = (False, _failure_detail(logs.get(test, [])) or "тест упал")
-
-    # A non-zero status means the package did not finish cleanly — a panic in
-    # ``init`` may come after perfectly plausible output. Nothing unconfirmed by
-    # a terminal test event survives it.
-    if proc.returncode != 0:
-        cause = f"go test завершился с кодом {proc.returncode}"
-        tail = _last_meaningful_line(output)
-        for name, test in order:
-            if name not in results:
-                results[name] = (False, f"{cause}: {tail}" if tail else f"{cause} ({test})")
-
-    fallback = "сборка пакета не удалась" if _looks_like_build_failure(output) else "тест не выполнился"
-    tail = _last_meaningful_line(output)
-    for name, test in order:
-        results.setdefault(name, (False, f"{fallback}: {tail}" if tail else f"{fallback} ({test})"))
+    results = _verdicts(output, order, proc.returncode)
     return results, output
 
 
@@ -610,13 +745,34 @@ def _failure_detail(lines: list[str]) -> str:
     return " | ".join(tail[:12])[:400]
 
 
-def _go_env() -> dict[str, str]:
-    import os
+def _go_env(repo: Path) -> dict[str, str]:
+    """A hermetic environment for one ``go test`` run.
 
+    A benchmark box carries its own GOFLAGS, GOPROXY, GOTOOLCHAIN and caches;
+    the evaluated contract must not change with them, so every contract key is
+    overwritten instead of defaulted. The toolchain is pinned to the installed
+    one, the module policy depends only on the workspace (a shipped ``vendor``
+    tree is used as is), the network stays out, and build and module caches
+    live beside the repository rather than in the host's.
+    """
+    cache = repo / ".go-cache"
     env = dict(os.environ)
-    env.setdefault("GOFLAGS", "-mod=mod")
-    env.setdefault("GOTOOLCHAIN", "local")
-    env["CGO_ENABLED"] = "0"
+    env.update(
+        {
+            "GOTOOLCHAIN": "local",  # never fetch another toolchain
+            "GOFLAGS": "-mod=vendor" if (repo / "vendor").is_dir() else "-mod=mod",
+            "GOPROXY": "off",  # the fixture ships its own dependencies
+            "GOWORK": "off",  # a stray host go.work must not join the build
+            "GO111MODULE": "on",
+            "GOSUMDB": "off",
+            "CGO_ENABLED": "0",
+            "GOCACHE": str(cache / "build"),
+            "GOMODCACHE": str(cache / "mod"),
+            "GOPATH": str(cache / "gopath"),
+        }
+    )
+    for key in ("GOCACHE", "GOMODCACHE", "GOPATH"):
+        Path(env[key]).mkdir(parents=True, exist_ok=True)
     return env
 
 
@@ -1129,36 +1285,50 @@ func TestResultsClose(t *testing.T) {
 }
 
 func TestCancelAck(t *testing.T) {
+	// Ten accepted Jobs, one gate-held worker: at the cancellation only the
+	// first Job is inside Run and nine are queued. The queue is far longer than
+	// the single select iteration between Jobs, so a pool that returns on ctx
+	// instead of draining the queue cannot survive by winning a coin flip.
+	const queued = 10
 	ctx, cancel := context.WithCancel(context.Background())
-	p := New(ctx, 1, 4)
+	p := New(ctx, 1, 2*queued)
 	rows := collect(p)
 	gate := make(chan struct{})
-	for i := 1; i <= 3; i++ {
+	inside := make(chan struct{}, 1)
+	for i := 1; i <= queued; i++ {
 		p.Submit(Job{ID: i, Run: func(context.Context) error {
+			select {
+			case inside <- struct{}{}:
+			default:
+			}
 			<-gate
 			return nil
 		}})
 	}
-	waitUntil(t, func() bool { return true }, "noop")
+	select {
+	case <-inside:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the worker never started")
+	}
 	cancel()
 	select {
 	case <-p.Stop():
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancelling ctx did not produce an acknowledgement")
 	}
-	if p.Submit(Job{ID: 9}) {
+	if p.Submit(Job{ID: 99}) {
 		t.Fatal("Submit accepted a job after ctx cancellation")
 	}
 	close(gate)
 	collected := waitRows(t, rows)
-	if len(collected) != 3 {
-		t.Fatalf("accepted jobs were dropped on cancel: got %d results", len(collected))
+	if len(collected) != queued {
+		t.Fatalf("accepted jobs were dropped on cancel: got %d results, want %d", len(collected), queued)
 	}
 	seen := map[int]bool{}
 	for _, row := range collected {
 		seen[row.ID] = true
 	}
-	for id := 1; id <= 3; id++ {
+	for id := 1; id <= queued; id++ {
 		if !seen[id] {
 			t.Fatalf("accepted job %d was lost on cancel", id)
 		}

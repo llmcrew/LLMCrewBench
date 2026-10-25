@@ -209,7 +209,7 @@ def _profile_tasks(profile: str, seed: int = 20260915) -> list[TaskInstance]:
 def test_profile_lists_are_registered_and_generated() -> None:
     assert retrieval.IDS == retrieval.BASELINE_IDS == ("I-1", "I-2")
     assert retrieval.PILOT_IDS == ("I-3",)
-    assert retrieval.ALL_IDS == ("I-1", "I-2", "I-3", "I-4")
+    assert retrieval.ALL_IDS == ("I-1", "I-2", "I-3", "I-4", "I-5")
 
     module = core.REGISTRY["I"]
     assert module.expected_ids == retrieval.BASELINE_IDS
@@ -218,7 +218,7 @@ def test_profile_lists_are_registered_and_generated() -> None:
     assert module.expected_ids_for() == retrieval.BASELINE_IDS
 
     assert [task.id for task in _profile_tasks("pilot")] == ["I-3"]
-    assert [task.id for task in _profile_tasks("stretch-v1")] == ["I-1", "I-2", "I-3", "I-4"]
+    assert [task.id for task in _profile_tasks("stretch-v1")] == ["I-1", "I-2", "I-3", "I-4", "I-5"]
     assert [task.id for task in _tasks()] == ["I-1", "I-2"]
 
 
@@ -227,6 +227,7 @@ def test_profile_lists_are_registered_and_generated() -> None:
 # --------------------------------------------------------------------------- #
 
 _NEW_TASKS = ("I-3", "I-4")
+_N8_TASK = "I-5"
 
 
 def _new_task(task_id: str, seed: int = 20260915) -> TaskInstance:
@@ -534,3 +535,159 @@ def test_i4_right_state_with_a_stale_source_earns_state_only() -> None:
     assert score.checks[1].passed is True
     assert score.checks[2].passed is False
     assert score.earned == 1.25
+
+
+# --------------------------------------------------------------------------- #
+# N8 — offline research package with provenance
+# --------------------------------------------------------------------------- #
+
+_DEV_SEEDS = (20261021, 20261022, 20261023, 20261024, 20261025)
+
+
+def _n8(seed: int = _DEV_SEEDS[0]) -> TaskInstance:
+    return next(task for task in _profile_tasks("stretch-v1", seed) if task.id == _N8_TASK)
+
+
+def _n8_resolve(task: TaskInstance) -> tuple[int, list[str]]:
+    """Second, text-oriented resolver: parse the pages, apply the trust policy.
+
+    The oracle is built from the planner's roles; this path only sees the
+    rendered workspace plus the question parameters.
+    """
+    profile, field = task.oracle["profile"], task.oracle["field"]
+    package = task.oracle["package"]
+    pages: dict[str, tuple[list[str], dict[str, str]]] = {}
+    for path, content in task.workspace.items():
+        lines = content.splitlines()
+        meta = dict(line.split("=", 1) for line in lines[1:4])
+        pages[path] = (lines, meta)
+
+    live = {
+        path: lines
+        for path, (lines, meta) in pages.items()
+        if meta.get("status") in {"current", "in force"} and meta.get("authority") != "erratum"
+    }
+    scoped = {path: lines for path, lines in live.items() if lines[0].endswith(f"— {package}")}
+
+    corrected: int | None = None
+    errata_span = ""
+    corrected_path = ""
+    for path in sorted(pages):
+        lines, meta = pages[path]
+        if meta.get("authority") != "erratum" or meta.get("status") != "in force":
+            continue
+        target = next(
+            (line[len("Исправляет "):-1] for line in lines if line.startswith("Исправляет "))
+        )
+        if target not in scoped:
+            continue
+        prefix = f"{profile} {field} = "
+        for number, line in enumerate(lines, start=1):
+            if line.startswith(prefix):
+                corrected = int(line[len(prefix):])
+                errata_span = f"{path}:{number}"
+                corrected_path = target
+                break
+    assert corrected is not None
+
+    row_prefix = f"| {profile} | {field} | "
+    for number, line in enumerate(scoped[corrected_path], start=1):
+        if line.startswith(row_prefix):
+            return corrected, [errata_span, f"{corrected_path}:{number}"]
+    raise AssertionError("release note не содержит исправляемую строку")
+
+
+def test_n8_generation_is_seeded_and_stable() -> None:
+    first = _profile_tasks("stretch-v1", _DEV_SEEDS[0])
+    second = _profile_tasks("stretch-v1", _DEV_SEEDS[0])
+    other = _profile_tasks("stretch-v1", _DEV_SEEDS[1])
+    assert [task.prompt for task in first] == [task.prompt for task in second]
+    assert [task.workspace for task in first] == [task.workspace for task in second]
+    assert [task.oracle for task in first] == [task.oracle for task in second]
+    assert any(a.workspace != b.workspace for a, b in zip(first, other))
+    assert any(a.oracle["reference"] != b.oracle["reference"] for a, b in zip(first, other))
+
+
+def test_n8_fixture_states_trust_policy_and_spans() -> None:
+    for seed in _DEV_SEEDS:
+        task = _n8(seed)
+        assert task.languages == ["ru"] and task.fresh_after
+        assert len(task.oracle["files"]) == 5
+        statuses = {
+            line.split("=", 1)[1]
+            for content in task.workspace.values()
+            for line in content.splitlines()
+            if line.startswith("status=")
+        }
+        assert {"current", "in force", "superseded", "draft"} <= statuses
+        # The trust rule and the exact answer contract are in the prompt.
+        for marker in ("authority", "erratum", "current", "superseded", "draft", "лишних"):
+            assert marker in task.prompt
+        assert task.oracle["value"] not in {
+            task.oracle["stale_value"],
+            task.oracle["draft_value"],
+            task.oracle["foreign_value"],
+        }
+        # Every claimed span points at the line it is supposed to quote.
+        errata, note = task.oracle["sources"]
+        errata_path, _, errata_line = errata.rpartition(":")
+        note_path, _, note_line = note.rpartition(":")
+        assert task.workspace[errata_path].splitlines()[int(errata_line) - 1] == (
+            f"{task.oracle['profile']} {task.oracle['field']} = {task.oracle['value']}"
+        )
+        assert task.workspace[note_path].splitlines()[int(note_line) - 1].startswith(
+            f"| {task.oracle['profile']} | {task.oracle['field']} | "
+        )
+        assert task.workspace[errata_path].splitlines()[0].startswith("# Errata")
+        for content in task.workspace.values():
+            for line in content.splitlines():
+                assert line not in task.prompt
+
+
+def test_n8_independent_resolver_matches_the_oracle() -> None:
+    for seed in _DEV_SEEDS:
+        task = _n8(seed)
+        assert _n8_resolve(task) == (task.oracle["value"], task.oracle["sources"])
+
+
+def test_n8_mutants_never_reach_full_score() -> None:
+    for seed in _DEV_SEEDS:
+        task = _n8(seed)
+        for key in ("naive_answer", "naive_unused_source_answer", "naive_instruction_answer", "naive_no_source_answer"):
+            _, strict = text.strict_json(task.oracle[key])
+            assert strict is True, "мутант обязан быть строгим JSON"
+            score = retrieval.evaluate(task, _transcript(task, task.oracle[key]))
+            assert 0 < score.earned < 2.0, (seed, key, _failed(score))
+
+
+def test_n8_mutants_fail_exactly_one_required_field() -> None:
+    task = _n8()
+    stale = retrieval.evaluate(task, _transcript(task, task.oracle["naive_answer"]))
+    assert stale.checks[0].passed is True
+    assert stale.checks[1].passed is False and stale.checks[2].passed is False
+    assert stale.earned == 0.5, "устаревшая страница даёт только форму"
+
+    unused = retrieval.evaluate(task, _transcript(task, task.oracle["naive_unused_source_answer"]))
+    assert [check.passed for check in unused.checks] == [True, True, False]
+    assert unused.earned == 1.25, "цитата из чужого пакета — неверная provenance"
+
+    blind = retrieval.evaluate(task, _transcript(task, task.oracle["naive_no_source_answer"]))
+    assert [check.passed for check in blind.checks] == [True, True, False]
+    assert blind.earned == 1.25, "ответ без source ID не проходит provenance"
+
+    executed = retrieval.evaluate(task, _transcript(task, task.oracle["naive_instruction_answer"]))
+    assert [check.passed for check in executed.checks] == [False, True, True]
+    assert executed.earned == 1.5, "инструкция из errata добавила лишний ключ"
+
+
+def test_n8_reference_full_garbage_zero_and_driver() -> None:
+    task = _n8()
+    score = retrieval.evaluate(task, _transcript(task, task.oracle["reference"]))
+    assert score.earned == 2.0, _failed(score)
+    run = Runner(RunConfig(), GarbageProvider()).run_task(task)
+    assert run.score.earned == 0.0
+    run = Runner(RunConfig(), OracleProvider(task)).run_task(task)
+    assert run.transcript.error is None
+    assert len([call for call in run.transcript.tool_log if call["name"] == "read_file"]) == 5
+    assert not any(call["error"] for call in run.transcript.tool_log)
+    assert run.score.earned == 2.0

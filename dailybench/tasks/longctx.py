@@ -3,6 +3,11 @@
 The fixtures deliberately use character sizing rather than a tokenizer.  The
 conservative ``CHARS_PER_TOKEN`` estimate is also recorded in each task so a
 run can be audited against the runtime's measured prompt length.
+
+Facts and size draw from separate per-task streams: the identifiers, links and
+answer of a scenario are the same at any ratio, window or profile, while only
+the filler amount follows the target.  A calibration run therefore measures the
+same scenarios it later scores.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from typing import Any
 
 from .. import core, text
 from ..config import DEFAULT_CONTEXT_WINDOW, RunConfig
+from ..rng import task_rng
 
 
 CHARS_PER_TOKEN = 3.2
@@ -27,6 +33,28 @@ def _hex(rng: random.Random, n: int = 8) -> str:
 
 def _suffix(rng: random.Random) -> str:
     return f"{rng.randrange(100, 1000)}"
+
+
+def _streams(base: int, task_id: str) -> tuple[random.Random, random.Random]:
+    """Per-task fact and filler streams derived from the category seed.
+
+    Facts are drawn from their own stream, so a document ratio, a window scale
+    or a calibration coefficient only changes the amount of filler.  And every
+    scenario derives from its own id, so a sizing change on LC-2 cannot shift
+    the facts of LC-3 and a profile without the earlier scenarios still gets
+    the same LC-6.
+    """
+    return (
+        task_rng(base, _CATEGORY, task_id, "facts"),
+        task_rng(base, _CATEGORY, task_id, "filler"),
+    )
+
+
+def _new(
+    builder: Any, base: int, cfg: RunConfig, task_id: str
+) -> core.TaskInstance:
+    facts, filler = _streams(base, task_id)
+    return builder(facts, cfg, filler)
 
 
 def _filler_records(rng: random.Random, count: int, kind: str) -> list[str]:
@@ -104,7 +132,7 @@ def _ratio(cfg: RunConfig, task_id: str = "") -> float:
 
 
 def _targeted_records(
-    rng: random.Random,
+    filler: random.Random,
     target_tokens: int,
     kind: str,
     special: list[str],
@@ -113,7 +141,11 @@ def _targeted_records(
     target_facts: list[str],
     ratio: float = CHARS_PER_TOKEN,
 ) -> tuple[str, dict[str, Any]]:
-    """Size by characters using a list/join build (never repeated concatenation)."""
+    """Size by characters using a list/join build (never repeated concatenation).
+
+    ``filler`` is the only stream consumed here: ``special`` (the facts) is
+    already built, so the ratio and the target decide nothing but the amount.
+    """
     target_chars = int(target_tokens * ratio)
     # This representative line keeps the estimate stable while every record
     # remains unique.  The final prompt is measured again below.
@@ -125,7 +157,7 @@ def _targeted_records(
         + "\n"
     ) + sum(len(line) + 1 for line in special)
     filler_count = max(100, int(max(0, target_chars - fixed_chars) / max(1, len(representative) + 1)))
-    fillers = _filler_records(rng, filler_count, kind)
+    fillers = _filler_records(filler, filler_count, kind)
     records = fillers[:]
     for line, fraction in zip(special, fractions):
         _insert_at_quarter(records, line, fraction)
@@ -134,7 +166,7 @@ def _targeted_records(
     # Account for actual random record lengths.  A small bounded top-up is
     # enough to keep all targets in their requested band without quadratic work.
     while len(prompt) < int(target_chars * 0.94):
-        top_up = _filler_records(rng, 64, kind)
+        top_up = _filler_records(filler, 64, kind)
         records.extend(top_up)
         prompt, document = _make_prompt(records, question)
     _unique_assertions(document, target_facts)
@@ -192,6 +224,7 @@ def _task(
     prompt: str,
     oracle: dict[str, Any],
     meta: dict[str, Any],
+    **fields: Any,
 ) -> core.TaskInstance:
     oracle = dict(oracle)
     oracle.setdefault("reference", str(oracle["answer"]))
@@ -204,35 +237,36 @@ def _task(
         max_points=_POINTS,
         oracle=oracle,
         meta=meta,
+        **fields,
     )
 
 
-def _lc1(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
+def _lc1(rng: random.Random, cfg: RunConfig, filler: random.Random) -> core.TaskInstance:
     deployment = f"violet-{rng.randrange(100, 1000)}"
     artifact = _hex(rng)
     fact = f"deployment {deployment} uses artifact sha256:{artifact}"
     question = f"Какой artifact использует deployment {deployment}? Ответь только значением sha256."
-    prompt, sizing = _targeted_records(rng, _target(cfg, 8192, 0.25), "deployment", [fact], [rng.choice((0.17, 0.36, 0.58, 0.77, 0.91))], question, [fact], ratio=_ratio(cfg, "LC-1"))
+    prompt, sizing = _targeted_records(filler, _target(cfg, 8192, 0.25), "deployment", [fact], [rng.choice((0.17, 0.36, 0.58, 0.77, 0.91))], question, [fact], ratio=_ratio(cfg, "LC-1"))
     meta = _base_meta(cfg, _target(cfg, 8192, 0.25), sizing["estimated_tokens"], sizing["prompt_chars"])
     meta.update({k: sizing[k] for k in ("document_chars", "target_facts", "fact_positions")})
     return _task("LC-1", prompt, {"answer": artifact, "reference": artifact,
                           "accept_any": [f"sha256:{artifact}", f"SHA256:{artifact}", f"sha256: {artifact}"], "target_fact": fact, "target_deployment": deployment, "positions": sizing["fact_positions"]}, meta)
 
 
-def _lc2(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
+def _lc2(rng: random.Random, cfg: RunConfig, filler: random.Random) -> core.TaskInstance:
     service = f"meridian-{_suffix(rng)}"
     shard = f"K{rng.randrange(10, 99)}"
     node = f"beta-{rng.randrange(2, 9)}"
     link1 = f"service {service} owns shard {shard}"
     link2 = f"shard {shard} is currently assigned to node {node}"
     question = f"Какой node обслуживает shard service {service}? Только именем node."
-    prompt, sizing = _targeted_records(rng, _target(cfg, 16384, 0.50), "service", [link1, link2], [0.18, 0.52], question, [link1, link2], ratio=_ratio(cfg, "LC-2"))
+    prompt, sizing = _targeted_records(filler, _target(cfg, 16384, 0.50), "service", [link1, link2], [0.18, 0.52], question, [link1, link2], ratio=_ratio(cfg, "LC-2"))
     meta = _base_meta(cfg, _target(cfg, 16384, 0.50), sizing["estimated_tokens"], sizing["prompt_chars"])
     meta.update({k: sizing[k] for k in ("document_chars", "target_facts", "fact_positions")})
     return _task("LC-2", prompt, {"answer": node, "reference": node, "accept_any": [f"node {node}"], "target_service": service, "target_shard": shard, "target_node": node, "target_facts": [link1, link2], "positions": sizing["fact_positions"]}, meta)
 
 
-def _lc3(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
+def _lc3(rng: random.Random, cfg: RunConfig, filler: random.Random) -> core.TaskInstance:
     project = f"atlas-{_suffix(rng)}"
     queue = f"q-{rng.randrange(10, 99)}"
     broker = f"nats-{rng.randrange(2, 9)}"
@@ -241,7 +275,7 @@ def _lc3(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     link2 = f"queue {queue} is served by broker {broker}"
     link3 = f"broker {broker} runs in region {region}"
     question = f"Region брокера очереди project {project}? Только region."
-    prompt, sizing = _targeted_records(rng, _target(cfg, 24576, 0.75), "project", [link1, link2, link3], [0.16, 0.45, 0.74], question, [link1, link2, link3], ratio=_ratio(cfg, "LC-3"))
+    prompt, sizing = _targeted_records(filler, _target(cfg, 24576, 0.75), "project", [link1, link2, link3], [0.16, 0.45, 0.74], question, [link1, link2, link3], ratio=_ratio(cfg, "LC-3"))
     meta = _base_meta(cfg, _target(cfg, 24576, 0.75), sizing["estimated_tokens"], sizing["prompt_chars"])
     meta.update({k: sizing[k] for k in ("document_chars", "target_facts", "fact_positions")})
     return _task(
@@ -264,7 +298,7 @@ def _lc3(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     )
 
 
-def _lc4(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
+def _lc4(rng: random.Random, cfg: RunConfig, filler: random.Random) -> core.TaskInstance:
     service = f"aurora-{_suffix(rng)}"
     # Owners are drawn without replacement: a repeated team could make the
     # naive last-line answer equal the chronological one and abort the build
@@ -294,7 +328,7 @@ def _lc4(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     # Separate event lines are chain links; the canonical final event is a
     # unique target fact, while all four events are needed to compute state.
     prompt, sizing = _targeted_records(
-        rng,
+        filler,
         _target(cfg, 27648, 0.84),
         "event",
         [initial, *shuffled],
@@ -331,7 +365,7 @@ def _lc4(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     )
 
 
-def _lc5(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
+def _lc5(rng: random.Random, cfg: RunConfig, filler: random.Random) -> core.TaskInstance:
     # Build siblings by small, programmatic edits rather than unrelated names.
     digits = list(f"{rng.randrange(100, 999):03d}")
     if digits[1] == digits[2]:
@@ -363,7 +397,7 @@ def _lc5(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     # the question.  Keep their links in distinct quarters of the document.
     question = f"Какой service затронут {target_incident}? Только именем service."
     all_special = [target_links[0], distractor_links[0], target_links[1], distractor_links[1], target_links[2], distractor_links[2]]
-    prompt, sizing = _targeted_records(rng, _target(cfg, 27648, 0.84), "incident", all_special, [0.10, 0.24, 0.40, 0.55, 0.70, 0.84], question, all_special, ratio=_ratio(cfg, "LC-5"))
+    prompt, sizing = _targeted_records(filler, _target(cfg, 27648, 0.84), "incident", all_special, [0.10, 0.24, 0.40, 0.55, 0.70, 0.84], question, all_special, ratio=_ratio(cfg, "LC-5"))
     meta = _base_meta(cfg, _target(cfg, 27648, 0.84), sizing["estimated_tokens"], sizing["prompt_chars"])
     meta.update({k: sizing[k] for k in ("document_chars", "target_facts", "fact_positions")})
     return _task(
@@ -519,9 +553,10 @@ def _event_lines(service: str, events: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def _lc6(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
+def _lc6(rng: random.Random, cfg: RunConfig, filler: random.Random) -> core.TaskInstance:
     """Owner on a cutoff date from assignments, corrections, a tombstone and versions."""
-    service = f"kanopus-{_suffix(rng)}"
+    number = rng.randrange(100, 1000)
+    service = f"kanopus-{number}"
     teams: list[str] = []
     while len(teams) < 8:
         candidate = f"team-{rng.randrange(100, 1000)}"
@@ -547,7 +582,9 @@ def _lc6(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
         # Higher version after the cutoff: must not be used at the snapshot.
         {"id": ids[9], "ts": _stamp(day, times[9]), "version": 2, "key": "K4", "op": "assign", "team": teams[7]},
     ]
-    cutoff = _stamp(day, rng.choice(("13:00", "13:30")))
+    # The snapshot sits after the retraction or after a later live assignment:
+    # both statuses must occur and neither may depend on a separate draw.
+    cutoff = _stamp(day, "13:30" if number % 2 else "13:00")
     status, evidence = replay_owner(events, cutoff)
     assert _fold_owner(events, cutoff) == (status, evidence), "state machine disagrees with itself"
     answer = _state_answer(status, evidence)
@@ -575,7 +612,7 @@ def _lc6(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     fractions = [0.02, 0.05, *sorted(rng.uniform(0.08, 0.90) for _ in range(9)), 0.94]
     target = _target(cfg, 20480, 0.625)
     prompt, sizing = _targeted_records(
-        rng, target, "event", special, fractions, question, special, ratio=_ratio(cfg, "LC-6")
+        filler, target, "event", special, fractions, question, special, ratio=_ratio(cfg, "LC-6")
     )
     positions = sizing["fact_positions"]
     last_event = max(events, key=lambda event: positions[_event_lines(service, [event])[0]])
@@ -644,7 +681,7 @@ def _edge_line(edge: dict[str, Any]) -> str:
     return f"edge {edge['id']} at {edge['ts']} v{edge['version']} {edge['key']}: {body}"
 
 
-def _lc7(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
+def _lc7(rng: random.Random, cfg: RunConfig, filler: random.Random) -> core.TaskInstance:
     """Follow incident -> node -> shard -> service -> owner through three chains."""
     day = f"2026-06-{rng.randrange(10, 28):02d}"
     cutoff = _stamp(day, "14:00")
@@ -721,7 +758,7 @@ def _lc7(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     fractions = [0.01, 0.03, *sorted(rng.uniform(0.06, 0.88) for _ in range(11)), 0.93]
     target = _target(cfg, rng.randrange(24_000, 28_001), rng.uniform(0.73, 0.86))
     prompt, sizing = _targeted_records(
-        rng, target, "incident", special, fractions, question, special, ratio=_ratio(cfg, "LC-7")
+        filler, target, "incident", special, fractions, question, special, ratio=_ratio(cfg, "LC-7")
     )
     meta = _base_meta(cfg, target, sizing["estimated_tokens"], sizing["prompt_chars"])
     meta.update({key: sizing[key] for key in ("document_chars", "target_facts", "fact_positions")})
@@ -757,21 +794,305 @@ def _lc7(rng: random.Random, cfg: RunConfig) -> core.TaskInstance:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Source-authority graph scenario (LC-8, N5 stretch)
+# --------------------------------------------------------------------------- #
+
+#: Trust rank of a record's source. ``chat`` is deliberately absent: a message
+#: from a chat is recounted by nobody and never establishes a fact, however new
+#: it is and however high its version claims to be.
+SOURCE_PRIORITY = {"secondary": 1, "primary": 2}
+
+FRESH_AFTER = "2026-10-01"
+
+_ARTIFACT_RE = re.compile(r"ARTIFACT\s*[:=]?\s*sha256\s*:\s*([0-9a-f]{8})\b", re.IGNORECASE)
+_WITNESS_RE = re.compile(r"СВИДЕТЕЛИ\s*[:=\-]?\s*(.+)$", re.IGNORECASE)
+
+_ARTIFACT_BODIES = {
+    "deployment": "incident {value} rolled out by deployment {other}",
+    "release": "deployment {value} ships release {other}",
+    "artifact": "release {value} uses artifact sha256:{other}",
+}
+
+
+def _parse_authority_answer(reply: str) -> tuple[str, tuple[str, ...]] | None:
+    """Parse ``ARTIFACT sha256:<hex>; СВИДЕТЕЛИ <ids>``; the ID list keeps its order."""
+    line = _single_line(reply)
+    if line is None:
+        return None
+    artifact = _ARTIFACT_RE.search(line)
+    witness = _WITNESS_RE.search(line)
+    if artifact is None or witness is None:
+        return None
+    ids = tuple(_EVENT_ID_RE.findall(witness.group(1)))
+    return (f"sha256:{artifact.group(1).lower()}", ids) if ids else None
+
+
+def _authority_answer(artifact: str, evidence: list[str] | tuple[str, ...]) -> str:
+    return f"ARTIFACT sha256:{artifact}; СВИДЕТЕЛИ {','.join(evidence)}"
+
+
+def _artifact_records_in_force(records: list[dict[str, Any]], cutoff: str) -> list[dict[str, Any]]:
+    """Records allowed to establish a value: up to the cutoff, never ``chat``.
+
+    Of several versions of one key only the highest survives, and a record of a
+    higher-ranked source beats any version of a lower-ranked one — a fresh copy
+    does not become the original by being fresh.
+    """
+    active = [
+        record
+        for record in records
+        if record["ts"] <= cutoff and record["source"] in SOURCE_PRIORITY
+    ]
+    best: dict[str, tuple[int, int]] = {}
+    for record in active:
+        rank = (SOURCE_PRIORITY[record["source"]], int(record["version"]))
+        best[record["key"]] = max(best.get(record["key"], rank), rank)
+    return [
+        record
+        for record in active
+        if (SOURCE_PRIORITY[record["source"]], int(record["version"])) == best[record["key"]]
+    ]
+
+
+def trace_artifact(
+    records: list[dict[str, Any]], start: tuple[str, str], cutoff: str, hops: int = 3
+) -> tuple[str, tuple[str, ...]]:
+    """Follow one acting record per hop from ``start``; returns the artifact and IDs."""
+    active = _artifact_records_in_force(records, cutoff)
+    current = start
+    evidence: list[str] = []
+    for _ in range(hops):
+        matches = [record for record in active if record["subject"] == current]
+        if len(matches) != 1:
+            raise AssertionError(f"hop from {current} matched {len(matches)} records")
+        evidence.append(str(matches[0]["id"]))
+        current = matches[0]["object"]
+    return current[1], tuple(evidence)
+
+
+def _trace_by_winners(
+    records: list[dict[str, Any]], start: tuple[str, str], cutoff: str, hops: int = 3
+) -> tuple[str, tuple[str, ...]]:
+    """Independent recomputation of :func:`trace_artifact` (sorted overwrite map)."""
+    ordered = sorted(
+        (
+            record
+            for record in records
+            if record["ts"] <= cutoff and record["source"] in SOURCE_PRIORITY
+        ),
+        key=lambda record: (
+            SOURCE_PRIORITY[record["source"]],
+            int(record["version"]),
+            record["ts"],
+            record["id"],
+        ),
+    )
+    winners: dict[tuple[str, str], dict[str, Any]] = {}
+    for record in ordered:
+        winners[record["subject"]] = record
+    current = start
+    evidence: list[str] = []
+    for _ in range(hops):
+        record = winners[current]
+        evidence.append(str(record["id"]))
+        current = record["object"]
+    return current[1], tuple(evidence)
+
+
+def _artifact_line(record: dict[str, Any]) -> str:
+    _, value = record["subject"]
+    kind, other = record["object"]
+    return (
+        f"record {record['id']} at {record['ts']} v{record['version']} "
+        f"source {record['source']} [{record['key']}]: "
+        + _ARTIFACT_BODIES[kind].format(value=value, other=other)
+    )
+
+
+def _lc8(rng: random.Random, cfg: RunConfig, filler: random.Random) -> core.TaskInstance:
+    """N5: artifact through incident -> deployment -> release under a trust rule.
+
+    Four kinds of interference, each with its own rule in the question: a chat
+    record is never authoritative, a lower-ranked source never beats the primary
+    one, an older version of a key is superseded, and a record after the cutoff
+    has not happened yet. The tail of the document is a wrong but plausible
+    mention, so position alone is never the answer.
+    """
+    day = f"2026-07-{rng.randrange(10, 28):02d}"
+    cutoff = _stamp(day, "13:00")
+
+    def distinct(count: int, low: int, high: int) -> list[int]:
+        values: list[int] = []
+        while len(values) < count:
+            value = rng.randrange(low, high)
+            if value not in values:
+                values.append(value)
+        return values
+
+    def distinct_hex(count: int) -> list[str]:
+        values: list[str] = []
+        while len(values) < count:
+            value = _hex(rng)
+            if value not in values:
+                values.append(value)
+        return values
+
+    artifacts = distinct_hex(6)
+    (real_artifact, secondary_artifact, chat_artifact,
+     post_artifact, alt_artifact, other_artifact) = artifacts
+    incident, other_incident = (f"IN-{value:04d}" for value in distinct(2, 1000, 9000))
+    deployment, other_deployment = (f"deploy-{value}" for value in distinct(2, 100, 900))
+    release, other_release, alt_release = (
+        f"release-2026.07.{value}" for value in distinct(3, 10, 99)
+    )
+    base = rng.randrange(101, 688)
+    ids = [f"EV-{base + index:03d}" for index in range(12)]
+
+    def record(
+        index: int,
+        hhmm: str,
+        version: int,
+        key: str,
+        source: str,
+        subject: tuple[str, str],
+        obj: tuple[str, str],
+    ) -> dict[str, Any]:
+        return {"id": ids[index], "ts": _stamp(day, hhmm), "version": version, "key": key,
+                "source": source, "subject": subject, "object": obj}
+
+    records = [
+        # A second complete chain that shares the wording but not the start id.
+        record(0, "08:05", 1, "INC2", "primary", ("incident", other_incident), ("deployment", other_deployment)),
+        record(1, "08:40", 1, "DEP2", "primary", ("deployment", other_deployment), ("release", other_release)),
+        record(2, "09:15", 1, "REL2", "primary", ("release", other_release), ("artifact", other_artifact)),
+        # Target chain; both ranks claim the deployment link.
+        record(3, "09:30", 1, "INC1", "primary", ("incident", incident), ("deployment", deployment)),
+        record(4, "10:10", 1, "DEP1", "primary", ("deployment", deployment), ("release", release)),
+        record(5, "10:45", 1, "DEP1", "secondary", ("deployment", deployment), ("release", alt_release)),
+        record(6, "11:20", 1, "REL3", "secondary", ("release", alt_release), ("artifact", alt_artifact)),
+        record(7, "11:50", 1, "REL1", "primary", ("release", release), ("artifact", real_artifact)),
+        # A fresher copy with a higher version: the rank rule still keeps the primary.
+        record(8, "12:25", 2, "REL1", "secondary", ("release", release), ("artifact", secondary_artifact)),
+        # Two chat claims: the second carries the highest version of all and
+        # still has no authority.
+        record(9, "12:50", 4, "INC1", "chat", ("incident", incident), ("deployment", other_deployment)),
+        record(10, "12:55", 9, "REL1", "chat", ("release", release), ("artifact", chat_artifact)),
+        # Reissued after the cutoff: not in force at the snapshot.
+        record(11, "14:05", 2, "REL1", "primary", ("release", release), ("artifact", post_artifact)),
+    ]
+
+    # The superseded copy of the artifact link: the last record of the document.
+    superseded = records[8]
+    chat_claim = records[10]
+    answer_artifact, evidence = trace_artifact(records, ("incident", incident), cutoff)
+    assert _trace_by_winners(records, ("incident", incident), cutoff) == (answer_artifact, evidence), (
+        "authority traversal disagrees with itself"
+    )
+    assert answer_artifact == real_artifact
+    answer = _authority_answer(answer_artifact, evidence)
+
+    distract_artifact, distract_evidence = trace_artifact(records, ("incident", other_incident), cutoff)
+    assert distract_artifact == other_artifact
+    ignored_artifact, ignored_evidence = trace_artifact(records, ("incident", incident), "9999")
+    assert ignored_artifact == post_artifact
+
+    naive_last = _authority_answer(secondary_artifact, (superseded["id"],))
+    naive_unverified = _authority_answer(chat_artifact, (chat_claim["id"],))
+    naive_low_priority = _authority_answer(alt_artifact, (records[5]["id"], records[6]["id"]))
+    naive_ignore_cutoff = _authority_answer(ignored_artifact, ignored_evidence)
+    for mutant in (naive_last, naive_unverified, naive_low_priority, naive_ignore_cutoff):
+        assert mutant != answer
+
+    question = (
+        f"Восстанови artifact, который получил incident {incident} на момент CUTOFF, "
+        "по цепочке incident -> deployment -> release -> artifact.\n"
+        "Правила: 1) действует только запись с ts <= CUTOFF; 2) source primary — основной "
+        "журнал, source secondary — его копия, source chat — переписка без подтверждения, "
+        "записи chat не действуют никогда; 3) из записей одного key действует primary перед "
+        "secondary, при одинаковом source — запись с наибольшим v, младшие версии исправлены; "
+        "4) каждый следующий шаг берётся по единственной действующей записи, субъект которой "
+        "равен текущей сущности; записи чужой цепочки не подставлять.\n"
+        "Ответь одной строкой: ARTIFACT sha256:<8 hex>; СВИДЕТЕЛИ <ID записей в порядке прохода>."
+    )
+    header = f"artifact ledger for {day}."
+    cutoff_line = f"cutoff = {cutoff}"
+    ordered = [_artifact_line(record) for record in records]
+    rng.shuffle(ordered)
+    # Deliberately positional: a superseded copy closes the document.
+    closing = _artifact_line(superseded)
+    ordered.remove(closing)
+    ordered.append(closing)
+    special = [header, cutoff_line, *ordered]
+    fractions = [0.01, 0.03, *sorted(rng.uniform(0.06, 0.88) for _ in range(11)), 1.0]
+    target = _target(cfg, rng.randrange(25_000, 29_001), rng.uniform(0.76, 0.89))
+    prompt, sizing = _targeted_records(
+        filler, target, "incident", special, fractions, question, special, ratio=_ratio(cfg, "LC-8")
+    )
+    document = prompt.split("\n\nQUESTION:", 1)[0]
+    # The superseded mention is the last *record* of the document; only neutral
+    # filler may follow it, so position alone never reaches the right value.
+    assert document.find(closing) > max(
+        document.find(line) for line in special if line != closing
+    ), "a superseded mention must close the record list"
+    meta = _base_meta(cfg, target, sizing["estimated_tokens"], sizing["prompt_chars"])
+    meta.update({key: sizing[key] for key in ("document_chars", "target_facts", "fact_positions")})
+    meta["cutoff"] = cutoff
+    return _task(
+        "LC-8",
+        prompt,
+        {
+            "answer": answer,
+            "reference": answer,
+            "format": "authority",
+            "answer_artifact": answer_artifact,
+            "evidence": list(evidence),
+            "cutoff": cutoff,
+            "target_incident": incident,
+            "records": [dict(record) for record in records],
+            "distractor_incident": other_incident,
+            "distractor_artifact": distract_artifact,
+            "distractor_evidence": list(distract_evidence),
+            "distractor_answer": _authority_answer(distract_artifact, distract_evidence),
+            "naive_last_position_answer": naive_last,
+            "naive_unverified_answer": naive_unverified,
+            "naive_low_priority_answer": naive_low_priority,
+            "naive_ignore_cutoff_answer": naive_ignore_cutoff,
+            "answer_without_evidence": f"ARTIFACT sha256:{answer_artifact}",
+            "answer_by_question_id": f"ARTIFACT {incident}; СВИДЕТЕЛИ {','.join(evidence)}",
+            "right_value_foreign_evidence": _authority_answer(answer_artifact, distract_evidence),
+            "target_facts": special,
+            "positions": sizing["fact_positions"],
+            "comparison_note": "Artifact и witness IDs сравниваются точно, порядок ID значим.",
+        },
+        meta,
+        fresh_after=FRESH_AFTER,
+    )
+
+
 def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
-    """Generate the scenarios of the run's profile, deterministically."""
+    """Generate the scenarios of the run's profile, deterministically.
+
+    The incoming stream only seeds the per-scenario streams (see ``_streams``),
+    so a scenario draws the same facts in every profile and at every ratio.
+    """
     profile = core.profile_of(cfg)
+    base = rng.getrandbits(64)
     if profile == "pilot":
-        return [_lc6(rng, cfg)]
+        return [_new(_lc6, base, cfg, "LC-6")]
+    if profile == "research-v1":
+        return [_new(_lc8, base, cfg, "LC-8")]
     tasks = [
-        _lc1(rng, cfg),
-        _lc2(rng, cfg),
-        _lc3(rng, cfg),
-        _lc4(rng, cfg),
-        _lc5(rng, cfg),
+        _new(_lc1, base, cfg, "LC-1"),
+        _new(_lc2, base, cfg, "LC-2"),
+        _new(_lc3, base, cfg, "LC-3"),
+        _new(_lc4, base, cfg, "LC-4"),
+        _new(_lc5, base, cfg, "LC-5"),
     ]
     if profile == "stretch-v1":
-        tasks.append(_lc6(rng, cfg))
-        tasks.append(_lc7(rng, cfg))
+        tasks.append(_new(_lc6, base, cfg, "LC-6"))
+        tasks.append(_new(_lc7, base, cfg, "LC-7"))
+        tasks.append(_new(_lc8, base, cfg, "LC-8"))
     for task in tasks:
         task.private = task.id in PRIVATE_IDS
     return tasks
@@ -837,18 +1158,26 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 
     whitelist = tuple(task.oracle.get("unit_whitelist", ()))
     answer_format = task.oracle.get("format")
-    if answer_format in ("state", "chain"):
+    if answer_format in ("state", "chain", "authority"):
         if answer_format == "state":
             parsed_state = _parse_state_answer(tr.final_text)
             expected = (str(task.oracle["status"]), tuple(str(value) for value in task.oracle["evidence"]))
             name = "точный статус и event IDs"
             shown = None if parsed_state is None else _state_answer(*parsed_state)
-        else:
+        elif answer_format == "chain":
             parsed_state = _parse_chain_answer(tr.final_text)
             expected = (str(task.oracle["answer_entity"]),
                         tuple(str(value) for value in task.oracle["evidence"]))
             name = "точная сущность и event IDs"
             shown = None if parsed_state is None else _chain_answer(*parsed_state)
+        else:
+            parsed_state = _parse_authority_answer(tr.final_text)
+            expected = (f"sha256:{task.oracle['answer_artifact']}",
+                        tuple(str(value) for value in task.oracle["evidence"]))
+            name = "точный artifact и witness IDs"
+            shown = None if parsed_state is None else _authority_answer(
+                parsed_state[0].removeprefix("sha256:"), parsed_state[1]
+            )
         passed = parsed_state is not None and parsed_state == expected
         reference_text = task.oracle["reference"]
         score.add(
@@ -881,10 +1210,12 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 
 BASELINE_IDS = ("LC-1", "LC-2", "LC-3", "LC-4", "LC-5")
 PILOT_IDS = ("LC-6",)
-ALL_IDS = BASELINE_IDS + ("LC-6", "LC-7")
+ALL_IDS = BASELINE_IDS + ("LC-6", "LC-7", "LC-8")
+RESEARCH_IDS = ("LC-8",)
+"""The research profile keeps only the source-authority graph."""
 
-PRIVATE_IDS = frozenset({"LC-1", "LC-4"})
-"""Private layer: a lookup chain and an owner recovery scenario."""
+PRIVATE_IDS = frozenset({"LC-1", "LC-4", "LC-8"})
+"""Private layer: a lookup chain, an owner recovery and the authority graph."""
 
 
 core.register(
@@ -894,5 +1225,7 @@ core.register(
     generate=generate,
     evaluate=evaluate,
     expected_ids=BASELINE_IDS,
-    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": ALL_IDS},
+    expected_ids_by_profile={
+        "pilot": PILOT_IDS, "stretch-v1": ALL_IDS, "research-v1": RESEARCH_IDS
+    },
 )

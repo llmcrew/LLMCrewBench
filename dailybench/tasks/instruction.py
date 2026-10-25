@@ -20,11 +20,15 @@ from .. import core, text
 IDS = ("IF-1", "IF-2", "IF-3", "IF-4", "IF-5")
 PILOT_IDS = ("IF-6",)
 """Scenarios that only the ``pilot`` and ``stretch-v1`` profiles measure."""
-STRETCH_IDS = IDS + PILOT_IDS + ("IF-7", "IF-7-KK", "IF-8")
-"""Stretch adds the ru/kk dated-ledger twins and the Unicode edge case."""
+STRETCH_IDS = IDS + PILOT_IDS + ("IF-7", "IF-7-KK", "IF-8", "IF-9", "IF-10")
+"""Stretch adds the ru/kk dated-ledger twins, the Unicode edge case and the
+composite selection pair."""
 
-PRIVATE_IDS = frozenset({"IF-7", "IF-7-KK", "IF-8"})
-"""Private layer of the category: the three stretch-only scenarios."""
+RESEARCH_IDS = ("IF-9", "IF-10")
+"""The research profile keeps only the composite selection pair."""
+
+PRIVATE_IDS = frozenset({"IF-7", "IF-7-KK", "IF-8", "IF-9", "IF-10"})
+"""Private layer of the category: the five stretch-only scenarios."""
 FRESH_AFTER = "2026-10-01"
 """The stretch scenarios post-date the model snapshot of the release."""
 
@@ -1046,6 +1050,253 @@ def _if8_eval(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 
 
 # --------------------------------------------------------------------------- #
+# IF-9 / IF-10 — composite selection: declared rule priority, NFC keys,
+# a mid-dialogue bound change, and the empty selection
+# --------------------------------------------------------------------------- #
+
+_N7_HEADER = ("id", "key", "zone", "severity", "score", "ts", "rev", "muted")
+
+_N7_GROUP_KEYS = ("йод", "ёлка", "объём", "звёзды")
+"""Keys whose NFC and NFD spellings really differ (composing Cyrillic letters)."""
+_N7_SPARE_KEYS = ("подъезд", "сеть", "мост", "свод", "смена", "пост", "канал", "шлюз")
+
+_N7_FORMAT = 0.25
+_N7_CONTENT = 0.375
+
+
+def _n7_spell(key: str, form: str) -> str:
+    return unicodedata.normalize(form, key)
+
+
+def _n7_rows(rng: random.Random, variant: str) -> tuple[list[dict[str, Any]], int, int, str]:
+    """Fixed skeleton of eleven to thirteen records around the two bounds.
+
+    The roles are what the rules below are proven against: one key group loses
+    its lower ``rev`` member, a muted record leads every score, and the two
+    records the corrected bound keeps tie on ``score`` so the declared
+    tie-break decides their order. ``variant == "empty"`` lifts the corrected
+    bound above every score without touching the first bound.
+    """
+    t1 = rng.choice((55, 60, 65))
+    t2 = t1 + (10 if variant == "select" else 25)
+    target = rng.choice(("core", "edge"))
+    other = "edge" if target == "core" else "core"
+    first, second = rng.sample(_N7_GROUP_KEYS, 2)
+    muted_key, *spare = rng.sample(_N7_SPARE_KEYS, len(_N7_SPARE_KEYS))
+
+    if variant == "select":
+        scores = {
+            "a": t2 + 10, "b": t2, "c": t1, "d": t2, "e": t2 - 5,
+            "f": t2 + 20, "g": t1 - 4, "h": t2 + 15, "k": t2 + 5,
+        }
+    else:
+        scores = {
+            "a": t1 + 10, "b": t1 + 2, "c": t1, "d": t1, "e": t1 - 5,
+            "f": t1 + 24, "g": t1 - 9, "h": t1 + 20, "k": t1 + 12,
+        }
+
+    def record(role: str, key: str, zone: str, severity: str, rev: int, muted: str = "no") -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "role": role, "key": key, "zone": zone, "severity": severity,
+            "rev": rev, "muted": muted,
+        }
+        if role in scores:
+            row["score"] = scores[role]
+        return row
+
+    rows = [
+        record("a", _n7_spell(first, "NFC"), target, "critical", 1),
+        record("b", _n7_spell(first, "NFD"), target, "critical", 3),
+        record("c", _n7_spell(second, "NFD"), target, "critical", 2),
+        record("d", _n7_spell(second, "NFC"), target, "critical", 4),
+        record("e", spare[0], target, "critical", 1),
+        record("f", _n7_spell(muted_key, "NFD"), target, "critical", 2, "yes"),
+        record("g", _n7_spell(muted_key, "NFC"), target, "critical", 1),
+        record("h", spare[1], other, "critical", 5),
+        record("k", spare[2], target, "warn", 1),
+    ]
+    for index in range(rng.randrange(2, 5)):
+        row = record(f"filler{index}", spare[3 + index], target, "critical", 1)
+        row["score"] = t1 - rng.randrange(6, 40)
+        rows.append(row)
+
+    ids = dict(zip((row["role"] for row in rows), rng.sample(range(100, 1000), len(rows))))
+    minutes = dict(zip((row["role"] for row in rows), rng.sample(range(480, 1150, 5), len(rows))))
+    # The tie-break must be able to lose: the earlier record carries the larger id.
+    if minutes["d"] > minutes["b"]:
+        minutes["b"], minutes["d"] = minutes["d"], minutes["b"]
+    if ids["b"] > ids["d"]:
+        ids["b"], ids["d"] = ids["d"], ids["b"]
+    for row in rows:
+        row["id"] = ids[row["role"]]
+        minute = minutes[row["role"]]
+        row["ts"] = f"{minute // 60:02d}:{minute % 60:02d}"
+    return rows, t1, t2, target
+
+
+def _n7_selection(rows: list[dict[str, Any]], zone: str, threshold: int) -> list[dict[str, Any]]:
+    """Rules in the declared order: include, exclusion, then one row per NFC key."""
+    survivors = [
+        row for row in rows
+        if row["zone"] == zone and row["severity"] == "critical"
+        and row["score"] >= threshold and row["muted"] != "yes"
+    ]
+    best: dict[str, dict[str, Any]] = {}
+    for row in survivors:
+        key = unicodedata.normalize("NFC", row["key"])
+        if key not in best or row["rev"] > best[key]["rev"]:
+            best[key] = row
+    return sorted(best.values(), key=lambda row: (-row["score"], row["ts"], row["id"]))
+
+
+def _n7(rng: random.Random, variant: str) -> core.TaskInstance:
+    rows, t1, t2, target = _n7_rows(rng, variant)
+    scenario = "IF-9" if variant == "select" else "IF-10"
+    rng.shuffle(rows)
+
+    by_role = {row["role"]: row for row in rows}
+    pre = _n7_selection(rows, target, t1)
+    picked = _n7_selection(rows, target, t2)
+    assert pre, "the first bound must select something"
+    assert by_role["f"]["muted"] == "yes"
+    assert by_role["f"]["score"] == max(row["score"] for row in rows), "the muted row leads every score"
+    if variant == "select":
+        assert picked == [by_role["d"], by_role["b"]], "the corrected bound keeps exactly the tie pair"
+        assert by_role["d"]["score"] == t2, "the second kept row sits exactly on the corrected bound"
+        assert by_role["d"]["ts"] < by_role["b"]["ts"] and by_role["d"]["id"] > by_role["b"]["id"]
+        assert [row["id"] for row in picked] != [row["id"] for row in pre]
+    else:
+        assert picked == [], "the corrected bound must empty the selection"
+    for lower, higher in ((by_role["a"], by_role["b"]), (by_role["c"], by_role["d"])):
+        assert lower["key"] != higher["key"]
+        assert unicodedata.normalize("NFC", lower["key"]) == unicodedata.normalize("NFC", higher["key"])
+        assert higher["rev"] > lower["rev"]
+
+    listing = "\n".join(
+        "\t".join([
+            str(row["id"]), row["key"], row["zone"], row["severity"],
+            str(row["score"]), row["ts"], str(row["rev"]), row["muted"],
+        ])
+        for row in rows
+    )
+    picks = [{"id": row["id"], "score": row["score"]} for row in picked]
+    total = sum(item["score"] for item in picks)
+    reference = json.dumps(
+        {"picks": picks, "count": len(picks), "total": total},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    prompt = "\n\n".join([
+        "Даны записи смены (поля через табуляцию): id, key, zone, severity, score, ts, rev, muted.",
+        f"{'\t'.join(_N7_HEADER)}\n{listing}",
+        "score, rev и id — целые числа; ts — время ЧЧ:ММ; muted — yes или no.\n"
+        "Один и тот же key может быть записан в разложенной (NFD) и в составленной (NFC) "
+        "форме Unicode — это один и тот же key.",
+        "Правила применяются строго сверху вниз:\n"
+        f"1. отбор: zone = {target} и severity = critical и score >= {t1};\n"
+        "2. если muted = yes, запись исключается, даже когда подходит под п.1;\n"
+        "3. один key — одна запись: key сравниваются после нормализации NFC, "
+        "из группы остаётся запись с бо́льшим rev.",
+        "picks — отобранные записи в виде {\"id\":…,\"score\":…}.\n"
+        "Порядок picks: score по убыванию; при равном score — ts по возрастанию; "
+        "при равенстве — id по возрастанию.\n"
+        "count — длина picks, total — сумма score отобранных записей.",
+        "Верни ТОЛЬКО валидный JSON:\n\n"
+        '{"picks":[{"id":0,"score":0}],"count":1,"total":0}\n\n'
+        "Никакого Markdown и дополнительного текста.",
+    ])
+    return core.TaskInstance(
+        id=scenario,
+        category="A",
+        title="Составной отбор с приоритетом правил",
+        prompt=prompt,
+        max_points=1.0,
+        dialogue=[
+            f"Поправка: порог score теперь {t2}, а не {t1}. "
+            "Остальные правила, порядок picks и формат прежние."
+        ],
+        oracle={
+            "reference": reference,
+            "picks": picks,
+            "ids": [item["id"] for item in picks],
+            "count": len(picks),
+            "total": total,
+            "zone": target,
+            "threshold1": t1,
+            "threshold2": t2,
+            "tie_ids": [by_role["d"]["id"], by_role["b"]["id"]],
+            "muted_id": by_role["f"]["id"],
+            "low_rev_ids": sorted((by_role["a"]["id"], by_role["c"]["id"])),
+            "superseded_ids": [row["id"] for row in pre],
+        },
+        languages=["ru"],
+        fresh_after=FRESH_AFTER,
+        meta={
+            "scenario": scenario,
+            "variant": variant,
+            "rows": len(rows),
+            "zone": target,
+            "threshold1": t1,
+            "threshold2": t2,
+        },
+    )
+
+
+def _n7_eval(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
+    score = core.Score(task_id=task.id, category="A")
+    oracle = task.oracle
+    value, strict = text.strict_json(tr.final_text)
+    if not isinstance(value, dict):
+        value = text.loose_json(tr.final_text)
+    picks = value.get("picks") if isinstance(value, dict) else None
+
+    def integer(candidate: Any) -> bool:
+        return isinstance(candidate, int) and not isinstance(candidate, bool)
+
+    shaped = isinstance(picks, list) and all(
+        isinstance(item, dict)
+        and set(item) == {"id", "score"}
+        and integer(item.get("id"))
+        and integer(item.get("score"))
+        for item in picks
+    )
+    fmt_ok = (
+        strict
+        and isinstance(value, dict)
+        and set(value) == {"picks", "count", "total"}
+        and shaped
+        and integer(value.get("count"))
+        and integer(value.get("total"))
+    )
+    got = [(item["id"], item["score"]) for item in picks] if shaped else []
+    expected = [(item["id"], item["score"]) for item in oracle["picks"]]
+    ids_ok = bool(shaped) and sorted(got) == sorted(expected)
+    order_ok = (
+        bool(shaped)
+        and got == expected
+        and isinstance(value, dict)
+        and value.get("count") == oracle["count"]
+        and value.get("total") == oracle["total"]
+    )
+    score.add(
+        "json_format", fmt_ok, _N7_FORMAT,
+        "ожидался строгий JSON с ключами picks, count, total, парами id/score и целыми значениями"
+        if not fmt_ok else "ok",
+    )
+    score.add(
+        "records", ids_ok, _N7_CONTENT,
+        f"получено {[item[0] for item in got]}, ожидалось {oracle['ids']}",
+    )
+    score.add(
+        "ordering", order_ok, _N7_CONTENT,
+        f"получено {got} / count={value.get('count') if isinstance(value, dict) else None} / "
+        f"total={value.get('total') if isinstance(value, dict) else None}, "
+        f"ожидалось {expected} / count={oracle['count']} / total={oracle['total']}",
+    )
+    return score
+
+
+# --------------------------------------------------------------------------- #
 # Registration
 # --------------------------------------------------------------------------- #
 
@@ -1063,6 +1314,8 @@ _STRETCH_SCENARIOS = (
     ("IF-7", lambda rng: _if7(rng, "ru"), _if7_eval),
     ("IF-7-KK", lambda rng: _if7(rng, "kk"), _if7_eval),
     ("IF-8", _if8, _if8_eval),
+    ("IF-9", lambda rng: _n7(rng, "select"), _n7_eval),
+    ("IF-10", lambda rng: _n7(rng, "empty"), _n7_eval),
 )
 
 _EVALUATORS = {
@@ -1074,6 +1327,15 @@ def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
     profile = core.profile_of(cfg)
     if profile == "pilot":
         return [builder(rng) for _, builder, _ in _PILOT_SCENARIOS]
+    if profile == "research-v1":
+        tasks = [
+            builder(rng)
+            for scenario, builder, _ in _STRETCH_SCENARIOS
+            if scenario in RESEARCH_IDS
+        ]
+        for task in tasks:
+            task.private = task.id in PRIVATE_IDS
+        return tasks
     tasks = [builder(rng) for _, builder, _ in _SCENARIOS]
     if profile == "stretch-v1":
         tasks.extend(builder(rng) for _, builder, _ in _PILOT_SCENARIOS)
@@ -1094,5 +1356,5 @@ core.register(
     generate=generate,
     evaluate=evaluate,
     expected_ids=IDS,
-    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": STRETCH_IDS},
+    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": STRETCH_IDS, "research-v1": RESEARCH_IDS},
 )

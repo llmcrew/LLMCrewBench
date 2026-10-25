@@ -56,6 +56,8 @@ PILOT_IDS = ("R-16",)
 STRETCH_IDS = IDS + PILOT_IDS + ("R-17", "R-17-KK")
 ALL_IDS = STRETCH_IDS
 """Stretch adds the ru/kk schedule twins; each is its own task and oracle."""
+RESEARCH_IDS: tuple[str, ...] = ()
+"""The research profile measures no reasoning scenario."""
 _POINTS = 1.0
 FRESH_AFTER = "2026-10-01"
 """The R-17 twins post-date the model snapshot of the release."""
@@ -1624,6 +1626,8 @@ def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
         scenarios = PILOT_IDS
     elif profile == "stretch-v1":
         scenarios = ALL_IDS
+    elif profile == "research-v1":
+        scenarios = RESEARCH_IDS
     else:
         scenarios = IDS
     tasks = [_BUILDERS[scenario](rng) for scenario in scenarios]
@@ -1731,5 +1735,7 @@ core.register(
     generate=generate,
     evaluate=evaluate,
     expected_ids=IDS,
-    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": ALL_IDS},
+    expected_ids_by_profile={
+        "pilot": PILOT_IDS, "stretch-v1": ALL_IDS, "research-v1": RESEARCH_IDS
+    },
 )

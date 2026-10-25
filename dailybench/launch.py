@@ -32,7 +32,7 @@ UNSLOTH = shutil.which("unsloth") or str(Path.home() / ".unsloth" / "studio" / "
 
 
 def api(base_url: str, path: str, timeout: float = 10.0) -> dict[str, Any] | None:
-    """GET one management path; ``None`` when it does not answer."""
+    """GET one OpenAI path (``/models``) under the base URL; ``None`` if silent."""
     try:
         with urllib.request.urlopen(base_url.rstrip("/") + path, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
@@ -44,6 +44,20 @@ def api_root(base_url: str) -> str:
     """The studio's management API lives at the server root, not under /v1."""
     root = base_url.rstrip("/")
     return root[: -len("/v1")] if root.endswith("/v1") else root
+
+
+def props(base_url: str, timeout: float = 10.0) -> dict[str, Any] | None:
+    """``GET /props`` at the root — llama.cpp's report of what it loaded.
+
+    Joining it to the base URL asked ``/v1/props`` and silently 404'd, which the
+    load check then read as "nothing to verify".
+    """
+    try:
+        with urllib.request.urlopen(api_root(base_url) + "/props", timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def studio_api(
@@ -96,7 +110,7 @@ def ensure_server(base_url: str, entry: dict[str, Any]) -> str:
         UNSLOTH, "studio", "run",
         "--model", str(entry["model"]),
         "--gguf-variant", str(entry["quant"]),
-        "--max-seq-length", str(entry.get("context_window") or DEFAULT_CONTEXT_WINDOW),
+        "--max-seq-length", str(entry["context_window"]),
     ]
     flags = 0
     if sys.platform == "win32":
@@ -114,14 +128,48 @@ def ensure_server(base_url: str, entry: dict[str, Any]) -> str:
     raise RuntimeError("сервер studio не поднялся за 15 минут")
 
 
-def load_entry(base_url: str, key: str, entry: dict[str, Any], timeout_s: float = 900) -> tuple[bool, str]:
-    """Load one configuration through the studio's own API and wait for it."""
-    model = str(entry["model"])
-    studio_api(base_url, "/api/inference/unload", key, {"model_path": model})
-    payload = {
-        "model_path": model,
+def _loaded_mismatch(props_payload: dict[str, Any] | None, entry: dict[str, Any]) -> str:
+    """Why the server does not serve the declared configuration ("" when it does).
+
+    A reachable server still holding the previous model would otherwise be
+    measured under the new entry's name: the model ID is shared across quants,
+    so only the loaded file and the window can tell them apart.
+    """
+    declared_window = int(entry["context_window"])
+    if not props_payload:
+        return (
+            f"runtime не подтвердил загрузку: {api_root(str(entry.get('base_url') or ''))}/props молчит — "
+            "проверить окно и файл весов нечем"
+        )
+    generation = props_payload.get("default_generation_settings") or {}
+    n_ctx = generation.get("n_ctx") or props_payload.get("n_ctx")
+    if n_ctx is None:
+        return "runtime не сообщил n_ctx: окно не подтверждено"
+    if int(n_ctx) != declared_window:
+        return (
+            f"окно сервера n_ctx={int(n_ctx)} не совпадает с объявленным {declared_window}: "
+            "запись и сервер описывают разные условия"
+        )
+    model_path = str(props_payload.get("model_path") or "")
+    quant = str(entry.get("quant") or "")
+    if not model_path:
+        return "runtime не сообщил model_path: какой файл загружен, неизвестно"
+    if quant and quant.casefold() not in model_path.casefold():
+        return f"загружен {model_path}, объявлен квант {quant}: сервер держит другой файл"
+    return ""
+
+
+def load_request(entry: dict[str, Any]) -> dict[str, Any]:
+    """The exact body ``/api/inference/load`` is sent — the executed lane.
+
+    Kept separate from ``ReferenceConfig.launch_line``: that one is a template
+    for reproduction, this one is what the launcher really asks the runtime for,
+    including the KV type and window the server ends up with.
+    """
+    return {
+        "model_path": str(entry["model"]),
         "gguf_variant": str(entry["quant"]),
-        "max_seq_length": int(entry.get("context_window") or DEFAULT_CONTEXT_WINDOW),
+        "max_seq_length": int(entry["context_window"]),
         "n_parallel": 1,
         "gpu_memory_mode": "auto",
         "cache_type_kv": str(entry.get("kv_type") or "q8_0"),
@@ -139,6 +187,22 @@ def load_entry(base_url: str, key: str, entry: dict[str, Any], timeout_s: float 
             "--top-p", "1",
         ],
     }
+
+
+def load_entry(base_url: str, key: str, entry: dict[str, Any], timeout_s: float = 900) -> tuple[bool, str]:
+    """Load one configuration through the studio's own API and wait for it.
+
+    The request actually sent is stored on ``entry["executed"]`` so the caller
+    can put it in the report beside the declared template instead of passing the
+    template off as the executed command.
+    """
+    model = str(entry["model"])
+    studio_api(base_url, "/api/inference/unload", key, {"model_path": model})
+    payload = load_request(entry)
+    entry["executed"] = {
+        "method": "studio-api POST /api/inference/load",
+        "request": payload,
+    }
     started = time.time()
     result = studio_api(base_url, "/api/inference/load", key, payload)
     if result.get("error"):
@@ -149,12 +213,12 @@ def load_entry(base_url: str, key: str, entry: dict[str, Any], timeout_s: float 
         models = api(base_url, "/models") or {}
         row = next((m for m in models.get("data", []) if m.get("id") == model), None)
         if row and row.get("loaded"):
-            props = api(base_url, "/props")
-            n_ctx = ((props or {}).get("default_generation_settings") or {}).get("n_ctx")
-            note = f"загружена за {int(time.time() - started)} с, n_ctx={n_ctx}"
-            if n_ctx and int(n_ctx) < int(entry.get("context_window") or 0):
-                note += " — окно урезано по VRAM (auto), допуск long context будет честно провален"
-            return True, note
+            payload_props = props(base_url)
+            mismatch = _loaded_mismatch(payload_props, entry)
+            if mismatch:
+                return False, f"загрузка за {int(time.time() - started)} с, но {mismatch}"
+            n_ctx = ((payload_props or {}).get("default_generation_settings") or {}).get("n_ctx")
+            return True, f"загружена за {int(time.time() - started)} с, n_ctx={n_ctx}, файл подтверждён"
         time.sleep(5)
     return False, "модель не загрузилась за отведённое время"
 
@@ -171,7 +235,16 @@ def stop() -> None:
 
 
 def up(entry: dict[str, Any]) -> tuple[bool, str, str]:
-    """Server up and model loaded. Returns ``(ok, note, api_key)``."""
+    """Server up and model loaded. Returns ``(ok, note, api_key)``.
+
+    ``entry`` is expected to be the *effective* view (``ReferenceConfig.effective``).
+    A raw entry is filled from the policy window once, so no later step has to
+    guess a different fallback. The dict is filled in place: after the call it
+    carries ``executed`` — the load request that was really sent — which the
+    caller records next to the declared template.
+    """
+    if not entry.get("context_window"):
+        entry["context_window"] = int(_policy().get("context_window") or DEFAULT_CONTEXT_WINDOW)
     base_url = str(entry.get("base_url") or "http://127.0.0.1:8888/v1")
     key = ensure_server(base_url, entry)
     ok, note = load_entry(base_url, key, entry)

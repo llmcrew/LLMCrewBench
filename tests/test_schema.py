@@ -220,7 +220,7 @@ def test_document_size_cap_is_enforced(tmp_path: Path, capsys, monkeypatch):
 
 def test_oversized_fields_are_rejected():
     assert any("longer than" in error for error in schema.validate_task(_det(title="т" * 201)))
-    assert any("longer than" in error for error in schema.validate_task(_det(prompt="п" * 262145)))
+    assert any("longer than" in error for error in schema.validate_task(_det(prompt="п" * 1048577)))
     assert any("more than" in error for error in schema.validate_task(_det(languages=["ru"] * 33)))
     assert any("more than" in error for error in schema.validate_task(_det(holdout_seeds=list(range(65)))))
 

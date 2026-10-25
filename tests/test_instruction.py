@@ -10,6 +10,8 @@ exclusion should have dropped, and ``>`` in place of ``>=``.
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from dataclasses import replace
 
 import pytest
@@ -291,7 +293,7 @@ def test_if6_is_a_pilot_scenario_only() -> None:
     assert module.expected_ids_for() == instruction.IDS
     assert module.expected_ids_for("pilot") == ("IF-6",)
     assert module.expected_ids_for("stretch-v1") == instruction.STRETCH_IDS
-    assert instruction.STRETCH_IDS == instruction.IDS + ("IF-6", "IF-7", "IF-7-KK", "IF-8")
+    assert instruction.STRETCH_IDS == instruction.IDS + ("IF-6", "IF-7", "IF-7-KK", "IF-8", "IF-9", "IF-10")
 
     def generated(profile: str) -> list[TaskInstance]:
         return instruction.generate(task_rng(1, "A"), RunConfig(profile=profile))
@@ -302,10 +304,10 @@ def test_if6_is_a_pilot_scenario_only() -> None:
 
     stretch = generated("stretch-v1")
     assert [task.id for task in stretch] == list(instruction.STRETCH_IDS)
-    # The stretch profile splits the fixed category total over its nine tasks.
+    # The stretch profile splits the fixed category total over its eleven tasks.
     apply_profile_weights(stretch, "stretch-v1")
     assert sum(task.max_points for task in stretch) == core.CATEGORY_POINTS["A"] == 10.0
-    # 10 / 9 leaves a 1e-4-scale rounding tail on the last task.
+    # 10 / 11 leaves a 1e-4-scale rounding tail on the last task.
     assert max(task.max_points for task in stretch) - min(task.max_points for task in stretch) <= 0.0002
 
 
@@ -315,4 +317,301 @@ def test_if6_registered_evaluator_is_the_dispatched_one() -> None:
     assert score.earned == 2.0
     assert [check.name for check in score.checks] == ["json_format", "ids", "aggregate"]
     with pytest.raises(KeyError):
-        instruction.evaluate(replace(task, id="IF-9"), _transcript(task, ""))
+        instruction.evaluate(replace(task, id="IF-99"), _transcript(task, ""))
+
+
+# --------------------------------------------------------------------------- #
+# N7 — composite selection (IF-9/IF-10): rule priority, NFC keys, correction
+# --------------------------------------------------------------------------- #
+
+N7_HEADER = ("id", "key", "zone", "severity", "score", "ts", "rev", "muted")
+
+
+def _n7_task(seed: int, scenario: str = "IF-9") -> TaskInstance:
+    tasks = instruction.generate(task_rng(seed, "A"), RunConfig(profile="stretch-v1"))
+    return next(task for task in tasks if task.id == scenario)
+
+
+def _n7_table(task: TaskInstance) -> list[dict[str, str]]:
+    header, *rest = task.prompt.split("\n\n")[1].split("\n")
+    assert tuple(header.split("\t")) == N7_HEADER
+    return [dict(zip(N7_HEADER, line.split("\t"))) for line in rest]
+
+
+def _n7_bounds(task: TaskInstance) -> tuple[str, int, int]:
+    """The zone and both bounds read from the brief itself, not from the oracle."""
+    zone = re.search(r"zone = (\w+)", task.prompt).group(1)
+    first = int(re.search(r"score >= (\d+)", task.prompt).group(1))
+    second = int(re.search(r"теперь (\d+)", task.dialogue[0]).group(1))
+    return zone, first, second
+
+
+def _n7_select(task: TaskInstance, threshold: int, keep_muted: bool = False,
+               merge_keys: bool = True) -> list[dict[str, str]]:
+    zone, _, _ = _n7_bounds(task)
+    kept = [
+        row for row in _n7_table(task)
+        if row["zone"] == zone and row["severity"] == "critical"
+        and int(row["score"]) >= threshold
+        and (keep_muted or row["muted"] != "yes")
+    ]
+    best: dict[str, dict[str, str]] = {}
+    for row in kept:
+        if not merge_keys:
+            best[f"{row['key']}#{row['id']}"] = row
+            continue
+        key = unicodedata.normalize("NFC", row["key"])
+        if key not in best or int(row["rev"]) > int(best[key]["rev"]):
+            best[key] = row
+    return sorted(best.values(), key=lambda row: (-int(row["score"]), row["ts"], int(row["id"])))
+
+
+def _n7_answer(rows: list[dict[str, str]]) -> str:
+    picks = [{"id": int(row["id"]), "score": int(row["score"])} for row in rows]
+    return _answer({"picks": picks, "count": len(picks), "total": sum(item["score"] for item in picks)})
+
+
+@pytest.mark.parametrize("scenario", ("IF-9", "IF-10"))
+def test_n7_scenario_contract(scenario: str) -> None:
+    task = _n7_task(1, scenario)
+    assert task.id == scenario and task.category == "A"
+    assert task.max_points == 1.0
+    assert task.private is True and task.fresh_after == instruction.FRESH_AFTER
+    assert len(task.dialogue) == 1
+    score = instruction.evaluate(task, _transcript(task, "не знаю"))
+    assert score.possible == 1.0
+    assert [check.name for check in score.checks] == ["json_format", "records", "ordering"]
+    assert [check.points for check in score.checks] == [0.25, 0.375, 0.375]
+    assert _checks(score) == {"json_format": False, "records": False, "ordering": False}
+    assert json.loads(task.oracle["reference"]) == {
+        "picks": task.oracle["picks"],
+        "count": task.oracle["count"],
+        "total": task.oracle["total"],
+    }
+    assert task.oracle["count"] == len(task.oracle["picks"])
+
+
+def test_n7_does_not_leak_the_oracle_into_the_prompt() -> None:
+    task = _n7_task(1)
+    assert task.oracle["reference"] not in task.prompt
+    assert '"picks":[{"id":0' in task.prompt  # the shape is an example, not the answer
+    assert "Поправка" not in task.prompt  # the correction stays in the dialogue
+    assert f"score >= {task.oracle['threshold1']}" in task.prompt
+    assert f"score >= {task.oracle['threshold2']}" not in task.prompt
+
+
+@pytest.mark.parametrize("scenario", ("IF-9", "IF-10"))
+def test_n7_reference_scores_full_and_garbage_zero(scenario: str) -> None:
+    for seed in DEV_SEEDS:
+        task = _n7_task(seed, scenario)
+        good = instruction.evaluate(task, _transcript(task, task.oracle["reference"]))
+        assert good.earned == good.possible == 1.0
+        assert _checks(good) == {"json_format": True, "records": True, "ordering": True}
+        for garbage in ("не знаю", ""):
+            assert instruction.evaluate(task, _transcript(task, garbage)).earned == 0.0
+
+
+def test_n7_oracle_matches_an_independent_reading() -> None:
+    for seed in DEV_SEEDS:
+        select = _n7_task(seed, "IF-9")
+        __, first, second = _n7_bounds(select)
+        live = _n7_select(select, second)
+        assert [int(row["id"]) for row in live] == select.oracle["ids"]
+        assert sum(int(row["score"]) for row in live) == select.oracle["total"]
+        superseded = [int(row["id"]) for row in _n7_select(select, first)]
+        assert superseded == select.oracle["superseded_ids"]
+        assert superseded != select.oracle["ids"]
+
+        empty = _n7_task(seed, "IF-10")
+        __, first, second = _n7_bounds(empty)
+        assert _n7_select(empty, second) == []
+        assert (empty.oracle["ids"], empty.oracle["count"], empty.oracle["total"]) == ([], 0, 0)
+        assert [int(row["id"]) for row in _n7_select(empty, first)] == empty.oracle["superseded_ids"]
+
+
+def test_n7_fixture_edges_are_the_declared_ones() -> None:
+    for seed in DEV_SEEDS:
+        task = _n7_task(seed)
+        rows = {int(row["id"]): row for row in _n7_table(task)}
+        assert 11 <= len(rows) <= 13
+        assert task.meta["rows"] == len(rows)
+
+        muted = rows[task.oracle["muted_id"]]
+        assert muted["muted"] == "yes"
+        assert int(muted["score"]) == max(int(row["score"]) for row in rows.values())
+        assert muted["zone"] == task.oracle["zone"] and muted["severity"] == "critical"
+
+        first_tie, second_tie = task.oracle["tie_ids"]
+        assert first_tie == task.oracle["ids"][0] and second_tie == task.oracle["ids"][1]
+        assert rows[first_tie]["score"] == rows[second_tie]["score"] == str(task.oracle["threshold2"])
+        assert rows[first_tie]["ts"] < rows[second_tie]["ts"]
+        assert first_tie > second_tie  # a tie-break by id would invert the expected order
+
+        for low_id in task.oracle["low_rev_ids"]:
+            low = rows[low_id]
+            twin = next(
+                row for row in rows.values()
+                if row["id"] != low["id"]
+                and unicodedata.normalize("NFC", row["key"]) == unicodedata.normalize("NFC", low["key"])
+            )
+            assert low["key"] != twin["key"], "both spellings really differ"
+            assert int(twin["rev"]) > int(low["rev"])
+            assert int(low["id"]) not in task.oracle["ids"]
+
+        assert all(rows[item]["zone"] == task.oracle["zone"] for item in task.oracle["ids"])
+        assert len(set(task.oracle["ids"])) == len(task.oracle["ids"])
+
+
+def test_n7_correction_empties_the_second_variant() -> None:
+    for seed in DEV_SEEDS:
+        task = _n7_task(seed, "IF-10")
+        assert task.oracle["picks"] == []
+        assert task.oracle["superseded_ids"]
+        assert task.oracle["threshold2"] > max(int(row["score"]) for row in _n7_table(task))
+        assert task.oracle["reference"] == '{"picks":[],"count":0,"total":0}'
+
+
+def test_n7_is_seed_deterministic() -> None:
+    for scenario in ("IF-9", "IF-10"):
+        first = _n7_task(17, scenario)
+        second = _n7_task(17, scenario)
+        assert (first.prompt, first.oracle, first.dialogue) == (second.prompt, second.oracle, second.dialogue)
+        assert first.prompt != _n7_task(18, scenario).prompt
+
+
+def test_n7_holdout_seeds_keep_the_same_invariants() -> None:
+    for seed in HOLDOUT_SEEDS:
+        for scenario in ("IF-9", "IF-10"):
+            task = _n7_task(seed, scenario)
+            __, first, second = _n7_bounds(task)
+            live = [int(row["id"]) for row in _n7_select(task, second)]
+            assert live == task.oracle["ids"]
+            assert instruction.evaluate(task, _transcript(task, task.oracle["reference"])).earned == 1.0
+            assert instruction.evaluate(task, _transcript(task, "не знаю")).earned == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# N7 target mutants
+# --------------------------------------------------------------------------- #
+
+
+def test_n7_almost_right_json_loses_only_the_format_point() -> None:
+    task = _n7_task(1)
+    reference = task.oracle["reference"]
+    reference_payload = json.loads(reference)
+
+    fenced = instruction.evaluate(task, _transcript(task, "```json\n" + reference + "\n```"))
+    assert fenced.earned == 0.75
+    assert _checks(fenced) == {"json_format": False, "records": True, "ordering": True}
+
+    padded = instruction.evaluate(task, _transcript(task, "Готово:\n" + reference + "\nконец"))
+    assert _checks(padded) == {"json_format": False, "records": True, "ordering": True}
+
+    extra_key = {**reference_payload, "note": "ok"}
+    assert _checks(instruction.evaluate(task, _transcript(task, _answer(extra_key))))["json_format"] is False
+
+    string_count = {**reference_payload, "count": str(reference_payload["count"])}
+    assert _checks(instruction.evaluate(task, _transcript(task, _answer(string_count))))["json_format"] is False
+
+    extra_field = {**reference_payload, "picks": [{**item, "ts": "09:00"} for item in reference_payload["picks"]]}
+    assert _checks(instruction.evaluate(task, _transcript(task, _answer(extra_field))))["json_format"] is False
+
+
+def test_n7_wrong_tie_break_keeps_the_records_but_loses_the_order() -> None:
+    task = _n7_task(1)
+    payload = json.loads(task.oracle["reference"])
+    payload["picks"] = list(reversed(payload["picks"]))
+    assert [item["id"] for item in payload["picks"]] != task.oracle["ids"]
+
+    score = instruction.evaluate(task, _transcript(task, _answer(payload)))
+    assert score.earned == 0.625
+    assert _checks(score) == {"json_format": True, "records": True, "ordering": False}
+
+
+def test_n7_ignored_correction_answers_the_old_bound() -> None:
+    task = _n7_task(1)
+    __, first, _second = _n7_bounds(task)
+    stale = _n7_select(task, first)
+    assert stale
+
+    score = instruction.evaluate(task, _transcript(task, _n7_answer(stale)))
+    assert score.earned == 0.25
+    assert _checks(score) == {"json_format": True, "records": False, "ordering": False}
+
+
+def test_n7_muted_record_survives_a_missing_exclusion_rule() -> None:
+    task = _n7_task(1)
+    __, _first, second = _n7_bounds(task)
+    leaked = _n7_select(task, second, keep_muted=True)
+    assert task.oracle["muted_id"] in [int(row["id"]) for row in leaked]
+
+    score = instruction.evaluate(task, _transcript(task, _n7_answer(leaked)))
+    assert score.earned == 0.25
+    assert _checks(score) == {"json_format": True, "records": False, "ordering": False}
+
+
+def test_n7_naive_nfc_keeps_the_superseded_spellings() -> None:
+    task = _n7_task(1)
+    __, _first, second = _n7_bounds(task)
+    unmerged = _n7_select(task, second, merge_keys=False)
+    got = [int(row["id"]) for row in unmerged]
+    extra = set(got) - set(task.oracle["ids"])
+    assert extra and extra <= set(task.oracle["low_rev_ids"])
+    assert got != task.oracle["ids"]
+
+    score = instruction.evaluate(task, _transcript(task, _n7_answer(unmerged)))
+    assert score.earned == 0.25
+    assert _checks(score) == {"json_format": True, "records": False, "ordering": False}
+
+
+def test_n7_empty_variant_rejects_the_pre_correction_answer() -> None:
+    task = _n7_task(1, "IF-10")
+    __, first, _second = _n7_bounds(task)
+    stale = _n7_select(task, first)
+    assert stale
+
+    score = instruction.evaluate(task, _transcript(task, _n7_answer(stale)))
+    assert score.earned == 0.25
+    assert _checks(score) == {"json_format": True, "records": False, "ordering": False}
+
+    empty = instruction.evaluate(task, _transcript(task, '{"picks":[],"count":0,"total":0}'))
+    assert empty.earned == 1.0
+
+    padded = instruction.evaluate(task, _transcript(task, "Итог: {\"picks\":[],\"count\":0,\"total\":0}."))
+    assert _checks(padded) == {"json_format": False, "records": True, "ordering": True}
+
+
+# --------------------------------------------------------------------------- #
+# N7 profile registration
+# --------------------------------------------------------------------------- #
+
+
+def test_n7_is_a_stretch_scenario_only() -> None:
+    module = core.REGISTRY["A"]
+    assert module.expected_ids_for("stretch-v1") == instruction.STRETCH_IDS
+    assert instruction.STRETCH_IDS[-2:] == ("IF-9", "IF-10")
+    assert {"IF-9", "IF-10"} <= instruction.PRIVATE_IDS
+    assert module.expected_ids_for("pilot") == ("IF-6",)
+
+    def generated(profile: str) -> list[TaskInstance]:
+        return instruction.generate(task_rng(1, "A"), RunConfig(profile=profile))
+
+    assert not {"IF-9", "IF-10"} & {task.id for task in generated(core.DEFAULT_PROFILE)}
+    assert not {"IF-9", "IF-10"} & {task.id for task in generated("pilot")}
+
+    stretch = generated("stretch-v1")
+    assert [task.id for task in stretch][-2:] == ["IF-9", "IF-10"]
+    assert all(task.private for task in stretch if task.id in ("IF-9", "IF-10"))
+    apply_profile_weights(stretch, "stretch-v1")
+    assert sum(task.max_points for task in stretch) == core.CATEGORY_POINTS["A"] == 10.0
+    assert max(task.max_points for task in stretch) - min(task.max_points for task in stretch) <= 0.0002
+
+
+def test_n7_registered_evaluator_is_the_dispatched_one() -> None:
+    for scenario in ("IF-9", "IF-10"):
+        task = _n7_task(1, scenario)
+        score = core.REGISTRY["A"].evaluate(task, _transcript(task, task.oracle["reference"]))
+        assert score.earned == 1.0
+        assert [check.name for check in score.checks] == ["json_format", "records", "ordering"]
+    with pytest.raises(KeyError):
+        instruction.evaluate(replace(_n7_task(1), id="IF-99"), _transcript(_n7_task(1), ""))

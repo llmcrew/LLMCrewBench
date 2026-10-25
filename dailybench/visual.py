@@ -14,13 +14,18 @@ that exposes
 Everything else — how many objects, what must be where after how many steps,
 which colours must be visible — is the scenario's business. This module only
 owns the parts that must be identical across all twenty: the prompt contract,
-the extraction of the answer, the deterministic render, and the four checks
-(``html``, ``scene``, ``simulation``, ``image``, one point each) that turn a
-render into a score.
+the extraction of the answer, the deterministic render, and the five checks
+(``html``, ``runtime``, ``scene``, ``simulation``, ``image``) that turn a render
+into a score. The checks are separate promises (M09): a page protocol, a
+misbehaving page, the scene and the simulation it reports, and the frame — the
+frame is measured from its own PNG bytes outside the page and at a hidden second
+sample (H17), so a black overlay or a picture unrelated to the state fails
+``image`` alone instead of the whole task.
 
 The library is pinned and served locally: ``./vendor/three.module.js`` is the
 only import an answer may use, and any request that leaves loopback is refused
-and reported. A page that quietly needs the internet is not a working page.
+and reported. A page that quietly needs the internet is not a working page;
+HTTP loads and WebSocket handshakes share one classifier and one penalty.
 """
 
 from __future__ import annotations
@@ -32,15 +37,24 @@ import json
 import os
 import platform
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from . import browser, core
 
-#: Every visual scenario carries four checks of one point.
-POINTS_PER_CHECK = 1.0
-CHECK_NAMES = ("html", "scene", "simulation", "image")
+#: Every visual scenario carries five checks; the task still costs four points,
+#: so each check is worth 0.8. The split is the rubric (M09): a document and a
+#: protocol, the runtime, the scene, the simulation and the frame are different
+#: promises, and one of them breaking must not zero the others.
+POINTS_PER_CHECK = 0.8
+CHECK_NAMES = ("html", "runtime", "scene", "simulation", "image")
+
+#: Share of ``steps`` added for the hidden variation of the initial conditions:
+#: the frame is scored at the declared sample *and* at a second one the prompt
+#: does not name. A picture painted once and never updated passes only the first.
+VARIATION_SHARE = 0.5
 
 #: The file an agent writes the page into. Graded from disk: an agent run is
 #: judged on what it produced, not on what it said.
@@ -106,8 +120,19 @@ def extract_html(text: str) -> str:
     return ""
 
 
+def remote_urls(html: str) -> list[str]:
+    """Requests the page declares against a remote host."""
+    return re.findall(r"(?:src|href)\s*=\s*[\"'](https?://[^\"']+)", html)
+
+
 def looks_like_document(html: str) -> tuple[bool, str]:
-    """Static pre-checks: a whole document, a module script, no remote URLs."""
+    """Static pre-checks: a whole document, a module script, the local library.
+
+    Remote ``src``/``href`` are *not* vetoed here: the renderer refuses them and
+    records the attempt, so an HTTP escape and a WebSocket escape — which the
+    static text cannot see — cost the same ``runtime`` check instead of the
+    former zeroing every check while the latter cost one.
+    """
     if not html:
         return False, "в ответе нет HTML-документа"
     lowered = html.lower()
@@ -117,9 +142,6 @@ def looks_like_document(html: str) -> tuple[bool, str]:
         return False, "нет ни одного <script>"
     if "three.module.js" not in html:
         return False, "страница не подключает ./vendor/three.module.js"
-    remote = re.findall(r"(?:src|href)\s*=\s*[\"'](https?://[^\"']+)", html)
-    if remote:
-        return False, f"внешние ресурсы запрещены: {remote[:3]}"
     return True, ""
 
 
@@ -404,6 +426,14 @@ class VisualSpec:
     steps: int
     dt: float = 1 / 60
     need_same_frame: bool = True
+    variation_steps: int = 0
+    """Extra steps for the hidden second sample; ``0`` derives it from ``steps``."""
+
+    def variation(self) -> int:
+        """Steps of the unnamed second sample the frame is also scored at."""
+        if self.steps <= 0:
+            return 0
+        return self.variation_steps or max(1, round(self.steps * VARIATION_SHARE))
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -411,6 +441,7 @@ class VisualSpec:
             "steps": self.steps,
             "dt": self.dt,
             "need_same_frame": self.need_same_frame,
+            "variation_steps": self.variation_steps,
         }
 
 
@@ -430,11 +461,11 @@ def _predicates_report(predicates: Sequence[Predicate], payload: dict[str, Any])
 #: Frame-format version for the cache key. Bumped when the *scoring contract*
 #: changes; the render environment is fingerprinted separately below, so a new
 #: browser or library invalidates the cache without a manual bump.
-FRAME_VERSION = 1
+FRAME_VERSION = 2
 
 #: Schema of the render fingerprint. Bumped when the fingerprint *composition*
 #: changes, not when one of its inputs does — inputs hash themselves.
-RENDER_FINGERPRINT_VERSION = 1
+RENDER_FINGERPRINT_VERSION = 2
 
 
 def _sha_file(path: Path) -> str:
@@ -444,28 +475,131 @@ def _sha_file(path: Path) -> str:
         return "missing"
 
 
-def _browser_build() -> str:
-    """Identity of the installed browser, without launching it.
+def _sha_big(path: Path) -> str:
+    """Hash of a large file, in chunks: a browser binary is hundreds of MiB."""
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return "missing"
+    return digest.hexdigest()
 
-    A different Chromium build changes pixels, so a frame from the old build is
-    not evidence for the new one. The playwright version and the installed
-    ``chromium-*`` directories name the build; an absent install stays ``?``.
+
+#: Install directory of a browser build: ``chromium-1243``, and its headless
+#: shell twin ``chromium_headless_shell-1243``.
+_REVISION = re.compile(r"^chromium(?:_headless_shell)?-(\d+)$")
+
+#: Name of the binary ``headless=True`` starts inside a shell build.
+_SHELL_NAME = "chrome-headless-shell"
+
+
+def _platform_tag() -> str:
+    """``<os>/<arch>``: pixels differ between platforms for the same build."""
+    return f"{platform.system() or '?'}/{platform.machine() or '?'}"
+
+
+@functools.lru_cache(maxsize=1)
+def _browser_executable() -> Path | None:
+    """The browser binary playwright resolves, without launching it.
+
+    ``None`` when playwright or its browser is missing: the identity then stays
+    an explicit ``?`` instead of guessing from install directories.
     """
-    parts = [f"playwright={_package_version('playwright')}"]
-    roots: list[Path] = []
-    raw = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if raw and raw != "0":
-        roots.append(Path(raw))
-    roots += [
-        Path.home() / ".cache" / "ms-playwright",
-        Path.home() / "Library" / "Caches" / "ms-playwright",
-    ]
-    for root in roots:
-        try:
-            parts += sorted(entry.name for entry in root.iterdir() if entry.name.startswith("chromium"))
-        except OSError:
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as pw:
+            return Path(pw.chromium.executable_path)
+    except Exception:  # pragma: no cover - depends on the machine
+        return None
+
+
+def _headless_shell(executable: Path) -> Path | None:
+    """The build a headless launch really starts, next to the full browser.
+
+    ``launch(headless=True)`` runs ``chrome-headless-shell``: the full Chromium
+    beside it never paints a frame and must not stand in for it.
+    """
+    for parent in executable.parents:
+        match = _REVISION.match(parent.name)
+        if not match:
             continue
-    return "|".join(parts) or "?"
+        shell_root = parent.with_name(f"chromium_headless_shell-{match.group(1)}")
+        for candidate in sorted(shell_root.glob(f"**/{_SHELL_NAME}*")):
+            if candidate.is_file() and candidate.suffix != ".dSYM":
+                return candidate
+    return None
+
+
+def _revision_of(executable: Path) -> str:
+    """Build revision from the install directory, the only place it is written."""
+    for part in executable.parts:
+        match = _REVISION.match(part)
+        if match:
+            return match.group(1)
+    return "?"
+
+
+@functools.lru_cache(maxsize=8)
+def _executable_version(path: str) -> str:
+    """Version the binary reports itself, ``?`` when it cannot answer."""
+    try:
+        done = subprocess.run(
+            [path, "--version"], capture_output=True, text=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "?"
+    lines = (done.stdout or done.stderr or "").strip().splitlines()
+    return lines[0][:80] if lines and done.returncode == 0 else "?"
+
+
+def _executable_identity(executable: Path) -> dict[str, str]:
+    """Who renders: path, build revision, self-reported version and bytes."""
+    try:
+        info = executable.stat()
+    except OSError:
+        info = None
+    return _identity_of(
+        str(executable),
+        info.st_size if info else -1,
+        info.st_mtime_ns if info else -1,
+    )
+
+
+@functools.lru_cache(maxsize=8)
+def _identity_of(path: str, size: int, mtime_ns: int) -> dict[str, str]:
+    """One executable's identity, reused until its bytes on disk move on."""
+    executable = Path(path)
+    return {
+        "path": path,
+        "revision": _revision_of(executable),
+        "version": _executable_version(path),
+        "sha": _sha_big(executable),
+    }
+
+
+def _render_environment() -> dict[str, Any]:
+    """The rendering build and platform, recorded beside every frame.
+
+    Page content alone is not enough: the same HTML renders differently after a
+    rebuild or a swap of the browser. The playwright version only names the
+    driver — it is unchanged when the executable under it is replaced, so it is
+    auxiliary here, not identification.
+    """
+    executable = _browser_executable()
+    builds: list[Path] = []
+    if executable is not None:
+        builds.append(executable)
+        shell = _headless_shell(executable)
+        if shell is not None and shell != executable:
+            builds.append(shell)
+    return {
+        "platform": _platform_tag(),
+        "playwright": _package_version("playwright"),
+        "launch_executables": [_executable_identity(build) for build in builds] or "?",
+    }
 
 
 def _package_version(name: str) -> str:
@@ -480,8 +614,8 @@ def _render_fingerprint() -> str:
     """Hash of everything that decides what a frame looks like.
 
     Page content alone is not enough: the same HTML renders differently after a
-    vendor bump, a different Chromium, other GL flags, a changed extractor or
-    capture profile. Each of those was able to serve a stale frame as a hit.
+    vendor bump, another browser executable, other GL flags, a changed extractor
+    or capture profile. Each of those was able to serve a stale frame as a hit.
     """
     payload = {
         "schema": RENDER_FINGERPRINT_VERSION,
@@ -489,7 +623,8 @@ def _render_fingerprint() -> str:
         "vendor": {
             name: _sha_file(browser.VENDOR / name) for name in ("three.module.js", "three.core.js")
         },
-        "browser": _browser_build(),
+        # executable, его сборка и платформа: кадр принадлежит им, а не версии пакета
+        "environment": _render_environment(),
         # драйвер и extractor: правка browser.py меняет способ снятия кадра
         "driver": _sha_file(Path(browser.__file__)),
         "extractor": hashlib.sha256(browser.PIXEL_PROBE.encode("utf-8")).hexdigest(),
@@ -611,6 +746,9 @@ def _cached_render(html: str, steps: int, dt: float) -> tuple[browser.RenderResu
         shot.write_bytes(result.shot)
     try:
         payload = result.as_dict()
+        # Каким браузером и на какой платформе снят кадр: доказательство,
+        # которое нельзя вывести из одного заголовка файла.
+        payload["environment"] = _render_environment()
         payload["result"] = {
             "ok": result.ok,
             "reason": result.reason,
@@ -620,6 +758,9 @@ def _cached_render(html: str, steps: int, dt: float) -> tuple[browser.RenderResu
             "stepped": result.stepped,
             "pixels": result.pixels,
             "pixels_again": result.pixels_again,
+            "probe_ok": result.probe_ok,
+            "ready_ok": result.ready_ok,
+            "step_ok": result.step_ok,
             "shot_sha": result.shot_sha,
             "shot_sha_again": result.shot_sha_again,
             "duration_s": result.duration_s,
@@ -665,8 +806,98 @@ def measure(task: core.TaskInstance, transcript: core.Transcript) -> tuple[brows
     return result, spec.as_dict().__repr__()
 
 
+#: Screen axes: probe ``x`` grows to the right, probe ``y`` grows upwards, so a
+#: rising ``y`` moves the picture *up* (negative screen y).
+_PROBE_AXES = {"x": (0, 1.0), "y": (1, -1.0)}
+#: Smallest centroid shift (share of the frame) that counts as "the picture moved".
+#: Large enough that scattered objects (particles, boids) cannot contradict the
+#: probe by their own jitter: a diffuse cloud's centroid is a weak witness.
+MOTION_MIN_SHIFT = 0.05
+
+
+def _numeric_leaves(payload: Any, prefix: str = "") -> dict[str, float]:
+    """Flatten a probe payload to ``{"balls.0.x": 2.0, ...}``."""
+    found: dict[str, float] = {}
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            found.update(_numeric_leaves(value, f"{prefix}.{key}" if prefix else str(key)))
+    elif isinstance(payload, list):
+        for index, value in enumerate(payload):
+            found.update(_numeric_leaves(value, f"{prefix}.{index}"))
+    elif isinstance(payload, (int, float)) and not isinstance(payload, bool):
+        found[prefix] = float(payload)
+    return found
+
+
+def _axis_motion(base_probe: dict[str, Any], varied_probe: dict[str, Any]) -> tuple[str, float] | None:
+    """Largest ``x``/``y`` change between two probes, if the probe moved at all."""
+    base = _numeric_leaves(base_probe)
+    varied = _numeric_leaves(varied_probe)
+    moves = [
+        (abs(varied[path] - value), path, varied[path] - value)
+        for path, value in base.items()
+        if path in varied and path.rsplit(".", 1)[-1] in _PROBE_AXES and varied[path] != value
+    ]
+    if not moves:
+        return None
+    _, path, delta = max(moves)
+    return path, delta
+
+
+def _motion_check(
+    base_probe: dict[str, Any],
+    varied_probe: dict[str, Any],
+    base_stats: dict[str, Any],
+    varied_stats: dict[str, Any],
+) -> tuple[bool | None, str]:
+    """Does the picture move the way the probe's own numbers say it does?
+
+    ``None`` when the probe reports no ``x``/``y`` movement to compare: the
+    frame is then only required to differ. Otherwise the largest declared shift
+    picks the axis and a colour class that is on screen in both frames must
+    follow it — a drawing unrelated to the reported state fails here even
+    though both frames render.
+    """
+    motion = _axis_motion(base_probe, varied_probe)
+    if motion is None:
+        return None, "probe не сообщил сдвига по x/y"
+    path, delta = motion
+    axis, screen_sign = _PROBE_AXES[path.rsplit(".", 1)[-1]]
+    wanted = screen_sign * (1.0 if delta > 0 else -1.0)
+    seen: list[str] = []
+    agreeing = False
+    contradicting = False
+    for name in ("warm", "cool", "bright", "dark"):
+        before = base_stats.get(name) or {}
+        after = varied_stats.get(name) or {}
+        if not before.get("centroid") or not after.get("centroid"):
+            continue
+        if float(before.get("fraction") or 0) < 0.0005:
+            continue
+        shift = float(after["centroid"][axis]) - float(before["centroid"][axis])
+        seen.append(f"{name} {shift:+.3f}")
+        if shift * wanted >= MOTION_MIN_SHIFT:
+            agreeing = True
+        elif shift * wanted <= -MOTION_MIN_SHIFT:
+            contradicting = True
+    detail = f"{path} {delta:+.3f} → пиксели {', '.join(seen) or 'объект не виден'}"
+    if agreeing or not contradicting:
+        # Маленькие и многочисленные объекты (стая, частицы) сдвигают общий
+        # центроид класса слабо: согласие — плюс, противоречие — минус.
+        return True, detail
+    return False, f"{path} {delta:+.3f}, но пиксели ушли против probe: {', '.join(seen)}"
+
+
 def evaluate(task: core.TaskInstance, transcript: core.Transcript) -> core.Score:
-    """The four checks every visual scenario shares."""
+    """The five checks every visual scenario shares.
+
+    The checks are independent promises (M09): ``html`` is the document and the
+    page protocol, ``runtime`` is a page that misbehaved (console error, page
+    error, a refused request of either transport), ``scene``/``simulation`` are
+    the probe against the Python recomputation, and ``image`` is the frame
+    measured from its own PNG bytes (H17) at the declared sample and at a hidden
+    second one.
+    """
     score = core.Score(task_id=task.id, category=task.category)
     spec = VisualSpec(**task.oracle["spec"])
 
@@ -678,42 +909,85 @@ def evaluate(task: core.TaskInstance, transcript: core.Transcript) -> core.Score
         score.notes.append(unavailable)
         return score
 
+    def all_failed(detail: str) -> core.Score:
+        for name in CHECK_NAMES:
+            score.add(name, False, POINTS_PER_CHECK, detail)
+        return score
+
     html = extract_html(page_of(task, transcript))
 
     static_ok, static_detail = looks_like_document(html)
     if not static_ok:
-        score.add("html", False, POINTS_PER_CHECK, static_detail)
-        for name in CHECK_NAMES[1:]:
-            score.add(name, False, POINTS_PER_CHECK, "проверять нечего: страницы нет")
         score.notes.append("Ответ не содержит исполняемого документа")
-        return score
+        return all_failed(static_detail)
 
     result, _ = _cached_render(html, spec.steps, spec.dt)
-    if not result.ok:
+    if not result.ok or not result.shot:
         reason = result.reason or "; ".join(result.errors[:3]) or "страница не отрисовалась"
-        score.add("html", False, POINTS_PER_CHECK, f"рендер не удался: {reason}")
-        for name in CHECK_NAMES[1:]:
-            score.add(name, False, POINTS_PER_CHECK, "проверять нечего: страница не работает")
         score.notes.append(reason)
-        return score
+        if result.failure:
+            # A worker that never started or died says nothing about the model;
+            # a page that exhausted the declared deadline is the candidate's
+            # outcome. Both stay in the denominator, only the status differs.
+            score.error = f"{core.failure_label(result.failure)}: {reason}"
+            score.failure = result.failure
+        return all_failed(f"рендер не удался: {reason}")
 
-    size = result.pixels or {}
-    detail = f"кадр {size.get('width')}x{size.get('height')}" if size.get("width") else "кадр получен"
-    if result.external:
-        score.add("html", False, POINTS_PER_CHECK, f"внешние запросы: {result.external[:3]}")
-    else:
-        score.add("html", True, POINTS_PER_CHECK, f"документ загружен без ошибок; {detail}")
+    stats = browser.frame_stats(result.shot)
+    detail = f"кадр {stats.get('width')}x{stats.get('height')}" if stats.get("width") else "кадр снят"
 
-    scene_ok, scene_detail = _predicates_report(spec.scene, browser.probe_of(result))
+    # html — документ и протокол страницы (``__ready``/``__probe``/``__step``).
+    # Потерянный probe больше не обнуляет кадр, но и html без протокола не
+    # засчитывается: страницу нельзя ни прочитать, ни продвинуть.
+    missing = [
+        label
+        for label, ok in (
+            ("нет window.__ready", result.ready_ok),
+            ("нет window.__probe()", result.probe_ok),
+            ("нет window.__step(dt)" if spec.steps else "", result.step_ok),
+        )
+        if not ok and label
+    ]
+    score.add(
+        "html",
+        not missing,
+        POINTS_PER_CHECK,
+        f"документ и протокол в порядке; {detail}" if not missing else f"протокол: {'; '.join(missing)}",
+    )
+
+    # runtime — страница отработала, но с ошибками. Обе транспорта-побега
+    # (HTTP-загрузка и WebSocket-рукопожатие) идут одним классификатором и
+    # стоят одинаково: это один и тот же отказ.
+    externals = browser.external_kinds(result.external)
+    runtime_ok = not result.errors and not any(externals.values())
+    runtime_parts: list[str] = []
+    if result.errors:
+        runtime_parts.append(f"ошибки страницы: {'; '.join(result.errors[:3])}")
+    if any(externals.values()):
+        runtime_parts.append(browser.describe_externals(result.external))
+    score.add(
+        "runtime",
+        runtime_ok,
+        POINTS_PER_CHECK,
+        "; ".join(runtime_parts) if runtime_parts else "страница отработала без ошибок и без внешних запросов",
+    )
+
+    probe = browser.probe_of(result)
+    stepped = browser.probe_of(result, stepped=True)
+    scene_ok, scene_detail = _predicates_report(spec.scene, probe)
+    if not result.probe_ok:
+        scene_ok, scene_detail = False, f"нет probe: {scene_detail}"
     score.add("scene", scene_ok, POINTS_PER_CHECK, scene_detail)
 
-    sim_ok, sim_detail = _predicates_report(spec.simulation, browser.probe_of(result, stepped=True))
+    sim_ok, sim_detail = _predicates_report(spec.simulation, stepped)
+    if not result.step_ok or not result.probe_ok:
+        sim_ok, sim_detail = False, f"шаг недоступен: {sim_detail}"
     score.add("simulation", sim_ok, POINTS_PER_CHECK, f"{spec.steps} шагов по {spec.dt:g} с: {sim_detail}")
 
-    pixels = result.pixels if isinstance(result.pixels, dict) else {}
-    image_ok, image_detail = _predicates_report(spec.image, pixels)
-    if spec.need_same_frame and not result.same_frame:
-        image_ok, image_detail = False, f"кадр не воспроизводится: {image_detail}"
+    # image — кадр из PNG, а не из canvas недоверенного realm. Кроме объявленных
+    # предикатов проверяются: воспроизводимость, второй (скрытый) момент и то,
+    # что картинка идёт за числами probe.
+    image_ok, image_detail = _image_check(html, spec, result, stats, stepped)
     score.add("image", image_ok, POINTS_PER_CHECK, image_detail)
 
     path = shot_path(html, spec.steps, spec.dt)
@@ -724,11 +998,67 @@ def evaluate(task: core.TaskInstance, transcript: core.Transcript) -> core.Score
         "shot": str(path) if path.is_file() else "",
         "steps": spec.steps,
         "dt": spec.dt,
-        "pixels": pixels,
+        "pixels": result.pixels if isinstance(result.pixels, dict) else {},
+        "frame": stats,
         "same_frame": result.same_frame,
         "duration_s": round(result.duration_s, 3),
     }
     return score
+
+
+def _image_check(
+    html: str,
+    spec: VisualSpec,
+    result: browser.RenderResult,
+    stats: dict[str, Any],
+    stepped: dict[str, Any],
+) -> tuple[bool, str]:
+    """Score the frame: declared predicates, reproducibility and the hidden sample."""
+    if not stats:
+        return False, "кадр не прочитан"
+    ok, detail = _predicates_report(spec.image, stats)
+    if spec.need_same_frame and not result.same_frame:
+        return False, f"кадр не воспроизводится; {detail}"
+    if not result.step_ok or not result.probe_ok:
+        # Нечем варьировать: второй момент и согласие с probe требуют протокола.
+        # Кадр при этом остаётся оценённым по объявленным предикатам.
+        return ok, f"{detail} (протокола шага нет: кадр только по предикатам)"
+
+    variation = spec.variation()
+    if not variation:
+        return ok, detail
+    # Две пробы: объявленная точка плюс половина шагов, и — если сцена уже в
+    # установившемся режиме — ранняя точка (регулятор, клапан, транзиент).
+    # Объявленные предикаты относятся к объявленной точке, поэтому на пробах
+    # проверяется только связь: кадр сменился или сцена законно неподвижна.
+    tried: list[str] = []
+    static = 0
+    for extra in dict.fromkeys((spec.steps + variation, max(1, spec.steps // 8))):
+        varied, _ = _cached_render(html, extra, spec.dt)
+        if not varied.ok or not varied.shot:
+            tried.append(f"{extra}: не отрисовалось")
+            continue
+        varied_stats = browser.frame_stats(varied.shot)
+        if not varied_stats:
+            tried.append(f"{extra}: кадр не прочитан")
+            continue
+        varied_probe = browser.probe_of(varied, stepped=True)
+        if varied.shot_sha == result.shot_sha:
+            if _axis_motion(stepped, varied_probe) is None:
+                static += 1
+                tried.append(f"{extra}: сцена статична и probe не двигает x/y")
+            else:
+                tried.append(f"{extra}: кадр тот же, хотя probe сдвинул x/y")
+            continue
+        motion, motion_detail = _motion_check(stepped, varied_probe, stats, varied_stats)
+        if motion is False:
+            return False, f"кадр и probe расходятся: {motion_detail}"
+        return ok, f"{detail}; {extra} шагов: {motion_detail}"
+    if static and static == len(tried):
+        # Сцена по своей природе неподвижна (терраин, установившийся режим) и
+        # probe не обещает сдвига: связывать нечего, предикатов достаточно.
+        return ok, f"{detail}; {'; '.join(tried)}"
+    return False, f"кадр не следует за симуляцией: {'; '.join(tried)}"
 
 
 # --------------------------------------------------------------------------- #
@@ -773,6 +1103,7 @@ def build_task(
                 "steps": spec.steps,
                 "dt": spec.dt,
                 "need_same_frame": spec.need_same_frame,
+                "variation_steps": spec.variation_steps,
             },
             "reference": answer,
             "final_answer": answer,

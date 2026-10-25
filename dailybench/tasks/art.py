@@ -76,6 +76,8 @@ IDS_BASELINE = tuple(f"L-{index}" for index in range(1, 30))
 IDS_BY_PROFILE: dict[str, tuple[str, ...]] = {
     "pilot": IDS_BASELINE,
     "stretch-v1": IDS,
+    # The research profile draws no art work.
+    "research-v1": (),
 }
 
 TITLE = "Free-form art"
@@ -177,5 +179,5 @@ core.register(
     generate=generate,
     evaluate=art.evaluate,
     expected_ids=IDS_BASELINE,
-    expected_ids_by_profile={"stretch-v1": IDS},
+    expected_ids_by_profile={"stretch-v1": IDS, "research-v1": ()},
 )

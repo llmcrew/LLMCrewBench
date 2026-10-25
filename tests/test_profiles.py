@@ -50,17 +50,17 @@ PILOT_IDS = [
 #: language/edge-case stratum added by the corpus wave.
 STRETCH_IDS = [
     *[f"IF-{index}" for index in range(1, 7)],
-    "IF-7", "IF-7-KK", "IF-8",
+    "IF-7", "IF-7-KK", "IF-8", "IF-9", "IF-10",
     *[f"R-{index}" for index in range(1, 17)],
     "R-17", "R-17-KK",
-    *[f"C-{index}" for index in range(1, 7)],
-    *[f"T-{index}" for index in range(1, 10)],
-    *[f"LC-{index}" for index in range(1, 8)],
-    "F", "F-2",
+    *[f"C-{index}" for index in range(1, 7)], "N-2",
+    *[f"T-{index}" for index in range(1, 12)],
+    *[f"LC-{index}" for index in range(1, 9)],
+    "F", "F-2", "F-3",
     *[f"G-{index}" for index in range(1, 6)],
     *[f"H-{index}" for index in range(1, 6)],
-    *[f"I-{index}" for index in range(1, 5)],
-    *[f"J-{index}" for index in range(1, 5)],
+    *[f"I-{index}" for index in range(1, 6)],
+    *[f"J-{index}" for index in range(1, 6)],
     *[f"K-{index}" for index in range(1, 31)],
     *[f"L-{index}" for index in range(1, 40)],
 ]
@@ -91,10 +91,12 @@ def test_pilot_and_stretch_expect_the_declared_ids():
     """A module override is profile-specific, and unregistered profiles fall back."""
     module = core.REGISTRY["A"]
     assert module.expected_ids_for() == module.expected_ids
-    assert module.expected_ids_for("stretch-v1") == (*module.expected_ids, "IF-6", "IF-7", "IF-7-KK", "IF-8")
+    assert module.expected_ids_for("stretch-v1") == (
+        *module.expected_ids, "IF-6", "IF-7", "IF-7-KK", "IF-8", "IF-9", "IF-10"
+    )
     assert module.expected_ids_for("pilot") == ("IF-6",)
     assert core.REGISTRY["F"].expected_ids_for("pilot") == ("F-2",)
-    assert core.REGISTRY["F"].expected_ids_for("stretch-v1") == ("F", "F-2")
+    assert core.REGISTRY["F"].expected_ids_for("stretch-v1") == ("F", "F-2", "F-3")
     assert core.REGISTRY["K"].expected_ids_for("pilot") == ("K-21", "K-23", "K-25")
 
     # Every profile is a frozen id list: no extra scenario may slip in and no
@@ -313,3 +315,157 @@ def _delete(path: str) -> core.ModelReply:
         text="",
         tool_calls=[{"id": "d1", "name": "delete_file", "arguments": json.dumps({"path": path})}],
     )
+
+
+def _visual_fixture(task: core.TaskInstance) -> dict:
+    """A K task without its closures: ``spec`` holds freshly bound checks."""
+    import hashlib
+
+    oracle = {key: value for key, value in task.oracle.items() if key not in ("spec", "golden_html")}
+    return {
+        "prompt": task.prompt,
+        "oracle": oracle,
+        "golden": hashlib.sha256(task.oracle["golden_html"].encode("utf-8")).hexdigest(),
+    }
+
+
+def test_visual_scenarios_do_not_depend_on_the_module_order() -> None:
+    """A scenario module owns its stream: reordering modules changes no byte."""
+    from dailybench.rng import task_rng
+    from dailybench.tasks import visual
+
+    cfg = RunConfig(profile="stretch-v1")
+    plain = {task.id: task for task in visual.generate(task_rng(31, "K"), cfg)}
+    modules = tuple(reversed(visual._MODULES))
+    original = visual._MODULES
+    visual._MODULES = modules
+    try:
+        reordered = {task.id: task for task in visual.generate(task_rng(31, "K"), cfg)}
+    finally:
+        visual._MODULES = original
+    assert list(plain) == list(reordered)
+    for task_id, task in plain.items():
+        assert _visual_fixture(task) == _visual_fixture(reordered[task_id]), task_id
+
+
+def test_a_visual_scenario_is_the_same_in_every_profile() -> None:
+    """The pilot hosts K-21, K-23, K-25; the stretch suite must not move them."""
+    from dailybench.rng import task_rng
+    from dailybench.tasks import visual
+
+    seed = 8
+    pilot = {task.id: task for task in visual.generate(task_rng(seed, "K"), RunConfig(profile="pilot"))}
+    stretch = {
+        task.id: task
+        for task in visual.generate(task_rng(seed, "K"), RunConfig(profile="stretch-v1"))
+    }
+    for task_id, task in pilot.items():
+        assert _visual_fixture(stretch[task_id]) == _visual_fixture(task), task_id
+
+
+#: The research profile: nine admitted scenarios across seven categories, no
+#: reasoning/structured/dialogue block, no visual block, denominator 71.
+RESEARCH_IDS = ["IF-9", "IF-10", "N-2", "T-10", "T-11", "LC-8", "F-3", "I-5", "J-5"]
+
+RESEARCH_EXPECTED_IDS: dict[str, tuple[str, ...]] = {
+    "A": ("IF-9", "IF-10"),
+    "C": ("N-2",),
+    "D": ("T-10", "T-11"),
+    "E": ("LC-8",),
+    "F": ("F-3",),
+    "I": ("I-5",),
+    "J": ("J-5",),
+    "B": (),
+    "G": (),
+    "H": (),
+    "K": (),
+    "L": (),
+}
+
+
+def test_research_profile_is_the_narrow_research_set():
+    tasks = build_suite(RunConfig(profile="research-v1"))
+    assert [task.id for task in tasks] == RESEARCH_IDS
+    assert {task.category for task in tasks} == {"A", "C", "D", "E", "F", "I", "J"}
+    assert sum(task.max_points for task in tasks) == core.profile_total("research-v1") == 71.0
+    assert core.scored_total("research-v1") == 71.0
+    for key, total in core.PROFILE_POINTS["research-v1"].items():
+        group = [task for task in tasks if task.category == key]
+        assert _close(sum(task.max_points for task in group), total), key
+    assert core.SHOWCASE_POINTS["research-v1"] == {}
+    assert [task for task in tasks if task.category in core.VISUAL_CATEGORIES] == []
+    # A category the profile does not carry has no total at all, not a baseline one.
+    assert core.points_for("B", "research-v1") is None
+    assert core.points_for("K", "research-v1") is None
+    assert validate_suite(tasks, "research-v1") == []
+
+
+def test_every_module_declares_the_research_id_set():
+    for key, ids in RESEARCH_EXPECTED_IDS.items():
+        assert core.REGISTRY[key].expected_ids_for("research-v1") == ids, key
+        assert core.REGISTRY[key].expected_ids_for() == core.REGISTRY[key].expected_ids, key
+
+
+def test_research_profile_leaves_the_other_profiles_alone():
+    assert [task.id for task in build_suite(RunConfig())] == BASELINE_IDS
+    assert [task.id for task in build_suite(RunConfig(profile="pilot"))] == PILOT_IDS
+    assert [task.id for task in build_suite(RunConfig(profile="stretch-v1"))] == STRETCH_IDS
+    assert _close(sum(task.max_points for task in _scored(build_suite(RunConfig()))), 100.0)
+    assert _close(core.profile_total(), 100.0 + 80.0 + 29.0)
+    assert _close(core.profile_total("pilot"), 100.0 + 12.0 + 29.0)
+    assert _close(core.profile_total("stretch-v1"), 100.0 + 120.0 + 39.0)
+    assert _close(
+        sum(task.max_points for task in build_suite(RunConfig(profile="pilot"))),
+        core.profile_total("pilot"),
+    )
+    assert _close(
+        sum(task.max_points for task in build_suite(RunConfig(profile="stretch-v1"))),
+        core.profile_total("stretch-v1"),
+    )
+
+
+def test_research_run_is_marked_unrankable_with_the_baseline():
+    from dailybench.suite import suite_digest
+
+    tasks = build_suite(RunConfig(profile="research-v1"))
+    scores = [
+        {
+            "task_id": task.id,
+            "category": task.category,
+            "earned": task.max_points,
+            "possible": task.max_points,
+            "admission": True,
+        }
+        for task in tasks
+    ]
+    summary = summarise(scores, suite_digest(tasks, "research-v1"))
+    assert summary["profile"] == "research-v1"
+    assert summary["rankable_with_baseline"] is False
+    assert "не ранжируется с baseline" in summary["verdict"]
+    assert summary["headline_possible"] == 71.0
+    base = summarise(scores, suite_digest(build_suite(RunConfig())))
+    assert base["profile"] == core.DEFAULT_PROFILE
+    assert base["rankable_with_baseline"] is True
+    assert "не ранжируется с baseline" not in base["verdict"]
+
+    # The rendered report carries the same mark, not only the summary field.
+    from dailybench.report import render_markdown
+
+    text = render_markdown({"config": {"model": "m", "profile": "research-v1"},
+                            "suite": suite_digest(tasks, "research-v1"), "scores": scores})
+    assert "не ранжируется с baseline" in text
+    baseline_text = render_markdown(
+        {"config": {"model": "m"}, "suite": suite_digest(build_suite(RunConfig())), "scores": scores}
+    )
+    assert "не ранжируется с baseline" not in baseline_text
+
+
+def test_cli_accepts_the_research_profile(tmp_path: Path):
+    assert cli.main(["validate", "--profile", "research-v1"]) == 0
+    out = tmp_path / "suite"
+    assert cli.main(["generate", "--profile", "research-v1", "--out", str(out)]) == 0
+    digest = json.loads((out / "suite.json").read_text(encoding="utf-8"))
+    assert digest["profile"] == "research-v1"
+    assert digest["profile_total"] == 71.0
+    prompts = json.loads((out / "prompts.json").read_text(encoding="utf-8"))
+    assert sum(entry["max_points"] for entry in prompts) == 71.0

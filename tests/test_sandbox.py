@@ -419,3 +419,101 @@ def test_argv_pins_init_and_shm() -> None:
     assert "--init" in argv
     assert "/dev/shm:rw,nosuid,nodev,noexec,size=64m,mode=1777" in argv
     assert "type=bind,src=/tmp/task,dst=/workspace,readonly" in argv
+
+
+# --------------------------------------------------------------------------- #
+# The task boundary (H01): fixture only, allowlisted env, no leak, cleanup
+# --------------------------------------------------------------------------- #
+
+
+def test_the_fixture_is_the_only_visible_path(image: str, task_dir: Path, tmp_path: Path):
+    """A neighbouring hidden test must not be reachable from inside.
+
+    The oracle and the neighbours live next to the fixture on the host; only the
+    fixture is mounted, so a ``find /`` cannot reach the rest of the machine.
+    """
+    marker = f"neighbour-oracle-{os.getpid()}.py"
+    neighbour = task_dir.parent / marker
+    neighbour.write_text("# hidden\n", encoding="utf-8")
+    (task_dir / "own.txt").write_text("фикстура\n", encoding="utf-8")
+    try:
+        report = _run(
+            ["sh", "-c", f"cat own.txt; find / -name {marker} 2>/dev/null || true"],
+            task_dir=task_dir,
+        )
+    finally:
+        neighbour.unlink()
+    output = str(report["output"])
+    assert report["status"] == "ok", output
+    assert "фикстура" in output
+    assert marker not in output, "соседний oracle виден из контейнера"
+    assert [entry["dst"] for entry in report["mounts"]] == ["/workspace"]
+    assert report["mounts"][0]["readonly"] is True
+
+
+def test_the_host_secret_does_not_reach_the_container(
+    image: str, task_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Docker inherits nothing, so the container env is exactly the allowlist."""
+    monkeypatch.setenv("DAILYBENCH_API_KEY", "task-secret-9f3c")
+    monkeypatch.setenv("HOST_ONLY", "unrelated")
+    report = _run(
+        ["sh", "-c", "env"],
+        task_dir=task_dir,
+        extra=["--env", "SAFE_NAME=safe-value"],
+    )
+    output = str(report["output"])
+    assert report["status"] == "ok", output
+    assert "SAFE_NAME=safe-value" in output
+    assert "task-secret-9f3c" not in output
+    assert "HOST_ONLY" not in output
+    assert report["env"] == ["SAFE_NAME"]
+
+
+def test_the_workspace_becomes_writable_on_request(image: str, task_dir: Path):
+    """The agent must write the answer; the write surface is in the argv."""
+    report = _run(
+        ["sh", "-c", "echo answer > answer.txt && cat answer.txt"],
+        task_dir=task_dir,
+        extra=["--workspace-rw"],
+    )
+    assert report["status"] == "ok", str(report["output"])
+    assert "answer" in str(report["output"])
+    assert (task_dir / "answer.txt").read_text(encoding="utf-8").strip() == "answer"
+    assert report["mounts"][0]["readonly"] is False
+
+
+def test_the_container_is_removed_after_a_timeout(image: str, task_dir: Path):
+    """Cleanup runs in ``finally``: a killed run leaves nothing behind."""
+    report = _run(
+        ["python", "-c", "while True: pass"], task_dir=task_dir, deadline=5
+    )
+    assert report["status"] == "timeout", report["output"]
+    assert report["timed_out"] is True
+    name = str(report["container"])
+    inspect = subprocess.run(
+        ["docker", "inspect", name], capture_output=True, text=True
+    )
+    assert inspect.returncode != 0, f"контейнер {name} остался после таймаута"
+
+
+def test_the_isolation_module_mounts_the_fixture_and_the_config_only(
+    image: str, task_dir: Path, tmp_path: Path
+):
+    """The module the runner uses: workspace rw, ``/agent`` ro, nothing else."""
+    from dailybench import isolation
+
+    agent_dir = tmp_path / "pi-agent"
+    agent_dir.mkdir()
+    box = isolation.Sandbox(work_dir=task_dir, agent_dir=agent_dir, image=image)
+    report = box.run_command(["python", "-c", "print('ok')"], host_env={})
+
+    assert report["status"] == "ok", report.get("output")
+    assert [(m["dst"], m["readonly"]) for m in report["mounts"]] == [
+        ("/workspace", False),
+        ("/agent", False),
+    ]
+    recorded = box.record()
+    assert recorded["executor_status"] == "container_run"
+    assert recorded["cgroups"]["pids_limit"] == 256
+    assert recorded["rootfs"] == "read_only"

@@ -641,6 +641,19 @@ def test_category_scales_carry_a_band_for_each_measured_metric(tmp_path: Path):
     assert all(float(low) <= float(high) for low, high in bands)
 
 
+def test_compare_publishes_the_paired_difference_and_weight_sensitivity(tmp_path: Path):
+    left = _ci_run(tmp_path, "run-a", "ровная", [6.0 + (index % 5) for index in range(40)])
+    right = _ci_run(tmp_path, "run-b", "чуть-слабее",
+                    [6.0 + (index % 5) - 0.05 for index in range(40)])
+    page = render_html([left, right])
+    assert "Парное сравнение: разность и её интервал" in page
+    assert "Вектор категорий" in page
+    assert "Чувствительность к весам" in page
+    assert "повторы и сиды не измеряются" in page
+    assert re.search(r"\+\d+\.\d\d … \+\d+\.\d\d п\.п\.", page)
+    assert ">значимо</td>" in page
+
+
 def test_a_small_sample_is_marked_provisional_on_the_page(tmp_path: Path):
     run = _ci_run(tmp_path, "run-a", "одна", [10.0, 2.0, 9.0])
     page = render_html([run])
@@ -752,3 +765,76 @@ def test_a_per_run_page_without_any_data_still_renders(tmp_path: Path):
     assert "нет данных: ни одного измеренного балла" in page
     assert "нет данных: ни одного задания" in page
     assert "нет данных: провалов нет" in page
+
+
+# --------------------------------------------------------------------------- #
+# Eligibility before ranking (H13)
+# --------------------------------------------------------------------------- #
+
+
+def _tier_run(
+    tmp_path: Path,
+    name: str,
+    model: str,
+    passed: int,
+    total: int,
+    *,
+    sha: str,
+) -> Path:
+    """A run with ``total`` one-point tasks on its own contract."""
+    directory = tmp_path / name
+    directory.mkdir(parents=True)
+    scores = [
+        {
+            "task_id": f"A-{index}", "category": "A",
+            "earned": 1.0 if index <= passed else 0.0, "possible": 1.0,
+            "checks": [{"name": "answer", "passed": index <= passed, "detail": "", "points": 1.0}],
+        }
+        for index in range(1, total + 1)
+    ]
+    (directory / "scores.json").write_text(json.dumps(scores), encoding="utf-8")
+    (directory / "config.json").write_text(json.dumps({"model": model}), encoding="utf-8")
+    (directory / "suite.json").write_text(json.dumps({
+        "tasks": total, "sha256": sha,
+        "per_task": [{"id": f"A-{i}", "category": "A", "max_points": 1.0} for i in range(1, total + 1)],
+    }), encoding="utf-8")
+    return directory
+
+
+def test_a_partial_one_of_one_does_not_outrank_a_full_suite(tmp_path: Path):
+    """PartialOne 1/1 used to take place 1 above Full95 95/100."""
+    partial = _tier_run(tmp_path, "run-partial", "PartialOne", 1, 1, sha="sha-partial")
+    # The partial run was built for the same kind of suite but only one task ran:
+    # its own denominator is honest, its coverage is not the full contract.
+    (partial / "suite.json").write_text(json.dumps({
+        "tasks": 100, "sha256": "sha-partial",
+        "per_task": [{"id": f"A-{i}", "category": "A", "max_points": 1.0} for i in range(1, 101)],
+    }), encoding="utf-8")
+    full = _tier_run(tmp_path, "run-full", "Full95", 95, 100, sha="sha-full")
+
+    page = render_html([partial, full])
+    assert page.index("data-model='Full95'") < page.index("data-model='PartialOne'")
+    # The partial run is shown in the incomplete table, not as a rank.
+    assert "class='grid incomplete-table'" in page
+    assert "неполный прогон" in page
+    assert "data-model='PartialOne'" in page
+    # Full95 stays the leader of its own contract.
+    assert "data-model='Full95'" in page.split("<table class='grid incomplete-table'>")[0]
+    assert "95/100" in page
+
+
+def test_different_suite_contracts_get_separate_tables(tmp_path: Path):
+    """Two different suite SHA must not share one ranked table."""
+    first = _tier_run(tmp_path, "run-one", "первая", 4, 5, sha="aaa111")
+    second = _tier_run(tmp_path, "run-two", "вторая", 9, 10, sha="bbb222")
+
+    page = render_html([first, second])
+    assert page.count("Сравнение по контракту") == 2
+    # Each model appears inside the section of its own contract: the stronger
+    # contract leads, and the two never mix in one table.
+    head_second = page.index("Сравнение по контракту <code>bbb222")
+    head_first = page.index("Сравнение по контракту <code>aaa111")
+    assert head_second < head_first
+    assert "вторая" in page[head_second:head_first]
+    assert "первая" in page[head_first:]
+    assert "2 разных контракта" in page

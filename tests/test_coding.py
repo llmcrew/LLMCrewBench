@@ -13,7 +13,10 @@ public answer contract (the file is compiled and imported) still holds.
 from __future__ import annotations
 
 import json
+import os
 import random
+import re
+import sys
 from pathlib import Path
 
 from dailybench import ModelReply, RunConfig, Transcript, Turn
@@ -145,6 +148,84 @@ class AsyncTTLCache:
     assert any(not check.passed for check in score.checks)
 
 
+_RUN_REPLACEMENT = '''
+import unittest
+
+
+def _fake(self, result=None):
+    if result is None:
+        result = self.defaultTestResult()
+    result.addSuccess(self)
+
+
+unittest.TestCase.run = _fake
+unittest.IsolatedAsyncioTestCase.run = _fake
+
+
+class AsyncTTLCache:
+    """Always answers "WRONG", and claims every test succeeded."""
+
+    def __init__(self, ttl, *, clock=None, sleep=None):
+        self.ttl = ttl
+
+    async def get_or_load(self, key, loader):
+        return "WRONG"
+'''
+
+
+def test_a_candidate_that_replaces_TestCase_run_is_still_judged_on_the_methods():
+    """The rebind is undone before every test, so the real assertions run."""
+    task = _task()
+    score = coding_python.evaluate(task, _transcript(task, _RUN_REPLACEMENT))
+    assert score.earned < 8.0
+    assert any(not check.passed for check in score.checks)
+    assert not any(check.detail.startswith("integrity:") for check in score.checks)
+
+
+_RECORDER_REAPPLIED = '''
+"""Rebinds the recorder from inside the tested call, on every call."""
+
+import sys
+
+
+def _ok(self, test, err):
+    self.addSuccess(test)
+
+
+class AsyncTTLCache:
+    def __init__(self, ttl, *, clock=None, sleep=None):
+        self.ttl = ttl
+
+    async def get_or_load(self, key, loader):
+        sys.modules["hidden_ttl_tests"].Recorder.addFailure = _ok
+        return "WRONG"
+'''
+
+
+def test_a_recorder_patch_reapplied_during_the_test_cannot_hide_failures():
+    """Restoring before the test is not enough: the candidate patches again in
+    the call under test, so the recorder methods are bound per instance."""
+    task = _task()
+    score = coding_python.evaluate(task, _transcript(task, _RECORDER_REAPPLIED))
+    assert score.earned < 8.0
+    assert any(not check.passed for check in score.checks)
+
+
+def test_a_no_op_callTestMethod_is_restored_before_the_tests():
+    """The counting hook lives on both case classes; a stub is undone, and the
+    counter proves the methods still run (assertion text survives)."""
+    task = _task()
+    code = _RUN_REPLACEMENT + """
+unittest.TestCase._callTestMethod = lambda self, method: None
+unittest.IsolatedAsyncioTestCase._callTestMethod = lambda self, method: None
+"""
+    score = coding_python.evaluate(task, _transcript(task, code))
+    failed = [check for check in score.checks if not check.passed]
+    assert failed
+    assert "WRONG" in failed[0].detail
+    assert not any(check.detail.startswith("integrity:") for check in score.checks)
+
+
 def test_duplicate_rows_are_last_wins():
     order = (("first_load", "test_first_load"), ("ttl_hit", "test_hit_within_ttl"))
     blob = "\n".join(
@@ -172,8 +253,8 @@ def test_a_missing_row_fails_with_the_global_cause():
 
 import pytest
 
-from dailybench import core
-from dailybench.tasks import coding, coding_go, coding_sql
+from dailybench import core, viz
+from dailybench.tasks import coding, coding_go, coding_sql, coding_workflow
 
 C4_POINTS = 8.0
 C5_POINTS = 8.0
@@ -297,6 +378,9 @@ def test_c4_reference_full_on_every_dev_seed(seed):
 requires_go = pytest.mark.skipif(
     coding_go._go_binary() is None, reason="go toolchain unavailable"
 )
+requires_docker = pytest.mark.skipif(
+    not coding_sql.PostgresBackend().available(), reason="docker unavailable"
+)
 
 
 @requires_go
@@ -328,6 +412,197 @@ def test_c5_forged_pass_lines_from_init_do_not_survive_a_panic():
     score = _score(task, _forged_go(task.oracle["reference"]))
     assert score.earned == 0.0
     assert all("кодом" in check.detail for check in score.checks)
+
+
+_GO_FORGED_INIT = '''
+import (
+\t"fmt"
+\t"os"
+)
+
+func init() {
+\tfor _, name := range []string{%s} {
+\t\tfmt.Printf("{\\\"Action\\\":\\\"run\\\",\\\"Package\\\":\\\"dailybench/pool\\\",\\\"Test\\\":\\\"%%s\\\"}\\n", name)
+\t\tfmt.Printf("{\\\"Action\\\":\\\"pass\\\",\\\"Package\\\":\\\"dailybench/pool\\\",\\\"Test\\\":\\\"%%s\\\"}\\n", name)
+\t}
+\tos.Exit(0)
+}
+'''
+
+
+def _go_forged_stub(task) -> str:
+    """The panicking stub plus an ``init`` that prints a perfect test2json log
+    and exits the process with status 0 before a single test ran."""
+    names = ", ".join(f'"{test}"' for _, test in coding_go.CHECK_ORDER)
+    stub = task.workspace[coding_go.TARGET_FILE]
+    return stub.replace('import "context"\n', 'import "context"\n' + _GO_FORGED_INIT % names, 1)
+
+
+@requires_go
+def test_c2_forged_test2json_from_init_does_not_score_full():
+    task = coding_go.generate(random.Random(1), RunConfig())
+    score = _score(task, _go_forged_stub(task))
+    assert score.earned < 8.0
+    assert not any(check.passed for check in score.checks)
+
+
+# --------------------------------------------------------------------------- #
+# C-2: the no-hang check must observe pool goroutines, not an unrelated timer.
+# --------------------------------------------------------------------------- #
+
+C2_NO_HANG = "no_hang_after_consumer_stops"
+
+
+def _c2_mutant(reference: str, kind: str) -> str:
+    """Break the cancellation paths a stopped consumer depends on."""
+    if kind == "blocking_send":
+        # The worker delivers without watching ctx: once nobody reads the
+        # output it is parked forever and its goroutine never ends.
+        return _replace(
+            reference,
+            "\t\t\t\t\terr := job.Run(ctx)\n"
+            "\t\t\t\t\tselect {\n"
+            "\t\t\t\t\tcase out <- Result{ID: job.ID, Err: err}:\n"
+            "\t\t\t\t\tcase <-ctx.Done():\n"
+            "\t\t\t\t\t\treturn\n"
+            "\t\t\t\t\t}",
+            "\t\t\t\t\terr := job.Run(ctx)\n"
+            "\t\t\t\t\tout <- Result{ID: job.ID, Err: err}",
+        )
+    if kind == "ignore_cancel":
+        # Workers only learn about cancellation from the receive select; with
+        # the producer parked on a send they wait for good.
+        return _replace(
+            reference,
+            "\t\t\tfor {\n"
+            "\t\t\t\tif ctx.Err() != nil {\n"
+            "\t\t\t\t\treturn\n"
+            "\t\t\t\t}\n"
+            "\t\t\t\tselect {\n"
+            "\t\t\t\tcase <-ctx.Done():\n"
+            "\t\t\t\t\treturn\n"
+            "\t\t\t\tcase job, ok := <-jobs:",
+            "\t\t\tfor {\n"
+            "\t\t\t\tjob, ok := <-jobs:",
+        )
+    raise AssertionError(kind)
+
+
+@requires_go
+def test_go_c2_reference_scores_full():
+    task = coding_go.generate(random.Random(1), RunConfig())
+    score = _score(task, task.oracle["reference"])
+    assert score.earned == score.possible == 8.0
+
+
+@requires_go
+@pytest.mark.parametrize("kind", ["blocking_send", "ignore_cancel"])
+def test_go_c2_mutant_does_not_score_full_and_fails_the_no_hang_check(kind):
+    """Both mutants only mis-handle "the consumer stopped reading after the
+    cancellation": the timer-only assertion used to let them through."""
+    task = coding_go.generate(random.Random(1), RunConfig())
+    score = _score(task, _c2_mutant(task.oracle["reference"], kind))
+    assert score.earned < 8.0
+    failed = {check.name for check in score.checks if not check.passed}
+    assert C2_NO_HANG in failed
+
+
+def test_go_c2_declares_the_no_hang_check():
+    """The observation lives in a check of its own: C-2 orders it by name."""
+    assert C2_NO_HANG in {name for name, _ in coding_go.CHECK_ORDER}
+
+
+# --------------------------------------------------------------------------- #
+# R03: the evaluation must not depend on the host's Go environment or network.
+# --------------------------------------------------------------------------- #
+
+HOSTILE_GO_ENV = {
+    "GOFLAGS": "-mod=vendor",  # no vendor directory is shipped
+    "GOTOOLCHAIN": "go1.99.99",  # only resolvable by downloading
+    "GOPROXY": "off",
+    "GOWORK": "/nonexistent/go.work",
+    "GO111MODULE": "off",
+}
+
+
+def test_go_env_overwrites_every_host_key(tmp_path, monkeypatch):
+    for key, value in HOSTILE_GO_ENV.items():
+        monkeypatch.setenv(key, value)
+    env = coding_go._go_env(tmp_path)
+    assert env["GOTOOLCHAIN"] == "local"
+    assert env["GOFLAGS"] == "-mod=mod"
+    assert env["GOPROXY"] == "off"
+    assert env["GOWORK"] == "off"
+    assert env["GO111MODULE"] == "on"
+    assert env["CGO_ENABLED"] == "0"
+    for key in ("GOCACHE", "GOMODCACHE", "GOPATH"):
+        assert env[key] != ""
+        assert Path(env[key]).is_dir()
+
+
+def test_go_caches_are_isolated_from_the_host_and_from_each_repository(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOCACHE", str(tmp_path / "host-build"))
+    monkeypatch.setenv("GOMODCACHE", str(tmp_path / "host-mod"))
+    (tmp_path / "host-build").mkdir()
+    (tmp_path / "host-mod").mkdir()
+    first = coding_go._go_env(tmp_path / "one")
+    second = coding_go._go_env(tmp_path / "two")
+    assert first["GOCACHE"] != str(tmp_path / "host-build")
+    assert first["GOMODCACHE"] != str(tmp_path / "host-mod")
+    assert first["GOCACHE"] != second["GOCACHE"]
+    assert first["GOMODCACHE"] != second["GOMODCACHE"]
+
+
+def test_go_env_uses_a_shipped_vendor_tree(tmp_path):
+    (tmp_path / "vendor").mkdir()
+    assert coding_go._go_env(tmp_path)["GOFLAGS"] == "-mod=vendor"
+
+
+@requires_go
+@pytest.mark.parametrize("builder", [coding_go.generate, coding_go.generate_c5])
+def test_go_evaluation_is_hermetic_against_the_host_environment(builder, monkeypatch):
+    """With a hostile host env and the network cut off, the reference still
+    scores full: the contract is decided by the evaluator, not by the box."""
+    for key, value in HOSTILE_GO_ENV.items():
+        monkeypatch.setenv(key, value)
+    task = builder(random.Random(1), RunConfig(profile="stretch-v1"))
+    score = _score(task, task.oracle["reference"])
+    assert score.earned == score.possible == 8.0
+
+
+def test_a_go_pass_event_needs_a_preceding_run_event():
+    order = (("check", "TestCheck"),)
+    only_pass = json.dumps({"Action": "pass", "Package": "p", "Test": "TestCheck"})
+    results = coding_go._verdicts(only_pass, order, 0)
+    assert results["check"][0] is False
+    assert "run" in results["check"][1]
+
+
+def test_a_forged_stream_inside_an_output_event_creates_nothing():
+    forged = "\n".join(
+        [
+            json.dumps({"Action": "run", "Test": "TestCheck"}),
+            json.dumps({"Action": "pass", "Test": "TestCheck"}),
+            json.dumps({"Action": "pass", "Package": "p"}),
+        ]
+    )
+    output = json.dumps({"Action": "output", "Test": "TestCheck", "Output": forged})
+    results = coding_go._verdicts(output, (("check", "TestCheck"),), 0)
+    assert results["check"][0] is False
+
+
+def test_a_stream_without_a_package_pass_is_not_a_completed_run():
+    order = (("check", "TestCheck"),)
+    output = "\n".join(
+        json.dumps(event)
+        for event in (
+            {"Action": "run", "Test": "TestCheck"},
+            {"Action": "pass", "Test": "TestCheck"},
+        )
+    )
+    results = coding_go._verdicts(output, order, 0)
+    assert results["check"][0] is False
+    assert "пакет" in results["check"][1]
 
 
 @requires_go
@@ -447,3 +722,417 @@ def test_new_scenarios_keep_their_declared_budgets_and_answer_files():
         assert task.oracle["answer_file"] == task.oracle["target_file"]
         assert task.oracle["answer_file"] in task.workspace
         assert task.oracle["reference"] not in task.prompt
+
+
+# --------------------------------------------------------------------------- #
+# R01: the PostgreSQL backend must create every database the checks name, and
+# a lost connection is an evaluator failure rather than a model zero.
+# --------------------------------------------------------------------------- #
+
+_FAKE_DOCKER = '''#!{python}
+"""Stand-in for the docker CLI: journals psql traffic, replays fixed rows."""
+
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+command = args[0] if args else ""
+log = os.environ["FAKE_DOCKER_LOG"]
+
+
+def journal(entry):
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry) + "\\n")
+
+
+if command == "info":
+    print("16.0")
+elif command == "run":
+    print("fake-pg")
+elif command == "rm":
+    pass
+elif command == "exec":
+    sql = sys.stdin.read()
+    database = args[args.index("-d") + 1] if "-d" in args else ""
+    journal({"database": database, "sql": sql})
+    failing = [name for name in os.environ.get("FAKE_DOCKER_FAIL_LOAD", "").split(",") if name]
+    is_query = sql.lstrip().upper().startswith(("SELECT", "WITH"))
+    if database in failing and not is_query:
+        sys.stderr.write('connection to server failed: database "%s" not rebooted\\n' % database)
+        sys.exit(2)
+    if is_query:
+        for row in json.loads(os.environ["FAKE_DOCKER_ROWS"]).get(database, []):
+            print("\\t".join(str(value) for value in row))
+else:
+    sys.exit(1)
+'''
+
+
+@pytest.fixture
+def fake_docker(tmp_path, monkeypatch):
+    """Install a fake ``docker`` on PATH and answer queries from the oracle."""
+
+    def install(task, fail_load: str = "") -> Path:
+        binaries = tmp_path / "bin"
+        binaries.mkdir(exist_ok=True)
+        script = binaries / "docker"
+        script.write_text(_FAKE_DOCKER.replace("{python}", sys.executable), encoding="utf-8")
+        script.chmod(0o755)
+        log = tmp_path / "docker.log"
+        log.write_text("", encoding="utf-8")
+        rows = {f"bench{index + 1}": rows for index, rows in enumerate(task.oracle["expected"])}
+        monkeypatch.setenv("PATH", f"{binaries}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.setenv("FAKE_DOCKER_LOG", str(log))
+        monkeypatch.setenv("FAKE_DOCKER_ROWS", json.dumps(rows))
+        monkeypatch.setenv("FAKE_DOCKER_FAIL_LOAD", fail_load)
+        return log
+
+    return install
+
+
+def _journal(log: Path) -> list[dict]:
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def _created(journal: list[dict]) -> list[str]:
+    created = []
+    for entry in journal:
+        match = re.match(r'\s*CREATE DATABASE "?(bench\d+)"?;', entry["sql"], re.IGNORECASE)
+        if match:
+            created.append(match.group(1))
+    return created
+
+
+@pytest.mark.parametrize(
+    "builder, points",
+    [(coding_sql.generate, 4.0), (coding_sql.generate_c6, 4.0)],
+    ids=["c3", "c6"],
+)
+def test_postgres_creates_every_database_before_loading_it(fake_docker, builder, points):
+    task = builder(random.Random(1), RunConfig(sql_backend="postgres"))
+    log = fake_docker(task)
+    score = _score(task, task.oracle["reference"])
+    assert score.earned == score.possible == points
+
+    journal = _journal(log)
+    expected_names = [f"bench{index + 1}" for index in range(len(task.oracle["checks"]))]
+    assert _created(journal) == expected_names
+    for name in expected_names:
+        created_at = next(i for i, entry in enumerate(journal) if _match_create(entry, name))
+        first_use = next(i for i, entry in enumerate(journal) if entry["database"] == name)
+        assert created_at < first_use
+
+
+def _match_create(entry: dict, name: str) -> bool:
+    return bool(re.match(rf'\s*CREATE DATABASE "?{name}"?;', entry["sql"], re.IGNORECASE))
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [coding_sql.generate, coding_sql.generate_c6],
+    ids=["c3", "c6"],
+)
+def test_postgres_connection_loss_is_evaluator_unavailable(fake_docker, builder):
+    task = builder(random.Random(1), RunConfig(sql_backend="postgres"))
+    fake_docker(task, fail_load="bench3")
+    score = _score(task, task.oracle["reference"])
+
+    assert score.status == "error"
+    assert "evaluator" in (score.error or "").lower()
+    assert viz.classify(score.as_dict()) == "evaluator_unavailable"
+    assert [check.passed for check in score.checks[:2]] == [True, True]
+    assert not any(check.passed for check in score.checks[2:])
+
+
+@requires_docker
+@pytest.mark.parametrize(
+    "builder",
+    [coding_sql.generate, coding_sql.generate_c6],
+    ids=["c3", "c6"],
+)
+def test_postgres_reference_scores_full_on_a_real_server(builder):
+    task = builder(random.Random(1), RunConfig(sql_backend="postgres"))
+    score = _score(task, task.oracle["reference"])
+    assert score.error is None
+    assert score.earned == score.possible == 4.0
+
+
+# --------------------------------------------------------------------------- #
+# N-2 (stretch): terminal/data workflow — CSV import, migration, report,
+# protected files, declared exit codes and atomicity on an invalid batch.
+# --------------------------------------------------------------------------- #
+
+N2_POINTS = 1.0
+
+
+def _n2(seed: int = 1):
+    return coding_workflow.generate(random.Random(seed), RunConfig(profile="stretch-v1"))
+
+
+def _replace_block(source: str, start: str, end: str, new: str) -> str:
+    head = source.index(start)
+    tail = source.index(end, head)
+    return source[:head] + new + source[tail:]
+
+
+_REPORT_WITHOUT_DB = '''def command_import(path: str) -> int:
+    if not Path(path).is_file():
+        return fail(f"invalid batch: missing {path}")
+    rows, bad, header_ok = parse_batch(path)
+    if bad:
+        if not header_ok:
+            return fail("invalid batch: 1")
+        return fail("invalid batch: " + ",".join(str(number) for number in bad))
+    command_report(path)
+    print(f"ok: rows={len(rows)}")
+    return 0
+
+
+def command_report(path: str) -> int:
+    rows, bad, _header = parse_batch(path)
+    if bad:
+        return fail("report: invalid batch")
+    name = batch_name(path)
+    by_region: dict[str, list[int]] = {}
+    by_product: dict[str, int] = {}
+    for _order_id, region, product, cents, _status in rows:
+        bucket = by_region.setdefault(region, [0, 0])
+        bucket[0] += 1
+        bucket[1] += cents
+        by_product[product] = by_product.get(product, 0) + cents
+    payload = {
+        "batch": name,
+        "rows": len(rows),
+        "total_cents": sum(row[3] for row in rows),
+        "by_region": [
+            {"region": region, "rows": by_region[region][0], "cents": by_region[region][1]}
+            for region in sorted(by_region)
+        ],
+        "top_product": min(by_product, key=lambda product: (-by_product[product], product)),
+    }
+    REPORTS.mkdir(exist_ok=True)
+    SUMMARY.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\\n", encoding="utf-8")
+    return 0
+
+
+'''
+
+_PARTIAL_INVALID = '''def command_import(path: str) -> int:
+    if not Path(path).is_file():
+        return fail(f"invalid batch: missing {path}")
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0] != HEADER:
+        return fail("invalid batch: 1")
+    regions = read_regions()
+    BUILD.mkdir(exist_ok=True)
+    connection = connect(DB)
+    with connection:
+        migrate(connection)
+    name = batch_name(path)
+    seen: set[int] = set()
+    bad: list[int] = []
+    count = 0
+    for number, line in enumerate(lines[1:], start=2):
+        fields = line.split(",")
+        if len(fields) != 5:
+            bad.append(number)
+            continue
+        raw_id, region, product, raw_cents, status = fields
+        order_id = int(raw_id) if re.fullmatch(r"[0-9]+", raw_id) else 0
+        cents = int(raw_cents) if re.fullmatch(r"[0-9]+", raw_cents) else 0
+        if (
+            order_id <= 0
+            or region not in regions
+            or not product
+            or cents <= 0
+            or status not in STATUSES
+            or order_id in seen
+        ):
+            bad.append(number)
+            continue
+        seen.add(order_id)
+        connection.execute(
+            "INSERT INTO orders (order_id, region, product, cents, status, batch)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(order_id) DO UPDATE SET"
+            " region = excluded.region, product = excluded.product,"
+            " cents = excluded.cents, status = excluded.status, batch = excluded.batch",
+            (order_id, region, product, cents, status, name),
+        )
+        count += 1
+    connection.commit()
+    connection.close()
+    if bad:
+        return fail("invalid batch: " + ",".join(str(number) for number in bad))
+    print(f"ok: rows={count}")
+    return 0
+
+
+'''
+
+
+def _n2_mutant(reference: str, kind: str) -> str:
+    if kind == "report_without_db":
+        return _replace_block(
+            reference,
+            "def command_import(path: str) -> int:",
+            "def main(argv: list[str]) -> int:",
+            _REPORT_WITHOUT_DB,
+        )
+    if kind == "double_import":
+        return _replace(
+            reference,
+            " cents = excluded.cents, status = excluded.status, batch = excluded.batch",
+            " cents = orders.cents + excluded.cents, status = excluded.status, batch = excluded.batch",
+        )
+    if kind == "partial_invalid_batch":
+        return _replace_block(
+            reference,
+            "def command_import(path: str) -> int:",
+            "def command_report(path: str) -> int:",
+            _PARTIAL_INVALID,
+        )
+    raise AssertionError(kind)
+
+
+def test_n2_reference_scores_full():
+    task = _n2()
+    score = _score(task, task.oracle["reference"])
+    assert score.earned == score.possible == N2_POINTS
+    assert [check.name for check in score.checks] == task.oracle["checks"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "failed"),
+    [
+        ("report_without_db", "db_rows"),
+        ("double_import", "idempotent_reimport"),
+        ("partial_invalid_batch", "invalid_atomicity"),
+    ],
+)
+def test_n2_mutant_does_not_score_full(kind, failed):
+    task = _n2()
+    score = _score(task, _n2_mutant(task.oracle["reference"], kind))
+    assert score.earned < N2_POINTS
+    assert not next(check for check in score.checks if check.name == failed).passed
+
+
+def test_n2_garbage_scores_zero():
+    task = _n2()
+    assert _score(task, "def broken(:\n    pass\n").earned == 0.0
+
+
+@pytest.mark.parametrize("seed", DEV_SEEDS)
+def test_n2_reference_is_full_on_every_dev_seed(seed):
+    task = _n2(seed)
+    assert task.id == "N-2" and task.max_points == N2_POINTS
+    assert _score(task, task.oracle["reference"]).earned == N2_POINTS
+
+
+def test_n2_oracle_report_is_recomputed_independently():
+    """The expected report is derived here from the structured rows, not read
+    from the module's own helper, so a generator bug cannot agree with itself."""
+    task = _n2(3)
+    rows = [tuple(row) for row in task.oracle["expected_rows"]]
+    by_region: dict[str, list[int]] = {}
+    by_product: dict[str, int] = {}
+    for _, region, product, cents, _status in rows:
+        bucket = by_region.setdefault(region, [0, 0])
+        bucket[0] += 1
+        bucket[1] += cents
+        by_product[product] = by_product.get(product, 0) + cents
+    expected = {
+        "batch": "batch_2026_10_01.csv",
+        "rows": len(rows),
+        "total_cents": sum(row[3] for row in rows),
+        "by_region": [
+            {"region": region, "rows": by_region[region][0], "cents": by_region[region][1]}
+            for region in sorted(by_region)
+        ],
+        "top_product": min(by_product, key=lambda product: (-by_product[product], product)),
+    }
+    assert task.oracle["expected_report"] == expected
+    # The constructed tie is real: two products share the maximum total and the
+    # alphabetical one wins; no filler may exceed them on any dev seed.
+    totals = sorted(by_product.values(), reverse=True)
+    assert totals[0] == totals[1]
+    assert task.oracle["expected_report"]["top_product"] == "alpha"
+
+
+@pytest.mark.parametrize("seed", DEV_SEEDS)
+def test_n2_fixture_is_valid_and_bounded(seed):
+    task = _n2(seed)
+    regions = set(task.workspace["config/regions.txt"].split())
+    lines = task.workspace["data/batch_2026_10_01.csv"].splitlines()
+    assert lines[0] == "order_id,region,product,cents,status"
+    rows = [line.split(",") for line in lines[1:]]
+    assert 14 <= len(rows) <= 20
+    ids = [row[0] for row in rows]
+    assert len(set(ids)) == len(ids)
+    for order_id, region, product, cents, status in rows:
+        assert order_id.isdigit() and int(order_id) > 0
+        assert region in regions and product and cents.isdigit() and int(cents) > 0
+        assert status in ("paid", "refunded")
+    assert sorted(int(value) for value in ids) == [row[0] for row in task.oracle["expected_rows"]]
+    # The invalid batch has exactly the four declared violations on their lines.
+    broken = task.workspace["data/batch_2026_10_02.csv"].splitlines()
+    assert task.oracle["invalid_lines"] == [4, 7, 8, 11]
+    assert broken[3].split(",")[1] not in regions
+    assert not broken[6].split(",")[3].isdigit()
+    assert broken[7].split(",")[0] == broken[1].split(",")[0]
+    assert broken[10].split(",")[4] not in ("paid", "refunded")
+
+
+def test_n2_prompt_declares_the_contract():
+    task = _n2()
+    prompt = task.prompt
+    for needle in (
+        "build/warehouse.db",
+        "reports/summary.json",
+        "config/regions.txt",
+        "order_id,region,product,cents,status",
+        "invalid batch:",
+        "код 2",
+        "код 64",
+        "томарн",
+        "protected",
+    ):
+        assert needle in prompt
+    assert task.oracle["reference"] not in prompt
+    assert task.oracle["answer_file"] == task.oracle["target_file"] == "pipeline.py"
+    assert task.oracle["answer_file"] in task.workspace
+    for rel in coding_workflow.PROTECTED:
+        assert rel in task.workspace
+    assert task.fresh_after == "2026-10-01"
+    assert task.languages == ["ru"]
+
+
+def test_n2_agent_mode_grades_the_file_on_disk(tmp_path):
+    task = _n2()
+    work = tmp_path / "copy"
+    for rel, content in task.workspace.items():
+        target = work / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    (work / task.oracle["answer_file"]).write_text(task.oracle["reference"], encoding="utf-8")
+    transcript = Transcript(
+        task_id=task.id,
+        category=task.category,
+        turns=[Turn(messages=[], reply=ModelReply(text="готово"))],
+        extra={"harness": "agent", "work_dir": str(work)},
+    )
+    score = coding.evaluate(task, transcript)
+    assert score.earned == N2_POINTS
+
+
+def test_n2_is_stretch_only_and_registered_by_profile():
+    stretch = coding.generate(random.Random(1), RunConfig(profile="stretch-v1"))
+    pilot = coding.generate(random.Random(1), RunConfig(profile="pilot"))
+    assert [task.id for task in stretch] == list(coding.STRETCH_IDS)
+    assert "N-2" in coding.STRETCH_IDS and coding.STRETCH_IDS[-1] == "N-2"
+    assert "N-2" not in [task.id for task in pilot]
+    category = core.REGISTRY["C"]
+    assert category.expected_ids_for("stretch-v1") == coding.STRETCH_IDS
+    assert category.expected_ids_for("pilot") == coding.PILOT_IDS
+    assert category.expected_ids_for("baseline-20261020") == coding.BASELINE_IDS
