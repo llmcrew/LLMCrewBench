@@ -1286,7 +1286,7 @@ def build_parser() -> argparse.ArgumentParser:
             choices=core.PROFILES,
             help="версия сьюта: baseline-20261020 (рейтинг), pilot (только пилотные), "
                  "stretch-v1 (baseline + новые сценарии, те же 100 баллов), "
-                 "research-v1 (десять research-сценариев, 71 балл, + 3 VQA-сценария вне счёта; не ранжируется с baseline)",
+                 "research-v1 (десять research-сценариев, 71 балл, + 6 VQA-сценариев вне счёта; не ранжируется с baseline)",
         )
         target.add_argument("--only", default="", help="категории или ID заданий через запятую (A,B / IF-1,R-7)")
         target.add_argument("--limit", type=int, default=0, help="ограничить число заданий (для дымового прогона)")

@@ -860,10 +860,10 @@ def _generate(profile: str, seed: int = 3) -> list[core.TaskInstance]:
 
 
 def test_the_registry_lists_every_slice_and_three_profiles() -> None:
-    assert len(tasks_visual.MODULES) == len(set(tasks_visual.MODULES)) == 11
+    assert len(tasks_visual.MODULES) == len(set(tasks_visual.MODULES)) == 14
     assert tasks_visual.BASELINE_IDS == tuple(f"K-{n}" for n in range(1, 21))
     assert tasks_visual.PILOT_IDS == ("K-21", "K-23", "K-25")
-    assert tasks_visual.ALL_IDS == tuple(f"K-{n}" for n in range(1, 31))
+    assert tasks_visual.ALL_IDS == tuple(f"K-{n}" for n in range(1, 37))
     assert tasks_visual.IDS == tasks_visual.BASELINE_IDS
 
 
@@ -890,10 +890,10 @@ def test_pilot_generates_only_the_three_host_scenarios_at_twelve_points() -> Non
     assert sum(task.max_points for task in tasks) == 12.0
 
 
-def test_stretch_generates_everything_in_declaration_order_at_a_hundred_and_twenty() -> None:
+def test_stretch_generates_everything_in_declaration_order_at_a_hundred_and_forty_four() -> None:
     tasks = _generate("stretch-v1")
     assert [task.id for task in tasks] == list(tasks_visual.ALL_IDS)
-    assert sum(task.max_points for task in tasks) == 120.0
+    assert sum(task.max_points for task in tasks) == 144.0
 
 
 def test_the_profile_expectations_come_from_the_band_sets() -> None:

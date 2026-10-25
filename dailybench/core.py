@@ -42,7 +42,7 @@ scenarios that are not admitted to the ranking yet; ``stretch`` adds tasks to
 the baseline and redistributes the same category totals inside it, so the
 A–J denominator stays 100 while ``pilot`` is read per task instead of as a
 /new total. ``research-v1`` is deliberately narrow: ten admitted research
-scenarios across seven categories plus three VQA showcases outside the
+scenarios across seven categories plus six VQA showcases outside the
 denominator, so its scored total is 71 and it is not comparable with the
 baseline per category.
 """
@@ -109,10 +109,10 @@ SHOWCASE_POINTS: dict[str, dict[str, float]] = {
         "L": 29.0,  # 29 art works; information only, not in the verdict
     },
     "pilot": {"K": 12.0, "L": 29.0},
-    "stretch-v1": {"K": 120.0, "L": 39.0},
-    # V is an image-input showcase: three scenarios, one point each, outside the
+    "stretch-v1": {"K": 144.0, "L": 39.0},
+    # V is an image-input showcase: six scenarios, one point each, outside the
     # 71-point research denominator.
-    "research-v1": {"V": 3.0},
+    "research-v1": {"V": 6.0},
 }
 """Categories that are measured and reported but never enter the verdict.
 

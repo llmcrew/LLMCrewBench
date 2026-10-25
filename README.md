@@ -68,12 +68,12 @@ and `suite.json`, and `resume`/`rescore` refuse to mix them.
 |---|---|
 | `baseline-20261020` (default) | Frozen ranked suite: 47 A–J tasks, 100 points, K-1…K-20, L-1…L-29 |
 | `pilot` | Only the scenarios not admitted to the ranking: IF-6, R-16, C-4, T-8, LC-6, F-2, G-5, H-4, I-3, J-3, visual hosts K-21, K-23, K-25 and L-1…L-29 — 42 tasks |
-| `stretch-v1` | Baseline plus the pilot tasks and the rest of the new ones: IF-7, IF-7-KK, IF-7-EN, IF-8, IF-9, IF-10, R-17, R-17-KK, R-18, C-5, C-6, C-7, N-2, N-9, T-8, T-9, T-10, T-11, LC-7, LC-8, H-5, I-4, I-5, J-4, J-5, K-21…K-30, L-30…L-39 — 82 A–J, 30 K and 39 L tasks; at least a fifth of every A–J category is private |
-| `research-v1` | Ten text research scenarios (IF-9, IF-10, N-2, T-10, T-11, T-12, LC-8, F-3, I-5, J-5) plus the VQA track V-1…V-3 (showcase-only). Seven scored categories (A, C, D, E, F, I, J), 71 points; B, G, H, K and L are absent, so the profile is never ranked against a baseline run |
+| `stretch-v1` | Baseline plus the pilot tasks and the rest of the new ones: IF-7, IF-7-KK, IF-7-EN, IF-8, IF-9, IF-10, R-17, R-17-KK, R-18, C-5, C-6, C-7, N-2, N-9, T-8, T-9, T-10, T-11, LC-7, LC-8, H-5, I-4, I-5, J-4, J-5, K-21…K-36, L-30…L-39 — 82 A–J, 36 K and 39 L tasks; at least a fifth of every A–J category is private |
+| `research-v1` | Ten text research scenarios (IF-9, IF-10, N-2, T-10, T-11, T-12, LC-8, F-3, I-5, J-5) plus the VQA track V-1…V-6 (showcase-only). Seven scored categories (A, C, D, E, F, I, J), 71 points; B, G, H, K and L are absent, so the profile is never ranked against a baseline run |
 
 `pilot` is not collapsed into a new `/100`: A–J tasks keep the per-task weights
 their modules declare, and each task is read on its own. `stretch-v1` keeps the
-A–J total at 100 and only enlarges the visual showcase (K 120 points, L 39,
+A–J total at 100 and only enlarges the visual showcase (K 144 points, L 39,
 informational). `research-v1` declares only the categories it carries, so its
 denominator is 71 and the report marks it as not rankable with the baseline.
 `apply_profile_weights` spreads the declared category total over
@@ -211,7 +211,7 @@ points the run at a specific binary; it is probed the same way.
 
 | Key | Block | Points (baseline / stretch) | Tasks (baseline / stretch) | What is actually checked |
 |---|---|---:|---:|---|
-| K | Visual simulations (Three.js r186) | 80 / 120 | 20 / 30 | The agent writes `index.html`; the page runs in headless Chromium, reports its scene through `window.__probe()`, advances exactly by `window.__step(dt)`, and renders a reproducible 800×600 frame |
+| K | Visual simulations (Three.js r186) | 80 / 144 | 20 / 36 | The agent writes `index.html`; the page runs in headless Chromium, reports its scene through `window.__probe()`, advances exactly by `window.__step(dt)`, and renders a reproducible 800×600 frame |
 | L | Free-form art | 29 / 39 (informational) | 29 / 39 | The agent writes `index.html`; `L-1` is fully free, the other 28 (38 in stretch, up to `L-39`) name only a subject, and the model picks composition, style, palette and means (HTML/CSS, SVG, Canvas, WebGL; the vendored Three.js is available but optional). The single check of 1 point is technical delivery: the page loads without external requests or errors and a 1920×1080 frame is captured |
 
 Each scenario asks one question: does the model produce a *working* page —
@@ -222,7 +222,7 @@ from the browser: the probe payload, the state after a stated number of steps
 recomputed independently in Python, and the frame itself.
 
 K is 80 points on K-1…K-20 in the baseline, 12 points on the three hosts
-K-21/K-23/K-25 in `pilot`, and 120 points on K-1…K-30 in `stretch-v1`. L earns
+K-21/K-23/K-25 in `pilot`, and 144 points on K-1…K-36 in `stretch-v1`. L earns
 1 point per work for delivery only, so its total is 29 or 39 and stays
 informational: artistic quality is judged by people from the gallery frames.
 
@@ -305,7 +305,7 @@ set it explicitly for thinking models with a big answer budget.
 is not collapsed into a new `/100`; its A–J tasks keep the module weights.
 `stretch-v1` adds scenarios on top of the baseline while keeping 100 A–J points:
 a category's weight is split evenly across its tasks, the showcase grows to
-K 120 / L 39. A runtime that never reports the input size leaves the admission
+K 144 / L 39. A runtime that never reports the input size leaves the admission
 `unverified` instead of failing it. The profile is written to `config.json` and
 `suite.json`; `resume` and `rescore` refuse to mix profiles. Every checkpoint also carries the full run identity (config,
 budgets, agent mode, suite digest, harness version) and `resume` rejects a
