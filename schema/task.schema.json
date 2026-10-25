@@ -4,7 +4,15 @@
   "title": "DailyBench task document v2",
   "description": "One scenario of the corpus. The block is derived from the category, the family prefix must agree with the block.",
   "type": "object",
-  "required": ["schema", "id", "category", "block", "family", "points", "prompt"],
+  "required": [
+    "schema",
+    "id",
+    "category",
+    "block",
+    "family",
+    "points",
+    "prompt"
+  ],
   "properties": {
     "schema": {
       "const": "dailybench/task/2"
@@ -16,13 +24,41 @@
       "pattern": "^[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*$"
     },
     "category": {
-      "enum": ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L"]
+      "enum": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "I",
+        "J",
+        "K",
+        "L",
+        "V"
+      ]
     },
     "block": {
-      "enum": ["deterministic", "open"]
+      "enum": [
+        "deterministic",
+        "open"
+      ]
     },
     "family": {
-      "enum": ["det/math", "det/logic", "det/code", "det/tools", "det/data", "vis/sim", "vis/vqa", "vis/gen", "vis/art", "vis/aes"]
+      "enum": [
+        "det/math",
+        "det/logic",
+        "det/code",
+        "det/tools",
+        "det/data",
+        "vis/sim",
+        "vis/vqa",
+        "vis/gen",
+        "vis/art",
+        "vis/aes"
+      ]
     },
     "languages": {
       "type": "array",
@@ -44,7 +80,10 @@
       }
     },
     "fresh_after": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "format": "date"
     },
     "private": {
@@ -64,7 +103,10 @@
       "maxLength": 200
     },
     "prompt": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "minLength": 1,
       "maxLength": 1048576
     },
@@ -73,18 +115,70 @@
       "pattern": "^[0-9a-f]{64}$"
     },
     "system": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "maxLength": 65536
     },
     "workspace": {
-      "type": ["object", "null"]
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "assets": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "media_type",
+          "sha256",
+          "data"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*//)[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+          },
+          "media_type": {
+            "enum": [
+              "image/png"
+            ]
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "data": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9+/]+=*$"
+          }
+        }
+      }
     },
     "tools": {
-      "type": ["array", "null"],
+      "type": [
+        "array",
+        "null"
+      ],
       "maxItems": 64
     },
     "dialogue": {
-      "type": ["array", "null"],
+      "type": [
+        "array",
+        "null"
+      ],
       "maxItems": 64,
       "items": {
         "type": "string"

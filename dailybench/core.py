@@ -18,10 +18,12 @@ Contract rules:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from . import schema
 
@@ -39,9 +41,10 @@ PROFILES: tuple[str, ...] = (DEFAULT_PROFILE, "pilot", "stretch-v1", "research-v
 scenarios that are not admitted to the ranking yet; ``stretch`` adds tasks to
 the baseline and redistributes the same category totals inside it, so the
 A–J denominator stays 100 while ``pilot`` is read per task instead of as a
-/new total. ``research-v1`` is deliberately narrow: nine admitted research
-scenarios across seven categories, so its denominator is 71 and it is not
-comparable with the baseline per category.
+/new total. ``research-v1`` is deliberately narrow: ten admitted research
+scenarios across seven categories plus three VQA showcases outside the
+denominator, so its scored total is 71 and it is not comparable with the
+baseline per category.
 """
 
 BASELINE_INCOMPARABLE_PROFILES = frozenset({"research-v1"})
@@ -107,7 +110,9 @@ SHOWCASE_POINTS: dict[str, dict[str, float]] = {
     },
     "pilot": {"K": 12.0, "L": 29.0},
     "stretch-v1": {"K": 120.0, "L": 39.0},
-    "research-v1": {},
+    # V is an image-input showcase: three scenarios, one point each, outside the
+    # 71-point research denominator.
+    "research-v1": {"V": 3.0},
 }
 """Categories that are measured and reported but never enter the verdict.
 
@@ -134,12 +139,22 @@ ART_CATEGORIES = (ART_CATEGORY,)
 SHOWCASE_TITLES: dict[str, str] = {
     "K": "Visual simulations (Three.js)",
     "L": "Free-form art",
+    "V": "Image input (VQA)",
 }
 
-SHOWCASE_CATEGORIES = ("K",)  # категории витрины (без арт-блока)
+#: Image-input scenarios are a showcase block too: they need a real multimodal
+#: endpoint, and a text-only model must not turn them into a fake accuracy.
+SHOWCASE_CATEGORIES = ("K", "V")
 
 #: Все категории, которые показываются кадрами, включая оценку глазами.
 VISUAL_CATEGORIES = SHOWCASE_CATEGORIES + ART_CATEGORIES
+
+#: One fixed PNG geometry for every presented image. The size is part of the
+#: contract: the evaluator and the oracle are written against it, and a fixture
+#: that renames or resizes the file is a different input.
+ASSET_SIZE: tuple[int, int] = (768, 512)
+ASSET_MEDIA_TYPES: tuple[str, ...] = ("image/png",)
+"""Media types a fixture may present. PNG only: preprocessing is fixed."""
 
 PROFILE_POINTS: dict[str, dict[str, float]] = {
     "pilot": dict(CATEGORY_POINTS),
@@ -166,31 +181,73 @@ scenarios a category received.
 #: folds it in, so a resume can never mix scores produced under two contracts.
 EVALUATOR_CONTRACT = 3
 
-#: Why a task did not produce a scored answer. A wrong answer is not in here:
-#: only outcomes that are not a capability verdict belong to the taxonomy.
-#: The split decides whether a run may be ranked at all.
+#: Complete outcome dictionary of the measurement protocol. ``success`` and
+#: ``model_failure`` are quiet outcomes: they carry no ``Score.failure`` and are
+#: derived from the row (``failure`` is ``None``), the rest are stored. The split
+#: below decides whether a run may be ranked at all.
 FAILURE_KINDS = (
-    "provider_unavailable",
-    "transport_unavailable",
-    "evaluator_unavailable",
-    "model_protocol_failure",
-    "candidate_resource_exhausted",
-    "incomplete_scenario",
+    "success",
+    "model_failure",
+    "resource_exhausted",
+    "infra_failure",
+    "evaluator_failure",
+    "integrity_violation",
+    "unsupported",
 )
 
+#: Kinds ``Score.failure`` actually stores: the two quiet outcomes stay ``None``.
+STORED_FAILURE_KINDS = FAILURE_KINDS[2:]
+
+#: Names produced before the protocol dictionary existed. Bundles on disk and
+#: their reports still carry them, so they are normalised, never re-written.
+LEGACY_FAILURE_KINDS = {
+    "provider_unavailable": "infra_failure",
+    "transport_unavailable": "infra_failure",
+    "evaluator_unavailable": "evaluator_failure",
+    "model_protocol_failure": "model_failure",
+    "candidate_resource_exhausted": "resource_exhausted",
+    "incomplete_scenario": "resource_exhausted",
+}
+
 FAILURE_LABELS = {
+    "success": "успех",
+    "model_failure": "неверный ответ модели",
+    "resource_exhausted": "исчерпан объявленный бюджет",
+    "infra_failure": "инфраструктура недоступна",
+    "evaluator_failure": "оценщик не установил результат",
+    "integrity_violation": "отказ в удостоверении",
+    "unsupported": "capability не поддерживается",
+}
+
+#: Legacy spellings keep their old wording: an old run must read unchanged.
+FAILURE_LABELS.update({
     "provider_unavailable": "провайдер недоступен",
     "transport_unavailable": "транспорт оборвался",
     "evaluator_unavailable": "evaluator недоступен",
     "model_protocol_failure": "сбой протокола модели",
     "candidate_resource_exhausted": "исчерпан объявленный ресурс кандидата",
     "incomplete_scenario": "сценарий не предъявлен до конца",
-}
+})
 
-#: Failures that make the measurement incomplete: they say nothing about the
-#: model, so a run carrying them must not be ranked. A candidate that ran out
-#: of its declared budget *is* a verdict and stays in the denominator.
-INFRA_FAILURES = frozenset({"provider_unavailable", "transport_unavailable", "evaluator_unavailable"})
+#: Outcomes that leave no trustworthy verdict: the numbers may be shown but the
+#: run must not be ranked. ``resource_exhausted`` is *not* here — an exhausted
+#: declared budget is a model outcome and stays in the denominator; so is a
+#: plain wrong answer. ``unsupported`` leaves the denominator entirely.
+INCOMPLETE_FAILURES = frozenset({"infra_failure", "evaluator_failure", "integrity_violation"})
+
+#: Kept for callers written against the three-name taxonomy.
+INFRA_FAILURES = INCOMPLETE_FAILURES
+
+#: Outcomes of a fixed-budget track: a real failure, but not an incomplete run.
+MODEL_FAILURES = frozenset({"model_failure", "resource_exhausted"})
+
+
+def canonical_failure(kind: str | None) -> str | None:
+    """Canonical protocol kind of a stored name, or ``None``."""
+    text = str(kind or "")
+    if not text:
+        return None
+    return LEGACY_FAILURE_KINDS.get(text, text)
 
 
 def failure_label(kind: str | None) -> str:
@@ -199,7 +256,32 @@ def failure_label(kind: str | None) -> str:
 
 
 def is_infra_failure(kind: str | None) -> bool:
-    return str(kind or "") in INFRA_FAILURES
+    """True when the measurement is incomplete (infra, evaluator, integrity)."""
+    return canonical_failure(kind) in INCOMPLETE_FAILURES
+
+
+def is_capability_gap(kind: str | None) -> bool:
+    return canonical_failure(kind) in {"unsupported"}
+
+
+def outcome_of(score: Any) -> str:
+    """One protocol outcome of a score row or :class:`Score`.
+
+    A skipped task is ``unsupported``; a stored failure is its canonical kind.
+    An error without a kind is an infrastructure outcome: the run broke before a
+    verdict. Otherwise the row is a capability verdict — wrong while any check
+    failed, ``success`` only when all of them passed.
+    """
+    data = score if isinstance(score, Mapping) else score.as_dict()
+    if data.get("skipped"):
+        return "unsupported"
+    kind = canonical_failure(data.get("failure"))
+    if kind:
+        return kind
+    if data.get("error"):
+        return "infra_failure"
+    failed = any(not check.get("passed") for check in data.get("checks") or [])
+    return "model_failure" if failed else "success"
 
 
 def showcase_points(profile: str = DEFAULT_PROFILE) -> dict[str, float]:
@@ -255,6 +337,35 @@ def category_title(key: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
+@dataclass(frozen=True)
+class Asset:
+    """One file presented to the model next to the text prompt.
+
+    The asset is *local*: ``path`` lives inside the fixture workspace and the
+    bytes are carried by the fixture itself. There is no external URL, so a
+    replay cannot silently fetch a different picture. PNG is the only accepted
+    media type and the geometry is fixed by :data:`ASSET_SIZE`; preprocessing is
+    therefore the same for every model and every run.
+    """
+
+    path: str
+    media_type: str
+    data: bytes
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.data).hexdigest()
+
+    def as_dict(self) -> dict[str, str]:
+        """JSON form: the filename and the exact bytes, base64-encoded."""
+        return {
+            "path": self.path,
+            "media_type": self.media_type,
+            "sha256": self.sha256,
+            "data": base64.b64encode(self.data).decode("ascii"),
+        }
+
+
 @dataclass
 class TaskInstance:
     """One generated scenario, ready to be handed to a model."""
@@ -284,6 +395,14 @@ class TaskInstance:
 
     workspace: dict[str, str] | None = None
     """Files materialised before the task runs (coding repos, tool fixtures)."""
+
+    assets: list[Asset] | None = None
+    """Typed files presented with the prompt (image-input scenarios).
+
+    Paths are relative to the fixture workspace and are materialised into it.
+    The runner reads the bytes back off disk and sends them as an ``image_url``
+    content part; a category V scenario without assets is a broken fixture.
+    """
 
     tools: list[dict[str, Any]] | None = None
     """OpenAI function-calling schemas, for multi-turn tool scenarios."""
@@ -543,7 +662,8 @@ class Score:
     """Taxonomy kind of why the task produced no verdict, one of
     :data:`FAILURE_KINDS`. ``error`` names *that* something broke; this names
     *what*, so infrastructure failures can be told apart from a model that ran
-    out of its declared budget. ``None`` for a wrong answer."""
+    out of its declared budget. ``None`` for a wrong answer and for success;
+    :func:`outcome_of` derives those two quiet outcomes from the row."""
 
     max_points: float | None = None
     """Fixed budget of the task as the harness knows it.
@@ -724,6 +844,10 @@ def json_default(value: Any) -> Any:
         return f"{value.numerator}/{value.denominator}"
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, Asset):
+        return value.as_dict()
+    if isinstance(value, (bytes, bytearray)):
+        return base64.b64encode(bytes(value)).decode("ascii")
     if isinstance(value, (set, frozenset, tuple)):
         return list(value)
     if callable(value):

@@ -327,7 +327,7 @@ def test_an_infra_http_503_is_not_ranked_as_a_quality_zero(tmp_path):
     finally:
         httpstub.stop(server)
 
-    assert run.score.failure == "provider_unavailable"
+    assert run.score.failure == "infra_failure"
     assert run.score.status == "error"
     assert run.score.possible == task.max_points, "инфраструктурная ошибка остаётся в знаменателе"
     summary = summarise([run.score.as_dict()], {"per_task": [{"id": task.id, "category": task.category}]})
@@ -347,7 +347,7 @@ def test_an_infra_http_503_is_not_ranked_as_a_quality_zero(tmp_path):
     )
     page = render_html([weak, strong])
     assert page.index("data-model='полная'") < page.index("data-model='упавшая'")
-    assert "инфраструктура" in page and "провайдер недоступен" in page
+    assert "инфраструктура" in page and "инфраструктура недоступна" in page
 
 
 def test_a_model_timeout_is_its_own_outcome_not_infrastructure(tmp_path):
@@ -364,12 +364,138 @@ def test_a_model_timeout_is_its_own_outcome_not_infrastructure(tmp_path):
     cfg.task_wall_clock = 0.15
     replies = [_call(index, "read_file", {"path": "README.md"}) for index in range(1, 10)]
     run = Runner(cfg, _Hung(replies)).run_task(task)
-    assert run.score.failure == "candidate_resource_exhausted"
+    assert run.score.failure == "resource_exhausted"
     assert run.score.status == "error"
     assert not run.transcript.extra.get("infra_error")
     assert run.score.possible == task.max_points, "таймаут не выкидывают из знаменателя"
     summary = summarise([run.score.as_dict()], {"per_task": [{"id": task.id, "category": task.category}]})
     assert summary["eligible"] is True, "модельный исход не делает прогон неранжируемым"
+    assert summary["outcomes"]["resource_exhausted"] == 1
+    assert summary["eligible"] is True
+
+
+# --------------------------------------------------------------------------- #
+# The outcome dictionary and its eligibility gates
+# --------------------------------------------------------------------------- #
+
+OUTCOMES = (
+    "success",
+    "model_failure",
+    "resource_exhausted",
+    "infra_failure",
+    "evaluator_failure",
+    "integrity_violation",
+    "unsupported",
+)
+
+
+def test_the_outcome_dictionary_is_complete_and_labeled():
+    assert core.FAILURE_KINDS == OUTCOMES
+    assert core.STORED_FAILURE_KINDS == OUTCOMES[2:]
+    for kind in core.FAILURE_KINDS:
+        assert core.failure_label(kind), f"у исхода {kind} нет подписи"
+    assert core.INCOMPLETE_FAILURES == {
+        "infra_failure", "evaluator_failure", "integrity_violation",
+    }
+    assert core.MODEL_FAILURES == {"model_failure", "resource_exhausted"}
+
+
+def test_legacy_names_normalise_to_the_dictionary():
+    expected = {
+        "provider_unavailable": "infra_failure",
+        "transport_unavailable": "infra_failure",
+        "incomplete_scenario": "resource_exhausted",
+        "model_protocol_failure": "model_failure",
+        "candidate_resource_exhausted": "resource_exhausted",
+        "evaluator_unavailable": "evaluator_failure",
+    }
+    for old, canonical in expected.items():
+        assert core.canonical_failure(old) == canonical
+        assert core.failure_label(old), "старая подпись теряется"
+    assert core.canonical_failure(None) is None
+    assert core.canonical_failure("network_outage") == "network_outage"
+    assert core.is_infra_failure("provider_unavailable")
+    assert core.is_infra_failure("integrity_violation")
+    assert not core.is_infra_failure("candidate_resource_exhausted")
+    assert not core.is_infra_failure("model_protocol_failure")
+
+
+def test_outcome_of_derives_the_quiet_states():
+    passed = {"task_id": "A-1", "category": "A", "checks": [{"name": "x", "passed": True}]}
+    wrong = {"task_id": "A-1", "category": "A", "checks": [{"name": "x", "passed": False}]}
+    assert core.outcome_of(passed) == "success"
+    assert core.outcome_of(wrong) == "model_failure"
+    assert core.outcome_of({"skipped": "нет браузера"}) == "unsupported"
+    assert core.outcome_of({"failure": "provider_unavailable"}) == "infra_failure"
+    assert core.outcome_of({"failure": "integrity_violation"}) == "integrity_violation"
+    assert core.outcome_of({"error": "boom"}) == "infra_failure"
+
+
+@pytest.mark.parametrize(
+    "kind, eligible",
+    [
+        ("infra_failure", False),
+        ("evaluator_failure", False),
+        ("integrity_violation", False),
+        ("resource_exhausted", True),
+        ("model_failure", True),
+        ("provider_unavailable", False),
+        ("candidate_resource_exhausted", True),
+    ],
+)
+def test_each_outcome_has_its_eligibility_gate(kind, eligible):
+    score = {
+        "task_id": "A-1", "category": "A", "earned": 0.0, "possible": 1.0,
+        "error": "прогон прерван", "failure": kind,
+        "checks": [{"name": "x", "passed": False, "points": 1.0}],
+    }
+    summary = summarise([score], {"per_task": [{"id": "A-1", "category": "A"}]})
+    assert summary["eligible"] is eligible
+    assert summary["incomplete"] is False, "покрытие не путается с допуском"
+    assert summary["outcomes"].get(core.canonical_failure(kind)) == 1
+    if not eligible:
+        assert "не ранжируется" in summary["verdict"]
+    if core.canonical_failure(kind) == "integrity_violation":
+        assert "удостоверение отозвано" in summary["verdict"]
+    if kind in ("resource_exhausted", "candidate_resource_exhausted"):
+        assert "исходы модели" in summary["verdict"]
+
+
+def test_unsupported_leaves_the_denominator_and_names_the_cohort():
+    scores = [
+        {"task_id": "A-1", "category": "A", "earned": 1.0, "possible": 1.0,
+         "checks": [{"name": "x", "passed": True, "points": 1.0}]},
+        {"task_id": "A-2", "category": "A", "skipped": "нет браузера", "checks": []},
+    ]
+    summary = summarise(scores, {
+        "per_task": [{"id": "A-1", "category": "A"}, {"id": "A-2", "category": "A"}],
+    })
+    assert summary["outcomes"]["unsupported"] == 1
+    assert summary["outcomes"]["success"] == 1
+    assert summary["unsupported"] == 1
+    assert summary["skipped_scored"] == 1
+    assert summary["eligible"] is True
+    assert summary["incomplete"] is True
+    assert "unsupported" in summary["verdict"]
+    assert "ни в числитель, ни в знаменатель" in summary["verdict"]
+
+
+def test_a_wrong_answer_is_model_failure_but_not_a_failure_code():
+    score = {"task_id": "A-1", "category": "A", "earned": 0.0, "possible": 1.0,
+             "checks": [{"name": "x", "passed": False, "points": 1.0}]}
+    summary = summarise([score], {"per_task": [{"id": "A-1", "category": "A"}]})
+    assert summary["outcomes"]["model_failure"] == 1
+    assert summary["failures"] == {}, "тихий исход не попадает в failure-счётчики"
+    assert summary["eligible"] is True
+
+
+def test_a_legacy_bundle_reads_under_the_canonical_kind():
+    score = {"task_id": "A-1", "category": "A", "earned": 0.0, "possible": 1.0,
+             "error": "HTTP 503", "failure": "provider_unavailable", "checks": []}
+    summary = summarise([score], {"per_task": [{"id": "A-1", "category": "A"}]})
+    assert summary["failures"] == {"infra_failure": 1}
+    assert summary["infra_failures"] == {"infra_failure": 1}
+    assert summary["eligible"] is False
 
 
 def test_a_browser_worker_refusal_is_an_evaluator_error(monkeypatch):
@@ -392,7 +518,7 @@ def test_a_browser_worker_refusal_is_an_evaluator_error(monkeypatch):
         browser, "render",
         lambda *a, **k: browser.RenderResult(
             ok=False, reason="рендер-процесс не запустился: boom",
-            failure="evaluator_unavailable",
+            failure="evaluator_failure",
         ),
     )
     transcript = core.Transcript(task_id="K-T", category="K")
@@ -406,7 +532,7 @@ def test_a_browser_worker_refusal_is_an_evaluator_error(monkeypatch):
         )
     )))
     score = visual.evaluate(task, transcript)
-    assert score.failure == "evaluator_unavailable"
+    assert score.failure == "evaluator_failure"
     assert score.status == "error"
     assert len([c for c in score.checks if not c.passed]) == len(visual.CHECK_NAMES)
     assert score.possible == 4.0
@@ -1053,11 +1179,15 @@ def test_t9_is_seed_deterministic_and_covers_both_branches():
     assert branches == {"before_commit", "after_commit"}
 
 
-def test_t8_and_t9_forfeit_the_budget_half_point_on_overrun():
-    for task_id, seed, profile in (("T-8", 3, "pilot"), ("T-9", 1, "stretch-v1")):
+def test_the_tool_budget_half_point_is_forfeited_on_overrun():
+    for task_id, seed, profile in (("T-8", 3, "pilot"), ("T-9", 1, "stretch-v1"), ("T-12", 1, "research-v1")):
         task = _profile_task(task_id, seed, profile)
         replies = _replay(task)
-        filler = "get_config_state" if task_id == "T-8" else "get_migration_state"
+        filler = {
+            "T-8": "get_config_state",
+            "T-9": "get_migration_state",
+            "T-12": "get_release_state",
+        }[task_id]
         while len(replies) <= task.oracle["call_budget"] + 1:
             replies.insert(len(replies) - 1, _call(len(replies), filler, {}))
         run = Runner(RunConfig(agent=False), ScriptedProvider(replies)).run_task(task)
@@ -1326,6 +1456,137 @@ def test_n4_is_seed_deterministic_and_holds_valid_boundaries():
         assert oracle["reservation_base"]
         assert len(oracle["golden_calls"]) <= oracle["call_budget"] <= 8
         assert first.fresh_after == tools.FRESH_AFTER
+        replay = Runner(RunConfig(agent=False), ScriptedProvider(_replay(first))).run_task(first)
+        assert replay.score.earned == first.max_points, (seed, [c.name for c in replay.score.checks if not c.passed])
+
+
+def test_t12_recovery_from_a_stale_snapshot_keeps_one_effect():
+    task = _profile_task("T-12", 1, "research-v1")
+    oracle = task.oracle
+    run = Runner(RunConfig(agent=False), ScriptedProvider(_replay(task))).run_task(task)
+
+    assert run.score.earned == task.max_points == 2.0
+    assert run.transcript.workspace_after[oracle["log_path"]].count(oracle["build"]) == 1
+    assert f"revision: {oracle['release_revision'] + 2}" in run.transcript.workspace_after[oracle["state_path"]]
+    assert f"deployed: {oracle['build']}" in run.transcript.workspace_after[oracle["state_path"]]
+
+    # The stale snapshot is refused, and the hotfix that made it stale is
+    # announced on that same call instead of being inferred from the answer.
+    conflict = run.transcript.tool_log[1]
+    assert conflict["error"] is True
+    assert "hotfix" in conflict["result"] and "конфликт ревизии" in conflict["result"]
+    timeout = run.transcript.tool_log[3]
+    assert timeout["error"] is True and "timeout после commit" in timeout["result"]
+
+
+def test_t12_a_blind_repeat_after_the_commit_breaks_the_recovery():
+    """Repeating "just to be sure" costs a revision and a journal line."""
+    task = _profile_task("T-12", 2, "research-v1")
+    oracle = task.oracle
+    replies = _replay(task)
+    repeat = _call(
+        6,
+        "publish_release",
+        {"build_id": oracle["build"], "revision": oracle["release_revision"] + 2},
+    )
+    replies = [*replies[:5], repeat, *replies[5:]]
+    run = Runner(RunConfig(agent=False), ScriptedProvider(replies)).run_task(task)
+
+    assert run.score.earned == 1.0
+    checks = {check.name: check.passed for check in run.score.checks}
+    assert checks["single_effect_consistent_state"] is False
+    assert checks["stale_snapshot_refreshed"] is True
+    log = run.transcript.workspace_after[oracle["log_path"]]
+    assert log.count(oracle["build"]) == 2
+    assert f"revision: {oracle['release_revision'] + 3}" in run.transcript.workspace_after[oracle["state_path"]]
+
+
+def test_t12_recovery_by_an_early_refresh_needs_no_conflict():
+    """The hotfix fires before the second call, so an early refresh already sees it."""
+    task = _profile_task("T-12", 5, "research-v1")
+    oracle = task.oracle
+    run = Runner(
+        RunConfig(agent=False),
+        ScriptedProvider(
+            [
+                _call(1, "get_release_state", {}),
+                _call(2, "get_release_state", {"refresh": True}),
+                _call(3, "publish_release", {"build_id": oracle["build"], "revision": oracle["release_revision"] + 1}),
+                _call(4, "get_release_state", {"refresh": True}),
+                core.ModelReply(text=oracle["final_answer"]),
+            ]
+        ),
+    ).run_task(task)
+
+    assert f"ревизия {oracle['release_revision'] + 1}" in run.transcript.tool_log[1]["result"]
+    assert run.transcript.tool_log[2]["error"] is True
+    assert "timeout после commit" in run.transcript.tool_log[2]["result"]
+    assert run.score.earned == task.max_points
+    assert run.transcript.workspace_after[oracle["log_path"]].count(oracle["build"]) == 1
+
+
+def test_t12_trusting_the_stale_snapshot_never_commits():
+    """Repeating the cached revision is refused every time: no effect at all."""
+    task = _profile_task("T-12", 3, "research-v1")
+    oracle = task.oracle
+    stale = {"build_id": oracle["build"], "revision": oracle["release_revision"]}
+    run = Runner(
+        RunConfig(agent=False),
+        ScriptedProvider(
+            [
+                _call(1, "get_release_state", {}),
+                _call(2, "publish_release", dict(stale)),
+                _call(3, "publish_release", dict(stale)),
+                core.ModelReply(text=f"опубликовано, ревизия {oracle['release_revision']}"),
+            ]
+        ),
+    ).run_task(task)
+
+    publishes = [call for call in run.transcript.tool_log if call["name"] == "publish_release"]
+    assert len(publishes) == 2 and all(call["error"] for call in publishes)
+    assert all("конфликт ревизии" in call["result"] for call in publishes)
+    assert run.transcript.workspace_after[oracle["log_path"]] == oracle["initial_log"]
+    assert f"revision: {oracle['release_revision']}" in run.transcript.workspace_after[oracle["state_path"]]
+    checks = {check.name: check.passed for check in run.score.checks}
+    assert checks == {"stale_snapshot_refreshed": False, "single_effect_consistent_state": False, "call_budget": True}
+    assert run.score.earned == 0.5
+
+
+def test_t12_recovery_claimed_without_any_effect_is_a_half():
+    task = _profile_task("T-12", 4, "research-v1")
+    oracle = task.oracle
+    run = Runner(
+        RunConfig(agent=False),
+        ScriptedProvider(
+            [
+                _call(1, "get_release_state", {}),
+                core.ModelReply(
+                    text=f"опубликовал {oracle['build']}, ревизия {oracle['release_revision'] + 2}, эффект один"
+                ),
+            ]
+        ),
+    ).run_task(task)
+
+    assert run.transcript.workspace_after[oracle["log_path"]] == oracle["initial_log"]
+    assert run.score.earned == 0.5
+
+
+def test_t12_recovery_is_seed_deterministic_and_declares_the_schedule():
+    for seed in range(1, 6):
+        first = _profile_task("T-12", seed, "research-v1")
+        second = _profile_task("T-12", seed, "research-v1")
+        assert (first.prompt, first.workspace, first.oracle) == (second.prompt, second.workspace, second.oracle)
+        oracle = first.oracle
+        assert oracle["build"] not in oracle["initial_log"]
+        assert oracle["current_build"] in oracle["initial_log"]
+        assert oracle["initial_log"] == first.workspace[oracle["log_path"]]
+        assert f"revision: {oracle['release_revision']}\n" in first.workspace[oracle["state_path"]]
+        assert all(oracle["build"] not in content for content in first.workspace.values())
+        # Both halves of the schedule are announced, not left to chance.
+        assert "hotfix" in first.prompt and "timeout" in first.prompt
+        assert "refresh=true" in first.prompt
+        assert len(oracle["golden_calls"]) <= oracle["call_budget"] <= 8
+        assert first.private is True and first.fresh_after == tools.FRESH_AFTER
         replay = Runner(RunConfig(agent=False), ScriptedProvider(_replay(first))).run_task(first)
         assert replay.score.earned == first.max_points, (seed, [c.name for c in replay.score.checks if not c.passed])
 
@@ -3358,3 +3619,66 @@ def test_a_broken_container_falls_back_to_the_host_and_is_marked(monkeypatch, tm
     assert "контейнере" in record["executor_reason"]
     assert run.transcript.extra["agent"]["exit_ok"] is True
     assert run.transcript.workspace_after.get("fell-back.txt", "").strip() == "host"
+
+
+# --------------------------------------------------------------------------- #
+# Image capability probe (category V)
+# --------------------------------------------------------------------------- #
+
+
+def _vqa_task():
+    import random
+
+    from dailybench.tasks import visual_input
+
+    class _Cfg:
+        profile = "research-v1"
+
+    return visual_input.generate(random.Random(5), _Cfg())[0]
+
+
+def test_the_image_probe_reaches_the_endpoint_as_a_content_array(endpoint):
+    base_url, server = endpoint
+    provider = OpenAICompatibleProvider(base_url=base_url, model="m")
+    assert provider.probe_images() is True
+    assert provider.probe_images() is True  # cached: one request only
+    parts = server.last_payload["messages"][-1]["content"]  # type: ignore[attr-defined]
+    assert [part["type"] for part in parts] == ["text", "image_url"]
+    assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+class _TextOnlyHandler(_Handler):
+    """A 4xx on any content array: the classic text-only chat endpoint."""
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        content = (payload.get("messages") or [{}])[-1].get("content")
+        if isinstance(content, list):
+            self.send_error(400, "image input not supported")
+            return
+        body = json.dumps({"error": "replay"}).encode()
+        self.server.last_payload = payload  # type: ignore[attr-defined]
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def test_a_text_only_endpoint_fails_the_probe_and_the_task_is_skipped():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _TextOnlyHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}/v1"
+        provider = OpenAICompatibleProvider(base_url=base_url, model="m")
+        assert provider.probe_images() is False
+        run = Runner(RunConfig(profile="research-v1"), provider).run_task(_vqa_task())
+        assert run.score.status == "skipped"
+        assert run.score.possible == 0.0
+        assert "capability probe" in (run.score.skipped or "")
+        assert run.transcript.extra["vision_probe"]["supported"] is False
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -16,6 +16,10 @@ ordered event log with retries, partial failures and tombstones.
 R-17 is the stretch schedule twin: the same working-day rule with Kazakhstan
 holidays written once in Russian and once in Kazakh, each run with its own
 fixture and oracle.
+R-18 is a stretch bounded optimisation: a tiny machine schedule whose optimum
+is proven by exhaustive search.  The answer is a schedule, not a number, so
+every optimal assignment is accepted and only feasibility plus the objective
+are checked.
 """
 
 from __future__ import annotations
@@ -53,9 +57,9 @@ IDS = (
     "R-15",
 )
 PILOT_IDS = ("R-16",)
-STRETCH_IDS = IDS + PILOT_IDS + ("R-17", "R-17-KK")
+STRETCH_IDS = IDS + PILOT_IDS + ("R-17", "R-17-KK", "R-18")
 ALL_IDS = STRETCH_IDS
-"""Stretch adds the ru/kk schedule twins; each is its own task and oracle."""
+"""Stretch adds the ru/kk schedule twins and the bounded optimiser, each its own task and oracle."""
 RESEARCH_IDS: tuple[str, ...] = ()
 """The research profile measures no reasoning scenario."""
 _POINTS = 1.0
@@ -1591,6 +1595,202 @@ def r17_kk(rng: random.Random) -> core.TaskInstance:
 
 
 # --------------------------------------------------------------------------- #
+# R-18 — bounded schedule optimisation, judged by exhaustive search
+# --------------------------------------------------------------------------- #
+
+_R18_MACHINES = 2
+_R18_LABELS = "ABCDEF"
+
+
+def _r18_simulate(
+    seq: list[tuple[int, int]],
+    duration: list[int],
+    release: list[int],
+    edges: list[tuple[int, int]],
+    machines: int,
+) -> tuple[int, bool]:
+    """Run one machine order back to back and report ``(makespan, precedence)``.
+
+    A task starts when its machine frees up and never before its release time;
+    it then occupies that machine for its whole duration.  The second value
+    says whether every dependency finished before its dependent started.
+    """
+    free = [0] * machines
+    start = [0] * len(duration)
+    end = [0] * len(duration)
+    for task, machine in seq:
+        start[task] = max(free[machine], release[task])
+        end[task] = start[task] + duration[task]
+        free[machine] = end[task]
+    feasible = all(start[target] >= end[source] for source, target in edges)
+    return max(end, default=0), feasible
+
+
+def _r18_best(
+    duration: list[int],
+    release: list[int],
+    edges: list[tuple[int, int]],
+) -> tuple[int, list[tuple[int, int]], list[tuple[int, int]] | None]:
+    """Exhaustively scan every assignment and every per-machine order.
+
+    Returns the proven feasible optimum, one optimal feasible schedule, and —
+    when the fixture has one — an infeasible schedule of the same makespan.
+    """
+    best: list[tuple[int, int]] | None = None
+    best_makespan: int | None = None
+    broken: list[tuple[int, int]] | None = None
+    broken_makespan: int | None = None
+    for order in permutations(range(len(duration))):
+        for machines in product(range(_R18_MACHINES), repeat=len(duration)):
+            seq = list(zip(order, machines))
+            makespan, feasible = _r18_simulate(seq, duration, release, edges, _R18_MACHINES)
+            if feasible:
+                if best_makespan is None or makespan < best_makespan:
+                    best, best_makespan = seq, makespan
+            elif broken_makespan is None or makespan < broken_makespan:
+                broken, broken_makespan = seq, makespan
+    assert best is not None and best_makespan is not None
+    return best_makespan, best, broken if broken_makespan == best_makespan else None
+
+
+def _r18_greedy(
+    duration: list[int],
+    release: list[int],
+    edges: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """Topological list schedule to the earliest-finishing machine.
+
+    Feasible by construction, but balancing greedily is not always optimal.
+    """
+    nodes = len(duration)
+    indegree = [0] * nodes
+    outgoing: list[list[int]] = [[] for _ in range(nodes)]
+    for source, target in edges:
+        outgoing[source].append(target)
+        indegree[target] += 1
+    available = [node for node in range(nodes) if indegree[node] == 0]
+    heapq.heapify(available)
+    free = [0] * _R18_MACHINES
+    seq: list[tuple[int, int]] = []
+    while available:
+        task = heapq.heappop(available)
+        starts = [max(free[machine], release[task]) for machine in range(_R18_MACHINES)]
+        machine = min(range(_R18_MACHINES), key=lambda index: (starts[index] + duration[task], index))
+        seq.append((task, machine))
+        free[machine] = starts[machine] + duration[task]
+        for target in outgoing[task]:
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                heapq.heappush(available, target)
+    return seq
+
+
+def _r18_text(seq: list[tuple[int, int]]) -> str:
+    return ",".join(f"{_R18_LABELS[task]}@{machine + 1}" for task, machine in seq)
+
+
+_R18_PAIR = re.compile(r"([A-F])@([12])")
+
+
+def _r18_parse(token: str | None, count: int) -> list[tuple[int, int]] | None:
+    """Parse ``A@1,B@2,...`` into a task sequence, or ``None`` when malformed."""
+    if token is None:
+        return None
+    parts = [part.strip() for part in token.split(",")]
+    if len(parts) != count:
+        return None
+    seq: list[tuple[int, int]] = []
+    seen: set[int] = set()
+    for part in parts:
+        match = _R18_PAIR.fullmatch(part.upper())
+        if match is None:
+            return None
+        task = ord(match.group(1)) - ord("A")
+        if task >= count or task in seen:
+            return None
+        seen.add(task)
+        seq.append((task, int(match.group(2)) - 1))
+    return seq if len(seen) == count else None
+
+
+def r18(rng: random.Random) -> core.TaskInstance:
+    # Retry until the fixture has all three interesting schedules: a proven
+    # optimum, a genuinely suboptimal greedy run, and an optimal but invalid
+    # assignment that the evaluator must reject on feasibility alone.
+    for _ in range(200):
+        count = rng.randrange(5, 7)
+        duration = [rng.randrange(3, 13) for _ in range(count)]
+        release = [rng.choice((0, 0, 0, 5, 10, 15)) for _ in range(count)]
+        candidates = [
+            (left, right)
+            for left in range(count)
+            for right in range(left + 1, count)
+        ]
+        edges = sorted(rng.sample(candidates, rng.randrange(2, 4)))
+        optimum, best, broken = _r18_best(duration, release, edges)
+        if broken is None:
+            continue
+        greedy = _r18_greedy(duration, release, edges)
+        greedy_makespan, feasible = _r18_simulate(greedy, duration, release, edges, _R18_MACHINES)
+        if not feasible or greedy_makespan <= optimum:
+            continue
+        break
+    else:
+        raise AssertionError("could not generate a fixture with a feasible suboptimal greedy run")
+
+    rows = "\n".join(
+        f"Задача {_R18_LABELS[index]}: выпущена в {release[index]} мин, длится {duration[index]} мин"
+        for index in range(count)
+    )
+    links = "\n".join(
+        f"Задача {_R18_LABELS[source]} должна завершиться до старта задачи {_R18_LABELS[target]}."
+        for source, target in edges
+    )
+    prompt = (
+        f"Есть {_R18_MACHINES} одинаковые машины, пронумерованные 1 и 2.\n\n"
+        f"{rows}\n\n"
+        f"Ограничения:\n"
+        f"{links}\n"
+        "Задача не может начаться раньше своего момента выпуска.\n"
+        "Задачи не прерываются: задача занимает выбранную машину целиком.\n"
+        "Задачи на одной машине выполняются подряд, без искусственных пауз, "
+        "в порядке перечисления.\n"
+        "Каждая задача выполняется ровно один раз и ровно на одной машине.\n\n"
+        "Нужно расписание с минимальным makespan (временем завершения последней задачи).\n"
+        "Принимается любое оптимальное расписание, а не только одно эталонное.\n\n"
+        "Формат ответа: задачи в порядке начала, каждая в виде ЗАДАЧА@МАШИНА, "
+        "через запятую (пример: A@1,B@2,C@1); буквы задач без пропусков, "
+        "задачи одной машины — в порядке их выполнения.\n\n"
+        "Ответь только расписанием."
+    )
+    return _task(
+        "R-18",
+        "Ограниченная оптимизация расписания",
+        prompt,
+        {
+            "optimum": optimum,
+            "duration": duration,
+            "release": release,
+            "edges": [list(edge) for edge in edges],
+            "machines": _R18_MACHINES,
+        },
+        kind="schedule",
+        reference=_r18_text(best),
+        meta={
+            "machines": _R18_MACHINES,
+            "duration": duration,
+            "release": release,
+            "edges": [list(edge) for edge in edges],
+            "optimal_makespan": optimum,
+            "optimal_schedule": _r18_text(best),
+            "mutant_feasible_slow": _r18_text(greedy),
+            "mutant_optimal_infeasible": _r18_text(broken),
+        },
+        fresh_after=FRESH_AFTER,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Generation and evaluation
 # --------------------------------------------------------------------------- #
 
@@ -1614,10 +1814,11 @@ _BUILDERS: dict[str, Callable[[random.Random], core.TaskInstance]] = {
     "R-16": r16,
     "R-17": r17,
     "R-17-KK": r17_kk,
+    "R-18": r18,
 }
 
-PRIVATE_IDS = frozenset({"R-3", "R-9", "R-17", "R-17-KK"})
-"""Private layer: the whole schedule pair plus two baseline scenarios."""
+PRIVATE_IDS = frozenset({"R-3", "R-9", "R-17", "R-17-KK", "R-18"})
+"""Private layer: the schedule pair, the optimiser and two baseline scenarios."""
 
 
 def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
@@ -1690,6 +1891,21 @@ def _compare(kind: str, token: str | None, answer: Any) -> tuple[bool, str]:
         # Exact single token: any different (even valid) ordering is rejected.
         passed = token.upper() == str(answer).upper()
         return passed, f"получено {token}, ожидалось {answer}"
+    if kind == "schedule":
+        # Several schedules can be optimal, so the token is replayed against the
+        # feasibility rules and only its makespan is compared with the proven
+        # optimum; the reference schedule itself carries no extra authority.
+        seq = _r18_parse(token, len(answer["duration"]))
+        if seq is None:
+            return False, f"ожидался формат ЗАДАЧА@1|2 через запятую, получено {token!r}"
+        makespan, feasible = _r18_simulate(
+            seq, answer["duration"], answer["release"], [tuple(edge) for edge in answer["edges"]],
+            answer["machines"],
+        )
+        if not feasible:
+            return False, f"расписание нарушает зависимости, makespan {makespan}"
+        passed = makespan == answer["optimum"]
+        return passed, f"makespan {makespan}, достижимый минимум {answer['optimum']}"
     if kind == "svc":
         parts = [part.strip() for part in token.split(";")]
         if len(parts) != 3:

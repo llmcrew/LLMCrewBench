@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import random
 
 from dailybench import core
@@ -232,7 +233,7 @@ def test_r16_is_pilot_only_and_registered_by_profile() -> None:
     assert module.expected_ids_for() == reasoning.IDS
     assert module.expected_ids_for("pilot") == ("R-16",)
     assert module.expected_ids_for("stretch-v1") == reasoning.STRETCH_IDS == reasoning.IDS + (
-        "R-16", "R-17", "R-17-KK")
+        "R-16", "R-17", "R-17-KK", "R-18")
 
 
 def test_r16_reference_scores_full_and_every_mutant_fails() -> None:
@@ -325,3 +326,149 @@ def test_r16_fixture_edge_cases_and_seed_determinism() -> None:
         assert "tombstone" in first.prompt and "один раз" in first.prompt
         assert "СТАТУС;ВЕРСИЯ;ПРИМЕНЕНО" in first.prompt
         assert "одной строкой без пояснений" in first.prompt
+
+
+# --------------------------------------------------------------------------- #
+# R-18 — bounded optimisation, stretch and private
+# --------------------------------------------------------------------------- #
+
+OPTIM_SEEDS = (20260915, 20260916, 20260917)
+_OPTIM_LABELS = "ABCDEF"
+
+
+def _stretch_tasks(seed: int) -> list[core.TaskInstance]:
+    return reasoning.generate(
+        random.Random(seed), RunConfig(seed=seed, profile="stretch-v1")
+    )
+
+
+def _optim(seed: int) -> core.TaskInstance:
+    return next(task for task in _stretch_tasks(seed) if task.id == "R-18")
+
+
+def _sim(
+    seq: list[tuple[int, int]], duration: list[int], release: list[int], edges: list[list[int]]
+) -> tuple[int, bool]:
+    """Test-side replay, written separately from the module's simulator."""
+    free = [0, 0]
+    start = [0] * len(duration)
+    end = [0] * len(duration)
+    for task, machine in seq:
+        start[task] = max(free[machine], release[task])
+        end[task] = start[task] + duration[task]
+        free[machine] = end[task]
+    return max(end), all(start[b] >= end[a] for a, b in edges)
+
+
+def _optimal_schedules(meta: dict) -> set[str]:
+    """Enumerate every feasible optimum of the published fixture from scratch."""
+    count = len(meta["duration"])
+    found: set[str] = set()
+    for order in itertools.permutations(range(count)):
+        for machines in itertools.product((0, 1), repeat=count):
+            seq = list(zip(order, machines))
+            makespan, feasible = _sim(seq, meta["duration"], meta["release"], meta["edges"])
+            if feasible and makespan == meta["optimal_makespan"]:
+                found.add(",".join(f"{_OPTIM_LABELS[task]}@{machine + 1}" for task, machine in seq))
+    return found
+
+
+def _score(task: core.TaskInstance, reply: str) -> float:
+    return reasoning.evaluate(task, _transcript(task, reply)).earned
+
+
+def test_bounded_optimization_is_stretch_only_and_private() -> None:
+    assert "R-18" not in reasoning.IDS
+    assert reasoning.STRETCH_IDS[-1] == "R-18"
+    assert "R-18" not in [task.id for task in _tasks(20260915)]
+    assert "R-18" in [task.id for task in _stretch_tasks(20260915)]
+
+    for seed in OPTIM_SEEDS:
+        task = _optim(seed)
+        assert task.private is True
+        assert task.max_points == 1.0
+        first, second = _optim(seed), _optim(seed)
+        assert (first.prompt, first.oracle, first.meta) == (second.prompt, second.oracle, second.meta)
+    assert _optim(OPTIM_SEEDS[0]).prompt != _optim(OPTIM_SEEDS[1]).prompt
+
+
+def test_bounded_optimization_accepts_every_optimal_schedule() -> None:
+    for seed in OPTIM_SEEDS:
+        task = _optim(seed)
+        reference = task.oracle["reference"]
+        assert _score(task, reference) == 1.0
+        optimal = _optimal_schedules(task.meta)
+        assert len(optimal) >= 3
+        assert reference in optimal
+        for schedule in optimal:
+            assert _score(task, schedule) == 1.0, schedule
+        # Case and spacing are the same answer.
+        assert _score(task, reference.lower().replace(",", ", ")) == 1.0
+
+
+def test_bounded_optimization_rejects_every_mutant() -> None:
+    for seed in OPTIM_SEEDS:
+        task = _optim(seed)
+        meta = task.meta
+        optimum = meta["optimal_makespan"]
+
+        # Feasible, but leaves time on the table.
+        slow = meta["mutant_feasible_slow"]
+        slow_seq = reasoning._r18_parse(slow, len(meta["duration"]))
+        assert slow_seq is not None
+        slow_makespan, slow_ok = _sim(slow_seq, meta["duration"], meta["release"], meta["edges"])
+        assert slow_ok is True and slow_makespan > optimum
+        assert _score(task, slow) == 0.0
+
+        # Optimal objective, but a dependency starts before its predecessor ends.
+        broken = meta["mutant_optimal_infeasible"]
+        broken_seq = reasoning._r18_parse(broken, len(meta["duration"]))
+        assert broken_seq is not None
+        broken_makespan, broken_ok = _sim(broken_seq, meta["duration"], meta["release"], meta["edges"])
+        assert broken_ok is False and broken_makespan == optimum
+        assert _score(task, broken) == 0.0
+
+        # Structurally incomplete or malformed answers stay rejected even when
+        # the makespan they describe would be optimal.
+        parts = task.oracle["reference"].split(",")
+        assert _score(task, ",".join(parts[:-1])) == 0.0
+        assert _score(task, ",".join([parts[0], *parts])) == 0.0
+        assert _score(task, task.oracle["reference"].replace("@1", "@3")) == 0.0
+        assert _score(task, "не знаю") == 0.0
+
+
+def test_bounded_optimization_oracle_is_independently_proven() -> None:
+    for seed in OPTIM_SEEDS:
+        task = _optim(seed)
+        meta = task.meta
+        count = len(meta["duration"])
+        assert count in (5, 6)
+        assert 1 <= len(meta["edges"]) <= 3
+        assert all(0 <= source < target < count for source, target in meta["edges"])
+
+        brute = min(
+            makespan
+            for order in itertools.permutations(range(count))
+            for machines in itertools.product((0, 1), repeat=count)
+            for seq in [list(zip(order, machines))]
+            for makespan, feasible in [_sim(seq, meta["duration"], meta["release"], meta["edges"])]
+            if feasible
+        )
+        assert brute == meta["optimal_makespan"] == task.oracle["answer"]["optimum"]
+        assert meta["optimal_schedule"] == task.oracle["reference"]
+
+        # The prompt states every constraint and the acceptance rule the
+        # evaluator applies.
+        prompt = task.prompt
+        assert "2 одинаковые машины" in prompt
+        assert "ровно один раз" in prompt
+        assert "подряд" in prompt and "раньше своего момента выпуска" in prompt
+        assert "любое оптимальное расписание" in prompt
+        assert "ЗАДАЧА@МАШИНА" in prompt
+        for index, label in enumerate(_OPTIM_LABELS[:count]):
+            assert f"Задача {label}: выпущена в {meta['release'][index]} мин" in prompt
+        for source, target in meta["edges"]:
+            assert (
+                f"Задача {_OPTIM_LABELS[source]} должна завершиться "
+                f"до старта задачи {_OPTIM_LABELS[target]}"
+            ) in prompt

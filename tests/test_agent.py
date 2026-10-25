@@ -515,7 +515,7 @@ def test_a_silent_agent_is_reported_not_scored(monkeypatch, tmp_path):
     work.mkdir()
     result = agent.run("p", work, RunConfig(base_url="http://x/v1", model="m"), agent_dir=tmp_path)
     assert not result.ok and result.error == "агент не выдал ни одного события"
-    assert result.failure == "incomplete_scenario"
+    assert result.failure == "infra_failure"
 
 
 def test_a_stop_reason_error_on_exit_zero_is_an_error(monkeypatch, tmp_path):
@@ -542,7 +542,7 @@ def test_a_stop_reason_error_on_exit_zero_is_an_error(monkeypatch, tmp_path):
     assert result.events, "событие обязано сохраниться"
     assert not result.ok
     assert "HTTP 400" in (result.error or "")
-    assert result.failure == "model_protocol_failure"
+    assert result.failure == "model_failure"
 
 
 def test_an_endpoint_error_stop_is_infrastructure(monkeypatch, tmp_path):
@@ -560,7 +560,7 @@ def test_an_endpoint_error_stop_is_infrastructure(monkeypatch, tmp_path):
     work = tmp_path / "w"
     work.mkdir()
     result = agent.run("p", work, RunConfig(base_url="http://x/v1", model="m"), agent_dir=tmp_path)
-    assert not result.ok and result.failure == "provider_unavailable"
+    assert not result.ok and result.failure == "infra_failure"
 
 
 def test_the_agent_does_not_wait_for_stdin(monkeypatch, tmp_path):

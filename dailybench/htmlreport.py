@@ -468,7 +468,11 @@ def _incomplete_table(
         contract = run.get("suite") or {}
         expected = len(contract.get("per_task") or []) or len(run.get("scores") or [])
         ran = summary.get("ran", 0) + summary.get("ran_showcase", 0)
-        state = "инфраструктура" if not summary.get("eligible") else "неполный прогон"
+        state = (
+            "отказ в удостоверении" if summary.get("integrity_failures")
+            else "инфраструктура" if not summary.get("eligible")
+            else "неполный прогон"
+        )
         if summary.get("skipped_scored"):
             state += f"; не проверялось заданий: {summary['skipped_scored']} (unsupported)"
         rows.append(
@@ -523,7 +527,15 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_
             + (
                 ""
                 if summary.get("eligible") and not summary.get("incomplete")
-                else f"<div class='sub state'>{'инфраструктура' if not summary.get('eligible') else 'неполный прогон — вне ранга'}</div>"
+                else (
+                    "<div class='sub state'>"
+                    + (
+                        "удостоверение отозвано" if summary.get("integrity_failures")
+                        else "инфраструктура" if not summary.get("eligible")
+                        else "неполный прогон — вне ранга"
+                    )
+                    + "</div>"
+                )
             )
             + f"<div class='big {_tone(summary['headline_earned'], summary['headline_possible'])}'>"
             f"{summary['headline_earned']:.0f}<span class='of'>/{summary['headline_possible']:.0f}</span>"
@@ -1615,12 +1627,12 @@ const framesEl = document.getElementById('viewer-frames');
 let current = [];
 
 function applyFilters() {{
-  const cats = new Set([...document.querySelectorAll('.flt[value="K"],.flt[value="L"]:checked')].map(i => i.value));
+  const cats = new Set([...document.querySelectorAll('.flt[value="K"],.flt[value="V"],.flt[value="L"]:checked')].map(i => i.value));
   document.querySelectorAll('#gallery figure').forEach(f => {{
     f.style.display = cats.has(f.dataset.cat) ? '' : 'none';
   }});
 }}
-document.querySelectorAll('.flt[value="K"],.flt[value="L"]').forEach(i => i.onchange = applyFilters);
+document.querySelectorAll('.flt[value="K"],.flt[value="V"],.flt[value="L"]').forEach(i => i.onchange = applyFilters);
 document.getElementById('size').oninput = e => {{
   galleryEl.style.gridTemplateColumns = `repeat(auto-fill, minmax(${{e.target.value}}px, 1fr))`;
 }};

@@ -256,3 +256,106 @@ def test_export_stubs_a_private_mapping():
     suite = schema.export_document("pilot", [doc])
     assert suite["tasks"][0]["prompt"] is None
     assert schema.validate_suite_doc(suite) == []
+
+
+# --------------------------------------------------------------------------- #
+# Category V: typed local assets
+# --------------------------------------------------------------------------- #
+
+
+def _v_asset():
+    import random
+
+    from dailybench.tasks import visual_input
+
+    class _Cfg:
+        profile = "research-v1"
+
+    return visual_input._chart(random.Random(7)).assets[0]
+
+
+def _v_task(**overrides):
+    task = core.TaskInstance(
+        "V-99",
+        "V",
+        "Chart",
+        "Какой столбик выше?",
+        1.0,
+        workspace={},
+        assets=[_v_asset()],
+    )
+    for key, value in overrides.items():
+        setattr(task, key, value)
+    return task
+
+
+def _v_doc(**overrides):
+    doc = schema.task_to_dict(_v_task())
+    doc.update(overrides)
+    return doc
+
+
+def test_v_is_an_open_image_input_category():
+    task = core.TaskInstance("V-99", "V", "Chart", "p", 1.0, workspace={}, assets=[_v_asset()])
+    assert (task.block, task.family) == ("open", "vis/vqa")
+    assert schema.validate_task(task) == []
+
+
+def test_v_requires_an_asset():
+    with pytest.raises(ValueError, match="assets"):
+        core.TaskInstance("V-99", "V", "Chart", "p", 1.0, workspace={})
+    # The document form is rejected as well.
+    doc = {
+        "schema": schema.SCHEMA_VERSION,
+        "id": "V-99",
+        "category": "V",
+        "block": "open",
+        "family": "vis/vqa",
+        "points": 1.0,
+        "prompt": "p",
+    }
+    assert any("assets" in error for error in schema.validate_task(doc))
+
+
+@pytest.mark.parametrize("path", ["/abs/chart.png", "../chart.png", "sub/../chart.png", "a\\b.png"])
+def test_an_asset_path_must_stay_inside_the_fixture(path):
+    doc = _v_doc()
+    doc["assets"][0]["path"] = path
+    assert any("path" in error for error in schema.validate_task(doc)), path
+
+
+def test_an_asset_cannot_shadow_a_workspace_file():
+    doc = _v_doc(workspace={"chart.png": "text"})
+    assert any("collides" in error for error in schema.validate_task(doc))
+
+
+def test_asset_media_type_and_digest_are_checked():
+    doc = _v_doc()
+    doc["assets"][0]["media_type"] = "image/jpeg"
+    assert any("media_type" in error for error in schema.validate_task(doc))
+
+    doc = _v_doc()
+    doc["assets"][0]["sha256"] = "0" * 64
+    assert any("sha256" in error for error in schema.validate_task(doc))
+
+
+def test_asset_geometry_is_fixed():
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (100, 60), "white").save(buffer, format="PNG")
+    wrong = core.Asset(path="chart.png", media_type="image/png", data=buffer.getvalue())
+    doc = _v_doc()
+    doc["assets"] = [wrong.as_dict()]
+    errors = schema.validate_task(doc)
+    assert any("size 100x60" in error for error in errors)
+
+
+def test_asset_bytes_round_trip_through_the_export():
+    task = _v_task()
+    doc = schema.task_to_dict(task)
+    assert schema.validate_task(doc) == []
+    assert doc["assets"][0]["data"].startswith("iVBOR")
+    assert doc["assets"][0]["sha256"] == task.assets[0].sha256

@@ -9,6 +9,7 @@ of the verdict.
 
 from __future__ import annotations
 
+import base64
 import html
 import json
 import re
@@ -89,6 +90,15 @@ def _interval_of(row: dict[str, Any]) -> tuple[float, float] | None:
     return (round(100.0 * low, 2), round(100.0 * high, 2))
 
 
+def _canonical_counts(counts: dict[str, int]) -> dict[str, int]:
+    """Merge failure counts under their canonical protocol kind."""
+    merged: dict[str, int] = {}
+    for kind, count in counts.items():
+        canonical = core.canonical_failure(kind) or kind
+        merged[canonical] = merged.get(canonical, 0) + count
+    return merged
+
+
 def summarise(
     scores: Iterable[dict[str, Any]],
     suite_tasks: int | dict[str, Any] | None = None,
@@ -124,6 +134,7 @@ def summarise(
             "samples": [],
             "units": {},
             "failures": {},
+            "outcomes": {},
         }
 
     per_category: dict[str, dict[str, Any]] = {key: blank() for key in core.CATEGORY_POINTS}
@@ -135,6 +146,10 @@ def summarise(
         else:
             row = per_category.setdefault(category, blank())
         row["tasks"] += 1
+        # The outcome vector covers skipped tasks too: ``unsupported`` is a
+        # protocol state even though it leaves the denominator untouched.
+        outcome = core.outcome_of(score)
+        row["outcomes"][outcome] = row["outcomes"].get(outcome, 0) + 1
         if score.get("skipped"):
             # Not verified is not a zero: it leaves both the numerator and the
             # denominator untouched, and the reason stays visible.
@@ -195,14 +210,33 @@ def summarise(
     skipped_showcase = sum(row["skipped"] for row in per_showcase.values())
     skipped_total = skipped_scored + skipped_showcase
     failure_counts: dict[str, int] = {}
+    outcome_counts: dict[str, int] = {}
     for row in list(per_category.values()) + list(per_showcase.values()):
         for kind, count in row["failures"].items():
             failure_counts[kind] = failure_counts.get(kind, 0) + count
+        for outcome, count in row["outcomes"].items():
+            outcome_counts[outcome] = outcome_counts.get(outcome, 0) + count
+    # Every stored failure is shown with the same canonical name it is counted
+    # under: a legacy bundle must not split ``infra_failure`` in two rows.
+    failure_counts = _canonical_counts(failure_counts)
+    # Incomplete means the numbers say nothing about the model: such a run is
+    # shown, but never ranked against complete ones.
     infra_failures = {
         kind: count for kind, count in failure_counts.items() if core.is_infra_failure(kind)
     }
-    # Infrastructure-incomplete means the numbers say nothing about the model:
-    # such a run is shown, but never ranked against complete ones.
+    integrity_failures = {
+        kind: count for kind, count in failure_counts.items()
+        if core.canonical_failure(kind) == "integrity_violation"
+    }
+    # Capability gaps are outside the denominator by design and form their own
+    # cohort; they are named in the verdict, not spread over the percentage.
+    unsupported = outcome_counts.get("unsupported", 0)
+    # Every dictionary kind is present, so a consumer never has to guess whether
+    # a missing key means zero or "not counted".
+    outcome_counts = {
+        **{kind: outcome_counts.get(kind, 0) for kind in core.FAILURE_KINDS},
+        **{kind: count for kind, count in outcome_counts.items() if kind not in core.FAILURE_KINDS},
+    }
     eligible = not infra_failures
 
     showcase_earned = round(sum(row["earned"] for key, row in per_showcase.items() if key in core.SHOWCASE_CATEGORIES), 3)
@@ -267,14 +301,26 @@ def summarise(
             f" (не ранжируется с baseline: профиль {profile} — свой набор категорий,"
             f" знаменатель {core.scored_total(profile):.0f})"
         )
-    if infra_failures:
+    if unsupported:
+        verdict += (
+            f" (unsupported: {unsupported} — отдельная capability, вне знаменателя)"
+        )
+    if integrity_failures:
+        # An attestation refusal outranks the rest: the verdict itself is not
+        # trustworthy, so only the integrity journal is named.
+        names = ", ".join(
+            f"{core.failure_label(kind)} x{count}"
+            for kind, count in sorted(integrity_failures.items())
+        )
+        verdict += f" (не ранжируется: удостоверение отозвано — {names})"
+    elif infra_failures:
         names = ", ".join(
             f"{core.failure_label(kind)} x{count}" for kind, count in sorted(infra_failures.items())
         )
         verdict += f" (не ранжируется: инфраструктура — {names})"
     elif failure_counts:
-        # A model outcome (exhausted budget, unfinished scenario) is a real
-        # verdict and stays in the denominator; it is named, not excused.
+        # A model outcome (exhausted budget, wrong answer) is a real verdict and
+        # stays in the denominator; it is named, not excused.
         names = ", ".join(
             f"{core.failure_label(kind)} x{count}" for kind, count in sorted(failure_counts.items())
         )
@@ -303,6 +349,9 @@ def summarise(
         "skipped_scored": skipped_scored,
         "incomplete": skipped_scored > 0 or not full_suite,
         "failures": failure_counts,
+        "outcomes": outcome_counts,
+        "unsupported": unsupported,
+        "integrity_failures": integrity_failures,
         "infra_failures": infra_failures,
         "eligible": eligible,
         "profile": profile,
@@ -648,7 +697,9 @@ def render_markdown(run: dict[str, Any]) -> str:
             else "допущен (полное измерение, инфраструктура чиста)"
             if not summary.get("incomplete") and summary.get("eligible")
             else "не ранжируется: " + (
-                "инфраструктурный провал"
+                "удостоверение отозвано"
+                if summary.get("integrity_failures")
+                else "инфраструктурный провал"
                 if not summary.get("eligible")
                 else "прогон неполон — знаменатель урезан"
             )
@@ -725,8 +776,10 @@ def render_markdown(run: dict[str, Any]) -> str:
         lines.append("")
         lines.append(
             f"Симуляции K — {summary['showcase_earned']:.0f} / {summary['showcase_possible']:.0f} "
-            "баллов вне итоговой суммы. L — свободные арт-работы: сохраняются страница "
-            "и кадр, цвет, тональность и художественное качество оценивает человек."
+            "баллов вне итоговой суммы. V — чтение изображений (график, пространственные "
+            "отношения, трассировка схемы): проверяется ответ по картинке. L — свободные "
+            "арт-работы: сохраняются страница и кадр, цвет, тональность и художественное "
+            "качество оценивает человек."
         )
         lines.append("")
         for key in sorted(showcase):
@@ -762,7 +815,8 @@ def render_markdown(run: dict[str, Any]) -> str:
                     f"{', '.join(failed) if failed else '—'} |"
                 )
             lines.append("")
-        if (Path(run["dir"]) / "visual.html").is_file():
+        run_dir = run.get("dir")
+        if run_dir and (Path(run_dir) / "visual.html").is_file():
             lines.append("Снимки кадров: [`visual.html`](visual.html).")
             lines.append("")
 
@@ -987,7 +1041,22 @@ def write_visual_gallery(run: dict[str, Any]) -> Path | None:
         score = scores.get(task_id) or {}
         earned, possible = score.get("earned"), score.get("possible")
         shot = _shot_of(entry, run_dir)
-        if shot:
+        asset = next(iter(task.get("assets") or []), None)
+        if not shot and isinstance(asset, dict) and asset.get("data"):
+            # An image-input scenario has no rendered page: the presented
+            # picture *is* the frame, and it is stored in the task document.
+            try:
+                raw = base64.b64decode(str(asset["data"]), validate=True)
+            except Exception:
+                raw = b""
+            if raw:
+                name = f"{task_id}.png"
+                (target / name).write_bytes(raw)
+                copied += 1
+                image = f'<img src="visual/{_esc(name)}" alt="{_esc(task_id)}" loading="lazy">'
+            else:
+                image = '<div class="missing">картинки нет в задании</div>'
+        elif shot:
             # The id becomes a file name: ``../x`` would land outside ``visual/``,
             # so anything off-schema is reduced to one path component.
             name = f"{task_id}.png" if gallery._ID_SCHEMA.fullmatch(task_id) else f"{_file_name(task_id)}.png"

@@ -4,7 +4,12 @@
   "title": "DailyBench profile manifest v2",
   "description": "Frozen suite version: identifier, slice date and the denominator of every category.",
   "type": "object",
-  "required": ["schema", "profile", "total", "categories"],
+  "required": [
+    "schema",
+    "profile",
+    "total",
+    "categories"
+  ],
   "properties": {
     "schema": {
       "const": "dailybench/profile/2"
@@ -26,9 +31,23 @@
     },
     "categories": {
       "type": "object",
-      "required": ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L"],
+      "required": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "I",
+        "J",
+        "K",
+        "L",
+        "V"
+      ],
       "patternProperties": {
-        "^[A-L]$": {
+        "^[A-LV]$": {
           "type": "number",
           "minimum": 0
         }

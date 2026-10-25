@@ -1,0 +1,40 @@
+{
+  "schema": "dailybench/license/1",
+  "id": "bigcodebench",
+  "origin": "https://huggingface.co/datasets/bigcode/bigcodebench-hard",
+  "revision": "298d2cc7b96612e15e47313c3603ee124cee0c1f",
+  "upstream_id": "bigcode/bigcodebench-hard@v0.1.4:instruct",
+  "code_license": "Apache-2.0",
+  "data_license": "Apache-2.0",
+  "attribution": "BigCodeBench, BigCode project; код адаптера — часть LLMCrewBench",
+  "redistribution": "allowed",
+  "status": "verified",
+  "adapter": "bigcodebench",
+  "recorded": "2026-10-25",
+  "repository": "https://github.com/bigcode-project/bigcodebench",
+  "note": "Проверены LICENSE репозитория v0.2.5 и карточка датасета: код и данные Apache-2.0. Лицензия harness не покрывает библиотеки, которые импортируют задачи, и credentials к сервисам.",
+  "limitations": [
+    "используется hard subset, а не полный набор из 1140 задач",
+    "локальный executor и batch size 1 не дают права называть результат официальным leaderboard score",
+    "pass@1 публикуется как внешняя доля (ratio), не как баллы native /100"
+  ],
+  "components": [
+    {
+      "name": "BigCodeBench-Hard dataset",
+      "role": "data",
+      "license": "Apache-2.0",
+      "url": "https://huggingface.co/datasets/bigcode/bigcodebench-hard",
+      "revision": "298d2cc7b96612e15e47313c3603ee124cee0c1f",
+      "split": "v0.1.4",
+      "note": "148 задач, поле instruct_prompt; hard — производный subset родительского bigcode/bigcodebench с лицензией apache-2.0"
+    },
+    {
+      "name": "bigcodebench scorer (код и CLI)",
+      "role": "code",
+      "license": "Apache-2.0",
+      "url": "https://github.com/bigcode-project/bigcodebench/blob/v0.2.5/LICENSE",
+      "version": "0.2.5",
+      "note": "локальный executor и штатный evaluator не переписаны; Apache-2.0 покрывает код, не датасеты третьих сторон, которые задачи импортируют"
+    }
+  ]
+}

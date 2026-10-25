@@ -10,6 +10,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov>=5"]
 visual = ["playwright>=1.40"]  # category K renders pages in headless Chromium
+vision = ["Pillow>=10"]  # category V renders its image fixtures with Pillow
 
 [project.scripts]
 dailybench = "dailybench.cli:main"
@@ -19,7 +20,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["dailybench", "dailybench.tasks"]
+packages = ["dailybench", "dailybench.adapters", "dailybench.tasks"]
 
 # Ресурсы витрины (three.js и plotly) нужны отчёту и рендеру; без них wheel
 # ставится без библиотек, и опубликованная сцена падает (R18). data-files, а не
@@ -39,6 +40,7 @@ packages = ["dailybench", "dailybench.tasks"]
 "schema" = [
   "schema/task.schema.json",
   "schema/profile.schema.json",
+  "schema/holdout.schema.json",
 ]
 
 [tool.pytest.ini_options]

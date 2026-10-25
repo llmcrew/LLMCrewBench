@@ -314,6 +314,13 @@ def suite_digest(tasks: Iterable[core.TaskInstance], profile: str = core.DEFAULT
             "workspace_sha256": hashlib.sha256(
                 json.dumps(task.workspace or {}, ensure_ascii=False, sort_keys=True).encode()
             ).hexdigest(),
+            "assets_sha256": hashlib.sha256(
+                json.dumps(
+                    [asset.as_dict() for asset in (task.assets or [])],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest(),
             "tools_sha256": hashlib.sha256(
                 json.dumps(task.tools or [], ensure_ascii=False, sort_keys=True).encode()
             ).hexdigest(),

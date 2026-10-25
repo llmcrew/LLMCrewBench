@@ -50,10 +50,10 @@ PILOT_IDS = [
 #: language/edge-case stratum added by the corpus wave.
 STRETCH_IDS = [
     *[f"IF-{index}" for index in range(1, 7)],
-    "IF-7", "IF-7-KK", "IF-8", "IF-9", "IF-10",
+    "IF-7", "IF-7-KK", "IF-7-EN", "IF-8", "IF-9", "IF-10",
     *[f"R-{index}" for index in range(1, 17)],
-    "R-17", "R-17-KK",
-    *[f"C-{index}" for index in range(1, 7)], "N-2",
+    "R-17", "R-17-KK", "R-18",
+    *[f"C-{index}" for index in range(1, 7)], "N-2", "C-7", "N-9",
     *[f"T-{index}" for index in range(1, 12)],
     *[f"LC-{index}" for index in range(1, 9)],
     "F", "F-2", "F-3",
@@ -92,7 +92,7 @@ def test_pilot_and_stretch_expect_the_declared_ids():
     module = core.REGISTRY["A"]
     assert module.expected_ids_for() == module.expected_ids
     assert module.expected_ids_for("stretch-v1") == (
-        *module.expected_ids, "IF-6", "IF-7", "IF-7-KK", "IF-8", "IF-9", "IF-10"
+        *module.expected_ids, "IF-6", "IF-7", "IF-7-KK", "IF-7-EN", "IF-8", "IF-9", "IF-10"
     )
     assert module.expected_ids_for("pilot") == ("IF-6",)
     assert core.REGISTRY["F"].expected_ids_for("pilot") == ("F-2",)
@@ -363,14 +363,18 @@ def test_a_visual_scenario_is_the_same_in_every_profile() -> None:
         assert _visual_fixture(stretch[task_id]) == _visual_fixture(task), task_id
 
 
-#: The research profile: nine admitted scenarios across seven categories, no
-#: reasoning/structured/dialogue block, no visual block, denominator 71.
-RESEARCH_IDS = ["IF-9", "IF-10", "N-2", "T-10", "T-11", "LC-8", "F-3", "I-5", "J-5"]
+#: The research profile: ten admitted scenarios across seven categories plus the
+#: three image-input showcase scenarios, no reasoning/structured/dialogue block,
+#: no K/L block, denominator 71.
+RESEARCH_IDS = [
+    "IF-9", "IF-10", "N-2", "T-10", "T-11", "T-12", "LC-8", "F-3", "I-5", "J-5",
+    "V-1", "V-2", "V-3",
+]
 
 RESEARCH_EXPECTED_IDS: dict[str, tuple[str, ...]] = {
     "A": ("IF-9", "IF-10"),
     "C": ("N-2",),
-    "D": ("T-10", "T-11"),
+    "D": ("T-10", "T-11", "T-12"),
     "E": ("LC-8",),
     "F": ("F-3",),
     "I": ("I-5",),
@@ -380,20 +384,24 @@ RESEARCH_EXPECTED_IDS: dict[str, tuple[str, ...]] = {
     "H": (),
     "K": (),
     "L": (),
+    "V": ("V-1", "V-2", "V-3"),
 }
 
 
 def test_research_profile_is_the_narrow_research_set():
     tasks = build_suite(RunConfig(profile="research-v1"))
     assert [task.id for task in tasks] == RESEARCH_IDS
-    assert {task.category for task in tasks} == {"A", "C", "D", "E", "F", "I", "J"}
-    assert sum(task.max_points for task in tasks) == core.profile_total("research-v1") == 71.0
+    assert {task.category for task in tasks} == {"A", "C", "D", "E", "F", "I", "J", "V"}
+    # 71 scored points plus the 3-point VQA showcase outside the verdict.
+    assert sum(task.max_points for task in tasks) == core.profile_total("research-v1") == 74.0
     assert core.scored_total("research-v1") == 71.0
     for key, total in core.PROFILE_POINTS["research-v1"].items():
         group = [task for task in tasks if task.category == key]
         assert _close(sum(task.max_points for task in group), total), key
-    assert core.SHOWCASE_POINTS["research-v1"] == {}
-    assert [task for task in tasks if task.category in core.VISUAL_CATEGORIES] == []
+    assert core.SHOWCASE_POINTS["research-v1"] == {"V": 3.0}
+    assert [task.id for task in tasks if task.category in core.VISUAL_CATEGORIES] == [
+        "V-1", "V-2", "V-3"
+    ]
     # A category the profile does not carry has no total at all, not a baseline one.
     assert core.points_for("B", "research-v1") is None
     assert core.points_for("K", "research-v1") is None
@@ -466,6 +474,7 @@ def test_cli_accepts_the_research_profile(tmp_path: Path):
     assert cli.main(["generate", "--profile", "research-v1", "--out", str(out)]) == 0
     digest = json.loads((out / "suite.json").read_text(encoding="utf-8"))
     assert digest["profile"] == "research-v1"
-    assert digest["profile_total"] == 71.0
+    assert digest["profile_total"] == 74.0
     prompts = json.loads((out / "prompts.json").read_text(encoding="utf-8"))
-    assert sum(entry["max_points"] for entry in prompts) == 71.0
+    # 71 scored points + the 3-point VQA showcase.
+    assert sum(entry["max_points"] for entry in prompts) == 74.0

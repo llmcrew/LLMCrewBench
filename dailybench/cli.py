@@ -20,7 +20,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from . import core, generation, reference, schema
+from . import core, generation, holdout, reference, schema
 from .config import DEFAULT_CONTEXT_WINDOW, DEFAULT_SEED, RunConfig
 from .measure import (
     SpeedResult,
@@ -32,6 +32,7 @@ from .measure import (
 from .providers import OpenAICompatibleProvider, Provider, ProviderError
 from .report import render_markdown, summarise, write_reports
 from .runner import RunResult, Runner, run_identity
+from .adapters.bigcodebench import add_subcommands as add_adapter_commands
 from .decontam import add_subcommands as add_decontam_commands
 from .selfcheck import save_suite, selfcheck, write_selfcheck_report
 from .suite import build_suite, fit_suite_sizing, public_prompts
@@ -317,8 +318,22 @@ def cmd_export(args: argparse.Namespace) -> int:
     cfg = _config_from(args)
     tasks = build_suite(cfg)
     include_private = bool(args.include_private)
-    doc = schema.export_document(cfg.profile, tasks, include_private=include_private)
+    manifest = None
+    hidden: dict[str, str] = {}
+    if getattr(args, "holdout", ""):
+        try:
+            manifest = holdout.load_manifest(Path(args.holdout))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"  {exc}", file=sys.stderr)
+            return 1
+        if not args.include_closed:
+            hidden = holdout.hidden_ids(manifest)
+    doc = schema.export_document(
+        cfg.profile, tasks, include_private=include_private, hidden=hidden
+    )
     errors = schema.validate_suite_doc(doc, check_totals=not cfg.only)
+    if manifest is not None and not args.include_closed:
+        errors.extend(holdout.check_export(doc, manifest))
     if errors:
         return _report_errors(errors, f"экспорт {cfg.profile}")
 
@@ -340,6 +355,88 @@ def cmd_export(args: argparse.Namespace) -> int:
         print(f"{target}: {len(doc['tasks'])} заданий")
     else:
         print(text, end="" if text.endswith("\n") else "\n")
+    return 0
+
+
+def cmd_holdout_assign(args: argparse.Namespace) -> int:
+    cfg = _config_from(args)
+    tasks = build_suite(cfg)
+    overrides: dict[str, str] = {}
+    for item in args.pin or []:
+        identifier, _, split = item.partition("=")
+        if not identifier or split not in holdout.SPLITS:
+            print(f"  --pin {item!r}: ожидалось ID=сплит из {', '.join(holdout.SPLITS)}", file=sys.stderr)
+            return 1
+        overrides[identifier] = split
+    try:
+        manifest = holdout.build_manifest(
+            tasks,
+            profile=cfg.profile,
+            seed=cfg.seed,
+            closed_share=args.closed_share,
+            audit_share=args.audit_share,
+            overrides=overrides,
+        )
+    except ValueError as exc:
+        print(f"  {exc}", file=sys.stderr)
+        return 1
+    errors = holdout.validate_manifest(manifest)
+    if errors:
+        return _report_errors(errors, "манифест holdout")
+    holdout.save_manifest(Path(args.out), manifest)
+    sizes = ", ".join(f"{name}={len(manifest['splits'][name])}" for name in holdout.SPLITS)
+    print(f"{args.out}: {sizes}, digest {manifest['digest']}")
+    return 0
+
+
+def cmd_holdout_check(args: argparse.Namespace) -> int:
+    manifest_path = Path(args.manifest)
+    try:
+        manifest = holdout.load_manifest(manifest_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  {exc}", file=sys.stderr)
+        return 1
+    errors = holdout.validate_manifest(manifest, str(manifest_path))
+    if errors:
+        return _report_errors(errors, str(manifest_path))
+    cfg = _config_from(args)
+    tasks = build_suite(cfg)
+    errors = holdout.check_manifest(manifest, tasks)
+    doc = schema.export_document(
+        cfg.profile, tasks, hidden=holdout.hidden_ids(manifest)
+    )
+    errors.extend(holdout.check_export(doc, manifest))
+    if errors:
+        return _report_errors(errors, str(manifest_path))
+    print(f"{manifest_path}: сплиты и хеши совпадают, экспорт закрыт")
+    return 0
+
+
+def cmd_licenses_check(args: argparse.Namespace) -> int:
+    explicit = [Path(item) for item in args.paths]
+    if not explicit:
+        failures = holdout.check_directory(Path(args.dir) if args.dir else None)
+    else:
+        failures = []
+        for path in explicit:
+            try:
+                record = holdout.load_record(path)
+            except (OSError, json.JSONDecodeError) as exc:
+                failures.append((path, [f"{path}: {exc}"]))
+                continue
+            errors = holdout.validate_record(record, str(path))
+            if isinstance(record, dict) and record.get("id") != path.stem:
+                errors.append(f"{path}/id: {record.get('id')!r} не совпадает с именем файла")
+            if errors:
+                failures.append((path, errors))
+    if failures:
+        count = sum(len(errors) for _, errors in failures)
+        for path, errors in failures:
+            for error in errors:
+                print(f"  {error}", file=sys.stderr)
+        print(f"права: {count} ошибок в {len(failures)} записях", file=sys.stderr)
+        return 1
+    print(f"права: все записи пригодны к импорту ({len(explicit) if explicit else 'каталог'})")
     return 0
 
 
@@ -526,7 +623,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         kinds = ", ".join(
             f"{core.failure_label(kind)} x{count}" for kind, count in summary["infra_failures"].items()
         )
-        print(f"прогон неранжируем: инфраструктура — {kinds}", file=sys.stderr)
+        reason = "удостоверение отозвано" if summary.get("integrity_failures") else "инфраструктура"
+        print(f"прогон неранжируем: {reason} — {kinds}", file=sys.stderr)
     if not summary.get("rankable_with_baseline", True):
         print(
             f"профиль {cfg.profile} не ранжируется с baseline: он несёт свой набор "
@@ -1098,7 +1196,7 @@ def build_parser() -> argparse.ArgumentParser:
             choices=core.PROFILES,
             help="версия сьюта: baseline-20261020 (рейтинг), pilot (только пилотные), "
                  "stretch-v1 (baseline + новые сценарии, те же 100 баллов), "
-                 "research-v1 (девять research-сценариев, 71 балл, не ранжируется с baseline)",
+                 "research-v1 (десять research-сценариев, 71 балл, + 3 VQA-сценария вне счёта; не ранжируется с baseline)",
         )
         target.add_argument("--only", default="", help="категории или ID заданий через запятую (A,B / IF-1,R-7)")
         target.add_argument("--limit", type=int, default=0, help="ограничить число заданий (для дымового прогона)")
@@ -1313,9 +1411,50 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--out", default="-", help="файл или каталог; по умолчанию stdout")
     export.add_argument("--format", choices=("json", "yaml"), default="json")
     export.add_argument("--include-private", action="store_true", help="включить приватные задания")
+    export.add_argument("--holdout", default="", help="манифест holdout: audit и closed-eval остаются хешами")
+    export.add_argument(
+        "--include-closed",
+        action="store_true",
+        help="опубликовать закрытый текст даже при --holdout",
+    )
     export.set_defaults(func=cmd_export)
 
+    holdout_parser = sub.add_parser(
+        "holdout", help="сплиты public-dev/audit/closed-eval: назначить и проверить"
+    )
+    holdout_actions = holdout_parser.add_subparsers(dest="holdout_action", required=True)
+
+    holdout_assign = holdout_actions.add_parser(
+        "assign", help="детерминированно назначить сплиты по task ID и записать манифест"
+    )
+    add_common(holdout_assign)
+    holdout_assign.add_argument("out", help="куда записать JSON-манифест")
+    holdout_assign.add_argument("--closed-share", type=float, default=holdout.CLOSED_SHARE)
+    holdout_assign.add_argument("--audit-share", type=float, default=holdout.AUDIT_SHARE)
+    holdout_assign.add_argument(
+        "--pin", action="append", default=[], metavar="ID=СПЛИТ",
+        help="закрепить задание в сплите (public-dev, audit, closed-eval)",
+    )
+    holdout_assign.set_defaults(func=cmd_holdout_assign)
+
+    holdout_check = holdout_actions.add_parser(
+        "check", help="сверить манифест с текущим сьютом и доказать, что экспорт закрыт"
+    )
+    add_common(holdout_check)
+    holdout_check.add_argument("manifest", help="JSON-манифест")
+    holdout_check.set_defaults(func=cmd_holdout_check)
+
+    licenses = sub.add_parser("licenses", help="реестр прав на внешние материалы")
+    license_actions = licenses.add_subparsers(dest="licenses_action", required=True)
+    licenses_check = license_actions.add_parser(
+        "check", help="отклонить записи без лицензии или с неverified статусом"
+    )
+    licenses_check.add_argument("paths", nargs="*", help="JSON-записи; по умолчанию каталог docs/licenses")
+    licenses_check.add_argument("--dir", default="", help="альтернативный каталог реестра")
+    licenses_check.set_defaults(func=cmd_licenses_check)
+
     add_decontam_commands(sub, add_common)
+    add_adapter_commands(sub)
     return parser
 
 

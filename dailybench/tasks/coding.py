@@ -3,8 +3,11 @@
 Baseline: ``C-1`` Python (10 hidden checks), ``C-2`` Go (10 hidden checks) and
 ``C-3`` SQL (5 generated databases). The pilot adds ``C-4`` (generational async
 cache) and ``stretch-v1`` adds ``C-5`` (bounded Go pool with acknowledged stop),
-``C-6`` (SQL order-journal snapshot) and ``N-2`` (terminal data workflow:
-CSV → SQLite → report with declared atomicity, exit codes and protected files).
+``C-6`` (SQL order-journal snapshot), ``N-2`` (terminal data workflow:
+CSV → SQLite → report with declared atomicity, exit codes and protected files),
+``C-7`` (library composition: base64 ZIP → CSV → SQLite with declared failure
+classes, resource hygiene and pinned stdlib APIs) and ``N-9`` (program from
+spec: ledger package with Decimal arithmetic, idempotency and atomic errors).
 Scoring is behavioural: hidden tests, real result sets and the observed
 filesystem decide the points, never the shape of the patch or a judge model.
 """
@@ -15,11 +18,11 @@ import random
 from typing import Any
 
 from .. import core
-from . import coding_go, coding_python, coding_sql, coding_workflow
+from . import coding_go, coding_program, coding_python, coding_sql, coding_workflow
 
 BASELINE_IDS = ("C-1", "C-2", "C-3")
 PILOT_IDS = ("C-4",)
-STRETCH_IDS = BASELINE_IDS + ("C-4", "C-5", "C-6", "N-2")
+STRETCH_IDS = BASELINE_IDS + ("C-4", "C-5", "C-6", "N-2", "C-7", "N-9")
 RESEARCH_IDS = ("N-2",)
 """The research profile keeps only the terminal data workflow."""
 
@@ -36,6 +39,8 @@ _SCENARIOS = {
     "C-5": (coding_go.generate_c5, coding_go.evaluate_c5),
     "C-6": (coding_sql.generate_c6, coding_sql.evaluate_c6),
     "N-2": (coding_workflow.generate, coding_workflow.evaluate),
+    "C-7": (coding_python.generate_c7, coding_python.evaluate_c7),
+    "N-9": (coding_program.generate, coding_program.evaluate),
 }
 
 

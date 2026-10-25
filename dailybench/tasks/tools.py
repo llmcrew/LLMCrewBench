@@ -36,7 +36,10 @@ display name: the missing id has to be clarified before the send, the
 unambiguous one must not be re-asked, and a draft is not a delivery. Stretch
 T-11 books four seats against seven: the same idempotency key must not spend the
 seats twice, while a version bump and an unrelated cancellation arrive on the
-common schedule.
+common schedule. Research T-12 publishes a build: the read cache lags behind a
+hotfix that the schedule announces, and the first commit times out after the
+effect has landed, so both the stale revision and the blind repeat have to be
+answered from the state and the effect journal instead of from memory.
 """
 
 from __future__ import annotations
@@ -58,10 +61,11 @@ PILOT_IDS = ("T-8",)
 """Pilot profile: the transaction scenario alone, not yet part of the ranking."""
 ALL_IDS = IDS + PILOT_IDS + ("T-9", "T-10", "T-11")
 """Stretch adds the timeout recovery, the clarification and the booking policy."""
-RESEARCH_IDS = ("T-10", "T-11")
-"""The research profile keeps the clarification and the booking policy."""
+RESEARCH_IDS = ("T-10", "T-11", "T-12")
+"""The research profile keeps the clarification, the booking policy and the
+recovery scenario; the stretch list stays frozen at T-1…T-11."""
 
-PRIVATE_IDS = frozenset({"T-1", "T-5", "T-10", "T-11"})
+PRIVATE_IDS = frozenset({"T-1", "T-5", "T-10", "T-11", "T-12"})
 """Private layer: the baseline discovery/documentation pair and the stretch-only
 scenarios. The D category keeps its private share above the gate only if the
 mirror of each new public behaviour stays hidden."""
@@ -91,6 +95,8 @@ TOOL_NAMES = (
     "booking_state",
     "create_booking",
     "cancel_booking",
+    "get_release_state",
+    "publish_release",
 )
 
 MUTATING = (
@@ -104,6 +110,7 @@ MUTATING = (
     "send_message",
     "create_booking",
     "cancel_booking",
+    "publish_release",
 )
 
 _DESCRIPTIONS = {
@@ -129,6 +136,8 @@ _DESCRIPTIONS = {
     "booking_state": "Показать остаток мест на слоте и версию расписания; попутно отдаёт наступившие события расписания.",
     "create_booking": "Создать резервацию мест. Требует актуальную версию слота; повтор с тем же idempotency_key не списывает места повторно.",
     "cancel_booking": "Отменить резервацию по reservation_id.",
+    "get_release_state": "Показать ревизию канала публикации и текущую сборку. Без refresh=true отдаётся закэшированный снимок, который может отставать на одну ревизию.",
+    "publish_release": "Опубликовать сборку на канале. Требует текущую ревизию канала; операция неидемпотентна: повтор добавляет второй эффект и новую ревизию.",
 }
 
 _PARAMS: dict[str, dict[str, Any]] = {
@@ -203,6 +212,12 @@ _PARAMS: dict[str, dict[str, Any]] = {
         "type": "object",
         "properties": {"reservation_id": {"type": "string"}},
         "required": ["reservation_id"],
+    },
+    "get_release_state": {"type": "object", "properties": {"refresh": {"type": "boolean"}}},
+    "publish_release": {
+        "type": "object",
+        "properties": {"build_id": {"type": "string"}, "revision": {"type": "integer"}},
+        "required": ["build_id", "revision"],
     },
 }
 
@@ -301,6 +316,18 @@ class Simulator:
         self.pending_events: list[tuple[int, str]] = []
         self.schedule_armed = False
         self.cancelled: set[str] = set()
+        # Release pipeline (T-12): the revision is driver state, the cached read
+        # lags one revision behind a scheduled hotfix, and the first commit
+        # writes its effect before reporting the timeout, so a repeat doubles it.
+        self.release_service = str(task.oracle.get("service", ""))
+        self.release_channel = str(task.oracle.get("channel", ""))
+        self.release_state_path = str(task.oracle.get("state_path", ""))
+        self.release_log_path = str(task.oracle.get("log_path", ""))
+        self.release_build = str(task.oracle.get("build", ""))
+        self.release_revision = int(task.oracle.get("release_revision", 0))
+        self.release_cached = self.release_revision
+        self.release_deployed = str(task.oracle.get("current_build", ""))
+        self.release_commits = 0
         self.calls: list[dict[str, Any]] = []
 
     # -- helpers ---------------------------------------------------------- #
@@ -715,6 +742,14 @@ class Simulator:
                     f"событие расписания: администратор опубликовал версию {self.booking_version} "
                     f"слота {self.booking_slot}"
                 )
+            elif kind == "hotfix":
+                # The cached read deliberately keeps the old revision: the model
+                # can only see the bump with refresh=true or in the state file.
+                self.release_revision += 1
+                fired.append(
+                    f"событие расписания: администратор выпустил hotfix и поднял ревизию канала "
+                    f"{self.release_channel} до {self.release_revision}; кэш чтения остаётся на {self.release_cached}"
+                )
             else:
                 rid = str(self.task.oracle.get("cancelled_id", ""))
                 self.cancelled.add(rid)
@@ -793,6 +828,83 @@ class Simulator:
         self.booking_remaining += self.booking_seats[rid]
         self._append_journal(self.booking_journal, f"cancel {self.booking_slot} {rid}")
         return core.ToolOutcome(text=f"отменена {rid}; остаток {self.booking_remaining}")
+
+    # -- release pipeline (T-12) ------------------------------------------ #
+
+    def _write_release_state(self) -> None:
+        if not self.release_state_path:
+            return
+        target = self._resolve(self.release_state_path)
+        text = target.read_text(encoding="utf-8", errors="replace")
+        lines = [
+            f"revision: {self.release_revision}"
+            if line.startswith("revision:")
+            else f"deployed: {self.release_deployed}"
+            if line.startswith("deployed:")
+            else line
+            for line in text.splitlines()
+        ]
+        target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _tool_get_release_state(self, refresh: bool = False) -> core.ToolOutcome:
+        if not self.release_revision:
+            return core.ToolOutcome(text="состояние канала не отслеживается в этом сценарии", error=True)
+        if not self.schedule_armed:
+            self.schedule_armed = True
+            read = len(self.calls) + 1
+            # Fixed offset from the first read: every model meets the hotfix one
+            # call later, so the snapshot it just received is stale by then.
+            self.pending_events = [(read + 1, "hotfix")]
+        if refresh:
+            self.release_cached = self.release_revision
+            return core.ToolOutcome(
+                text=(
+                    f"текущее состояние: ревизия {self.release_revision}, канал {self.release_channel}, "
+                    f"опубликовано {self.release_deployed}"
+                )
+            )
+        return core.ToolOutcome(
+            text=(
+                f"кэш: ревизия {self.release_cached}, канал {self.release_channel}, "
+                f"опубликовано {self.release_deployed} "
+                "(снимок может отставать; refresh=true — текущее значение)"
+            )
+        )
+
+    def _tool_publish_release(self, build_id: str, revision: int) -> core.ToolOutcome:
+        if not self.release_revision:
+            return core.ToolOutcome(text="публикация не отслеживается в этом сценарии", error=True)
+        build = str(build_id or "").strip()
+        if not build:
+            return core.ToolOutcome(text="build_id is required", error=True)
+        # The revision is checked before anything is written: a call sent from
+        # the cache is refused instead of committing on a stale view.
+        if int(revision) != self.release_revision:
+            return core.ToolOutcome(
+                text=(
+                    f"конфликт ревизии: канал на ревизии {self.release_revision}, передана {revision}; "
+                    "прочитай get_release_state с refresh=true"
+                ),
+                error=True,
+            )
+        self.release_commits += 1
+        self.release_revision += 1
+        self.release_cached = self.release_revision
+        self.release_deployed = build
+        self._append_journal(
+            self.release_log_path, f"rev {self.release_revision} build {build} channel {self.release_channel}"
+        )
+        self._write_release_state()
+        if self.release_commits == 1:
+            # The effect is already durable; only the answer was lost.
+            return core.ToolOutcome(
+                text=(
+                    f"timeout после commit: {build} записана на ревизии {self.release_revision}, "
+                    "исход неизвестен; повтор добавит второй эффект"
+                ),
+                error=True,
+            )
+        return core.ToolOutcome(text=f"опубликовано {build} на ревизии {self.release_revision}")
 
 
 def _snapshot(root: Path) -> dict[str, str]:
@@ -1648,6 +1760,106 @@ def _t11(rng: random.Random) -> core.TaskInstance:
     )
 
 
+_RELEASE_SERVICES = ("payments-api", "search-api", "billing-api")
+_RELEASE_CHANNELS = ("beta", "edge")
+
+
+def _t12(rng: random.Random) -> core.TaskInstance:
+    """Stale snapshot plus a committed timeout: the state, not memory, decides.
+
+    The pipeline cache lags behind a hotfix that the schedule announces one call
+    after the first read, so the revision read at the start is already refused at
+    the publish. The first commit then writes its effect and reports a timeout:
+    retrying it to "make sure" is a second effect, skipping the repeat is right.
+    """
+    service = rng.choice(_RELEASE_SERVICES)
+    channel = rng.choice(_RELEASE_CHANNELS)
+    revision = rng.randrange(4, 10)
+    state_path = "releases/state.yaml"
+    log_path = "releases/published.log"
+    builds: list[str] = []
+    while len(builds) < revision:
+        candidate = f"b-{rng.randrange(10000, 99999)}"
+        if candidate not in builds:
+            builds.append(candidate)
+    build = f"b-{rng.randrange(10000, 99999)}"
+    while build in builds:
+        build = f"b-{rng.randrange(10000, 99999)}"
+    current = builds[-1]
+    log_lines = [f"rev {index} build {name} channel {channel}" for index, name in enumerate(builds, start=1)]
+    initial_log = "\n".join(log_lines) + "\n"
+    workspace = {
+        state_path: f"revision: {revision}\ndeployed: {current}\nchannel: {channel}\nservice: {service}\n",
+        log_path: initial_log,
+        "docs/release-policy.md": (
+            "# Политика публикации\n\n"
+            f"Канал {channel} публикуется только через publish_release; каждая публикация\n"
+            "добавляет одну строку в releases/published.log и поднимает ревизию на единицу.\n\n"
+            "get_release_state без refresh=true отдаёт кэш, который может отставать на одну\n"
+            "ревизию: актуальную ревизию отдаёт только refresh=true. Файл releases/state.yaml —\n"
+            "снимок последнего commit, внешний hotfix в нём не виден.\n\n"
+            "publish_release требует текущую ревизию; при конфликте ревизии вызов отклоняется\n"
+            "без эффекта. Публикация неидемпотентна: повтор после восстановления добавит\n"
+            "второй эффект и новую ревизию.\n\n"
+            "Первый commit может ответить timeout уже после записи эффекта. Такой вызов\n"
+            "завершён не полностью: исход проверяют по ревизии и журналу, а не повторяют слепо.\n"
+        ),
+    }
+    golden = [
+        {"name": "get_release_state", "arguments": {}},
+        {"name": "publish_release", "arguments": {"build_id": build, "revision": revision}},
+        {"name": "get_release_state", "arguments": {"refresh": True}},
+        {"name": "publish_release", "arguments": {"build_id": build, "revision": revision + 1}},
+        {"name": "get_release_state", "arguments": {"refresh": True}},
+    ]
+    final_answer = (
+        f"Hotfix поднял ревизию канала {channel} до {revision + 1}, кэш отставал на {revision} — "
+        f"перечитал состояние с refresh. Публикация {build} ответила timeout, но эффект записан: "
+        f"итоговая ревизия {revision + 2}, в журнале одна строка, повтор не потребовался."
+    )
+    assert len(golden) <= 8
+    return core.TaskInstance(
+        id="T-12",
+        category="D",
+        title="Восстановление после устаревшего чтения и timeout",
+        prompt=(
+            f"Сервис {service} публикуется по каналу {channel}; текущая ревизия {revision}, "
+            f"опубликована сборка {current}.\n"
+            f"Опубликуй сборку {build} через publish_release.\n\n"
+            "Расписание фиксировано и привязано к позиции вызова:\n"
+            f"- через один вызов после первого успешного get_release_state администратор выпускает\n"
+            f"  hotfix и поднимает ревизию канала на единицу; кэш снимка при этом остаётся прежним;\n"
+            f"- первый commit сборки {build} отвечает timeout уже после записи эффекта.\n\n"
+            "Правила:\n"
+            "- состояние читай через get_release_state; кэш без refresh может отставать,\n"
+            "  при конфликте ревизии перечитай состояние с refresh=true;\n"
+            "- передавай в publish_release только текущую ревизию;\n"
+            "- после timeout не повторяй вслепую: проверь состояние с refresh=true и журнал\n"
+            "  releases/published.log и реши, нужен ли повтор (публикация неидемпотентна).\n\n"
+            f"В конце сообщи итоговую ревизию, опубликованную сборку и число эффектов. Не больше 8 вызовов."
+        ),
+        max_points=2.0,
+        workspace=workspace,
+        tools=schemas(),
+        oracle={
+            "reference": final_answer,
+            "final_answer": final_answer,
+            "golden_calls": golden,
+            "service": service,
+            "channel": channel,
+            "build": build,
+            "current_build": current,
+            "release_revision": revision,
+            "state_path": state_path,
+            "log_path": log_path,
+            "initial_log": initial_log,
+        },
+        languages=["ru"],
+        fresh_after=FRESH_AFTER,
+        meta={"scenario": "T-12", "driver": "tools", "release_revision": revision},
+    )
+
+
 _BUILDERS = {
     "T-1": _t1,
     "T-2": _t2,
@@ -1660,10 +1872,11 @@ _BUILDERS = {
     "T-9": _t9,
     "T-10": _t10,
     "T-11": _t11,
+    "T-12": _t12,
 }
 
 
-_HARD_CALL_LIMITS = {"T-8": 10, "T-9": 8, "T-10": 8, "T-11": 8}
+_HARD_CALL_LIMITS = {"T-8": 10, "T-9": 8, "T-10": 8, "T-11": 8, "T-12": 8}
 
 
 def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
@@ -2506,6 +2719,122 @@ def _eval_t11(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     return score
 
 
+def _release_field(tr: core.Transcript, path: str, key: str) -> str | None:
+    match = re.search(rf"^{key}:\s*(\S+)\s*$", tr.workspace_after.get(path, ""), re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def _eval_t12(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
+    score = core.Score(task_id=task.id, category="D")
+    oracle = task.oracle
+    revision = int(oracle["release_revision"])
+    build = oracle["build"]
+    state_path = oracle["state_path"]
+    log_path = oracle["log_path"]
+    prefix = len(oracle["initial_log"].splitlines())
+
+    def _failed_publish(call: dict[str, Any]) -> bool:
+        return call["name"] == "publish_release" and call.get("error") and "конфликт ревизии" in str(call.get("result", ""))
+
+    def _timeout_publish(call: dict[str, Any]) -> bool:
+        return call["name"] == "publish_release" and call.get("error") and "timeout после commit" in str(call.get("result", ""))
+
+    def _committed_publish(call: dict[str, Any]) -> bool:
+        # A timeout still committed its effect; a conflict wrote nothing. The
+        # journal, not the error flag, says which call left a trace.
+        return _timeout_publish(call) or (call["name"] == "publish_release" and not call.get("error"))
+
+    conflict_index = _call_index(tr, _failed_publish)
+    commit_index = _call_index(tr, _committed_publish)
+    timeout_index = _call_index(tr, _timeout_publish)
+    first_publish = _call_index(tr, lambda call: call["name"] == "publish_release")
+
+    # Only successful reads are evidence: an attempt that errored away proves
+    # nothing about the channel it never saw.
+    initial_read = _call_index(
+        tr,
+        lambda call: call["name"] == "get_release_state"
+        and not call.get("error")
+        and str(revision) in str(call.get("result", "")),
+    )
+    read_first = initial_read is not None and (first_publish is None or initial_read < first_publish)
+    # The stale snapshot is only recovered from by a fresh read after the read
+    # that produced it: either right after that read (the hotfix already fired)
+    # or after the refused call. The call that commits must then carry the
+    # revision that read produced.
+    boundary = initial_read if initial_read is not None else first_publish
+    fresh_index = next(
+        (
+            index
+            for index, call in enumerate(tr.tool_log)
+            if boundary is not None
+            and index > boundary
+            and call["name"] == "get_release_state"
+            and not call.get("error")
+            and str(revision + 1) in str(call.get("result", ""))
+        ),
+        None,
+    )
+    recovered = (
+        read_first
+        and fresh_index is not None
+        and commit_index is not None
+        and fresh_index < commit_index
+        and str(revision + 1) in str(tr.tool_log[commit_index]["arguments"].get("revision", ""))
+    )
+    score.add(
+        "stale_snapshot_refreshed",
+        recovered,
+        0.5,
+        f"нужно успешное чтение с ревизией {revision} до первой публикации (чтение@{initial_read}, "
+        f"публикация@{first_publish}), конфликт@{conflict_index}, затем свежее чтение с ревизией "
+        f"{revision + 1}@{fresh_index} и commit@{commit_index} уже с этой ревизией; "
+        "0.5 — исходное состояние известно, а устаревший снимок перечитан, а не угадан",
+    )
+
+    new_lines = [
+        line for line in (tr.workspace_after.get(log_path) or "").splitlines()[prefix:] if line.strip()
+    ]
+    ours = [line for line in new_lines if build in line]
+    effects = len(ours)
+    final_revision = _release_field(tr, state_path, "revision")
+    final_build = _release_field(tr, state_path, "deployed")
+    commits = [call for call in tr.tool_log if _committed_publish(call)]
+    resolved = timeout_index is not None and any(
+        index > timeout_index and call["name"] == "get_release_state" and not call.get("error")
+        for index, call in enumerate(tr.tool_log)
+    )
+    answer = tr.final_text
+    effect_ok = (
+        effects == 1
+        and final_revision == str(revision + 2)
+        and final_build == build
+        and len(commits) == 1
+        and resolved
+        and _text_has_all(answer, [str(revision + 2)])
+        and _text_has_any(answer, ["без повтор", "не потребовался", "не повторял", "повтор не"])
+    )
+    score.add(
+        "single_effect_consistent_state",
+        effect_ok,
+        1.0,
+        f"timeout@{timeout_index}, чтение после него: {'да' if resolved else 'нет'}; "
+        f"новых строк с {build}: {effects} (нужна 1), commit-вызовов {len(commits)} (нужен 1), "
+        f"ревизия {final_revision} (нужна {revision + 2}), deployed {final_build} (нужна {build}); "
+        "1.0 — эффект один и состояние сошлось с журналом",
+    )
+
+    cap = int(oracle.get("call_budget", 8))
+    budget_ok = bool(tr.tool_log) and len(tr.tool_log) <= cap
+    score.add(
+        "call_budget",
+        budget_ok,
+        0.5,
+        f"вызовов {len(tr.tool_log)} из {cap}; без единого вызова решение не подтверждено (0.5 — дисциплина)",
+    )
+    return score
+
+
 _EVALUATORS = {
     "T-1": _eval_t1,
     "T-2": _eval_t2,
@@ -2518,6 +2847,7 @@ _EVALUATORS = {
     "T-9": _eval_t9,
     "T-10": _eval_t10,
     "T-11": _eval_t11,
+    "T-12": _eval_t12,
 }
 
 

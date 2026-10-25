@@ -62,6 +62,11 @@ class OracleProvider:
     def tokenize(self, text: str) -> int | None:
         return None
 
+    def probe_images(self) -> bool | None:
+        # The oracle plays a model that reads the fixture: it must not be
+        # skipped as unsupported, or its evaluator would go unproven.
+        return True
+
     def describe(self) -> dict[str, Any]:
         return {"provider": self.name, "task": self.task.id}
 
@@ -80,6 +85,9 @@ class GarbageProvider:
 
     def tokenize(self, text: str) -> int | None:
         return None
+
+    def probe_images(self) -> bool | None:
+        return True
 
     def describe(self) -> dict[str, Any]:
         return {"provider": self.name}
