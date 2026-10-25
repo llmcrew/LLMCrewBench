@@ -55,7 +55,19 @@ def _provider_from(cfg: RunConfig) -> Provider:
         model=cfg.model,
         api_key=cfg.api_key,
         timeout=cfg.request_timeout,
+        extra_body=dict(cfg.extra_body or {}),
     )
+
+
+def _json_object(text: str) -> dict:
+    if not text:
+        return {}
+    import json as _json
+
+    value = _json.loads(text)
+    if not isinstance(value, dict):
+        raise SystemExit("--extra-body: нужен JSON-объект")
+    return value
 
 
 def _config_from(args: argparse.Namespace) -> RunConfig:
@@ -70,19 +82,24 @@ def _config_from(args: argparse.Namespace) -> RunConfig:
         runtime=getattr(args, "runtime", "") or "",
         weights_path=getattr(args, "weights", "") or "",
         n_ctx=getattr(args, "context_window", DEFAULT_CONTEXT_WINDOW),
+        max_new_tokens=getattr(args, "max_new_tokens", None) or 4096,
+        # The flag is an upper bound on one answer, not a table value the window
+        # branch may ignore: 259834 used to go out after ``--max-new-tokens 32``.
+        answer_cap=getattr(args, "max_new_tokens", None) or 4096,
+        # ``None`` unless the flag was typed: ``__post_init__`` then derives the
+        # total from the answer budget instead of clamping it to 16384.
+        max_total_tokens=getattr(args, "max_total_tokens", None),
         kv_type=getattr(args, "kv_type", "") or "",
         offload=getattr(args, "offload", "none"),
         sql_backend=args.sql_backend,
+        extra_body=_json_object(getattr(args, "extra_body", "")),
     )
     if args.only:
         cfg.only = tuple(part.strip() for part in args.only.split(",") if part.strip())
     if getattr(args, "max_new_tokens", None):
+        # ``max_new_tokens`` and the cap already went through the constructor,
+        # so the derived total saw the enlarged answer.
         cfg.max_new_tokens = args.max_new_tokens
-        # The flag is an upper bound on one answer, not a table value the window
-        # branch may ignore: 259834 used to go out after ``--max-new-tokens 32``.
-        cfg.answer_cap = args.max_new_tokens
-    if getattr(args, "max_total_tokens", None):
-        cfg.max_total_tokens = args.max_total_tokens
     if getattr(args, "generation_mode", ""):
         cfg.generation_mode = args.generation_mode
     if getattr(args, "reasoning_budget", None) is not None:
@@ -452,6 +469,42 @@ def cmd_selfcheck(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+def _executor_environment(cfg: RunConfig) -> dict[str, Any]:
+    """The executor record a run of ``cfg`` writes, reasons included.
+
+    One builder for the run and for the resume guard: the guard rebuilt a bare
+    ``generation.environment()``, so a saved record that said ``container_run``
+    (with the CA it mounted) never matched and every resume was refused.
+    """
+    from . import isolation
+
+    if cfg.sandbox:
+        # Builds a missing image here, once, before the first task; the runner
+        # reuses the remembered answer. An unusable sandbox is recorded with its
+        # own status: a failed build must not look like a deliberate host run.
+        usable, reason, status = isolation.prepare()
+    else:
+        usable, reason, status = False, "", ""
+    environment = generation.environment(container_ran=cfg.sandbox and usable)
+    cfg.image_digest = str(environment.get("image_digest") or "")
+    if not cfg.sandbox:
+        environment["executor_status"] = "host_run"
+        environment["executor_reason"] = "sandbox выключен (--no-sandbox)"
+    elif not usable:
+        environment["executor_status"] = status or "host_run"
+        environment["executor_reason"] = f"контейнер недоступен ({reason}); агент пойдёт на хосте"
+    # The CA is only a mount when a container really will start; a host run
+    # verifies with the host store anyway.
+    ca = isolation.ca_bundle() if cfg.sandbox and usable else None
+    environment["ca_mounted"] = ca is not None
+    environment["ca_bundle"] = str(ca or "")
+    environment["ca_container_path"] = isolation.CONTAINER_CA if ca else ""
+    environment["ca_reason"] = (
+        "" if ca or not cfg.sandbox or not usable else isolation.CA_MISSING_REASON
+    )
+    return environment
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     cfg = _config_from(args)
     provider = _provider_from(cfg)
@@ -482,21 +535,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     # execute in a container does not first claim to be a host run.
     from . import isolation
 
-    sandbox_usable, sandbox_reason = isolation.ready() if cfg.sandbox else (False, "")
-    environment = generation.environment(container_ran=cfg.sandbox and sandbox_usable)
-    cfg.image_digest = str(environment.get("image_digest") or "")
-    if not cfg.sandbox:
-        environment["executor_status"] = "host_run"
-        environment["executor_reason"] = "sandbox выключен (--no-sandbox)"
-    elif not sandbox_usable:
-        environment["executor_reason"] = (
-            f"контейнер недоступен ({sandbox_reason}); агент пойдёт на хосте"
-        )
+    environment = _executor_environment(cfg)
     if environment.get("status") != "verified":
         print(
             f"среда песочницы не проверена: {environment.get('reason') or 'нет данных'}",
             flush=True,
         )
+    # A host CA is what makes the container's TLS verification mean anything.
+    # Missing is a warning, never a stop: an http endpoint does not need one.
+    if environment.get("ca_reason"):
+        print(f"CA: {isolation.CA_MISSING_REASON}", flush=True)
     if environment.get("executor_status") != "container_run":
         print(
             f"исполнитель не подтверждён контейнером: "
@@ -724,13 +772,15 @@ def _bench_run_argv(args: argparse.Namespace) -> list[str]:
         "--profile", args.profile,
         "--sql-backend", args.sql_backend,
         "--context-window", str(args.context_window),
-        "--max-new-tokens", str(args.max_new_tokens),
-        "--max-total-tokens", str(args.max_total_tokens),
         "--generation-mode", args.generation_mode,
         "--reasoning-budget", str(args.reasoning_budget),
         "--offload", args.offload,
     ]
     for flag, value in (
+        # ``None`` (flag not typed) stays unset, so the run derives the total
+        # from its own answer budget instead of inheriting a stale default.
+        ("--max-new-tokens", args.max_new_tokens),
+        ("--max-total-tokens", args.max_total_tokens),
         ("--quant", args.quant),
         ("--runtime", args.runtime),
         ("--kv-type", args.kv_type),
@@ -925,6 +975,11 @@ def cmd_configs(args: argparse.Namespace) -> int:
 
 
 def cmd_preflight(args: argparse.Namespace) -> int:
+    if args.target == "sandbox":
+        return _preflight_sandbox()
+    if not args.config:
+        print("нужен --config <ID> (или 'preflight sandbox')", file=sys.stderr)
+        return 2
     resolved = reference.resolve(args.config, args.configs_path or None)
     report = reference.preflight(
         resolved,
@@ -938,6 +993,38 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         target.write_text(report.render() + "\n", encoding="utf-8")
         print(f"\nОтчёт: {target}")
     return 0 if report.ok else 1
+
+
+def _preflight_sandbox() -> int:
+    """Check (and build) the sandbox image without a model or a config.
+
+    This is the one place where a missing image is repaired *on demand* instead
+    of being discovered by the first task, and it is what ``make
+    preflight-sandbox`` calls: the same probe the run uses, with the same reason
+    strings, so a green preflight is evidence for the run that follows.
+    """
+    from . import isolation
+
+    isolation.forget_build_state()
+    ca = isolation.ca_bundle()
+    if ca is None:
+        print(f"CA: {isolation.CA_MISSING_REASON}", file=sys.stderr, flush=True)
+    else:
+        print(f"CA: {ca} → {isolation.CONTAINER_CA} (read-only)", flush=True)
+    usable, reason, status = isolation.prepare()
+    if usable:
+        print(
+            f"песочница готова: образ {isolation.default_image()} "
+            f"(runtime {isolation.default_runtime()})",
+            flush=True,
+        )
+        return 0
+    print(
+        f"песочница недоступна ({status or 'host_run'}): {reason}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return 2
 
 
 def cmd_rescore(args: argparse.Namespace) -> int:
@@ -999,7 +1086,10 @@ def _resume_tasks(
     if not tasks_path.is_file() or not suite_path.is_file():
         return tasks, []
     if environment is None:
-        environment = generation.environment()
+        # Only direct callers reach this: the guard must compare against the
+        # record a run would write, not a bare ``environment()`` without the
+        # executor/CA facts the run adds.
+        environment = _executor_environment(cfg)
 
     saved_digest = generation.read_json(directory, "suite.json")
     saved_profile = saved_digest.get("profile") or core.DEFAULT_PROFILE
@@ -1217,12 +1307,14 @@ def build_parser() -> argparse.ArgumentParser:
                 help="окно контекста в токенах (по умолчанию 262144; --config задаёт своё окно)",
             )
             target.add_argument(
-                "--max-new-tokens", type=int, default=4096,
-                help="верхняя граница ответа; меньшее из неё и свободного окна уходит в запрос",
+                "--max-new-tokens", type=int, default=None,
+                help="верхняя граница ответа; меньшее из неё и свободного окна уходит в запрос "
+                     "(по умолчанию 4096)",
             )
             target.add_argument(
-                "--max-total-tokens", type=int, default=16384,
-                help="потолок генерации на задание (ответы считаются суммой)",
+                "--max-total-tokens", type=int, default=None,
+                help="потолок генерации на задание (ответы считаются суммой); по умолчанию "
+                     "не меньше 16384 и не меньше --max-new-tokens",
             )
             target.add_argument(
                 "--generation-mode", choices=("fixed", "native"), default="fixed",
@@ -1231,6 +1323,10 @@ def build_parser() -> argparse.ArgumentParser:
             target.add_argument(
                 "--reasoning-budget", type=int, default=2048,
                 help="серверный потолок thinking в токенах (только fixed)",
+            )
+            target.add_argument(
+                "--extra-body", default="",
+                help="JSON-объект, добавляемый в каждый payload (флаги сервера)",
             )
             target.add_argument("--weights", default="", help="путь к файлу весов для SHA-256")
             target.add_argument(
@@ -1349,7 +1445,14 @@ def build_parser() -> argparse.ArgumentParser:
     configs.set_defaults(func=cmd_configs)
 
     preflight = sub.add_parser("preflight", help="проверить, что runtime соответствует эталонной конфигурации")
-    preflight.add_argument("--config", required=True)
+    preflight.add_argument(
+        "target",
+        nargs="?",
+        default="",
+        choices=("", "sandbox"),
+        help="'sandbox' — собрать и проверить образ песочницы без конфигурации",
+    )
+    preflight.add_argument("--config", default="")
     preflight.add_argument("--configs-path", default="")
     preflight.add_argument("--full", action="store_true", help="заполнить всё окно контекста и снять пик VRAM")
     preflight.add_argument("--hash-weights", action="store_true", help="посчитать SHA-256 файла весов")

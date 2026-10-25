@@ -112,6 +112,39 @@ def test_run_writes_the_artefacts_and_returns_zero(endpoint, tmp_path: Path):
     assert len(httpstub.chat_payloads(server)) == 1
 
 
+def _config(argv: list[str]) -> RunConfig:
+    from dailybench.cli import _config_from, build_parser
+
+    return _config_from(build_parser().parse_args(argv))
+
+
+def test_an_enlarged_answer_budget_raises_the_derived_total(endpoint, tmp_path: Path):
+    """J-5: ``--max-new-tokens 65536`` was still cut back to 16384 tokens.
+
+    The total was a default, not a choice, and every answer was clamped to what
+    was left of it. Without the flag it now follows the answer budget; an
+    explicit ``--max-total-tokens`` still wins.
+    """
+    base_url, server = endpoint
+    out = tmp_path / "runs"
+
+    assert _config(["run", "--max-new-tokens", "65536"]).max_total_tokens == 65536
+    assert _config(["run", "--max-total-tokens", "20000"]).max_total_tokens == 20000
+    assert (
+        _config(["run", "--max-new-tokens", "65536", "--max-total-tokens", "20000"]).max_total_tokens
+        == 20000
+    )
+    assert _config(["run"]).max_total_tokens == 16384
+
+    # ... and the bigger total reaches the saved run, not only the config object.
+    assert _run(base_url, out, "--only", "IF-2", "--limit", "1", "--name", "big",
+                "--max-new-tokens", "65536") == 0
+    saved = _read(out / "big" / "config.json")
+    assert saved["max_total_tokens"] == 65536
+    assert saved["answer_cap"] == 65536
+    assert len(httpstub.chat_payloads(server)) == 1
+
+
 def test_run_checkpoints_after_every_task(endpoint, tmp_path: Path, monkeypatch):
     """A crash at task 2 of 2 must not lose task 1.
 

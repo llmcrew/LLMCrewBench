@@ -224,3 +224,12 @@ The suite exercises a real `docker run` (build, deadline kill, read-only rootfs,
 no network, pids limit, a `:` in the mount path, `sched_setaffinity` plus
 threads under the seccomp profile) and a fake `docker` on `PATH` for the exit
 `125` classification. The whole module skips when no Docker daemon answers.
+
+
+## CA для https-endpoint
+
+`run` автоматически монтирует host CA (из `SSL_CERT_FILE`/`CURL_CA_BUNDLE`
+или `~/.config/omp/certs/sberdevices-ca-bundle.pem`) read-only и отдаёт
+`SSL_CERT_FILE`/`NODE_EXTRA_CA_CERTS` внутрь; без файла запуск идёт с
+`ca_mounted=false` и причиной. Образ агента собирается один раз:
+`dailybench preflight sandbox` (или автосборка при первом agent-задании).

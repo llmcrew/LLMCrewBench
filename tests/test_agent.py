@@ -509,6 +509,27 @@ def test_a_nonzero_exit_keeps_the_events_and_the_reason(monkeypatch, tmp_path):
     assert "кодом 3" in (result.error or "") and "boom" in result.stderr_tail
 
 
+def test_a_killed_agent_is_a_resource_outcome_not_a_model_failure(monkeypatch, tmp_path):
+    """``exit -9`` is the kernel or a watchdog, not the model's verdict.
+
+    Classified as ``model_failure`` it looked like a wrong answer; the declared
+    resource was exhausted (or someone intervened) and the run must say so.
+    """
+    script = _fake_pi(
+        tmp_path,
+        'printf \'%s\\n\' \'{"type":"message_end","message":{"role":"assistant","content":[]}}\'\n'
+        "kill -9 $$\n",
+    )
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
+    work = tmp_path / "w"
+    work.mkdir()
+    result = agent.run("p", work, RunConfig(base_url="http://x/v1", model="m"), agent_dir=tmp_path)
+    assert not result.ok
+    assert result.failure == "candidate_resource_exhausted"
+    assert "сигналом 9" in (result.error or "")
+    assert result.events, "события до убийства обязаны сохраниться"
+
+
 def test_a_silent_agent_is_reported_not_scored(monkeypatch, tmp_path):
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_pi(tmp_path, "exit 0\n")))
     work = tmp_path / "w"
@@ -907,6 +928,71 @@ def test_the_prompt_names_the_graded_file():
     assert task.prompt.rstrip() in prompt
     assert f"`{coding_python.TARGET_FILE}`" in prompt
     assert "осталось на диске" in prompt
+
+
+# --------------------------------------------------------------------------- #
+# The screenshot helper (K/L)
+# --------------------------------------------------------------------------- #
+
+SHOT = Path(agent.__file__).with_name("shot.sh")
+
+
+def _fake_chrome(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "fake-chrome"
+    path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
+def _shot(chrome: Path, out: Path, *, timeout: int = 20) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(SHOT), "http://example.test/", str(out)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**os.environ, "CHROME_BIN": str(chrome), "SHOT_TIMEOUT": str(timeout)},
+    )
+
+
+def test_the_shot_helper_returns_a_frame_quickly(tmp_path):
+    chrome = _fake_chrome(
+        tmp_path,
+        "out=\n"
+        'for arg do case "$arg" in --screenshot=*) out=${arg#--screenshot=};; esac; done\n'
+        'printf png > "$out"\n',
+    )
+    out = tmp_path / "frame.png"
+    proc = _shot(chrome, out)
+    assert proc.returncode == 0, proc.stderr
+    assert out.read_bytes() == b"png"
+
+
+def test_the_shot_helper_kills_a_hanging_browser(tmp_path):
+    """A stuck Chrome must cost the deadline, not the task's whole wall clock."""
+    pid_file = tmp_path / "pid"
+    chrome = _fake_chrome(
+        tmp_path,
+        f'sleep 600 &\necho $! > "{pid_file}"\nwait\n',
+    )
+    started = time.monotonic()
+    proc = _shot(chrome, tmp_path / "frame.png", timeout=1)
+    elapsed = time.monotonic() - started
+    assert proc.returncode == 124, proc.stderr
+    assert elapsed < 15, f"watchdog не сработал за {elapsed:.1f} с"
+    child = int(pid_file.read_text().strip())
+    assert not _pid_alive(child), "дерево браузера обязано быть убито целиком"
+
+
+def test_the_work_dir_ships_the_shot_helper(tmp_path):
+    """AGENTS.md must point at a file that is really there and executable."""
+    load_all()
+    task = art.build_task(task_id="L-T", title="t", prompt="нарисуй", golden="<html></html>")
+    task.category = "L"
+    work = agent.prepare_work_dir(task, tmp_path)
+    shot = work / "shot.sh"
+    assert shot.is_file() and os.access(shot, os.X_OK)
+    readme = (work / "AGENTS.md").read_text(encoding="utf-8")
+    assert "./shot.sh <url> out.png" in readme
 
 
 # --------------------------------------------------------------------------- #

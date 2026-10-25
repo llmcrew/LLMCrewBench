@@ -22,6 +22,11 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["dailybench", "dailybench.adapters", "dailybench.tasks"]
 
+# ``shot.sh`` передаётся в рабочую копию задачи: без него в wheel визуальный
+# агент не получает обёртку и снимает страницу голым chromium.
+[tool.setuptools.package-data]
+dailybench = ["shot.sh"]
+
 # Ресурсы витрины (three.js и plotly) нужны отчёту и рендеру; без них wheel
 # ставится без библиотек, и опубликованная сцена падает (R18). data-files, а не
 # package-data: vendor/ лежит рядом с пакетом, не внутри него.

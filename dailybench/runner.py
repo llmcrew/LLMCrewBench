@@ -337,7 +337,7 @@ class Runner:
         self.environment = environment if environment is not None else {}
         self._template: dict[str, Any] | None = None
         self._template_probed = False
-        self._sandbox_state: tuple[bool, str] | None = None
+        self._sandbox_state: tuple[bool, str, str] | None = None
         self._vision_state: tuple[bool | None, str] | None = None
 
     def _vision_support(self) -> tuple[bool | None, str]:
@@ -365,24 +365,28 @@ class Runner:
             self._vision_state = (supported, note)
         return self._vision_state
 
-    def _sandbox_usable(self) -> tuple[bool, str]:
+    def _sandbox_usable(self) -> tuple[bool, str, str]:
         """Whether a container can run at all, checked once per run.
 
-        A failed probe is a property of the host, not of the task, so it is
-        cached: a Docker-less machine must not pay a daemon timeout per task.
+        The probe also builds a missing image (once, under a deadline) and the
+        answer is cached: an unusable sandbox is a property of the host, not of
+        the task, so neither a Docker-less machine nor a failed build pays its
+        cost per task. The third item is the executor status the transcript
+        records when no container runs.
         """
         if self._sandbox_state is None:
-            self._sandbox_state = isolation.ready()
+            self._sandbox_state = isolation.prepare()
         return self._sandbox_state
 
     def _sandbox(self, work_dir: Path) -> isolation.Sandbox:
         """The boundary for one agent task, marked as host when it cannot run.
 
         The object is returned either way: an unusable sandbox carries the
-        reason, and the transcript then says ``host_run`` with it instead of
+        reason and its status, and the transcript then says ``host_run`` (or
+        ``executor_unverified`` after a failed build) with it instead of
         silently inheriting the machine.
         """
-        usable, reason = self._sandbox_usable()
+        usable, reason, status = self._sandbox_usable()
         box = isolation.Sandbox(
             work_dir=work_dir,
             image=isolation.default_image(),
@@ -393,7 +397,7 @@ class Runner:
             ready_state=(usable, reason),
         )
         if not usable:
-            box.fallback(reason or "песочница недоступна")
+            box.fallback(reason or "песочница недоступна", status=status or "host_run")
         return box
 
     def _note_container_run(self) -> None:
@@ -916,6 +920,30 @@ class Runner:
                 transcript.extra["failure"] = "model_failure"
         except Exception as exc:  # pragma: no cover - defensive
             transcript.error = f"{type(exc).__name__}: {exc}"
+
+        if transcript.error is None and transcript.turns:
+            # A thinking model can spend the whole answer budget on reasoning:
+            # the reply is cut at ``length`` before a visible answer starts, and
+            # the row was scored ``ok`` on an empty text. A reply that still
+            # carries tool calls continues the loop, so it is not this case.
+            last = transcript.turns[-1].reply
+            visible = (last.text or "").strip()
+            reasoning = (last.reasoning or "").strip()
+            if (
+                last.finish_reason == "length"
+                and not last.tool_calls
+                and (not visible or visible == reasoning)
+            ):
+                transcript.error = (
+                    "бюджет исчерпан до ответа: finish_reason=length, видимого текста нет"
+                )
+                # The declared budget is the harness's own ceiling.
+                transcript.extra["failure"] = "resource_exhausted"
+                transcript.extra.setdefault("notes", []).append(
+                    f"ответ оборван по length без видимого текста "
+                    f"({last.completion_tokens or 0} токенов, из них reasoning "
+                    f"{last.reasoning_tokens or 0})"
+                )
 
         if usage_missing:
             # Without ``completion_tokens`` the stop rule counted every reply as

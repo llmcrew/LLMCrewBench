@@ -477,8 +477,10 @@ def run_sandbox(
     extras: list[tuple[Path, str, bool]] = []
     for host, target, readonly in extra_mounts:
         host = Path(host).resolve()
-        if not host.is_dir():
-            raise InfraError(f"mounted directory missing: {host}")
+        # A file mount is legitimate here (the host CA bundle); only absence is
+        # an error, and it is still caught before the image lookup.
+        if not host.exists():
+            raise InfraError(f"mounted path missing: {host}")
         extras.append((host, target, readonly))
     mounts = _mount_pairs(
         task_dir,
