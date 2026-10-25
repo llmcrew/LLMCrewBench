@@ -62,11 +62,17 @@ HTML, камера, материалы, освещение и мастер-MP4 �
   Раскрытие переигрывает весь клип с начала без ускорения.
   Композиции и экспорт - 60 fps; исходные записи 120 fps не перекодируются.
 - Для каждой пары модель/сцена статус различает `ok`, `skipped`, `not_run`,
-  `model_failed`, `evaluator_unavailable`, `capture_failed` и `media_missing`.
-  `not_run`/`skipped` не обвиняют модель; `model_failed` означает неуспех
-  исходной работы, `evaluator_unavailable` - недоступного оценщика,
-  `capture_failed` - инфраструктурный сбой записи, `media_missing` - клип,
-  отсутствующий в поставке. Если HTML нет, новую сцену не дорисовывают.
+  `model_failed`, `evaluator_unavailable`, `infra_failure`, `capture_failed` и
+  `media_missing`. `not_run`/`skipped` не обвиняют модель; `model_failed`
+  означает неуспех исходной работы, `evaluator_unavailable` - недоступного
+  оценщика, `infra_failure` - провал инфраструктуры (транспорт, 503,
+  рендер-воркер), `capture_failed` - сбой самой записи, `media_missing` - клип,
+  отсутствующий в поставке. Причину берём из поля `failure` строки score, а не
+  из текста ошибки. Если HTML нет, новую сцену не дорисовывают.
+- Флот моделей и сцены - данные, а не код: `src/data/models.json` и
+  `src/data/scenes.json`. Третья модель добавляется строкой в `models.json`
+  (или своим файлом через `--models` у рекордера, пробы и preflight), правок
+  кода не требуется.
 
 ## Состав
 
@@ -152,8 +158,9 @@ python video/tools/verify_clips.py video/out/recording-20s/clips --manifest vide
    Проверки правил: `npm run test:showcase` (Node.js 22.18+).
 
 Общий разбор подхода записи, грабли и чек-лист приёмки - `docs/recording/`
-(фреймворк `record_scene.py`/`record_batch.py` и драйвер `page-driver.js`
-вынесены отдельно и от ролика не зависят).
+(фреймворк `record_scene.py`/`record_batch.py`, драйвер `page-driver.js` с
+занавесом `curtain.js` и проверка `verify_clips.py` вынесены отдельно и от
+ролика не зависят; политика чисел - `timing.py`, полос - `layout.py`).
 
 ## Запись клипов: инварианты
 
@@ -161,7 +168,8 @@ python video/tools/verify_clips.py video/out/recording-20s/clips --manifest vide
   `reports/comparison-deepseek-1021/_showcase/<модель>/pages/<сцена>.html`
   (отдаётся локальным http-сервером; `_vendor` рядом).
 - Управляемые часы `record_clip.py` двигают `requestAnimationFrame`, таймеры
-  или `window.__step(dt)` с шагом 1/120 с. `window.__probe()` вызывается после
+  или `window.__step(dt)` с шагом 1/fps с (по умолчанию 1/120 с); `--fps`,
+  `--crf` и `--preset` доезжают до ffmpeg, паспорта записи и preflight/verify. `window.__probe()` вызывается после
   явного шага: у части страниц рендер выполняется в этом хуке.
 - Записываются 20 секунд виртуального времени: 2400 кадров в 120 fps.
   Скорость рендера машины не приводит к пропускам шагов; штатная статичность
@@ -173,8 +181,9 @@ python video/tools/verify_clips.py video/out/recording-20s/clips --manifest vide
   вслед за отдельным объектом. Яркость и графический код не исправляются.
 - Статусная плашка объясняет причину: `not_run` - задачи нет в прогоне;
   `model_failed` - исходная работа не запустилась/упала;
-  `evaluator_unavailable` - недоступен оценщик; `capture_failed` - страница
-  жива, запись сорвалась. `result-notes.json` отдельно хранит причину и
+  `evaluator_unavailable` - недоступен оценщик; `infra_failure` -
+  инфраструктурный провал измерения; `capture_failed` - страница жива, запись
+  сорвалась. Проба страницы не стирает `capture_failed`, пока нет клипа. `result-notes.json` отдельно хранит причину и
   ожидаемый результат для частичного/неуспешного ответа.
 - Изменённый код показывается отдельным клипом с пометкой «Технический ремонт ·
   не исходный результат модели». Увеличенное время ожидания без изменения HTML

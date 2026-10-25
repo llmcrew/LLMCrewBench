@@ -81,17 +81,19 @@ def verify(path: Path, ffmpeg: str, ffprobe: str, seconds: Fraction, fps: int) -
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("clips", type=Path)
     parser.add_argument("--seconds", default="20")
     parser.add_argument("--fps", type=int, default=120)
+    parser.add_argument("--crf", type=int, default=16)
+    parser.add_argument("--preset", default="medium")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--ffprobe", default="ffprobe")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--manifest", type=Path, help="Check only model/scene pairs in clips.json")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     manifest_by_file = {}
     if args.manifest:
         manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
@@ -117,7 +119,8 @@ def main() -> int:
                     expected_frames = round(Fraction(args.seconds) * args.fps)
                     expected = {
                         "status": item["status"], "seconds": float(Fraction(args.seconds)),
-                        "fps": args.fps, "frames": expected_frames, "crf": 16, "preset": "medium",
+                        "fps": args.fps, "frames": expected_frames,
+                        "crf": args.crf, "preset": args.preset,
                         "captured_frames": expected_frames if item["status"] == "ok" else 0,
                     }
                     for key, value in expected.items():

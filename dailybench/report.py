@@ -12,13 +12,14 @@ from __future__ import annotations
 import base64
 import html
 import json
+import math
 import re
 import shutil
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import core, gallery, generation, stats
+from . import core, gallery, generation, schema, stats, telemetry, viz
 
 SHORT_ORDER = core.ADMISSION_CATEGORIES
 
@@ -61,6 +62,12 @@ def load_run(directory: Path | str) -> dict[str, Any]:
         path = base / f"{name}.json"
         if path.is_file():
             data[name] = json.loads(path.read_text(encoding="utf-8"))
+    # The journal is committed as an index under ``telemetry/``; the bare
+    # ``telemetry.json`` is the pre-index name and stays readable.
+    for path in (base / "telemetry" / "index.json", base / "telemetry.json"):
+        if path.is_file():
+            data["telemetry"] = json.loads(path.read_text(encoding="utf-8"))
+            break
     return data
 
 
@@ -371,18 +378,29 @@ WEIGHT_SCHEMES: dict[str, dict[str, float]] = {
 """Weight mixtures the verdict is recomputed under."""
 
 
+def _stratum(category: str) -> str:
+    """Resampling stratum of a category: its semantic family.
+
+    Ten renamed entities of one family are not ten independent draws, so the
+    interval is a cluster-level one. The category is only the fallback for an
+    off-schema category.
+    """
+    return schema.family_for(category) or "прочее"
+
+
 def _paired_units(
     left: dict[str, Any] | None, right: dict[str, Any] | None, key: str
 ) -> list[stats.PairedUnit]:
-    """Shared task instances of two category rows, tagged with the category."""
+    """Shared task instances of two category rows, tagged with the family."""
     left_units = (left or {}).get("units") or {}
     right_units = (right or {}).get("units") or {}
+    stratum = _stratum(key)
     units: list[stats.PairedUnit] = []
     for task_id, (left_earned, left_possible) in left_units.items():
         pair = right_units.get(task_id)
         if pair is None or left_possible <= 0 or pair[1] <= 0:
             continue
-        units.append((key, left_earned, left_possible, pair[0], pair[1]))
+        units.append((stratum, left_earned, left_possible, pair[0], pair[1]))
     return units
 
 
@@ -395,31 +413,47 @@ def _overlaps(
     return not stats.disjoint(left, right)
 
 
-def _weighted_pct(summary: dict[str, Any], weights: dict[str, float]) -> float | None:
-    """Score under one weight mixture; ``None`` when nothing was measured."""
-    total = earned = 0.0
+def _weighted_pct(
+    summary: dict[str, Any], weights: dict[str, float]
+) -> tuple[float | None, frozenset[str]]:
+    """Score under one weight mixture, and the categories nobody measured.
+
+    The denominator is the *whole* profile weight, so an unmeasured category is
+    not a free pass: its weight stays in the denominator and is reported as
+    unknown instead of being re-normalised away. Two runs measuring different
+    sets are then still on one scale.
+    """
+    total = sum(weights.values())
+    earned = 0.0
+    unknown: set[str] = set()
     for key, weight in weights.items():
         row = summary["per_category"].get(key) or {}
         possible = row.get("possible") or 0.0
         if possible <= 0:
+            unknown.add(key)
             continue
         earned += weight * row.get("earned", 0.0) / possible
-        total += weight
-    return round(100.0 * earned / total, 2) if total else None
+    return (round(100.0 * earned / total, 2) if total else None), frozenset(unknown)
 
 
 def _weight_sensitivity(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     """Whether the ordering survives a different policy, not just the published one."""
     schemes: dict[str, Any] = {}
     for name, weights in WEIGHT_SCHEMES.items():
-        left_pct = _weighted_pct(left, weights)
-        right_pct = _weighted_pct(right, weights)
+        scheme_total = sum(weights.values())
+        left_pct, left_unknown = _weighted_pct(left, weights)
+        right_pct, right_unknown = _weighted_pct(right, weights)
+        unknown = left_unknown | right_unknown
         delta = None if left_pct is None or right_pct is None else round(left_pct - right_pct, 2)
         schemes[name] = {
             "weights": dict(weights),
             "left": left_pct,
             "right": right_pct,
             "delta": delta,
+            # Weight that at least one side did not measure: the delta above is
+            # capped by that much unknown, so it is printed, not hidden.
+            "unknown": round(100.0 * sum(weights[key] for key in unknown) / scheme_total, 1)
+            if unknown and scheme_total else 0.0,
             "winner": None if delta is None else ("left" if delta > 0 else "right" if delta < 0 else "tie"),
         }
     published = schemes["published"]["winner"]
@@ -452,12 +486,16 @@ def _compare_pair(
     right_pct = _pct_of(right)
     test = stats.paired_ratio_difference(_paired_units(left, right, key))
     delta_ci = test["ci95"]
+    delta = test["delta"]
     return {
         "left_ci95": left_ci,
         "right_ci95": right_ci,
         "left_pct": left_pct,
         "right_pct": right_pct,
-        "delta": None if left_pct is None or right_pct is None else round(left_pct - right_pct, 2),
+        # The published difference is the *paired* one: it lives on the shared
+        # ids, exactly like the interval printed beside it. The two marginal
+        # percentages are context columns, not the estimate.
+        "delta": None if delta is None else round(100.0 * delta, 2),
         "delta_ci95": None if delta_ci is None
         else (round(100.0 * delta_ci[0], 2), round(100.0 * delta_ci[1], 2)),
         "pairs": test["n_pairs"],
@@ -473,25 +511,77 @@ def _pct_of(row: dict[str, Any] | None) -> float | None:
     return round(100.0 * row.get("earned", 0.0) / row["possible"], 2)
 
 
+def contract_key(run: dict[str, Any]) -> str:
+    """Immutable contract identity of a run: the suite digest sha256.
+
+    Runs built from different suite bytes, profiles or evaluator contracts have
+    different denominators; their percentages are not ranks of one another.
+    """
+    return str((run.get("suite") or {}).get("sha256") or "")
+
+
+def rankable(summary: dict[str, Any]) -> bool:
+    """Only a complete, infrastructure-clean measurement may be ranked.
+
+    A skipped *scored* category shrinks the denominator and would silently
+    reward the run, so an incomplete run is not ranked either. A skipped
+    showcase task (K/L) does not touch the verdict.
+    """
+    return (
+        bool(summary.get("eligible"))
+        and bool(summary.get("full_suite"))
+        and not summary.get("skipped_scored")
+    )
+
+
+def unranked_reason(summary: dict[str, Any]) -> str:
+    """Short reason why a run cannot take a place."""
+    if summary.get("integrity_failures"):
+        return "удостоверение отозвано"
+    if not summary.get("eligible"):
+        return "инфраструктура"
+    return "неполный прогон"
+
+
+def _comparison_gate(left: dict[str, Any], right: dict[str, Any], *, same_contract: bool) -> str:
+    """Why this pair is not a rank comparison; empty when it is one."""
+    if not same_contract:
+        return "другой контракт сьюта"
+    if not rankable(left):
+        return f"база — {unranked_reason(left)}"
+    if not rankable(right):
+        return unranked_reason(right)
+    return ""
+
+
 def _headline_keys(summary: dict[str, Any]) -> tuple[str, ...]:
     """Categories the headline of that run counts, mirroring :func:`summarise`."""
     return SHORT_ORDER if summary.get("admission_state") == "failed" else core.SCORED_CATEGORIES
 
 
-def compare_summaries(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+def compare_summaries(
+    left: dict[str, Any], right: dict[str, Any], *, same_contract: bool = True
+) -> dict[str, Any]:
     """Compare two summaries on shared tasks; ``significant`` is a paired test.
 
     The estimand is the difference of the two ratios over the *same* task
-    instances, stratified by category. Two separate intervals overlapping does
+    instances, stratified by family. Two separate intervals overlapping does
     not block the verdict: a consistent 0.05-per-task edge is significant even
     when both marginals share a band. Which side wins is published per weight
     mixture, because the published weights are product policy.
+
+    ``same_contract`` and rankability gate the *verdict*, not the arithmetic:
+    runs from another suite contract, or ones that are incomplete or
+    infrastructure-broken, still show their difference and interval but are
+    marked ``ranked = False`` and take no part in the significance claim.
     """
     keys = tuple(key for key in _headline_keys(left) if key in _headline_keys(right))
     units = [unit for key in keys
              for unit in _paired_units(left["per_category"].get(key), right["per_category"].get(key), key)]
     test = stats.paired_ratio_difference(units)
     delta_ci = test["ci95"]
+    delta = test["delta"]
+    gate = _comparison_gate(left, right, same_contract=same_contract)
     overall = {
         "left_ci95": left.get("headline_ci95"),
         "right_ci95": right.get("headline_ci95"),
@@ -499,16 +589,16 @@ def compare_summaries(left: dict[str, Any], right: dict[str, Any]) -> dict[str, 
         if left.get("headline_possible") else None,
         "right_pct": round(100.0 * right["headline_earned"] / right["headline_possible"], 2)
         if right.get("headline_possible") else None,
-        "delta": None,
+        "delta": None if delta is None else round(100.0 * delta, 2),
         "delta_ci95": None if delta_ci is None
         else (round(100.0 * delta_ci[0], 2), round(100.0 * delta_ci[1], 2)),
         "pairs": test["n_pairs"],
-        "significant": test["significant"],
+        "significant": test["significant"] and not gate,
+        "ranked": not gate,
+        "unranked_reason": gate,
         "overlap": _overlaps(left.get("headline_ci95"), right.get("headline_ci95")),
         "provisional": bool(left.get("headline_provisional") or right.get("headline_provisional")),
     }
-    if overall["left_pct"] is not None and overall["right_pct"] is not None:
-        overall["delta"] = round(overall["left_pct"] - overall["right_pct"], 2)
     return {
         "method": "paired stratified bootstrap",
         "overall": overall,
@@ -526,6 +616,10 @@ def _fmt(value: Any, digits: int = 2) -> str:
     if value is None:
         return "n/a"
     if isinstance(value, float):
+        # ``nan``/``inf`` are not numbers a reader can compare; older saved
+        # speed blocks still carry them.
+        if not math.isfinite(value):
+            return "n/a"
         return f"{value:.{digits}f}"
     return str(value)
 
@@ -627,6 +721,125 @@ def _launch_lanes(config: dict[str, Any], lines: list[str]) -> None:
         lines.append(str(config["launch"]))
         lines.append("```")
         lines.append("")
+
+
+_METRIC_LABELS = {
+    "spend_tokens": "расход токенов",
+    "wall_s": "время задания",
+    "context_occupancy": "занятость контекста",
+}
+
+
+def _telemetry_section(run: dict[str, Any], summary: dict[str, Any]) -> list[str]:
+    """Cost/time correlations, unknown shares and the guarded cost per point.
+
+    A run without a telemetry index still renders: every metric is then simply
+    unknown, which is the point — it must not look like free work.
+    """
+    lines = ["## Телеметрия и корреляции", ""]
+    index = run.get("telemetry") or []
+    data = telemetry.rows(index, run.get("scores") or [])
+    scored_rows = [row for row in data if not row.get("skipped")]
+    measured = [row for row in scored_rows if row.get("measured")]
+    if not measured:
+        lines.append(
+            "Телеметрия не собрана: стоимость, TTFT и занятость контекста неизвестны "
+            "(не нули)."
+        )
+        lines.append("")
+        lines.append("Стоимость балла: не рассчитана — нет расхода токенов.")
+        lines.append("")
+        return lines
+
+    counts = {"budgeted": 0, "unbounded": 0, "unknown": 0}
+    for row in scored_rows:
+        mode = row.get("budgeted")
+        counts["unknown" if mode is None else ("budgeted" if mode else "unbounded")] += 1
+    lines.append(
+        f"Режим бюджета: budgeted {counts['budgeted']}, unbounded {counts['unbounded']}, "
+        f"неизвестно {counts['unknown']}. Неизвестное значение остаётся пустым и не "
+        "складывается с нулём."
+    )
+    lines.append("")
+    compact = telemetry.summary_index(measured)
+    lines.append(viz.telemetry_index(compact))
+    lines.append("")
+    cache_unknown = {
+        category: sum(
+            1
+            for row in measured
+            if row.get("category") == category and row.get("cache_share") is None
+        )
+        for category in {row.get("category") for row in measured}
+    }
+    lines.append(
+        "| Категория | Задач | Медиана TTFT, с | Медиана cache, % | Медиана tok/s | "
+        "Медиана времени, с |"
+    )
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
+    for row in compact:
+        share = row.get("cache_share")
+        cache = "н/п" if share is None else f"{share * 100:.0f} %"
+        unknown_cache = cache_unknown.get(row["category"]) or 0
+        if unknown_cache:
+            cache += f" (н/п у {unknown_cache})"
+        lines.append(
+            f"| {row['category']} | {row['n']} | {_fmt(row.get('ttft_s'))} | {cache} | "
+            f"{_fmt(row.get('decode_tokens_per_s'), 1)} | {_fmt(row.get('wall_s'))} |"
+        )
+    lines.append("")
+
+    shares = telemetry.unknown_shares(scored_rows)
+    categories = sorted(shares)
+    metrics = list(telemetry.METRICS)
+    lines.append("Доля неизвестных значений:")
+    lines.append("")
+    lines.append("| Категория | " + " | ".join(_METRIC_LABELS[m] for m in metrics) + " |")
+    lines.append("| --- | " + " | ".join("---:" for _ in metrics) + " |")
+    for category in categories:
+        cells = []
+        for metric in metrics:
+            row = shares[category][metric]
+            share = row.get("share")
+            cells.append("—" if share is None else f"{share * 100:.0f} % ({row['unknown']}/{row['total']})")
+        lines.append(f"| {category} | " + " | ".join(cells) + " |")
+    lines.append("")
+
+    correlations = [row for row in telemetry.correlations(scored_rows) if row["n"]]
+    if correlations:
+        lines.append("Корреляция Спирмена: балл × стоимость/время/контекст.")
+        lines.append("")
+        lines.append("| Категория | Метрика | ρ | n | Неизвестно |")
+        lines.append("| --- | --- | ---: | ---: | ---: |")
+        for row in correlations:
+            rho = "—" if row["rho"] is None else f"{row['rho']:+.2f}"
+            lines.append(
+                f"| {row['category']} | {_METRIC_LABELS[row['metric']]} | {rho} | "
+                f"{row['n']} | {row['unknown']} |"
+            )
+        lines.append("")
+
+    complete = (
+        bool(scored_rows)
+        and not summary.get("incomplete")
+        and summary.get("eligible", True)
+        and all(row.get("spend_tokens") is not None for row in scored_rows)
+    )
+    cost = telemetry.cost_per_point(scored_rows, complete=complete)
+    if cost is not None:
+        lines.append(
+            f"Стоимость балла: {cost['tokens_per_point']:.1f} токенов на балл "
+            f"({cost['tokens']} токенов на {cost['earned']:.0f} баллов; измерение полное)."
+        )
+    else:
+        reason = (
+            "есть неизвестный расход"
+            if any(row.get("spend_tokens") is None for row in scored_rows)
+            else "прогон неполон или не ранжируется"
+        )
+        lines.append(f"Стоимость балла: не рассчитана — {reason}.")
+    lines.append("")
+    return lines
 
 
 def render_markdown(run: dict[str, Any]) -> str:
@@ -821,6 +1034,8 @@ def render_markdown(run: dict[str, Any]) -> str:
             lines.append("")
 
 
+    lines.extend(_telemetry_section(run, summary))
+
     speed = run.get("speed")
     if speed:
         lines.append("## Скорость и память (без баллов качества)")
@@ -929,25 +1144,40 @@ def _paired_markdown(compared: list[tuple[dict[str, Any], dict[str, Any]]]) -> l
     conservative reading is still possible.
     """
     baseline_run, baseline = compared[0]
-    results = [compare_summaries(baseline, summary) for _, summary in compared[1:]]
+    results = [
+        compare_summaries(baseline, summary, same_contract=contract_key(run) == contract_key(baseline_run))
+        for run, summary in compared[1:]
+    ]
     lines = [
         "",
         "## Парное сравнение: разность и её интервал",
         "",
-        f"База — `{_label(baseline_run)}`. Сравниваются одинаковые task_id, "
-        "стратифицированно по категориям. Значимость — 95 % интервал разности не содержит нуля; "
-        "перекрытие отдельных ДИ указано рядом и вердикт не блокирует.",
+        f"База — `{_label(baseline_run)}` (первый прогон в порядке вызова, как и в HTML). "
+        "Сравниваются одинаковые task_id, стратифицированно по семействам. Δ — парная разность на "
+        "общих задачах; доли каждой стороны от её собственного набора — отдельные колонки. "
+        "Значимость — 95 % интервал разности не содержит нуля; перекрытие отдельных ДИ указано "
+        "рядом и вердикт не блокирует. Прогон вне контракта базы или неполный места в вердикте "
+        "не получает.",
         "",
-        "| Модель | Δ, п.п. | 95 % ДИ разности | Общих задач | Перекрытие отдельных ДИ | Значимо |",
-        "| --- | ---: | --- | ---: | --- | --- |",
+        "| Модель | Δ (парная), п.п. | 95 % ДИ разности | База, % | Модель, % | Общих задач | "
+        "Перекрытие отдельных ДИ | Значимо |",
+        "| --- | ---: | --- | ---: | ---: | ---: | --- | --- |",
     ]
+    base_pct = round(
+        100.0 * baseline["headline_earned"] / baseline["headline_possible"], 2
+    ) if baseline.get("headline_possible") else None
     for (run, _), result in zip(compared[1:], results):
         overall = result["overall"]
         ci = overall["delta_ci95"]
         band = f"{ci[0]:+.2f} … {ci[1]:+.2f}" if ci else "n/a"
+        verdict = (
+            ("да" if overall["significant"] else "нет") if overall["ranked"]
+            else f"не ранжируется: {overall['unranked_reason']}"
+        )
         lines.append(
-            f"| {_label(run)} | {_fmt(overall['delta'], 2)} | {band} | {overall['pairs']} | "
-            f"{'да' if overall['overlap'] else 'нет'} | {'да' if overall['significant'] else 'нет'} |"
+            f"| {_label(run)} | {_fmt(overall['delta'], 2)} | {band} | {_fmt(base_pct)} | "
+            f"{_fmt(overall['right_pct'])} | {overall['pairs'] or 'n/a'} | "
+            f"{'да' if overall['overlap'] else 'нет'} | {verdict} |"
         )
     plan = results[0]["sample_plan"]
     lines += [
@@ -972,7 +1202,9 @@ def _paired_markdown(compared: list[tuple[dict[str, Any], dict[str, Any]]]) -> l
         "",
         "## Чувствительность к весам",
         "",
-        "Дельта под каждой политикой весов: устойчивый вывод не зависит от смеси.",
+        "Дельта под каждой политикой весов: устойчивый вывод не зависит от смеси. "
+        "Знаменатель — полный вес профиля, поэтому непомеренная категория не даёт бесплатного "
+        "прохода: её доля веса указана рядом с дельтой.",
         "",
         "| Политика | " + " | ".join(_label(run) for run, _ in compared[1:]) + " |",
         "| --- |" + "---:|" * max(0, len(compared) - 1),
@@ -981,7 +1213,10 @@ def _paired_markdown(compared: list[tuple[dict[str, Any], dict[str, Any]]]) -> l
         cells = []
         for result in results:
             entry = result["weight_sensitivity"]["schemes"][scheme]
-            cells.append(f"{_fmt(entry['delta'], 2)} ({entry['winner'] or 'n/a'})")
+            cells.append(
+                f"{_fmt(entry['delta'], 2)} ({entry['winner'] or 'n/a'})"
+                + (f" — не измерено {entry['unknown']:.0f}% веса" if entry["unknown"] else "")
+            )
         lines.append(f"| {scheme} | " + " | ".join(cells) + " |")
     stable = all(result["weight_sensitivity"]["stable"] for result in results)
     lines.append("")

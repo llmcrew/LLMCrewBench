@@ -1,0 +1,12 @@
+[
+ {
+  "dir": "deepseek-v4.1-flash-unc-1021",
+  "label": "DeepSeek-V4.1-Flash",
+  "accent": "#4cc2ff"
+ },
+ {
+  "dir": "deepseek-v4.1-flash-unc-1017-1021",
+  "label": "DeepSeek-V4.1-Flash 1017",
+  "accent": "#ffb45c"
+ }
+]

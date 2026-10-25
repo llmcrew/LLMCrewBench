@@ -52,7 +52,7 @@ test('a delivered partial result remains eligible', () => {
 });
 
 test('unavailable media never creates an empty full-screen presentation', () => {
-  const statuses: MediaStatus[] = ['skipped', 'not_run', 'model_failed', 'evaluator_unavailable', 'capture_failed', 'media_missing'];
+  const statuses: MediaStatus[] = ['skipped', 'not_run', 'model_failed', 'evaluator_unavailable', 'infra_failure', 'capture_failed', 'media_missing'];
   for (const status of statuses) {
     assert.equal(canOpenFullscreen(work(status, status)), false, status);
   }

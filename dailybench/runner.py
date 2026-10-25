@@ -23,6 +23,7 @@ from . import core
 from . import agent
 from . import generation
 from . import isolation
+from . import telemetry
 from .config import RunConfig
 from .measure import VramSampler
 from .providers import Provider, ProviderError
@@ -181,6 +182,7 @@ class TaskRun:
     task: core.TaskInstance
     transcript: core.Transcript
     score: core.Score
+    telemetry: telemetry.Telemetry | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -193,6 +195,7 @@ class TaskRun:
             },
             "transcript": transcript_to_dict(self.transcript),
             "score": self.score.as_dict(),
+            "telemetry": self.transcript.telemetry,
         }
 
 
@@ -205,6 +208,7 @@ def transcript_to_dict(transcript: core.Transcript) -> dict[str, Any]:
         "prompt_tokens": transcript.prompt_tokens(),
         "generated_tokens": transcript.generated_tokens(),
         "spend": transcript.spend(),
+        "telemetry": transcript.telemetry,
         "tool_log": transcript.tool_log,
         "workspace_before": transcript.workspace_before,
         "workspace_after": transcript.workspace_after,
@@ -230,6 +234,7 @@ def transcript_from_dict(data: dict[str, Any], task: core.TaskInstance) -> core.
         tool_log=list(data.get("tool_log") or []),
         workspace_before=dict(data.get("workspace_before") or {}),
         workspace_after=dict(data.get("workspace_after") or {}),
+        telemetry=data.get("telemetry"),
         extra=dict(data.get("extra") or {}),
     )
     for turn in data.get("turns") or []:
@@ -455,6 +460,14 @@ class Runner:
         from .tasks import load_all
 
         load_all()
+        journal = telemetry.Telemetry(
+            task.id, category=task.category, window=self.cfg.context_window
+        )
+
+        def close(transcript: core.Transcript, outcome: str) -> None:
+            journal.task_end(outcome=outcome, error=transcript.error)
+            transcript.telemetry = journal.aggregate()
+
         if task.category in self.cfg.unsupported:
             reason = (
                 f"категория {task.category} объявлена неприменимой для этой конфигурации "
@@ -465,7 +478,8 @@ class Runner:
             # The budget is a property of the task even when nothing is scored;
             # ``Score.possible`` still reports 0 for a skip.
             score.max_points = task.max_points
-            return TaskRun(task=task, transcript=transcript, score=score)
+            close(transcript, "skipped")
+            return TaskRun(task=task, transcript=transcript, score=score, telemetry=journal)
 
         if task.assets:
             supported, note = self._vision_support()
@@ -485,7 +499,8 @@ class Runner:
                 # Not verified: zero possible, so a text-only model is not read
                 # as having failed the picture.
                 score.max_points = task.max_points
-                return TaskRun(task=task, transcript=transcript, score=score)
+                close(transcript, "skipped")
+                return TaskRun(task=task, transcript=transcript, score=score, telemetry=journal)
 
         agent_mode = self._uses_agent(task)
         # One root per task, removed in the ``finally`` below: the working copy,
@@ -527,9 +542,12 @@ class Runner:
                 }
             )
         try:
-            return self._run_task_inner(
-                task, transcript, work_dir, agent_mode, driver, sandbox
-            )
+            with telemetry.bind(journal):
+                run = self._run_task_inner(
+                    task, transcript, work_dir, agent_mode, driver, sandbox, journal
+                )
+            run.telemetry = journal
+            return run
         finally:
             if sandbox is not None:
                 # Rewritten after execution: only a container that really ran may
@@ -546,6 +564,37 @@ class Runner:
                         pass
             shutil.rmtree(task_root, ignore_errors=True)
             transcript.extra["work_dir_removed"] = not task_root.exists()
+            close(transcript, "error" if transcript.error else "ok")
+
+    def _spent_budget(
+        self,
+        transcript: core.Transcript,
+        total_limit: int,
+        *,
+        can_present: bool,
+        overrun: bool,
+    ) -> tuple[bool, bool]:
+        """The one rule for a spent generation budget: ``(keep_going, overrun)``.
+
+        Called at the loop top *and* right after a tool batch, so the same
+        situation gets the same outcome kind. When a message is still owed
+        (*can_present*) the loop presents it once over the budget, because
+        stopping there would grade a half-presented scenario as ``ok``.
+        Otherwise the row is unverified: the declared total was the harness's
+        own ceiling, so it is ``resource_exhausted``, not infrastructure.
+        """
+        notes = transcript.extra.setdefault("notes", [])
+        if "бюджет генерации" not in " ".join(notes):
+            notes.append(f"бюджет генерации исчерпан ({total_limit})")
+        if can_present:
+            if not overrun:
+                overrun = True
+                transcript.extra["total_budget_overrun"] = True
+                notes.append("бюджет превышен ради предъявления сценария до конца")
+            return True, overrun
+        transcript.error = transcript.error or f"бюджет генерации исчерпан ({total_limit}) до ответа"
+        transcript.extra["failure"] = "resource_exhausted"
+        return False, overrun
 
     def _run_task_inner(
         self,
@@ -555,13 +604,14 @@ class Runner:
         agent_mode: bool,
         driver: Any,
         sandbox: isolation.Sandbox | None,
+        journal: telemetry.Telemetry | None = None,
     ) -> TaskRun:
         """The task itself, on a working copy the caller already made and cleans."""
         if driver is not None:
             transcript.extra["driver"] = task.category
 
         if agent_mode:
-            self._run_agent(task, transcript, work_dir, sandbox)
+            self._run_agent(task, transcript, work_dir, sandbox, journal)
             # The working copy is temporary: record what the agent produced while
             # it still exists, so a report rendered later shows the graded file.
             agent.record_artefact(task, transcript)
@@ -573,6 +623,12 @@ class Runner:
         messages: list[dict[str, Any]] = []
         if self.cfg.system_prompt:
             messages.append({"role": "system", "content": self.cfg.system_prompt})
+        if task.system:
+            # The scenario's own instruction is a second system message, not a
+            # paragraph glued into the user turn: it is part of the task, keeps
+            # its place when the dialogue appends user messages, and travels in
+            # the digest.
+            messages.append({"role": "system", "content": task.system})
         messages.append({"role": "user", "content": user_content(task, work_dir)})
         started = time.perf_counter()  # elapsed metric only
         # One absolute deadline for the whole task, not one per request: the
@@ -612,28 +668,13 @@ class Runner:
                 # A scenario that was not presented to the end, or a tool result
                 # that never reached the model, is unverified — not ``ok``.
                 if generated >= total_limit:
-                    if "бюджет генерации" not in " ".join(transcript.extra.get("notes", [])):
-                        transcript.extra.setdefault("notes", []).append(
-                            f"бюджет генерации исчерпан ({total_limit})"
-                        )
-                    unfinished = awaiting
-                    if not unfinished:
-                        if not transcript.turns or transcript.turns[-1].reply.tool_calls:
-                            # The last reply only asked for tools the budget no
-                            # longer allows: no answer was produced.
-                            transcript.error = (
-                                f"бюджет генерации исчерпан ({total_limit}) до ответа"
-                            )
-                            transcript.extra["failure"] = "resource_exhausted"
+                    # A pending scenario message is still owed; presenting it is
+                    # worth the overrun. Everything else stops as exhausted.
+                    keep_going, overrun = self._spent_budget(
+                        transcript, total_limit, can_present=awaiting, overrun=overrun
+                    )
+                    if not keep_going:
                         break
-                    # The dialogue turn or the release turn is still owed:
-                    # stopping here would grade a half-presented scenario as ok.
-                    if not overrun:
-                        overrun = True
-                        transcript.extra["total_budget_overrun"] = True
-                        transcript.extra.setdefault("notes", []).append(
-                            "бюджет превышен ради предъявления сценария до конца"
-                        )
                     tools_answered = False
                 # A request started after the deadline would only be killed by
                 # its own socket timeout, so the task stops here instead and is
@@ -677,6 +718,24 @@ class Runner:
                         f"ответ у floor {plan.tokens}: {plan.reason}"
                     )
                 seed = derived_seed(self.cfg.seed, task.id, str(len(transcript.turns)))
+                if journal is not None:
+                    journal.attempt_start(
+                        budget=plan.tokens,
+                        reason=plan.reason,
+                        prompt_tokens=size if size_source == "tokenizer" else None,
+                        prompt_estimate=size if size_source != "tokenizer" else None,
+                        prompt_source=size_source,
+                        unbounded=self.cfg.unbounded_budget,
+                        turn=len(transcript.turns),
+                    )
+                    journal.request_sent(
+                        budget=plan.tokens,
+                        reason=plan.reason,
+                        prompt_tokens=size if size_source == "tokenizer" else None,
+                        prompt_estimate=size if size_source != "tokenizer" else None,
+                        prompt_source=size_source,
+                        turn=len(transcript.turns),
+                    )
                 reply = self.provider.chat(
                     messages,
                     # Once the call budget is spent, send no tools: a tool-less
@@ -690,6 +749,7 @@ class Runner:
                     seed=seed,
                     wall_clock=request_budget,
                     contract=self._wire_contract(plan.tokens, seed),
+                    telemetry=journal,
                 )
                 transcript.turns.append(core.Turn(messages=_copy_messages(messages), reply=reply))
                 if isinstance(reply.raw.get("wire"), dict):
@@ -717,10 +777,12 @@ class Runner:
                     if budget_spent:
                         # A tool-less request already went out and still came
                         # back with calls: one more would loop forever. No final
-                        # answer was produced, so the row is unverified.
+                        # answer was produced, so the row is unverified — and it
+                        # is a declared harness ceiling, not infrastructure.
                         transcript.error = transcript.error or (
                             f"бюджет вызовов инструментов исчерпан ({call_budget}) до ответа"
                         )
+                        transcript.extra["failure"] = "resource_exhausted"
                         break
                     transcript.extra.setdefault("notes", []).append(
                         f"бюджет вызовов инструментов исчерпан ({call_budget})"
@@ -756,11 +818,22 @@ class Runner:
                 messages.append(_assistant_tool_message(reply))
                 results: list[dict[str, Any]] = []
                 for call in calls:
+                    name = str(call.get("name", ""))
+                    if journal is not None:
+                        journal.tool_call_start(name=name, index=len(transcript.tool_log))
+                    call_started = time.perf_counter()
                     arguments, parse_error = _parse_arguments(call.get("arguments"))
                     if parse_error:
                         outcome = core.ToolOutcome(text=f"invalid tool arguments: {parse_error}", error=True)
                     else:
-                        outcome = driver.execute(str(call.get("name", "")), arguments)
+                        outcome = driver.execute(name, arguments)
+                    if journal is not None:
+                        journal.tool_call_end(
+                            name=name,
+                            ok=not outcome.error,
+                            duration_s=time.perf_counter() - call_started,
+                            error=outcome.error,
+                        )
                     # The endpoint key reaches the model's own tools through the
                     # environment (``echo $DAILYBENCH_API_KEY``, ``cat
                     # $PI_CODING_AGENT_DIR/models.json``). The transcript is a
@@ -805,13 +878,31 @@ class Runner:
                     awaiting = True
 
                 if generated >= total_limit:
-                    if "бюджет генерации" not in " ".join(transcript.extra.get("notes", [])):
-                        transcript.extra.setdefault("notes", []).append(
-                            f"бюджет генерации исчерпан ({total_limit})"
-                        )
-                    break
+                    # Same rule as the loop top: a spent budget right after a
+                    # tool batch used to ``break`` silently, and the row was
+                    # then graded as a plain wrong answer although the tool
+                    # results never reached the model. Only another scenario
+                    # message justifies a request here — the answer to the
+                    # batch alone does not, so the batch ends as exhausted.
+                    keep_going, overrun = self._spent_budget(
+                        transcript, total_limit, can_present=bool(followups), overrun=overrun
+                    )
+                    if not keep_going:
+                        break
         except ProviderError as exc:
             transcript.error = str(exc)
+            partial = getattr(exc, "partial", None)
+            if partial is not None:
+                # The stream died mid-generation: what arrived was generated and
+                # paid for, so it is recorded as a turn (and its usage) instead
+                # of vanishing with the error. Its ``finish_reason`` is None.
+                transcript.turns.append(
+                    core.Turn(messages=_copy_messages(messages), reply=partial)
+                )
+                if isinstance(partial.raw.get("wire"), dict):
+                    transcript.extra.setdefault("wire", {}).update(partial.raw["wire"])
+                if partial.generated_tokens is None:
+                    usage_missing = True
             if getattr(exc, "infra", True):
                 transcript.extra["infra_error"] = True
                 text = str(exc)
@@ -877,6 +968,7 @@ class Runner:
         transcript: core.Transcript,
         work_dir: Path,
         sandbox: isolation.Sandbox | None = None,
+        journal: telemetry.Telemetry | None = None,
     ) -> None:
         """Hand the task to ``pi`` in its working copy and record what happened.
 
@@ -914,12 +1006,18 @@ class Runner:
             # the digest is checkable against the file afterwards.
             settings = agent.settings_pin(agent_dir)
             prompt = agent.prompt_for(task)
+            if task.system:
+                # ``pi`` has one prompt and no system channel: the scenario's
+                # own system text leads it instead of being dropped.
+                prompt = f"{task.system.rstrip()}\n\n{prompt}"
             run = agent.run(prompt, work_dir, self.cfg, agent_dir=agent_dir, sandbox=sandbox)
         except Exception as exc:  # pragma: no cover - environment dependent
             transcript.error = f"{type(exc).__name__}: {exc}"
             transcript.extra["failure"] = "evaluator_failure"
             transcript.duration_s = time.perf_counter() - started
             return
+        if journal is not None:
+            run.replay_telemetry(journal)
         if sandbox is not None:
             transcript.extra["sandbox"] = sandbox.record()
             transcript.extra["sandbox"]["endpoint_rewritten_by_harness"] = rewritten
@@ -949,6 +1047,7 @@ class Runner:
             transcript.extra["failure"] = run.failure or "model_failure"
 
     def _score(self, task: core.TaskInstance, transcript: core.Transcript) -> core.Score:
+        journal = telemetry.active()
         module = core.REGISTRY.get(task.category)
         if module is None:
             return core.Score(
@@ -958,9 +1057,14 @@ class Runner:
                 failure="evaluator_failure",
                 max_points=task.max_points,
             )
+        if journal is not None:
+            journal.evaluator_start(category=task.category)
+        started = time.perf_counter()
+        ok = True
         try:
             score = module.evaluate(task, transcript)
         except Exception as exc:
+            ok = False
             # An evaluator crash must not remove the task from the
             # denominator: the model still failed to earn these points.
             score = core.Score(
@@ -971,6 +1075,10 @@ class Runner:
             )
             score.add("evaluator", False, task.max_points,
                       f"оценка не выполнена: {type(exc).__name__}: {exc}")
+        if journal is not None:
+            journal.evaluator_end(
+                ok=ok, duration_s=time.perf_counter() - started, error=score.error
+            )
         # Single point where the harness owns the denominator: an evaluator
         # cannot widen ``possible`` by adding a penalty check, and a profile's
         # re-split budget is enforced here rather than in every module.
@@ -1118,6 +1226,18 @@ class RunResult:
         # tasks.json goes after scores.json: an interruption between them is
         # exactly the mixed checkpoint the generation manifest has to survive.
         files["tasks.json"] = dump(entries)
+        measured = [
+            run.transcript.telemetry
+            for run in self.runs
+            if run.transcript.telemetry is not None
+        ]
+        if measured:
+            files["telemetry/index.json"] = dump(measured)
+            for run in self.runs:
+                if run.telemetry is not None:
+                    files[f"telemetry/{run.task.id.replace('/', '_')}.jsonl"] = (
+                        run.telemetry.to_jsonl()
+                    )
         for entry, run in zip(entries, self.runs):
             files[f"transcripts/{run.task.id.replace('/', '_')}.json"] = dump(entry)
         generation.commit(

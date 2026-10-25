@@ -14,6 +14,14 @@
  * Для записи наружу выставлены `window.__dbscene.seek(n)` (ручной прогон до
  * шага n; назад не ходит) и сообщения `step|pause|play|reset`.
  *
+ * СЕТКА И ЗАНАВЕС. С `?dbstage=1` страница становится не сценой, а кадром из
+ * равных полос (`lanes`, по умолчанию 2 × 960 px). Каждая полоса - iframe с
+ * той же страницей (`dbstage=0`), со своим замером и своим seek. Внешний
+ * драйвер раскладывает полосы по раскадровке `curtain.js`: на своём ходу
+ * полоса выезжает на весь кадр за `curtain` секунд, стоит клип и уходит
+ * обратно. Поэтому кадр клипа = кадр раскадровки, и `seek(n)` ведёт сразу и
+ * геометрию, и обе полосы. Без `dbstage` поведение прежнее: одна сцена.
+ *
  * ВАЖНО: страница, которая перерисовывает кадр только в `__probe()`, без
  * драйвера стоит «как скриншот» - драйвер оборачивает `WebGLRenderer` и
  * перерисовывает сцену после каждого шага.
@@ -135,6 +143,111 @@
   // чтобы не отбирать его у страницы.
   window.__dbscene = scene;
   window.__beat = beat;
+
+  // --- занавес и две полосы ------------------------------------------------
+  // Сцена-полоса меряет собственное окно (ниже), а страница-сетка только
+  // раскладывает полосы и выезжает нужной на весь кадр по раскадровке.
+  const stage = {config: null, el: null, lanes: [], turns: []};
+  const stageFacing = () => {
+    const query = new URLSearchParams(location.search);
+    if (query.get('dbstage') !== '1') return null;
+    if (!window.__dbcurtain) return null;
+    const number = (key, fallback) => Number(query.get(key) ?? fallback);
+    const order = (query.get('order') || '')
+      .split(',').filter((part) => part !== '').map(Number);
+    // Раскадровка считает в кадрах: секунды из URL переводим и округляем.
+    const fps = number('fps', 120);
+    const config = {
+      fps, secs: Math.round(number('secs', 23) * fps),
+      open: Math.round(number('open', 20) * fps), lanes: number('lanes', 2),
+      width: number('width', window.innerWidth), height: number('height', window.innerHeight),
+      lead: Math.round(number('lead', 1.5) * fps),
+      curtain: Math.round(number('curtain', 0.75) * fps),
+      order: order.length ? order : undefined,
+      clips: (query.get('clips') || '').split(',').filter(Boolean),
+      frames: number('frames', 1),
+    };
+    try { return window.__dbcurtain.validate(config); } catch (e) {
+      console.warn('dbstage: ' + e.message);
+      return null;
+    }
+  };
+  const mountStage = (config) => {
+    stage.config = config;
+    stage.turns = window.__dbcurtain.build(config);
+    const rest = config.width / config.lanes;
+    stage.el = document.createElement('div');
+    stage.el.id = 'dbstage';
+    stage.el.style.cssText = 'position:fixed;inset:0;overflow:hidden;background:#05080f';
+    for (let index = 0; index < config.lanes; index++) {
+      const lane = document.createElement('div');
+      lane.className = 'db-lane';
+      lane.style.cssText = 'position:absolute;top:0;left:0;height:100%;'
+        + `width:${rest}px;transform:translateX(${index * rest}px);will-change:transform,width`;
+      const frame = document.createElement('iframe');
+      frame.style.cssText = 'display:block;width:100%;height:100%;border:0';
+      const own = new URLSearchParams(location.search);
+      own.set('dbstage', '0');
+      own.set('lane', String(index));
+      const query = own.toString();
+      frame.src = location.pathname + (query ? '?' + query : '') + location.hash;
+      lane.appendChild(frame);
+      stage.el.appendChild(lane);
+      stage.lanes.push(lane);
+    }
+    document.body.appendChild(stage.el);
+    scene.mode = 'staged';
+    // Внешнее окно движения - длина клипа: рекордер ведёт кадр клипа напрямую.
+    scene.freeze = config.frames - 1;
+    scene.storyboard = () => stage.turns.slice();
+    scene.seek = (n) => {
+      auto = false;
+      const frame = Math.max(0, Math.min(config.frames - 1, n | 0));
+      const state = window.__dbcurtain.frameState(stage.turns, frame, config);
+      stage.lanes.forEach((lane, index) => {
+        const open = index === state.lane;
+        lane.style.zIndex = String(open ? 30 : 1 + index);
+        lane.style.width = (open ? state.width : rest) + 'px';
+        lane.style.transform = 'translateX(' + (open ? state.x : index * rest) + 'px)';
+      });
+      // Полосы идут своим ходом всё время. Автоплей стоит с момента готовности,
+      // поэтому seek не упирается в уже пройденные шаги: считаем от базы полосы.
+      const progress = config.frames > 1 ? frame / (config.frames - 1) : 1;
+      stage.lanes.forEach((lane) => {
+        const inner = lane.firstChild && lane.firstChild.contentWindow;
+        const drive = inner && inner.__dbscene;
+        if (!drive || !drive.seek) return;
+        if (lane.dbBase === undefined) {
+          inner.postMessage('pause', '*');
+          lane.dbBase = drive.step | 0;
+        }
+        const own = drive.freeze | 0;
+        const span = Math.max(0, own - lane.dbBase);
+        drive.seek(lane.dbBase + Math.round(progress * span));
+      });
+      shown = frame;
+      scene.step = frame;
+      return frame;
+    };
+    const laneReady = () => stage.lanes.every((lane) => {
+      const inner = lane.firstChild && lane.firstChild.contentWindow;
+      const drive = inner && inner.__dbscene;
+      if (!drive || drive.mode === 'measuring') return false;
+      // Автоплей гасим сразу: иначе до первого seek полоса уходит вперёд.
+      if (lane.dbBase === undefined) {
+        inner.postMessage('pause', '*');
+        lane.dbBase = drive.step | 0;
+      }
+      return true;
+    });
+    const waitLanes = () => {
+      if (laneReady()) { window.__ready = true; return; }
+      requestAnimationFrame(waitLanes);
+    };
+    window.__ready = false;
+    waitLanes();
+  };
+
   const publish = () => {
     scene.mode = phase;
     scene.freeze = freeze;
@@ -149,6 +262,8 @@
     };
   };
   publish();
+  const staged = stageFacing();
+  if (staged) mountStage(staged);
 
   const play = () => {
     const cache = got();
@@ -178,7 +293,10 @@
     requestAnimationFrame(tick);
   };
 
-  if (got() === null) {
+  if (staged) {
+    // Сетка не играет сама: кадры двигает рекордер через seek, полосы - свои
+    // маленькие драйверы. Замер и автоплей остаются полосам.
+  } else if (got() === null) {
     // Первый заход: дождаться кадра страницы, измерить окно и перезагрузиться -
     // показ пойдёт с чистого состояния, замер уже в кэше.
     const t0 = performance.now();

@@ -46,6 +46,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import telemetry
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -1322,7 +1324,12 @@ def render(
     if not (html or "").strip():
         return RenderResult(ok=False, reason="пустой ответ: рендерить нечего")
 
+    journal = telemetry.active()
+    stage = "navigation" if mode == "live" else "hook"
     started = time.time()
+    stage_started = time.monotonic()
+    if journal is not None:
+        journal.browser_stage(stage, status="start")
     try:
         _ensure_worker()
     except Exception as exc:
@@ -1355,7 +1362,10 @@ def render(
         _kill_worker()
         # The navigation timeout is only a part of the budget, so the reason
         # names the whole render deadline; the stage is kept separately.
-        stage = "navigation" if mode == "live" else "hook"
+        if journal is not None:
+            journal.browser_stage(
+                stage, status="timeout", duration_s=time.monotonic() - stage_started
+            )
         return RenderResult(
             ok=False,
             errors=[f"{stage}: TimeoutError: дедлайн рендера {timeout_ms} мс исчерпан"],
@@ -1364,6 +1374,12 @@ def render(
             duration_s=time.time() - started,
         )
     result.duration_s = time.time() - started
+    if journal is not None:
+        journal.browser_stage(
+            "render",
+            status="ok" if result.ok else "error",
+            duration_s=time.monotonic() - stage_started,
+        )
     return result
 
 

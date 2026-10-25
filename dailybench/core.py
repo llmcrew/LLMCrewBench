@@ -391,7 +391,9 @@ class TaskInstance:
 
     system: str | None = None
     """Extra system text. Normally ``None`` — the run uses the model's own
-    chat template plus the minimal neutral instruction from ``runner``."""
+    chat template plus the minimal neutral instruction from ``runner``. When
+    set, the runner sends it as its own additional system message and it is
+    part of the suite digest."""
 
     workspace: dict[str, str] | None = None
     """Files materialised before the task runs (coding repos, tool fixtures)."""
@@ -475,26 +477,69 @@ class ModelReply:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     reasoning_tokens: int | None = None
+    cached_tokens: int | None = None
+    """Prompt tokens the runtime served from its prefix cache, when reported."""
     ttft_s: float | None = None
     total_s: float | None = None
     finish_reason: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
-    def generated_tokens(self) -> int | None:
-        """Total generated tokens as the runtime counts them.
+    def tokens(self) -> "TokenSplit":
+        """Answer/reasoning/total of this reply, see ``split_tokens``."""
+        return split_tokens(self)
 
-        OpenAI-compatible usage includes reasoning in ``completion_tokens``
-        and exposes the reasoning share in ``completion_tokens_details``:
-        adding them on top double-counts (170 instead of the reported 100).
-        Backends that exclude reasoning from completion are recognised by
-        ``completion < reasoning`` and summed instead.
-        """
-        if self.completion_tokens is None:
-            return None
-        if self.reasoning_tokens is None or self.reasoning_tokens <= self.completion_tokens:
-            return self.completion_tokens
-        return self.completion_tokens + self.reasoning_tokens
+    @property
+    def generated_tokens(self) -> int | None:
+        """Total generated tokens as the runtime counts them."""
+        return self.tokens.total
+
+
+#: ``TokenSplit.source`` values. The relationship between completion and
+#: reasoning is guessed for ``estimated`` and unknown for ``unknown``.
+REPORTED = "reported"
+SEPARATE = "separate"
+ESTIMATED = "estimated"
+UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class TokenSplit:
+    """One reply's generated tokens, split without counting reasoning twice.
+
+    ``answer`` and ``reasoning`` never overlap and ``total`` is the number the
+    runtime counts, so ``answer + reasoning`` may differ from ``total`` when
+    the reasoning share was estimated.
+    """
+
+    answer: int | None
+    reasoning: int | None
+    total: int | None
+    source: str = UNKNOWN
+
+
+def split_tokens(reply: ModelReply) -> TokenSplit:
+    """Decompose one reply into visible answer and reasoning.
+
+    OpenAI-compatible usage already includes reasoning in ``completion_tokens``
+    and reports the share separately: the answer is the subtraction (170 total
+    is 100 answer + 70 reasoning, not 240). A backend that excludes reasoning is
+    recognised by ``reasoning > completion`` and the two are added instead.
+
+    Without ``reasoning_tokens`` the reasoning is estimated from its text and
+    **not** subtracted: ``answer = completion`` is what the runtime measured,
+    the estimate only marks the share and must not shrink a measured total.
+    """
+    completion = reply.completion_tokens
+    if completion is None:
+        return TokenSplit(None, reply.reasoning_tokens, None, UNKNOWN)
+    reasoning = reply.reasoning_tokens
+    if reasoning is not None and reasoning > completion:
+        return TokenSplit(completion, reasoning, completion + reasoning, SEPARATE)
+    if reasoning is not None:
+        return TokenSplit(max(0, completion - reasoning), reasoning, completion, REPORTED)
+    estimate = len(reply.reasoning or "") // 3
+    return TokenSplit(completion, estimate, completion, ESTIMATED)
 
 
 @dataclass
@@ -526,6 +571,12 @@ class Transcript:
     """Set when the run itself broke (transport error, budget abort)."""
 
     duration_s: float | None = None
+    telemetry: dict[str, Any] | None = None
+    """Reduced timing/accounting aggregate, ``None`` when none was collected.
+
+    Unknown measurements stay ``None``; the report's unknown shares read that
+    absence instead of a fake zero.
+    """
 
     # -- convenience ------------------------------------------------------- #
 
@@ -580,34 +631,69 @@ class Transcript:
         The run does not cap generation any more: the limit is the window, so
         the numbers below are the honest record of what a model chose to spend
         instead of how much it was allowed to.
+
+        A count that one turn did not report stays ``None`` rather than summing
+        the half that arrived. ``generated_tokens`` is the runtime's own total,
+        so a stand that excludes reasoning from ``completion_tokens`` cannot
+        produce a second, contradictory answer here.
         """
-        answer = think = 0
+        split = [turn.reply.tokens for turn in self.turns]
+        sources = {part.source for part in split}
+        if not split:
+            accounting = UNKNOWN
+        elif sources <= {REPORTED}:
+            accounting = REPORTED
+        elif sources <= {REPORTED, SEPARATE}:
+            accounting = SEPARATE if SEPARATE in sources else REPORTED
+        elif sources <= {ESTIMATED}:
+            accounting = ESTIMATED
+        elif UNKNOWN in sources:
+            accounting = UNKNOWN
+        else:
+            accounting = "mixed"
+
+        answers = [part.answer for part in split]
+        thinkings = [part.reasoning for part in split]
+        totals = [part.total for part in split]
+        answer = sum(answers) if answers and None not in answers else None
+        reasoning = sum(thinkings) if thinkings and None not in thinkings else None
+        generated = sum(totals) if totals and None not in totals else None
+        estimated = any(part.source == ESTIMATED for part in split)
+
+        prompts = [turn.reply.prompt_tokens for turn in self.turns]
+        prompt_total = sum(prompts) if prompts and None not in prompts else None
+        caches = [turn.reply.cached_tokens for turn in self.turns]
+        cached = sum(caches) if caches and None not in caches else None
+
         ttft: float | None = None
         total = 0.0
-        turns_with_tokens = 0
         for turn in self.turns:
-            reply = turn.reply
-            if reply.reasoning_tokens is not None:
-                think += reply.reasoning_tokens
-            else:
-                think += len(reply.reasoning or "") // 3
-            if reply.completion_tokens is not None:
-                turns_with_tokens += 1
-                answer += max(0, reply.completion_tokens - (reply.reasoning_tokens or 0))
-            total += reply.total_s or 0.0
-            if ttft is None and reply.ttft_s is not None:
-                ttft = reply.ttft_s
+            total += turn.reply.total_s or 0.0
+            if ttft is None and turn.reply.ttft_s is not None:
+                ttft = turn.reply.ttft_s
         return {
             "turns": len(self.turns),
             "tool_calls": len(self.tool_log),
             "prompt_tokens_last": self.prompt_tokens(),
-            "answer_tokens": answer if turns_with_tokens else None,
-            "reasoning_tokens": think if turns_with_tokens or self.turns else None,
+            "prompt_tokens_total": prompt_total,
+            "cached_tokens": cached,
+            "cache_share": (
+                round(cached / prompt_total, 4)
+                if cached is not None and prompt_total
+                else None
+            ),
+            "answer_tokens": answer,
+            "reasoning_tokens": reasoning,
+            "generated_tokens": generated,
+            "token_accounting": accounting,
+            "reasoning_estimated": estimated,
             "answer_chars": sum(len(t.reply.text or "") for t in self.turns),
             "reasoning_chars": sum(len(t.reply.reasoning or "") for t in self.turns),
             "ttft_s": round(ttft, 3) if ttft is not None else None,
             "generate_s": round(total, 3) or None,
-            "tokens_per_s": round((answer + think) / total, 2) if total > 0.5 else None,
+            "tokens_per_s": round(generated / total, 2)
+            if generated is not None and total > 0.5
+            else None,
             "finish_reasons": [t.reply.finish_reason for t in self.turns],
         }
 

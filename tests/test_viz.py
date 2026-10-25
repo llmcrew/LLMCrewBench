@@ -75,7 +75,7 @@ def test_heatmap_cells_are_placed_by_index_and_carry_the_number():
     )
     cells = re.findall(
         r"<g class='hm (\w+)' data-model='([^']+)' data-family='([^']+)' "
-        r"data-pct='([^']*)' data-tasks='(\d+)' data-failed='(\d+)'>",
+        r"data-pct='([^']*)' data-tasks='(\d+)' data-failed='(\d+)'[^>]*>",
         svg,
     )
     assert cells == [("zero", "модель", "det/logic", "20.0", "5", "4"),

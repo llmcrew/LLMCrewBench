@@ -274,18 +274,22 @@ def heatmap(
             pct = cell.get("pct")
             pct = _num(pct) if isinstance(pct, (int, float)) else None
             tasks = int(_num(cell.get("tasks")))
+            # ``measured`` is what the percentage is computed over; ``tasks``
+            # also counts skips. Without it a partly skipped cell read as full
+            # coverage and the skip silently looked like a better result.
+            measured = int(_num(cell.get("measured"))) if "measured" in cell else tasks
             failed = int(_num(cell.get("failed")))
             css = tone(pct)
-            label = (
-                f"{name} · {family}: " + (
-                    f"{pct:.0f}% (провалено {failed} из {tasks})" if pct is not None
-                    else ("не проверялось" if tasks else "нет задач")
-                )
-            )
+            if pct is not None:
+                label = f"{name} · {family}: {pct:.0f}% (провалено {failed} из {measured} проверенных"
+                label += f", всего заданий {tasks})" if measured != tasks else ")"
+            else:
+                label = f"{name} · {family}: " + ("не проверялось" if tasks else "нет задач")
             text = f"{pct:.0f}%" if pct is not None else "—"
             cells.append(
                 f"<g class='hm {css}' data-model='{_esc(name)}' data-family='{_esc(family)}' "
-                f"data-pct='{'' if pct is None else f'{pct:.1f}'}' data-tasks='{tasks}' data-failed='{failed}'>"
+                f"data-pct='{'' if pct is None else f'{pct:.1f}'}' data-tasks='{tasks}' "
+                f"data-failed='{failed}' data-measured='{measured}'>"
                 f"<title>{_esc(label)}</title>"
                 f"<rect x='{x + 1}' y='{y + 1}' width='{cell_w - 2}' height='{cell_h - 2}' rx='4'/>"
                 f"<text x='{x + cell_w / 2:.1f}' y='{y + 19}' text-anchor='middle' font-size='11.5'>"
@@ -797,4 +801,63 @@ def verdict_strip(
     return _figure(
         width=640, height=height, label="Вердикт по цифрам: 3 вывода и 3 риска",
         css="verdict-strip", body=body,
+    )
+
+
+def gutter(value: float | None, maximum: float, *, width: float = 72, height: float = 8) -> str:
+    """A narrow value bar inside a fixed gutter; ``None`` is a dashed void.
+
+    The gutter is a constant width, so a missing measurement does not widen the
+    column and does not change the scale of its neighbours.
+    """
+    if value is None or maximum <= 0:
+        return (
+            f"<rect x='0' y='0' width='{width:g}' height='{height:g}' fill='none' "
+            "stroke='#30363d' stroke-dasharray='2 3' rx='2'/>"
+        )
+    share = max(0.0, min(1.0, _num(value) / maximum))
+    return (
+        f"<rect x='0' y='0' width='{width:g}' height='{height:g}' fill='#161b22' rx='2'/>"
+        f"<rect x='0' y='0' width='{share * width:.2f}' height='{height:g}' fill='#79c0ff' rx='2'/>"
+    )
+
+
+def telemetry_index(rows: Sequence[Mapping[str, Any]], *, width: int = 560) -> str:
+    """Compact per-category telemetry index: TTFT and decode rate gutters.
+
+    Deliberately small — the index is injected between the score tables and the
+    correlation section, and must not push (or inflate) a score row.
+    """
+    if not rows:
+        return _empty("телеметрия не собрана", width=width, height=110)
+    line = 24
+    height = len(rows) * line + 34
+    body = (
+        f"<text x='0' y='12' fill='#8b949e' font-size='11'>TTFT / декод, медианы</text>"
+        f"<text x='{width - 140}' y='12' fill='#8b949e' font-size='11'>неизвестный расход</text>"
+    )
+    ttfts = [float(r["ttft_s"]) for r in rows if r.get("ttft_s") is not None]
+    rates = [float(r["decode_tokens_per_s"]) for r in rows if r.get("decode_tokens_per_s") is not None]
+    ttft_max = max(ttfts, default=0.0)
+    rate_max = max(rates, default=0.0)
+    for number, row in enumerate(rows):
+        y = 24 + number * line
+        unknown = int(row.get("unknown_spend") or 0)
+        body += (
+            f"<g data-category='{_esc(row.get('category'))}' data-n='{row.get('n')}' "
+            f"data-ttft='{_esc(row.get('ttft_s'))}' data-rate='{_esc(row.get('decode_tokens_per_s'))}'>"
+            f"<title>{_esc(row.get('category'))}: n={row.get('n')}, неизвестный расход {unknown}</title>"
+            f"<text x='0' y='{y + 7}' fill='#c9d1d9' font-size='12'>{_esc(row.get('category'))}</text>"
+            f"<g transform='translate(34,{y})'>{gutter(row.get('ttft_s'), ttft_max)}</g>"
+            f"<g transform='translate(116,{y})'>{gutter(row.get('decode_tokens_per_s'), rate_max)}</g>"
+            f"<text x='{width - 140}' y='{y + 7}' fill='{'#e3b341' if unknown else '#8b949e'}' "
+            f"font-size='11'>{unknown}</text>"
+            "</g>"
+        )
+    return _figure(
+        width=width,
+        height=height,
+        label="Индекс телеметрии по категориям",
+        css="telemetry-index",
+        body=body,
     )

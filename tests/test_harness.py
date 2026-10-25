@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import random
+import shutil
 import stat
 import subprocess
 import threading
@@ -146,14 +147,53 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
 
-@pytest.fixture()
-def endpoint():
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+class _CountingTokenizer(BaseHTTPRequestHandler):
+    """A tokenizer whose count depends on the text, not only on its length.
+
+    ``aaaa`` and ``bbbb`` are the same length and must not share a cache entry.
+    """
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):  # silence the test server
+        return
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        content = str(payload.get("prompt") or payload.get("content") or "")
+        self.server.tokenize_calls += 1  # type: ignore[attr-defined]
+        body = json.dumps({"tokens": list(range(max(1, len(content) + 4 * content.count("b"))))}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@contextlib.contextmanager
+def _serve(handler_cls=_Handler):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    server.tokenize_calls = 0  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    yield f"http://127.0.0.1:{server.server_address[1]}/v1", server
-    server.shutdown()
-    server.server_close()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/v1", server
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture()
+def endpoint():
+    with _serve() as served:
+        yield served
+
+
+@pytest.fixture()
+def tokenizer_endpoint():
+    with _serve(_CountingTokenizer) as served:
+        yield served
 
 
 def test_streaming_reply_assembly(endpoint):
@@ -187,6 +227,21 @@ def test_blocking_reply_and_tokenizer(endpoint):
     count = provider.tokenize("abcdefgh")
     assert count == 2  # the stub reports len/4
     assert provider.tokenize("") == 0
+
+
+def test_the_tokenizer_cache_is_keyed_on_the_whole_text(tokenizer_endpoint):
+    """P3: the key was ``len`` plus 32 random bits of ``hash()``.
+
+    Two inputs of the same length could collide and the second one then got the
+    first one's count — an exact-looking number that silently moves the
+    admission decision.
+    """
+    base_url, server = tokenizer_endpoint
+    provider = OpenAICompatibleProvider(base_url=base_url, model="test-model", timeout=10)
+    assert provider.tokenize("aaaa") == 4
+    assert provider.tokenize("bbbb") == 20, "тот же размер, другой текст — свой счёт"
+    assert provider.tokenize("aaaa") == 4
+    assert server.tokenize_calls == 2, "повтор текста берётся из кэша, а не по сети"
 
 
 def test_unreachable_endpoint_raises():
@@ -262,6 +317,43 @@ def test_eof_without_a_finish_marker_is_a_provider_error():
             provider.chat([{"role": "user", "content": "hi"}])
     finally:
         httpstub.stop(server)
+
+
+def test_a_cut_stream_keeps_the_fragments_it_already_produced():
+    """P3: the error used to throw away text, reasoning and usage.
+
+    They were generated (and paid for) before the stream died; only the missing
+    terminal marker makes the reply unusable as a whole.
+    """
+    base_url, server = httpstub.start(finish=False)
+    try:
+        provider = OpenAICompatibleProvider(base_url=base_url, model="test-model", timeout=10)
+        with pytest.raises(ProviderError) as caught:
+            provider.chat([{"role": "user", "content": "hi"}])
+        partial = caught.value.partial
+        assert partial is not None, "частичный ответ обязан ехать вместе с ошибкой"
+        assert partial.text == "ответ"
+        assert partial.reasoning == "думаю "
+        assert partial.finish_reason is None
+    finally:
+        httpstub.stop(server)
+
+
+def test_the_runner_records_the_partial_turn_of_a_cut_stream():
+    """P3: the runner appends the partial reply before classifying the error."""
+    task = _tool_task("T-1")
+    base_url, server = httpstub.start(finish=False)
+    try:
+        provider = OpenAICompatibleProvider(base_url=base_url, model="test-model", timeout=10)
+        run = Runner(RunConfig(), provider).run_task(task)
+    finally:
+        httpstub.stop(server)
+
+    assert run.transcript.error and "finish_reason" in run.transcript.error
+    assert len(run.transcript.turns) == 1
+    assert run.transcript.turns[0].reply.text == "ответ"
+    assert run.transcript.turns[0].reply.finish_reason is None
+    assert run.score.status == "error"
 
 
 def test_an_sse_error_event_is_not_an_empty_reply():
@@ -1671,6 +1763,52 @@ def test_total_budget_stops_before_the_next_request():
     assert "бюджет генерации исчерпан (2)" in run.transcript.extra.get("notes", [])
 
 
+def test_a_budget_spent_on_a_tool_batch_is_exhausted_not_ok():
+    """P3: the post-batch break left the row ``ok`` with no answer at all.
+
+    The tool the last reply asked for still runs, but its result never reaches
+    the model: the row must carry the same ``resource_exhausted`` kind the
+    identical stop gets at the loop top, not a silent wrong answer.
+    """
+    task = _tool_task("T-1")
+    reply = _call(1, "read_file", {"path": "README.md"})
+    reply.completion_tokens = 2
+    provider = ScriptedProvider([reply, core.ModelReply(text="поздно")])
+    cfg = RunConfig()
+    cfg.max_total_tokens = 2
+    run = Runner(cfg, provider).run_task(task)
+
+    assert len(provider.calls) == 1, "ответ к батчу не запрашивается: бюджет уже исчерпан"
+    assert len(run.transcript.tool_log) == 1
+    assert "до ответа" in (run.transcript.error or "")
+    assert run.transcript.extra["failure"] == "resource_exhausted"
+    assert run.score.status == "error"
+    assert core.outcome_of(run.score) == "resource_exhausted"
+
+
+def test_a_pending_dialogue_message_still_overruns_a_spent_budget():
+    """The same rule from the batch: an unshown message is worth the overrun."""
+    task = _tool_task("T-1")
+    task.dialogue = ["Поправка: читай только README."]
+    reply = _call(1, "read_file", {"path": "README.md"})
+    reply.completion_tokens = 2
+    provider = ScriptedProvider(
+        [
+            reply,
+            core.ModelReply(text="готово", completion_tokens=2),
+            core.ModelReply(text="итог", completion_tokens=2),
+        ]
+    )
+    cfg = RunConfig()
+    cfg.max_total_tokens = 2
+    run = Runner(cfg, provider).run_task(task)
+
+    assert len(provider.calls) == 3, "непредъявленная поправка обязана дойти до модели"
+    assert run.transcript.extra["total_budget_overrun"] is True
+    assert run.transcript.error is None
+    assert run.score.status == "ok"
+
+
 def test_a_task_level_deadline_stops_before_the_next_request():
     """P3: ``request_wall_clock`` is per request, so the task needs its own.
 
@@ -2808,6 +2946,90 @@ def test_rescore_records_a_changed_possible_even_without_earned_change(tmp_path:
     assert row["after"]["possible"] == task.max_points
 
 
+def _saved_run(directory: Path, task: core.TaskInstance, **fingerprints: str) -> Path:
+    """A minimal saved run plus its ``suite.json`` row, with optional drift."""
+    from dailybench import suite as suite_module
+
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "config.json").write_text(
+        json.dumps({"model": "stub", "only": [task.id]}), encoding="utf-8"
+    )
+    (directory / "tasks.json").write_text(
+        json.dumps(
+            [
+                {
+                    "task": {"id": task.id, "category": task.category},
+                    "score": {
+                        "task_id": task.id,
+                        "category": task.category,
+                        "max_points": float(task.max_points),
+                        "checks": [{"name": "probe", "passed": False, "detail": "не проверено"}],
+                    },
+                    "transcript": {"turns": []},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    digest = suite_module.suite_digest([task])
+    row = {**digest["per_task"][0], **fingerprints}
+    (directory / "suite.json").write_text(
+        json.dumps({**digest, "per_task": [row]}, default=str), encoding="utf-8"
+    )
+    return directory
+
+
+def test_rescore_keeps_the_old_score_when_the_assets_changed(tmp_path: Path):
+    """P3: a regenerated picture was replayed against an answer that never saw it."""
+    from dailybench.rescore import rescore_run
+
+    task = next(t for t in build_suite(RunConfig(seed=20260915)) if t.id == "IF-1")
+    _saved_run(tmp_path, task, assets_sha256="0" * 64)
+
+    marker = rescore_run(tmp_path)
+    statuses = [str(entry.get("status") or "") for entry in marker["changed"]]
+    assert any("фикстура задания разошлась: assets_sha256" in status for status in statuses)
+    kept = json.loads((tmp_path / "tasks.json").read_text(encoding="utf-8"))[0]["score"]
+    assert [check["name"] for check in kept["checks"]] == ["probe"], "ответ не переигрывался"
+
+
+def test_rescore_records_a_new_oracle_contract_and_replays(tmp_path: Path):
+    """P3: a changed oracle is a new grading contract, not a new fixture.
+
+    The answer was produced against exactly this task, so it must be re-graded —
+    and the re-grade has to be named apart from a fixture drift.
+    """
+    from dailybench.rescore import rescore_run
+
+    task = next(t for t in build_suite(RunConfig(seed=20260915)) if t.id == "IF-1")
+    _saved_run(tmp_path, task, oracle_sha256="0" * 64, evaluator_sha256="1" * 64)
+
+    marker = rescore_run(tmp_path)
+    statuses = [str(entry.get("status") or "") for entry in marker["changed"]]
+    assert any(
+        "переоценено по новому контракту: oracle_sha256, evaluator_sha256" in status
+        for status in statuses
+    )
+    assert not any("фикстура задания разошлась" in status for status in statuses)
+    rescored = json.loads((tmp_path / "tasks.json").read_text(encoding="utf-8"))[0]["score"]
+    assert "probe" not in [check["name"] for check in rescored["checks"]], "ответ переигран"
+
+
+def test_rescore_names_a_task_of_an_unregistered_category(tmp_path: Path, monkeypatch):
+    """P3: the old score is kept, so the marker must say the row was not re-graded."""
+    from dailybench import rescore as rescore_module
+
+    task = next(t for t in build_suite(RunConfig(seed=20260915)) if t.id == "IF-1")
+    _saved_run(tmp_path, task)
+    monkeypatch.setattr(rescore_module, "build_suite", lambda cfg: [task])
+    monkeypatch.delitem(core.REGISTRY, task.category)
+
+    marker = rescore_module.rescore_run(tmp_path)
+    assert marker["changed"] == [{"task_id": "IF-1", "status": "категория не зарегистрирована"}]
+    kept = json.loads((tmp_path / "tasks.json").read_text(encoding="utf-8"))[0]["score"]
+    assert [check["name"] for check in kept["checks"]] == ["probe"]
+
+
 def test_render_and_compare_markdown(tmp_path: Path):
     run = {
         "dir": str(tmp_path),
@@ -3443,6 +3665,42 @@ def test_suite_identity_covers_hidden_tests_and_the_toolchain():
     assert before["evaluator_bundle"]["A"]
 
 
+def test_suite_identity_covers_the_system_text_and_the_meta():
+    """P3: neither the scenario system instruction nor ``meta`` was in the digest.
+
+    A changed instruction was silently kept out of both the fingerprint and the
+    resume, and the runner never sent the text at all.
+    """
+    from dailybench import suite as suite_module
+
+    task = next(t for t in build_suite(RunConfig(seed=20260915)) if t.id == "IF-2")
+    before = suite_module.suite_digest([task])
+
+    task.system = "Отвечай только по-русски."
+    with_system = suite_module.suite_digest([task])
+    assert with_system["sha256"] != before["sha256"]
+    assert with_system["per_task"][0]["system_sha256"] != before["per_task"][0]["system_sha256"]
+
+    task.meta = {**task.meta, "digest_probe": 7}
+    with_meta = suite_module.suite_digest([task])
+    assert with_meta["sha256"] != with_system["sha256"]
+    assert with_meta["per_task"][0]["meta_sha256"] != with_system["per_task"][0]["meta_sha256"]
+
+
+def test_the_scenario_system_text_is_sent_as_a_system_message():
+    """P3: ``TaskInstance.system`` was declared but never reached the request."""
+    task = _tool_task("T-1")
+    task.system = "Сначала прочитай README."
+    provider = ScriptedProvider([core.ModelReply(text="готово", completion_tokens=5)])
+    run = Runner(RunConfig(), provider).run_task(task)
+
+    sent = provider.calls[0]
+    assert [m["role"] for m in sent].count("system") == 2, "конфиг и сценарий — два сообщения"
+    assert sent[1]["content"] == task.system
+    assert sent[-1]["role"] == "user"
+    assert run.score.status == "ok"
+
+
 def test_grading_identity_changes_when_a_hidden_test_changes(monkeypatch):
     """The identity a checkpoint stores must move with the hidden tests."""
     from dailybench.runner import run_identity
@@ -3682,3 +3940,143 @@ def test_a_text_only_endpoint_fails_the_probe_and_the_task_is_skipped():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def _telemetry_reply() -> core.ModelReply:
+    return core.ModelReply(
+        text="ответ",
+        prompt_tokens=40,
+        completion_tokens=9,
+        reasoning_tokens=4,
+        ttft_s=0.01,
+        total_s=0.02,
+        finish_reason="stop",
+    )
+
+
+def test_the_runner_records_a_task_telemetry_journal(tmp_path: Path):
+    """Every request, tool span and the task end land in the journal."""
+    task = _plain_task()
+    run = Runner(RunConfig(), ScriptedProvider([_telemetry_reply()])).run_task(task)
+
+    events = run.telemetry.events()
+    kinds = [row["event"] for row in events]
+    assert kinds[0] == "attempt_start"
+    assert "request_sent" in kinds
+    assert "first_token" in kinds
+    assert "usage" in kinds
+    assert kinds[-1] == "task_end"
+    assert kinds.count("evaluator_start") == 1
+    assert run.transcript.telemetry["answer_tokens"] == 5
+    assert run.transcript.telemetry["reasoning_tokens"] == 4
+
+    path = run.telemetry.save(tmp_path)
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [row["seq"] for row in rows] == list(range(1, len(rows) + 1))
+    assert all(row["task_id"] == task.id for row in rows)
+
+
+def test_the_saved_run_index_carries_the_telemetry_aggregate(tmp_path: Path):
+    from dailybench.report import load_run
+    from dailybench.runner import RunResult
+
+    task = _plain_task()
+    run = Runner(RunConfig(), ScriptedProvider([_telemetry_reply()])).run_task(task)
+    cfg = RunConfig(out_dir=tmp_path / "run")
+    result = RunResult(cfg, runs=[run], suite_digest={"sha256": "x", "per_task": []})
+    out = result.save()
+
+    index = json.loads((out / "telemetry" / "index.json").read_text(encoding="utf-8"))
+    assert index[0]["task_id"] == task.id
+    assert index[0]["answer_tokens"] == 5
+    journal = (out / "telemetry" / f"{task.id}.jsonl").read_text(encoding="utf-8")
+    assert json.loads(journal.splitlines()[-1])["event"] == "task_end"
+
+    # The section is rendered from the committed directory, not from a dict
+    # injected by the test: a reader only ever sees what ``load_run`` serves.
+    loaded = load_run(out)
+    assert loaded["telemetry"] == index
+    markdown = render_markdown(loaded)
+    assert "Телеметрия и корреляции" in markdown
+    assert "телеметрия не собрана" not in markdown
+
+
+def test_a_legacy_telemetry_file_is_still_read(tmp_path: Path):
+    from dailybench.report import load_run
+    from dailybench.runner import RunResult
+
+    task = _plain_task()
+    run = Runner(RunConfig(), ScriptedProvider([_telemetry_reply()])).run_task(task)
+    cfg = RunConfig(out_dir=tmp_path / "run")
+    out = RunResult(cfg, runs=[run], suite_digest={"sha256": "x", "per_task": []}).save()
+    legacy = json.loads((out / "telemetry" / "index.json").read_text(encoding="utf-8"))
+    shutil.rmtree(out / "telemetry")
+    (out / "telemetry.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+    assert load_run(out)["telemetry"] == legacy
+
+
+def test_spend_agrees_with_generated_tokens_on_a_separate_reasoning_stand():
+    """``completion`` without reasoning yields one total, not two answers."""
+    reply = core.ModelReply(
+        text="ответ", prompt_tokens=40, completion_tokens=100,
+        reasoning_tokens=150, total_s=2.0,
+    )
+    transcript = core.Transcript(task_id="T-1", category="A", turns=[core.Turn([], reply)])
+
+    spend = transcript.spend()
+    assert spend["answer_tokens"] == 100
+    assert spend["reasoning_tokens"] == 150
+    assert spend["generated_tokens"] == transcript.generated_tokens() == 250
+    assert spend["token_accounting"] == core.SEPARATE
+    assert spend["tokens_per_s"] == 125.0
+
+
+def test_an_estimated_reasoning_share_does_not_shrink_the_answer():
+    """Reasoning text without details is estimated, never subtracted twice."""
+    reply = core.ModelReply(
+        text="ответ", reasoning="думал" * 300, prompt_tokens=40,
+        completion_tokens=100, total_s=2.0,
+    )
+    transcript = core.Transcript(task_id="T-1", category="A", turns=[core.Turn([], reply)])
+
+    spend = transcript.spend()
+    assert spend["answer_tokens"] == 100
+    assert spend["reasoning_tokens"] == len(reply.reasoning) // 3
+    assert spend["generated_tokens"] == 100
+    assert spend["token_accounting"] == core.ESTIMATED
+    assert spend["reasoning_estimated"] is True
+
+
+def test_spend_records_the_prompt_total_and_the_cache_share():
+    reply = core.ModelReply(
+        text="ответ", prompt_tokens=1000, completion_tokens=10,
+        reasoning_tokens=0, cached_tokens=600, total_s=1.0,
+    )
+    later = core.ModelReply(
+        text="ещё", prompt_tokens=1200, completion_tokens=5,
+        reasoning_tokens=0, cached_tokens=900, total_s=1.0,
+    )
+    transcript = core.Transcript(
+        task_id="T-1", category="A",
+        turns=[core.Turn([], reply), core.Turn([], later)],
+    )
+
+    spend = transcript.spend()
+    assert spend["prompt_tokens_total"] == 2200
+    assert spend["prompt_tokens_last"] == 1200
+    assert spend["cached_tokens"] == 1500
+    assert spend["cache_share"] == round(1500 / 2200, 4)
+
+
+def test_an_unknown_usage_leaves_spend_unknown_not_zero():
+    reply = core.ModelReply(text="ответ", total_s=1.0)
+    transcript = core.Transcript(task_id="T-1", category="A", turns=[core.Turn([], reply)])
+
+    spend = transcript.spend()
+    assert spend["answer_tokens"] is None
+    assert spend["reasoning_tokens"] is None
+    assert spend["generated_tokens"] is None
+    assert spend["tokens_per_s"] is None
+    assert spend["token_accounting"] == core.UNKNOWN
+    assert spend["prompt_tokens_total"] is None

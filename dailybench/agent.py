@@ -468,6 +468,52 @@ class AgentRun:
     #: One row per compaction the agent performed: reason and before/after size.
     compactions: list[dict[str, Any]] = field(default_factory=list)
 
+    def replay_telemetry(self, journal: Any) -> None:
+        """Replay the event stream into the task journal.
+
+        The agent owns its loop, so the stream is the only trace of when a
+        request started, when the first token came and how long a tool ran.
+        ``pi`` timestamps nothing, so the gaps between preparation and send are
+        marked unknown; order, TTFT (``ttftMs``) and usage are exact.
+        """
+        pending: dict[str, float] = {}
+        for event in self.events:
+            kind = event.get("type")
+            if kind == "message_start":
+                journal.attempt_start(reason="agent", queue_known=False)
+                journal.request_sent(reason="agent")
+            elif kind == "message_end":
+                message = event.get("message") or {}
+                if message.get("role") != "assistant":
+                    continue
+                usage = message.get("usage") or {}
+                ttft = message.get("ttftMs")
+                journal.first_token(
+                    ttft_s=(float(ttft) / 1000.0) if isinstance(ttft, (int, float)) else None
+                )
+                journal.usage(
+                    prompt_tokens=usage.get("input") if isinstance(usage.get("input"), int) else None,
+                    completion_tokens=(
+                        usage.get("output") if isinstance(usage.get("output"), int) else None
+                    ),
+                    reasoning_tokens=(
+                        usage.get("reasoning") if isinstance(usage.get("reasoning"), int) else None
+                    ),
+                    exact=isinstance(usage.get("output"), int),
+                )
+            elif kind == "tool_execution_start":
+                pending[str(event.get("toolCallId"))] = time.perf_counter()
+                journal.tool_call_start(name=str(event.get("toolName") or ""))
+            elif kind == "tool_execution_end":
+                name = str(event.get("toolName") or "")
+                started = pending.pop(str(event.get("toolCallId")), None)
+                journal.tool_call_end(
+                    name=name,
+                    ok=not bool(event.get("isError")),
+                    duration_s=(time.perf_counter() - started) if started else None,
+                    error=bool(event.get("isError")),
+                )
+
     def as_extra(self, secret: str | None = None) -> dict[str, Any]:
         """The provenance blob a report reads: how the agent was driven.
 

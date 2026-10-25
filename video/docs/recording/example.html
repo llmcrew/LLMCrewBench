@@ -10,6 +10,8 @@
 <canvas id="c" width="800" height="600"></canvas>
 <script>
 // Минимальная сцена под контракт: __ready, __step, __probe.
+// Сетку и занавес сцена не знает: драйвер приходит с ?dbstage=1 и сам
+// раскладывает полосы по раскадровке curtain.js.
 // Движение детерминировано: шаг - чистая функция от состояния.
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');

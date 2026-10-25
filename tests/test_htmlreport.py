@@ -879,3 +879,208 @@ def test_legacy_failure_names_keep_their_label_and_gate(tmp_path: Path):
     assert "инфраструктура недоступна" in page
     assert "не ранжируется" in page
     assert page.index("data-model='чистая'") < page.index("data-model='старая'")
+
+
+def test_unknown_spend_renders_as_not_measured_not_zero(tmp_path: Path):
+    """An endpoint without usage must not read as a free, instant run."""
+    directory = _run(tmp_path, "run-a")
+    tasks = json.loads((directory / "tasks.json").read_text(encoding="utf-8"))
+    for entry in tasks:
+        if entry["task"]["id"] == "K-1":
+            entry["transcript"]["spend"] = {
+                "answer_tokens": None, "reasoning_tokens": None,
+                "generate_s": None, "tool_calls": 1,
+            }
+    (directory / "tasks.json").write_text(json.dumps(tasks, ensure_ascii=False), encoding="utf-8")
+
+    page = render_html([directory])
+    assert "токенов: <b>н/п</b>" in page
+    assert "(н/п у 1 из 1)" in page
+    assert "балл/мин <b>н/п</b>" in page
+    assert "<td class='num small'>н/п</td>" in page
+    assert '"per_min": null' in page
+    # Не 10^11: без известного времени балл за минуту не печатается числом.
+    assert "токенов: <b>0K</b>" not in page
+
+
+# --------------------------------------------------------------------------- #
+# Paired delta, baseline identity, rank denominator and heatmap cover (P1-P3)
+# --------------------------------------------------------------------------- #
+
+
+def _run_with(
+    tmp_path: Path,
+    name: str,
+    model: str,
+    rows: list[tuple[str, float, float]],
+    sha: str = "sha-pair",
+) -> Path:
+    """A run with explicit ``(category, earned, possible)`` score rows."""
+    directory = tmp_path / name
+    directory.mkdir(parents=True)
+    scores = [
+        {"task_id": f"{category}-{index}", "category": category,
+         "earned": earned, "possible": possible, "checks": []}
+        for index, (category, earned, possible) in enumerate(rows)
+    ]
+    (directory / "scores.json").write_text(json.dumps(scores), encoding="utf-8")
+    (directory / "config.json").write_text(json.dumps({"model": model}), encoding="utf-8")
+    (directory / "suite.json").write_text(json.dumps({
+        "tasks": len(rows), "sha256": sha,
+        "per_task": [{"id": score["task_id"], "category": score["category"],
+                      "max_points": score["possible"]} for score in scores],
+    }), encoding="utf-8")
+    return directory
+
+
+def _append_scores(directory: Path, rows: list[tuple[str, float, float]]) -> None:
+    path = directory / "scores.json"
+    scores = json.loads(path.read_text(encoding="utf-8"))
+    for offset, (category, earned, possible) in enumerate(rows):
+        scores.append({"task_id": f"{category}-x{offset}", "category": category,
+                       "earned": earned, "possible": possible, "checks": []})
+    path.write_text(json.dumps(scores), encoding="utf-8")
+
+
+def _comparison_row(page: str, model: str) -> str:
+    """The row of one model in the paired-comparison table."""
+    block = page.split("Парное сравнение: разность и её интервал")[1].split("</table>")[0]
+    return re.search(rf"<tr><td class='model'>{re.escape(model)}</td>.*?</tr>", block, re.S).group(0)
+
+
+def test_the_compare_delta_is_paired_and_lies_inside_its_interval(tmp_path: Path):
+    """Δ must belong to the sample the interval is built from."""
+    base = _run_with(tmp_path, "run-a", "база", [("A", 9.5, 10.0)] * 40)
+    other = _run_with(tmp_path, "run-b", "другая", [("A", 10.0, 10.0)] * 40)
+    _append_scores(base, [("A", 0.0, 10.0)] * 40)   # база мерила больше и провалила
+    page = render_html([base, other])
+
+    row = _comparison_row(page, "другая")
+    cells = re.findall(r"<td class='num[^']*'>(.*?)</td>", row)
+    delta = float(cells[0])
+    band = re.match(r"([+-][\d.]+) … ([+-][\d.]+)", cells[1])
+    assert band and float(band.group(1)) <= delta <= float(band.group(2)), cells[:2]
+    assert delta == pytest.approx(-5.0)             # не предельные 47.5 − 100
+    assert cells[2] == "47.5" and cells[3] == "100.0"   # предельные доли отдельно
+
+
+def test_the_comparison_baseline_is_the_first_caller_run(tmp_path: Path):
+    """comparison.md uses the caller's first run; HTML must use the same one."""
+    weak = _run_with(tmp_path, "run-a", "первая", [("A", 5.0, 10.0)] * 20)
+    strong = _run_with(tmp_path, "run-b", "вторая", [("A", 10.0, 10.0)] * 20)
+    page = render_html([weak, strong])
+    assert "База — <b>первая</b>" in page
+    assert "<td class='num'>-50.00</td>" in _comparison_row(page, "вторая")
+    # ...хотя ранг всё равно ставит вторую выше.
+    ranked = page.split("Парное сравнение")[0]
+    assert ranked.index("data-model='вторая'") < ranked.index("data-model='первая'")
+
+
+def test_a_comparison_without_shared_tasks_prints_n_a(tmp_path: Path):
+    first = _run_with(tmp_path, "run-a", "первая", [("A", 10.0, 10.0)] * 3)
+    second = _run_with(tmp_path, "run-b", "вторая", [("B", 10.0, 10.0)] * 3)
+    page = render_html([first, second])
+    row = _comparison_row(page, "вторая")
+    assert "<td class='num'>n/a</td><td class='num'>n/a</td>" in row
+    assert "<td class='num'>n/a</td>" in row        # и «Общих задач»
+
+
+def test_an_incomplete_run_is_unranked_in_the_paired_table(tmp_path: Path):
+    base = _run_with(tmp_path, "run-a", "полная", [("A", 10.0, 10.0)] * 20)
+    broken = _run_with(tmp_path, "run-b", "обрыв", [("A", 0.0, 10.0)] * 20)
+    path = broken / "scores.json"
+    scores = json.loads(path.read_text(encoding="utf-8"))
+    scores[0]["error"] = "обрыв соединения"
+    scores[0]["failure"] = "provider_unavailable"
+    path.write_text(json.dumps(scores), encoding="utf-8")
+
+    page = render_html([base, broken])
+    row = _comparison_row(page, "обрыв")
+    # Полосы у пары сильные, но вердикт не выносится.
+    assert "не ранжируется: инфраструктура" in row
+    assert ">незначимо<" not in row and ">значимо<" not in row
+
+
+def test_a_run_of_another_contract_is_unranked_in_the_paired_table(tmp_path: Path):
+    first = _run_with(tmp_path, "run-a", "первая", [("A", 10.0, 10.0)] * 20, sha="aaa")
+    second = _run_with(tmp_path, "run-b", "чужая", [("A", 5.0, 10.0)] * 20, sha="bbb")
+    page = render_html([first, second])
+    row = _comparison_row(page, "чужая")
+    assert "не ранжируется: другой контракт сьюта" in row
+    assert ">значимо<" not in row
+
+
+def test_the_rank_counts_earned_points_against_the_profile_denominator(tmp_path: Path):
+    """85/90 must not outrank 92/100 by its smaller denominator."""
+    more = _run_with(tmp_path, "run-a", "92 из 100", [("A", 1.0, 1.0)] * 92 + [("A", 0.0, 1.0)] * 8)
+    fewer = _run_with(tmp_path, "run-b", "85 из 90", [("A", 1.0, 1.0)] * 85 + [("A", 0.0, 1.0)] * 5)
+    page = render_html([more, fewer])
+    ranked = page.split("Парное сравнение")[0]
+    assert ranked.index("data-model='92 из 100'") < ranked.index("data-model='85 из 90'")
+    assert re.search(r"data-model='92 из 100'><div class='rank'>1<", page)
+
+
+def test_the_place_restarts_in_each_contract(tmp_path: Path):
+    page = render_html([
+        _run_with(tmp_path, "run-1", "а1", [("A", 1.0, 1.0)] * 10, sha="aaa"),
+        _run_with(tmp_path, "run-2", "а2", [("A", 1.0, 1.0)] * 5 + [("A", 0.0, 1.0)] * 5, sha="aaa"),
+        _run_with(tmp_path, "run-3", "б1", [("A", 1.0, 1.0)] * 8, sha="bbb"),
+        _run_with(tmp_path, "run-4", "б2", [("A", 1.0, 1.0)] * 2, sha="bbb"),
+    ])
+    sections = page.split("Сравнение по контракту")
+    assert len(sections) == 3
+    for section in sections[1:]:
+        assert "<div class='rank'>1<" in section
+        assert "<div class='rank'>3<" not in section
+
+
+def test_a_failed_admission_sorts_after_the_admitted_runs(tmp_path: Path):
+    """Its own headline denominator (90) is smaller, not better."""
+    admitted = _run_with(tmp_path, "run-a", "допущенная",
+                         [("A", 1.0, 1.0)] * 95 + [("A", 0.0, 1.0)] * 5)
+    short = _run_with(tmp_path, "run-b", "недопущенная", [("A", 1.0, 1.0)] * 90)
+    path = short / "scores.json"
+    scores = json.loads(path.read_text(encoding="utf-8"))
+    scores.append({"task_id": "E-1", "category": "E", "earned": 0.0, "possible": 10.0,
+                   "admission": False, "checks": []})
+    path.write_text(json.dumps(scores), encoding="utf-8")
+
+    page = render_html([short, admitted])
+    ranked = page.split("Парное сравнение")[0]
+    assert ranked.index("data-model='допущенная'") < ranked.index("data-model='недопущенная'")
+    assert re.search(r"data-model='недопущенная'><div class='rank'>2<", page)
+
+
+def test_the_heatmap_counts_measured_tasks_apart_from_skips(tmp_path: Path):
+    """A skip must not be reported as a task behind the percentage."""
+    first = _run(tmp_path, "run-a", model="измеряющая")
+    second = _run(tmp_path, "run-b", model="вторая")
+
+    def cell(page: str) -> str:
+        return re.search(
+            r"<g class='hm [^']*' data-model='измеряющая' data-family='det/logic'[^>]*>", page
+        ).group(0)
+
+    before = cell(render_html([first, second]))
+    assert "data-measured='1'" in before and "data-tasks='1'" in before
+
+    _append_scores(first, [("A", 0.0, 10.0)])
+    scores = json.loads((first / "scores.json").read_text(encoding="utf-8"))
+    scores[-1]["skipped"] = "нет времени"
+    (first / "scores.json").write_text(json.dumps(scores), encoding="utf-8")
+
+    after = cell(render_html([first, second]))
+    assert "data-pct='100.0'" in after           # skip не улучшил ячейку...
+    assert "data-measured='1'" in after          # ...а измерено по-прежнему одно
+    assert "data-tasks='2'" in after             # всего заданий видно
+
+
+def test_the_weight_table_marks_unmeasured_weight(tmp_path: Path):
+    """An unmeasured category keeps its weight instead of becoming a free pass."""
+    left = _run_with(tmp_path, "run-a", "только-A", [("A", 1.0, 1.0)] * 5)
+    right = _run_with(tmp_path, "run-b", "A-и-B",
+                      [("A", 0.5, 1.0)] * 5 + [("B", 1.0, 1.0)] * 5)
+    page = render_html([left, right])
+    published = page.split("Чувствительность к весам")[1].split("</tr>")[1]
+    assert "не измерено 90% веса" in published
+    assert ">right<" not in published and "right ·" in published

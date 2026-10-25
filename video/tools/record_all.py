@@ -3,8 +3,8 @@
 
 Использование:
   python3 record_all.py [workers] [seconds] [warmup] [--out DIR]
-      [--report-root DIR] [--fps 120] [--crf 16] [--preset medium]
-      [--startup-timeout 180] [--chrome PATH] [--force]
+      [--report-root DIR] [--models FILE] [--fps 120] [--crf 16]
+      [--preset medium] [--startup-timeout 180] [--chrome PATH] [--force]
 
 Запись каждой пары идёт в отдельный временный каталог и заменяет предыдущий
 клип только после успешной записи. `capture_failed` - инфраструктурный сбой:
@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import fleet  # noqa: E402
 import media_status  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,9 +33,9 @@ DEFAULT_REPORT_ROOT = ROOT / "reports" / "comparison-deepseek-1021"
 OUT = VIDEO / "public" / "clips"
 TOOL = Path(__file__).with_name("record_clip.py")
 RUNS = ROOT / "runs"
-SCENES_JSON = VIDEO / "src" / "data" / "scenes.json"
-MODELS = ["deepseek-v4.1-flash-unc-1021", "deepseek-v4.1-flash-unc-1017-1021"]
-SCENES = [row["id"] for row in json.loads(SCENES_JSON.read_text(encoding="utf-8"))]
+#: Флот и сцены - из данных; `--models` подменяет флот моделей.
+MODELS = fleet.model_names()
+SCENES = fleet.scene_ids()
 CACHE_FILE = ".recording.json"
 
 
@@ -53,10 +54,11 @@ def _cache_matches(out_dir: Path, metadata: dict) -> bool:
 
 def _recording_metadata(secs: float, warmup: float, fps: int, crf: int,
                         preset: str, source_root: Path, startup_timeout: float,
-                        chrome: str | None) -> dict:
+                        chrome: str | None, models: list[str] | None = None,
+                        scenes: list[str] | None = None) -> dict:
     sources = {}
-    for model in MODELS:
-        for scene in SCENES:
+    for model in models or MODELS:
+        for scene in scenes or SCENES:
             page = source_page_path(source_root, model, scene)
             sources[f"{model}/{scene}"] = (
                 hashlib.sha256(page.read_bytes()).hexdigest() if page.is_file() else None
@@ -87,6 +89,7 @@ def job(pair: tuple[str, str], secs: float, warmup: float, force: bool = False,
         *, out_dir: Path | None = None, fps: int = 120, crf: int = 16,
         preset: str = "medium", source_root: Path | None = None,
         startup_timeout: float = 180, chrome: str | None = None,
+        models_file: Path | None = None,
         cache_metadata: dict | None = None) -> tuple[str, str, str]:
     model, scene = pair
     out_dir = out_dir or OUT
@@ -120,6 +123,8 @@ def job(pair: tuple[str, str], secs: float, warmup: float, force: bool = False,
         ]
         if chrome:
             command.extend(("--chrome", chrome))
+        if models_file is not None:
+            command.extend(("--models", str(models_file)))
         if force:
             command.append("--force")
         try:
@@ -178,18 +183,11 @@ def job(pair: tuple[str, str], secs: float, warmup: float, force: bool = False,
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-LABELS = {
-    "deepseek-v4.1-flash-unc-1021": "DeepSeek-V4.1-Flash",
-    "deepseek-v4.1-flash-unc-1017-1021": "DeepSeek-V4.1-Flash 1017",
-}
-ACCENTS = {
-    "deepseek-v4.1-flash-unc-1021": "#4cc2ff",
-    "deepseek-v4.1-flash-unc-1017-1021": "#ffb45c",
-}
-
-
 def _write_showcase(out_dir: Path | None = None,
-                    report_root: Path | None = None) -> list[dict]:
+                    report_root: Path | None = None,
+                    models: list[str] | None = None,
+                    model_rows: list[dict] | None = None,
+                    scenes: list[str] | None = None) -> list[dict]:
     """Write the showcase and its clips projection for a completed media tree.
 
     The public tree updates the site's source data as well as public/clips.json.
@@ -197,10 +195,16 @@ def _write_showcase(out_dir: Path | None = None,
     """
     out_dir = out_dir or OUT
     report_root = report_root or DEFAULT_REPORT_ROOT
-    scenes = json.loads(SCENES_JSON.read_text(encoding="utf-8"))
-    status = media_status.scan(out_dir, [sc["id"] for sc in scenes], MODELS, RUNS)
-    for sc in scenes:
-        for model in MODELS:
+    fleet_rows = model_rows or fleet.models()
+    models = models or [row["dir"] for row in fleet_rows]
+    labels = {row["dir"]: row.get("label") for row in fleet_rows}
+    accents = {row["dir"]: row.get("accent") for row in fleet_rows}
+    scene_rows = fleet.scenes() if scenes is None else [
+        {"id": scene, "title": scene, "label": scene} for scene in scenes
+    ]
+    status = media_status.scan(out_dir, [sc["id"] for sc in scene_rows], models, RUNS)
+    for sc in scene_rows:
+        for model in models:
             key = (model, sc["id"])
             if status[key] != "media_missing":
                 continue
@@ -211,16 +215,16 @@ def _write_showcase(out_dir: Path | None = None,
 
     rnd = random.Random(20261005)
     rows = []
-    for sc in scenes:
+    for sc in scene_rows:
         runs = [
             {
                 "model": model,
-                "label": LABELS[model],
+                "label": labels.get(model) or model,
                 "clip": f"clips/{model}__{sc['id']}.mp4",
                 "status": status[(model, sc["id"])],
-                "accent": ACCENTS[model],
+                "accent": accents.get(model) or "#888888",
             }
-            for model in MODELS
+            for model in models
         ]
         available = [index for index, run in enumerate(runs) if run["status"] == "ok"]
         rows.append({
@@ -253,6 +257,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("warmup", nargs="?", type=float, default=0.6)
     parser.add_argument("--out", type=Path, default=OUT, help="каталог клипов в video/out или video/public")
     parser.add_argument("--report-root", type=Path, default=DEFAULT_REPORT_ROOT)
+    parser.add_argument("--models", type=Path, help="свой models.json вместо src/data/models.json")
     parser.add_argument("--fps", type=int, default=120)
     parser.add_argument("--crf", type=int, default=16)
     parser.add_argument("--preset", default="medium")
@@ -281,11 +286,14 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     report_root = args.report_root.expanduser().resolve()
+    fleet_rows = fleet.models(args.models)
+    models = [row["dir"] for row in fleet_rows]
+    scenes = fleet.scene_ids()
     out_dir.mkdir(parents=True, exist_ok=True)
     metadata = _recording_metadata(args.secs, args.warmup, args.fps, args.crf,
                                    args.preset, report_root, args.startup_timeout,
-                                   args.chrome)
-    pairs = [(model, scene) for scene in SCENES for model in MODELS]
+                                   args.chrome, models=models, scenes=scenes)
+    pairs = [(model, scene) for scene in scenes for model in models]
     stats: dict[str, int] = {}
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         jobs = pool.map(
@@ -293,7 +301,8 @@ def main(argv: list[str] | None = None) -> int:
                 pair, args.secs, args.warmup, args.force,
                 out_dir=out_dir, fps=args.fps, crf=args.crf, preset=args.preset,
                 source_root=report_root, startup_timeout=args.startup_timeout,
-                chrome=args.chrome, cache_metadata=metadata,
+                chrome=args.chrome, models_file=args.models,
+                cache_metadata=metadata,
             ),
             pairs,
         )
@@ -307,7 +316,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        _write_showcase(out_dir, report_root)
+        _write_showcase(out_dir, report_root, models=models, model_rows=fleet_rows)
         (out_dir / CACHE_FILE).write_text(
             json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )

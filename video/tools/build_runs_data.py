@@ -5,7 +5,7 @@
 разное округление половины (92.5 → 92 против 93), и без этого кадр расходился
 с опубликованным отчётом.
 
-  python3 tools/build_runs_data.py
+  python3 tools/build_runs_data.py [--models FILE]
 """
 from __future__ import annotations
 
@@ -17,19 +17,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dailybench import core, report  # noqa: E402
+import fleet  # noqa: E402
 
 RUNS = ROOT / "runs"
-DIRS = ["deepseek-v4.1-flash-unc-1021", "deepseek-v4.1-flash-unc-1017-1021"]
-LABELS = {
-    "deepseek-v4.1-flash-unc-1021": "DeepSeek-V4.1-Flash",
-    "deepseek-v4.1-flash-unc-1017-1021": "DeepSeek-V4.1-Flash 1017",
-}
-ACCENTS = {
-    "deepseek-v4.1-flash-unc-1021": "#4cc2ff",
-    "deepseek-v4.1-flash-unc-1017-1021": "#ffb45c",
-}
 
 
 REPLY_FIELDS = {f.name for f in dataclasses.fields(core.ModelReply)}
@@ -90,7 +83,9 @@ def spend_of(tasks: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def model_row(directory: str) -> dict:
+def model_row(entry: dict) -> dict:
+    directory = entry["dir"]
+    label = entry.get("label") or directory
     run = report.load_run(RUNS / directory)
     totals = {
         cat: {
@@ -104,13 +99,16 @@ def model_row(directory: str) -> dict:
     config = run.get("config") or {}
     return {
         "dir": directory,
-        "label": LABELS[directory],
-        "title": LABELS[directory],
-        "accent": ACCENTS[directory],
+        "label": label,
+        "title": label,
+        "accent": entry.get("accent") or "#888888",
         "quant": config.get("quant") or "-",
         "context": int(config.get("context_window") or 0),
         # `score` - число для сортировки и пропорций, `verdict` - строка отчёта.
-        "score": round(sum(t["earned"] for cat, t in totals.items() if cat in core.SCORED_CATEGORIES), 3),
+        # Берём headline из `summarise`: там же, где вердикт, поэтому провал
+        # admission у E не расходится с подписью на экране.
+        "score": round(summary["headline_earned"], 3),
+        "possible": summary["headline_possible"],
         "verdict": summary["verdict"],
         "errors": sum(1 for s in run["scores"] if s.get("error")),
         "tasks": len(run["scores"]),
@@ -127,8 +125,13 @@ def model_row(directory: str) -> dict:
     }
 
 
-def main() -> int:
-    rows = [model_row(d) for d in DIRS]
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Данные прогонов для видео")
+    parser.add_argument("--models", type=Path, help="свой models.json вместо src/data/models.json")
+    args = parser.parse_args(argv)
+    rows = [model_row(entry) for entry in fleet.models(args.models)]
     target = ROOT / "video/src/data/runs.json"
     target.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
     for r in rows:

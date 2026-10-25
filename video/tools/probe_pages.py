@@ -11,7 +11,10 @@
 Готовность по режиму: K обязаны выставить `__ready`/`__dbscene`, свободным L
 достаточно settled-разметки. `__ready` у L не требуется.
 
-  python3 probe_pages.py [workers]
+Готовность снимает маркер, но `capture_failed` без клипа переживает пробу:
+живая страница без записи - всё ещё сорванный захват, а не готовая сцена.
+
+  python3 probe_pages.py [workers] [--models FILE]
 """
 from __future__ import annotations
 
@@ -24,8 +27,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import fleet  # noqa: E402
 import media_status  # noqa: E402
-from record_all import DEFAULT_REPORT_ROOT, MODELS, OUT, SCENES, _write_showcase, source_page_path  # noqa: E402
+from record_all import DEFAULT_REPORT_ROOT, OUT, _write_showcase, source_page_path  # noqa: E402
 from record_clip import H, W, WS, cdp_ws, chrome, free_port, html_server, locate_source, page_ready  # noqa: E402
 
 READY_MS = 12000
@@ -78,9 +82,13 @@ def main() -> int:
     parser.add_argument("workers", nargs="?", type=int, default=6)
     parser.add_argument("--report-root", type=Path, default=DEFAULT_REPORT_ROOT,
                         help="каталог отчёта; для ремонта укажите корень _repairs")
+    parser.add_argument("--models", type=Path, help="свой models.json вместо src/data/models.json")
     args = parser.parse_args()
     report_root = args.report_root.expanduser().resolve()
-    pairs = [(model, scene) for scene in SCENES for model in MODELS
+    model_rows = fleet.models(args.models)
+    models = [row["dir"] for row in model_rows]
+    scenes = fleet.scene_ids()
+    pairs = [(model, scene) for scene in scenes for model in models
              if source_page_path(report_root, model, scene).is_file()]
     _, server_root = locate_source(pairs[0][0], pairs[0][1], report_root) if pairs else (None, report_root)
     srv, base = html_server(server_root)
@@ -92,7 +100,10 @@ def main() -> int:
                     lambda pair: probe(pair[0], pair[1], base, report_root), pairs):
                 if ready:
                     if publish_original_status:
-                        media_status.clear_marker(OUT, model, scene)
+                        kept = media_status.refresh_after_probe(OUT, model, scene)
+                        if kept:
+                            broken.append(f"{model}/{scene}: {kept} без клипа")
+                            print(f"[probe] {model}/{scene}: жива, но клипа нет -> {kept}", flush=True)
                 else:
                     reason = desc or "страница не дошла до первого кадра"
                     if publish_original_status:
@@ -104,7 +115,7 @@ def main() -> int:
     # Repaired/custom-root probes are diagnostic only; keep the original
     # model-status markers and showcase source unchanged.
     if publish_original_status:
-        _write_showcase(OUT, report_root)
+        _write_showcase(OUT, report_root, models=models, model_rows=model_rows)
     return 0
 
 

@@ -9,9 +9,10 @@ Usage:
 Source pages default to ``reports/comparison-deepseek-1021/_showcase``. To
 record a repaired copy, pass ``--source-root
 reports/comparison-deepseek-1021/_repairs``. Source files are never modified.
-Frames are lossless PNG at 1920x1080, encoded at 120 fps. Missing or
-pre-frame-failing pages produce typed media-status placeholders; capture and
-encoding failures return a non-zero infrastructure code.
+Frames are lossless PNG at 1920x1080, encoded at the requested fps (default
+120). Missing or pre-frame-failing pages produce typed media-status
+placeholders; capture and encoding failures return a non-zero infrastructure
+code.
 """
 from __future__ import annotations
 
@@ -38,12 +39,14 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[2]
 VIDEO = ROOT / "video"
 sys.path.insert(0, str(Path(__file__).parent))
+import fleet  # noqa: E402
 import media_status  # noqa: E402
 
 REPORTS = ROOT / "reports" / "comparison-deepseek-1021"
 OUT = VIDEO / "public" / "clips"
-MODELS = ("deepseek-v4.1-flash-unc-1021", "deepseek-v4.1-flash-unc-1017-1021")
-SCENES = tuple(f"K-{i}" for i in range(1, 21)) + tuple(f"L-{i}" for i in range(1, 30))
+#: Флот и сцены - из данных (`--models` переопределяет флот моделей).
+MODELS = tuple(fleet.model_names())
+SCENES = tuple(fleet.scene_ids())
 
 #: Native rendering is disabled for the page. Every driven frame advances this
 #: clock by exactly one FPS interval, regardless of the host's elapsed time.
@@ -124,12 +127,13 @@ def run_bin(exe: Path, args: list[str], **kwargs) -> subprocess.CompletedProcess
     return subprocess.run([str(exe), *args], cwd=str(exe.parent), check=True, **kwargs)
 
 
-def check_target(model: str, scene: str, out_dir: Path) -> Path:
-    """Validate model/scene and contain output under video/out or video/public."""
-    if model not in MODELS:
-        raise SystemExit(f"unknown model {model!r}: {', '.join(MODELS)}")
-    if scene not in SCENES:
-        raise SystemExit(f"unknown scene {scene!r}: K-1..K-20, L-1..L-29")
+def check_target(model: str, scene: str, out_dir: Path, models: Path | str | None = None) -> Path:
+    """Validate model/scene against the fleet data and contain output.
+
+    ``models`` points at an alternative `models.json`; scenes come from
+    `src/data/scenes.json`.
+    """
+    fleet.check_pair(model, scene, models)
     target = out_dir.expanduser().resolve()
     allowed = (VIDEO / "out").resolve(), (VIDEO / "public").resolve()
     if not any(target == root or root in target.parents for root in allowed):
@@ -138,10 +142,10 @@ def check_target(model: str, scene: str, out_dir: Path) -> Path:
     return target
 
 
-FRAME_CLOCK_JS = r"""
+FRAME_CLOCK_TEMPLATE = r"""
 (() => {
   if (window.__recordClock) return;
-  const FPS = 120;
+  const FPS = __FPS__;
   const STEP_MS = 1000 / FPS;
   const EPOCH = 946684800000;
   let frame = -1;
@@ -316,6 +320,15 @@ FRAME_CLOCK_JS = r"""
   };
 })();
 """
+
+
+def frame_clock(fps: int = FPS) -> str:
+    """Injected clock at the requested rate: the page renders one frame per step."""
+    return FRAME_CLOCK_TEMPLATE.replace("__FPS__", str(int(fps)))
+
+
+#: Default-rate clock, kept for callers that cannot pass a rate.
+FRAME_CLOCK_JS = frame_clock()
 
 
 class PageJavaScriptError(RuntimeError):
@@ -611,13 +624,13 @@ def html_server(
     return server, f"http://127.0.0.1:{server.server_address[1]}"
 
 
-def _frame_count(seconds: float, *, allow_zero: bool = False) -> int:
+def _frame_count(seconds: float, *, allow_zero: bool = False, fps: int = FPS) -> int:
     if not math.isfinite(seconds) or seconds < 0:
         raise ValueError("duration must be a finite, non-negative number")
-    count = round(seconds * FPS)
-    if (not math.isclose(count / FPS, seconds, rel_tol=0, abs_tol=1e-9)
+    count = round(seconds * fps)
+    if (not math.isclose(count / fps, seconds, rel_tol=0, abs_tol=1e-9)
             or (count == 0 and not allow_zero)):
-        raise ValueError(f"duration must be a positive multiple of 1/{FPS} second")
+        raise ValueError(f"duration must be a positive multiple of 1/{fps} second")
     return count
 
 
@@ -635,19 +648,20 @@ def _atomic_output(out: Path, args: list[str]) -> None:
         partial.unlink(missing_ok=True)
 
 
-def encode(frames: Path, out: Path, frame_count: int | None = None) -> None:
-    """Encode a lossless PNG sequence as a fast-start 120-fps H.264 clip."""
+def encode(frames: Path, out: Path, frame_count: int | None = None,
+           *, fps: int = FPS, crf: int = CRF, preset: str = PRESET) -> None:
+    """Encode a lossless PNG sequence as a fast-start H.264 clip."""
     if frame_count is not None and frame_count <= 0:
         raise ValueError("frame_count must be positive")
     args = [
         "-hide_banner", "-loglevel", "error",
-        "-framerate", str(FPS), "-start_number", "0",
+        "-framerate", str(fps), "-start_number", "0",
         "-i", str((frames / "%06d.png").resolve()),
     ]
     if frame_count is not None:
         args += ["-frames:v", str(frame_count)]
     args += [
-        "-an", "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF),
+        "-an", "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
         "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     ]
     _atomic_output(out, args)
@@ -661,18 +675,19 @@ _BLACK_PNG = base64.b64decode(
 )
 
 
-def placeholder(out: Path, secs: float) -> None:
+def placeholder(out: Path, secs: float, *, fps: int = FPS, crf: int = CRF,
+                preset: str = PRESET) -> None:
     """Write a fixed-rate dark placeholder of exactly the requested duration."""
-    count = _frame_count(secs)
+    count = _frame_count(secs, fps=fps)
     frame = out.with_suffix(".plate.png")
     frame.write_bytes(_BLACK_PNG)
     try:
         _atomic_output(out, [
             "-hide_banner", "-loglevel", "error",
             "-loop", "1", "-i", str(frame.resolve()),
-            "-vf", f"scale={W}:{H}", "-r", str(FPS),
+            "-vf", f"scale={W}:{H}", "-r", str(fps),
             "-frames:v", str(count), "-an",
-            "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF),
+            "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
             "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         ])
     finally:
@@ -680,15 +695,17 @@ def placeholder(out: Path, secs: float) -> None:
 
 
 def _write_capture_metadata(out: Path, source: Path | None, seconds: float,
-                            status: str, details: dict | None = None) -> None:
+                            status: str, details: dict | None = None,
+                            *, fps: int = FPS, crf: int = CRF,
+                            preset: str = PRESET) -> None:
     source_hash = None
     if source is not None and source.is_file():
         with source.open("rb") as original:
             source_hash = hashlib.file_digest(original, "sha256").hexdigest()
     data = {
         "clip": out.name, "status": status, "source_sha256": source_hash,
-        "seconds": seconds, "fps": FPS, "frames": _frame_count(seconds),
-        "captured_frames": 0, "crf": CRF, "preset": PRESET,
+        "seconds": seconds, "fps": fps, "frames": _frame_count(seconds, fps=fps),
+        "captured_frames": 0, "crf": crf, "preset": preset,
         "input_format": "png" if status == "ok" else "generated-placeholder",
         **(details or {}),
     }
@@ -736,6 +753,9 @@ def record(
     source_root: Path = REPORTS,
     startup_timeout: float = STARTUP_TIMEOUT,
     chrome_binary: str | Path | None = None,
+    fps: int = FPS,
+    crf: int = CRF,
+    preset: str = PRESET,
 ) -> tuple[str, str]:
     """Record a page; return (status, reason), raising on capture infrastructure errors."""
     src, server_root = locate_source(model, scene, source_root)
@@ -743,8 +763,9 @@ def record(
         return "model_failed", "source page missing"
     if startup_timeout <= 0 or not math.isfinite(startup_timeout):
         raise ValueError("startup timeout must be finite and positive")
-    count = _frame_count(secs)
-    warmup_frames = _frame_count(warmup, allow_zero=True)
+    count = _frame_count(secs, fps=fps)
+    warmup_frames = _frame_count(warmup, allow_zero=True, fps=fps)
+    dt = 1 / fps
     route = src.relative_to(server_root).as_posix()
     url = f"{base_url}/{route}"
     out = out_dir / f"{model}__{scene}.mp4"
@@ -792,7 +813,7 @@ def record(
             )
             call("Page.enable")
             call("Runtime.enable")
-            call("Page.addScriptToEvaluateOnNewDocument", {"source": FRAME_CLOCK_JS})
+            call("Page.addScriptToEvaluateOnNewDocument", {"source": frame_clock(fps)})
             call("Emulation.setDeviceMetricsOverride", {
                 "width": W, "height": H, "deviceScaleFactor": 1, "mobile": False,
             })
@@ -821,11 +842,11 @@ def record(
                         return "model_failed", note[:200]
                     raise RuntimeError(f"page JavaScript failed during capture: {note[:200]}")
                 try:
-                    state_response = _evaluate(call, f"window.__recordClock.capture({DT!r})", timeout=120)
+                    state_response = _evaluate(call, f"window.__recordClock.capture({dt!r})", timeout=120)
                     clock_state = state_response["result"]["result"]["value"]
                     expected_frame = warmup_frames + index
                     if clock_state["frame"] != expected_frame or not math.isclose(
-                        clock_state["time"], expected_frame * 1000 / FPS, abs_tol=1e-7,
+                        clock_state["time"], expected_frame * 1000 / fps, abs_tol=1e-7,
                     ):
                         raise RuntimeError(f"recording clock discontinuity at frame {index}: {clock_state}")
                 except PageJavaScriptError as exc:
@@ -855,7 +876,7 @@ def record(
                     raise RuntimeError(f"frame {index} is not a {W}x{H} PNG")
                 (frames / f"{index:06d}.png").write_bytes(png)
                 captured += 1
-                if captured == 1 or captured % FPS == 0:
+                if captured == 1 or captured % fps == 0:
                     print(f"[rec] {model}/{scene}: captured {captured}/{count}", flush=True)
                 digest = hashlib.sha256(png).hexdigest()
                 distinct_hashes.add(digest)
@@ -889,7 +910,7 @@ def record(
 
         if captured != count:
             raise RuntimeError(f"captured {captured} of {count} requested frames")
-        encode(frames, out, count)
+        encode(frames, out, count, fps=fps, crf=crf, preset=preset)
         _write_capture_metadata(out, src, secs, "ok", {
             "captured_frames": captured, "clock_modes": sorted(clock_modes),
             "clock_start_ms": first_clock_ms, "clock_end_ms": last_clock_ms,
@@ -901,13 +922,14 @@ def record(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("model", choices=MODELS)
-    parser.add_argument("scene", choices=SCENES)
+    parser.add_argument("model")
+    parser.add_argument("scene")
     parser.add_argument("out_dir", type=Path)
     parser.add_argument("seconds", type=float, nargs="?", default=DEFAULT_SECS)
     parser.add_argument("warmup_s", type=float, nargs="?", default=DEFAULT_WARMUP)
     parser.add_argument("--force", action="store_true", help="replace an existing clip")
     parser.add_argument("--source-root", type=Path, default=REPORTS)
+    parser.add_argument("--models", type=Path, help="свой models.json вместо src/data/models.json")
     parser.add_argument("--fps", type=int, default=FPS)
     parser.add_argument("--crf", type=int, default=CRF)
     parser.add_argument("--preset", default=PRESET)
@@ -921,19 +943,17 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    out_dir = check_target(args.model, args.scene, args.out_dir)
+    out_dir = check_target(args.model, args.scene, args.out_dir, args.models)
+    if args.fps <= 0 or args.crf not in range(52) or not args.preset:
+        print("[rec] fps must be positive, CRF in 0..51, preset non-empty", file=sys.stderr)
+        return 2
     try:
-        _frame_count(args.seconds)
-        _frame_count(args.warmup_s, allow_zero=True)
+        _frame_count(args.seconds, fps=args.fps)
+        _frame_count(args.warmup_s, allow_zero=True, fps=args.fps)
     except ValueError as exc:
         print(f"[rec] invalid duration: {exc}", file=sys.stderr)
         return 2
-    if (args.fps, args.crf, args.preset) != (FPS, CRF, PRESET):
-        print(
-            f"[rec] encoding is fixed at {FPS} fps, CRF {CRF}, preset {PRESET}",
-            file=sys.stderr,
-        )
-        return 2
+    encoding = {"fps": args.fps, "crf": args.crf, "preset": args.preset}
     if args.startup_timeout <= 0 or not math.isfinite(args.startup_timeout):
         print("[rec] startup timeout must be finite and positive", file=sys.stderr)
         return 2
@@ -951,13 +971,14 @@ def main(argv: list[str] | None = None) -> int:
         if reason == "ok":
             reason = "model_failed"
         try:
-            placeholder(out, args.seconds)
+            placeholder(out, args.seconds, **encoding)
         except Exception as exc:
             media_status.write_marker(out_dir, model, scene, "capture_failed", str(exc))
             print(f"[rec] {model}/{scene}: placeholder failed: {exc}", file=sys.stderr, flush=True)
             return EXIT["capture_failed"]
         media_status.write_marker(out_dir, model, scene, reason)
-        _write_capture_metadata(out, None, args.seconds, reason, {"reason": "source page missing"})
+        _write_capture_metadata(out, None, args.seconds, reason, {"reason": "source page missing"},
+                                **encoding)
         print(f"[rec] {model}/{scene}: source missing -> placeholder ({reason})")
         return EXIT["model_failed"]
 
@@ -971,7 +992,7 @@ def main(argv: list[str] | None = None) -> int:
             status, note = record(
                 model, scene, out_dir, args.seconds, args.warmup_s, base_url,
                 source_root=args.source_root, startup_timeout=args.startup_timeout,
-                chrome_binary=args.chrome,
+                chrome_binary=args.chrome, **encoding,
             )
         except Exception as exc:  # noqa: BLE001 - capture/encoding, not model verdict
             status = "capture_failed"
@@ -983,13 +1004,14 @@ def main(argv: list[str] | None = None) -> int:
                 media_status.write_marker(out_dir, model, scene, status, note)
                 return EXIT[status]
             try:
-                placeholder(out, args.seconds)
+                placeholder(out, args.seconds, **encoding)
             except Exception as exc:
                 status = "capture_failed"
                 note = f"{note}; placeholder failed: {exc}" if note else str(exc)
                 print(f"[rec] {model}/{scene}: placeholder failed: {exc}", file=sys.stderr, flush=True)
             media_status.write_marker(out_dir, model, scene, status, note)
-            _write_capture_metadata(out, src, args.seconds, status, {"reason": note})
+            _write_capture_metadata(out, src, args.seconds, status, {"reason": note},
+                                    **encoding)
             print(f"[rec] {model}/{scene}: placeholder ({status}{': ' + note if note else ''})")
             return EXIT[status]
 

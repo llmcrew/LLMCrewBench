@@ -7,13 +7,14 @@
   * статус согласован с маркером и файлом (ok без маркера, плашка с маркером,
     media_missing без клипа);
   * not_run/model_failed согласованы со scores прогона;
-  * каждый клип декодируется ffprobe: h264, 1920×1080, 120 fps, 20 с,
-    ожидаемое число кадров, читаются первый и последний кадр.
+  * каждый клип декодируется ffprobe: h264, 1920×1080, ожидаемые fps и
+    длительность, ожидаемое число кадров, читаются первый и последний кадр.
 
 Ошибка печатается до Studio/render и даёт ненулевой код: битое медиа не должно
 выясняться кадром 300 в Studio или через час рендера.
 
   python3 tools/preflight.py [--no-decode] [--no-clips]
+      [--seconds 20] [--fps 120] [--models FILE]
 
 ``--no-clips`` проверяет манифест без самих клипов: в чистом клоне
 ``public/clips/`` нет (каталог вне git), а согласованность showcase.json,
@@ -29,17 +30,20 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import fleet  # noqa: E402
 import media_status  # noqa: E402
-from record_all import MODELS, OUT, RUNS  # noqa: E402
+from record_all import OUT, RUNS  # noqa: E402
 from record_clip import FPS, H, W  # noqa: E402
 
 VIDEO = OUT.parents[1]
+MODELS = fleet.model_names()
 SHOWCASE = VIDEO / "src" / "data" / "showcase.json"
 CLIPS_JSON = OUT.parent / "clips.json"
 SCENES_JSON = VIDEO / "src" / "data" / "scenes.json"
 SECONDS = 20.0
 DURATION_TOL = 0.25
-FRAMES = int(round(SECONDS * FPS))
+#: Последний кадр ищем за секунду до конца: точный последний кадр режет GOP.
+LAST_FRAME_OFFSET = 0.2
 
 
 def find_ffprobe() -> Path | None:
@@ -73,9 +77,10 @@ def probe_meta(exe: Path, path: Path) -> dict:
     return json.loads(out.stdout or "{}")
 
 
-def decode_frame(exe: Path, path: Path, last: bool = False) -> str | None:
+def decode_frame(exe: Path, path: Path, last: bool = False,
+                 seconds: float = SECONDS) -> str | None:
     """Декодировать первый/последний кадр: ffprobe, а не только заголовок."""
-    interval = f"{SECONDS - 0.2:.1f}%+#1" if last else "0%+#1"
+    interval = f"{max(seconds - LAST_FRAME_OFFSET, 0):.3f}%+#1" if last else "0%+#1"
     out = subprocess.run(
         [str(exe), "-v", "error", "-select_streams", "v:0",
          "-show_entries", "frame=pkt_pts_time", "-read_intervals", interval,
@@ -91,7 +96,8 @@ def decode_frame(exe: Path, path: Path, last: bool = False) -> str | None:
     return None if frames else "кадр не декодирован"
 
 
-def check_clip(exe: Path, model: str, scene: str, status: str, errors: list[str]) -> None:
+def check_clip(exe: Path, model: str, scene: str, status: str, errors: list[str],
+               *, seconds: float = SECONDS, fps: int = FPS) -> None:
     path = media_status.clip_path(OUT, model, scene)
     label = f"{model}/{scene}"
     if not path.is_file():
@@ -117,32 +123,34 @@ def check_clip(exe: Path, model: str, scene: str, status: str, errors: list[str]
         errors.append(f"{label}: кодек {st.get('codec_name')}, ожидался h264")
     if (st.get("width"), st.get("height")) != (W, H):
         errors.append(f"{label}: размер {st.get('width')}x{st.get('height')}, ожидался {W}x{H}")
-    fps = st.get("avg_frame_rate") or st.get("r_frame_rate")
-    if fps != f"{FPS}/1":
-        errors.append(f"{label}: частота {fps}, ожидалась {FPS}/1")
+    rate = st.get("avg_frame_rate") or st.get("r_frame_rate")
+    if rate != f"{fps}/1":
+        errors.append(f"{label}: частота {rate}, ожидалась {fps}/1")
     try:
         duration = float(st.get("duration") or (meta.get("format") or {}).get("duration") or 0)
     except ValueError:
         duration = 0.0
-    if abs(duration - SECONDS) > DURATION_TOL:
-        errors.append(f"{label}: длительность {duration:.3f} с, ожидалось {SECONDS}")
+    if abs(duration - seconds) > DURATION_TOL:
+        errors.append(f"{label}: длительность {duration:.3f} с, ожидалось {seconds}")
     frames = st.get("nb_frames")
     try:
         frame_count = int(frames) if frames is not None else -1
     except ValueError:
         frame_count = -1
-    if abs(frame_count - FRAMES) > 2:
-        errors.append(f"{label}: кадров {frames}, ожидалось {FRAMES}")
-    first = decode_frame(exe, path)
+    expected_frames = int(round(seconds * fps))
+    if abs(frame_count - expected_frames) > 2:
+        errors.append(f"{label}: кадров {frames}, ожидалось {expected_frames}")
+    first = decode_frame(exe, path, seconds=seconds)
     if first:
         errors.append(f"{label}: первый кадр: {first}")
-    last = decode_frame(exe, path, last=True)
+    last = decode_frame(exe, path, last=True, seconds=seconds)
     if last:
         errors.append(f"{label}: последний кадр: {last}")
 
 
 def validate(rows: list, scenes: list[str], errors: list[str], warnings: list[str],
-             *, clips: bool = True) -> None:
+             *, clips: bool = True, models: list[str] | None = None) -> None:
+    models = models or MODELS
     scene_ids = [s["id"] for s in scenes]
     if [r.get("scene") for r in rows] != scene_ids:
         errors.append("showcase.json: набор/порядок сцен не совпадает с scenes.json")
@@ -157,8 +165,8 @@ def validate(rows: list, scenes: list[str], errors: list[str], warnings: list[st
     for row in rows:
         scene = row.get("scene", "?")
         runs = row.get("runs") or []
-        if [r.get("model") for r in runs] != MODELS:
-            errors.append(f"{scene}: полосы не совпадают с моделями {MODELS}")
+        if [r.get("model") for r in runs] != models:
+            errors.append(f"{scene}: полосы не совпадают с моделями {models}")
             continue
         if row.get("open") not in range(len(runs)):
             errors.append(f"{scene}: open={row.get('open')} вне полос")
@@ -209,18 +217,37 @@ def validate(rows: list, scenes: list[str], errors: list[str], warnings: list[st
             errors.append("clips.json расходится с showcase.json (производный файл устарел)")
 
 
-def main() -> int:
-    clips = "--no-clips" not in sys.argv[1:]
-    decode = "--no-decode" not in sys.argv[1:] and clips
-    errors: list[str] = []
-    warnings: list[str] = []
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    clips = "--no-clips" not in argv
+    decode = "--no-decode" not in argv and clips
+    seconds = SECONDS
+    fps = FPS
+    models_file = None
+    for name, value in (("--seconds", "seconds"), ("--fps", "fps"), ("--models", "models")):
+        if name in argv:
+            index = argv.index(name)
+            try:
+                raw = argv[index + 1]
+            except IndexError:
+                print(f"preflight: {name} без значения", file=sys.stderr)
+                return 2
+            if value == "seconds":
+                seconds = float(raw)
+            elif value == "fps":
+                fps = int(raw)
+            else:
+                models_file = Path(raw)
     try:
         scenes = json.loads(SCENES_JSON.read_text(encoding="utf-8"))
         rows = json.loads(SHOWCASE.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        models = fleet.model_names(models_file)
+    except (OSError, ValueError, SystemExit) as exc:
         print(f"preflight: не читаются данные: {exc}", file=sys.stderr)
         return 2
-    validate(rows, scenes, errors, warnings, clips=clips)
+    errors: list[str] = []
+    warnings: list[str] = []
+    validate(rows, scenes, errors, warnings, clips=clips, models=models)
     # Осиротевшие файлы: клип без строки манифеста или маркер без пары.
     manifest_pairs = {(r.get("model"), row.get("scene")) for row in rows for r in row.get("runs") or []}
     if not clips:
@@ -238,7 +265,7 @@ def main() -> int:
             continue
         stem = path.name[: -len(suffix)]
         model, _, scene = stem.partition("__")
-        if scene not in {s["id"] for s in scenes} or model not in MODELS or (model, scene) not in manifest_pairs:
+        if scene not in {s["id"] for s in scenes} or model not in models or (model, scene) not in manifest_pairs:
             warnings.append(f"лишний файл вне манифеста: {path.name}")
     if errors:
         for line in errors:
@@ -256,7 +283,8 @@ def main() -> int:
             return 1
         for row in rows:
             for run in row["runs"]:
-                check_clip(exe, run["model"], row["scene"], run["status"], errors)
+                check_clip(exe, run["model"], row["scene"], run["status"], errors,
+                           seconds=seconds, fps=fps)
         if errors:
             for line in errors:
                 print(f"preflight: ОШИБКА: {line}", file=sys.stderr)
@@ -264,7 +292,7 @@ def main() -> int:
             return 1
     mode = "декодирование проверено" if decode else (
         "клипы не проверялись" if not clips else "без декодирования")
-    print(f"preflight: ok - {len(rows)} сцен, {len(rows) * len(MODELS)} клипов, {mode}")
+    print(f"preflight: ok - {len(rows)} сцен, {len(rows) * len(models)} клипов, {mode}")
     return 0
 
 

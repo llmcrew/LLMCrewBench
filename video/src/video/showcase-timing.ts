@@ -12,6 +12,7 @@ export type MediaStatus =
   | 'not_run'
   | 'model_failed'
   | 'evaluator_unavailable'
+  | 'infra_failure'
   | 'capture_failed'
   | 'media_missing';
 

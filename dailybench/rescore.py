@@ -101,14 +101,32 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
         # would compare incomparable things, so the old score is kept and the
         # mismatch is recorded.
         expected = saved_fingerprints.get(str(task_id))
+        contract_drift: list[str] = []
         if expected:
             current = suite_digest([task])["per_task"][0]
+            # A changed oracle (hidden tests) or evaluator is a *new grading
+            # contract*, not a new fixture: the answer was produced against
+            # exactly this task, so it is re-graded and the re-grade is recorded
+            # apart from the fixture drift.
+            contract_drift = [
+                key
+                for key in ("oracle_sha256", "evaluator_sha256")
+                if key in expected and expected.get(key) != current.get(key)
+            ]
             # Old suite rows recorded only the prompt hash: an absent key means
             # "not recorded then", not "changed now", so it must not make every
             # legacy task look drifted.
             drift = [
                 key
-                for key in ("prompt_sha256", "dialogue_sha256", "workspace_sha256", "tools_sha256")
+                for key in (
+                    "prompt_sha256",
+                    "system_sha256",
+                    "meta_sha256",
+                    "dialogue_sha256",
+                    "workspace_sha256",
+                    "assets_sha256",
+                    "tools_sha256",
+                )
                 if key in expected and expected.get(key) != current.get(key)
             ]
             if drift:
@@ -121,8 +139,11 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
         transcript = transcript_from_dict(entry.get("transcript") or {}, task)
         module = core.REGISTRY.get(task.category)
         if module is None:
+            # Nothing can re-grade it, so the old score stands — but the marker
+            # must say so, or the row looks re-scored.
             scores.append(core.Score.from_dict(entry["score"]))
             replays.append(None)
+            changed.append({"task_id": task_id, "status": "категория не зарегистрирована"})
             continue
         if task.category in cfg.unsupported:
             # Applicability is harness policy, not an evaluator result: replaying
@@ -167,6 +188,13 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
         }
         if any(_differs(before[key], after[key]) for key in after):
             changed.append({"task_id": task_id, "before": before, "after": after})
+        if contract_drift:
+            changed.append(
+                {
+                    "task_id": task_id,
+                    "status": f"переоценено по новому контракту: {', '.join(contract_drift)}",
+                }
+            )
         scores.append(fresh)
 
     # Пересчёт обновляет и записи ответов: наблюдения сцены (кадр, метрики)

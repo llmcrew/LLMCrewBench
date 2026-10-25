@@ -224,14 +224,14 @@ def fit_prompt_to_tokens(
 class SpeedResult:
     label: str
     runs: int
-    ttft_s: float
+    ttft_s: float | None
     prompt_tokens: float
     completion_tokens: float
-    prompt_tok_s: float
-    generation_tok_s: float
+    prompt_tok_s: float | None
+    generation_tok_s: float | None
     total_s: float
     vram_peak_mib: int | None = None
-    spread: dict[str, float] = field(default_factory=dict)
+    spread: dict[str, float | None] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -320,18 +320,18 @@ def speed_profile(
             SpeedResult(
                 label=label,
                 runs=len(rows),
-                ttft_s=statistics.median(ttfts) if ttfts else float("nan"),
+                ttft_s=statistics.median(ttfts) if ttfts else None,
                 prompt_tokens=statistics.median([r["prompt_tokens"] for r in rows]),
                 completion_tokens=statistics.median([r["completion_tokens"] for r in rows]),
-                prompt_tok_s=statistics.median(pre) if pre else float("nan"),
-                generation_tok_s=statistics.median(gen) if gen else float("nan"),
+                prompt_tok_s=statistics.median(pre) if pre else None,
+                generation_tok_s=statistics.median(gen) if gen else None,
                 total_s=statistics.median([r["total_s"] or 0.0 for r in rows]),
                 vram_peak_mib=max(peaks) if peaks else None,
                 spread={
-                    "ttft_min_s": min(ttfts) if ttfts else float("nan"),
-                    "ttft_max_s": max(ttfts) if ttfts else float("nan"),
-                    "generation_tok_s_min": min(gen) if gen else float("nan"),
-                    "generation_tok_s_max": max(gen) if gen else float("nan"),
+                    "ttft_min_s": min(ttfts) if ttfts else None,
+                    "ttft_max_s": max(ttfts) if ttfts else None,
+                    "generation_tok_s_min": min(gen) if gen else None,
+                    "generation_tok_s_max": max(gen) if gen else None,
                 },
             )
         )
