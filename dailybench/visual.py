@@ -13,7 +13,7 @@ that exposes
 
 Everything else — how many objects, what must be where after how many steps,
 which colours must be visible — is the scenario's business. This module only
-owns the parts that must be identical across all twenty: the prompt contract,
+owns the parts that must be identical across all scenarios: the prompt contract,
 the extraction of the answer, the deterministic render, and the five checks
 (``html``, ``runtime``, ``scene``, ``simulation``, ``image``) that turn a render
 into a score. The checks are separate promises (M09): a page protocol, a

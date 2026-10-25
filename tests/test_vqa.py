@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+import re
 from pathlib import Path
 
 import pytest
@@ -47,7 +48,7 @@ def _image_parts(messages) -> list[dict]:
 # --------------------------------------------------------------------------- #
 
 
-def test_three_scenarios_are_generated_with_typed_png_assets():
+def test_six_scenarios_are_generated_with_typed_png_assets():
     tasks = _tasks()
     assert list(tasks) == list(visual_input.IDS)
     for task in tasks.values():
@@ -161,6 +162,79 @@ def test_swapping_the_picture_changes_the_answer():
 
 
 # --------------------------------------------------------------------------- #
+# The second trio: crossings, a route and a header table
+# --------------------------------------------------------------------------- #
+
+
+def test_v4_chart_reads_crossing_count_and_the_higher_series():
+    task = _tasks()["V-4"]
+    layout = task.oracle["layout"]
+    match = re.fullmatch(r"пересечения=(\d+); выше=(red|blue)", task.oracle["answer"])
+    assert match
+    diffs = [high - low for low, high in zip(layout["left"], layout["right"])]
+    assert all(diff != 0 for diff in diffs)
+    signs = [1 if diff > 0 else -1 for diff in diffs]
+    assert sum(1 for left, right in zip(signs, signs[1:]) if left != right) == layout["crossings"]
+    assert int(match.group(1)) == layout["crossings"] >= 1
+    assert match.group(2) == ("blue" if diffs[-1] > 0 else "red")
+    assert task.oracle["mutant"] != task.oracle["answer"]
+    assert schema.validate_task(task) == []
+
+
+def test_v5_route_reads_turns_and_the_final_direction():
+    task = _tasks()["V-5"]
+    layout = task.oracle["layout"]
+    match = re.fullmatch(r"поворотов=(\d+); направление=(север|юг|восток|запад)", task.oracle["answer"])
+    assert match
+    path = [tuple(cell) for cell in layout["path"]]
+    assert len(set(path)) == len(path)
+    steps = [(second[0] - first[0], second[1] - first[1]) for first, second in zip(path, path[1:])]
+    turns = sum(1 for first, second in zip(steps, steps[1:]) if first != second)
+    assert turns == layout["turns"] == int(match.group(1))
+    assert turns >= 1
+    assert match.group(2) == visual_input.DIRECTIONS[steps[-1]]
+    assert task.oracle["mutant"] != task.oracle["answer"]
+    assert schema.validate_task(task) == []
+
+
+def test_v6_table_cell_is_the_asked_row_and_column():
+    task = _tasks()["V-6"]
+    layout = task.oracle["layout"]
+    row, column = layout["asked"]
+    assert task.oracle["answer"] == str(layout["table"][row][column])
+    assert layout["rows"][row] in task.prompt
+    assert layout["columns"][column] in task.prompt
+    flat = [value for line in layout["table"] for value in line]
+    assert len(set(map(str, flat))) == len(flat)
+    assert task.oracle["mutant"] != task.oracle["answer"]
+    assert schema.validate_task(task) == []
+
+
+@pytest.mark.parametrize(
+    "builder,seed",
+    [(visual_input._cross_chart, 99), (visual_input._route, 99), (visual_input._header_table, 99)],
+)
+def test_reordering_or_rotating_the_scene_changes_the_answer(builder, seed):
+    task = _tasks()["V-4" if builder is visual_input._cross_chart else "V-5" if builder is visual_input._route else "V-6"]
+    other = builder(random.Random(seed))
+    assert other.oracle["answer"] != task.oracle["answer"]
+    swapped = core.TaskInstance(
+        id=task.id,
+        category=task.category,
+        title=task.title,
+        prompt=task.prompt,
+        max_points=task.max_points,
+        workspace=dict(task.workspace or {}),
+        assets=list(other.assets),
+        oracle=dict(other.oracle),
+    )
+    wrong = _runner(ScriptedProvider([str(task.oracle["answer"])], images=True)).run_task(swapped)
+    assert wrong.score.earned == 0.0
+    right = _runner(ScriptedProvider([str(other.oracle["answer"])], images=True)).run_task(swapped)
+    assert right.score.earned == swapped.max_points
+
+
+# --------------------------------------------------------------------------- #
 # Evaluator
 # --------------------------------------------------------------------------- #
 
@@ -185,7 +259,7 @@ def test_exact_answer_and_answer_region_are_scored_separately(reply, earned):
 
 
 def test_the_category_stays_outside_the_scored_denominator():
-    assert core.points_for("V", "research-v1") == 3.0
+    assert core.points_for("V", "research-v1") == 6.0
     assert "V" not in core.scored_categories("research-v1")
     assert "V" in core.SHOWCASE_CATEGORIES
     assert core.scored_total("research-v1") == 35.0 + 36.0

@@ -536,8 +536,8 @@ def test_the_header_weighs_the_tasks_on_offer_not_the_category_ceiling(tmp_path:
 
 
 def test_the_header_follows_the_profile_weights(tmp_path: Path):
-    """A pilot K block is 12 points, a stretch one 120 — not the baseline 80."""
-    for profile, ceiling in (("pilot", 12), ("stretch-v1", 120)):
+    """A pilot K block is 12 points, a stretch one 144 — not the baseline 80."""
+    for profile, ceiling in (("pilot", 12), ("stretch-v1", 144)):
         directory = _run(tmp_path, f"run-{profile}")
         config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
         config["profile"] = profile

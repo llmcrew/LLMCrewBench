@@ -61,7 +61,7 @@ STRETCH_IDS = [
     *[f"H-{index}" for index in range(1, 6)],
     *[f"I-{index}" for index in range(1, 6)],
     *[f"J-{index}" for index in range(1, 6)],
-    *[f"K-{index}" for index in range(1, 31)],
+    *[f"K-{index}" for index in range(1, 37)],
     *[f"L-{index}" for index in range(1, 40)],
 ]
 
@@ -113,7 +113,7 @@ def test_profile_category_totals_are_fixed():
                                "F": 8.0, "G": 8.0, "H": 6.0, "I": 4.0, "J": 5.0,
                                "K": 80.0, "L": 29.0},
         "pilot": {**core.CATEGORY_POINTS, "K": 12.0, "L": 29.0},
-        "stretch-v1": {**core.CATEGORY_POINTS, "K": 120.0, "L": 39.0},
+        "stretch-v1": {**core.CATEGORY_POINTS, "K": 144.0, "L": 39.0},
     }
     for profile, expected in totals.items():
         tasks = build_suite(RunConfig(profile=profile))
@@ -124,7 +124,7 @@ def test_profile_category_totals_are_fixed():
         assert all(task.max_points > 0 for task in tasks)
     assert core.SHOWCASE_POINTS["pilot"] == {"K": 12.0, "L": 29.0}
     assert core.SHOWCASE_POINTS[core.DEFAULT_PROFILE] == {"K": 80.0, "L": 29.0}
-    assert core.SHOWCASE_POINTS["stretch-v1"] == {"K": 120.0, "L": 39.0}
+    assert core.SHOWCASE_POINTS["stretch-v1"] == {"K": 144.0, "L": 39.0}
 
 
 def test_stretch_redistributes_within_each_category_point_budget():
@@ -136,8 +136,8 @@ def test_stretch_redistributes_within_each_category_point_budget():
         # Even shares with the tail on the last task, never a variable scale.
         assert max(task.max_points for task in group) - min(task.max_points for task in group) <= TOLERANCE
     showcase = {key: sum(t.max_points for t in tasks if t.category == key) for key in core.VISUAL_CATEGORIES}
-    assert _close(showcase["K"], 120.0) and _close(showcase["L"], 39.0)
-    assert core.points_for("K", "stretch-v1") == 120.0
+    assert _close(showcase["K"], 144.0) and _close(showcase["L"], 39.0)
+    assert core.points_for("K", "stretch-v1") == 144.0
     assert core.points_for("L", "stretch-v1") == 39.0
     assert validate_suite(tasks, "stretch-v1") == []
 
@@ -363,12 +363,12 @@ def test_a_visual_scenario_is_the_same_in_every_profile() -> None:
         assert _visual_fixture(stretch[task_id]) == _visual_fixture(task), task_id
 
 
-#: The research profile: ten admitted scenarios across seven categories plus the
-#: three image-input showcase scenarios, no reasoning/structured/dialogue block,
+#: The research profile: ten admitted scenarios across seven categories plus six
+#: image-input showcase scenarios, no reasoning/structured/dialogue block,
 #: no K/L block, denominator 71.
 RESEARCH_IDS = [
     "IF-9", "IF-10", "N-2", "T-10", "T-11", "T-12", "LC-8", "F-3", "I-5", "J-5",
-    "V-1", "V-2", "V-3",
+    "V-1", "V-2", "V-3", "V-4", "V-5", "V-6",
 ]
 
 RESEARCH_EXPECTED_IDS: dict[str, tuple[str, ...]] = {
@@ -384,7 +384,7 @@ RESEARCH_EXPECTED_IDS: dict[str, tuple[str, ...]] = {
     "H": (),
     "K": (),
     "L": (),
-    "V": ("V-1", "V-2", "V-3"),
+    "V": ("V-1", "V-2", "V-3", "V-4", "V-5", "V-6"),
 }
 
 
@@ -392,15 +392,15 @@ def test_research_profile_is_the_narrow_research_set():
     tasks = build_suite(RunConfig(profile="research-v1"))
     assert [task.id for task in tasks] == RESEARCH_IDS
     assert {task.category for task in tasks} == {"A", "C", "D", "E", "F", "I", "J", "V"}
-    # 71 scored points plus the 3-point VQA showcase outside the verdict.
-    assert sum(task.max_points for task in tasks) == core.profile_total("research-v1") == 74.0
+    # 71 scored points plus the 6-point VQA showcase outside the verdict.
+    assert sum(task.max_points for task in tasks) == core.profile_total("research-v1") == 77.0
     assert core.scored_total("research-v1") == 71.0
     for key, total in core.PROFILE_POINTS["research-v1"].items():
         group = [task for task in tasks if task.category == key]
         assert _close(sum(task.max_points for task in group), total), key
-    assert core.SHOWCASE_POINTS["research-v1"] == {"V": 3.0}
+    assert core.SHOWCASE_POINTS["research-v1"] == {"V": 6.0}
     assert [task.id for task in tasks if task.category in core.VISUAL_CATEGORIES] == [
-        "V-1", "V-2", "V-3"
+        "V-1", "V-2", "V-3", "V-4", "V-5", "V-6"
     ]
     # A category the profile does not carry has no total at all, not a baseline one.
     assert core.points_for("B", "research-v1") is None
@@ -421,7 +421,7 @@ def test_research_profile_leaves_the_other_profiles_alone():
     assert _close(sum(task.max_points for task in _scored(build_suite(RunConfig()))), 100.0)
     assert _close(core.profile_total(), 100.0 + 80.0 + 29.0)
     assert _close(core.profile_total("pilot"), 100.0 + 12.0 + 29.0)
-    assert _close(core.profile_total("stretch-v1"), 100.0 + 120.0 + 39.0)
+    assert _close(core.profile_total("stretch-v1"), 100.0 + 144.0 + 39.0)
     assert _close(
         sum(task.max_points for task in build_suite(RunConfig(profile="pilot"))),
         core.profile_total("pilot"),
@@ -474,7 +474,7 @@ def test_cli_accepts_the_research_profile(tmp_path: Path):
     assert cli.main(["generate", "--profile", "research-v1", "--out", str(out)]) == 0
     digest = json.loads((out / "suite.json").read_text(encoding="utf-8"))
     assert digest["profile"] == "research-v1"
-    assert digest["profile_total"] == 74.0
+    assert digest["profile_total"] == 77.0
     prompts = json.loads((out / "prompts.json").read_text(encoding="utf-8"))
-    # 71 scored points + the 3-point VQA showcase.
-    assert sum(entry["max_points"] for entry in prompts) == 74.0
+    # 71 scored points + the 6-point VQA showcase.
+    assert sum(entry["max_points"] for entry in prompts) == 77.0

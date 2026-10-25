@@ -1,8 +1,9 @@
 """Category K — visual simulations on Three.js, measured outside the score.
 
-Thirty scenarios: physics and fields (K-1..K-11), cells and machines
-(K-12..K-16), visualisations (K-17..K-20), and the extended slices (K-21..K-30:
-gear kinematics, fluids, circuits, a queue, a lift and structures). Each one asks
+Thirty-six scenarios: physics and fields (K-1..K-11), cells and machines
+(K-12..K-16), visualisations (K-17..K-20), and the extended slices (K-21..K-36:
+gear kinematics, fluids, circuits, a queue, a lift, structures, orbits, a PDE
+and mechanisms). Each one asks
 for a working page and is checked by *running* it in a headless Chromium (see
 ``dailybench/visual`` and ``dailybench/browser``).
 
@@ -13,7 +14,7 @@ than in ``CATEGORY_POINTS``.
 
 Profiles pick the scenario set, never the machinery: the baseline runs the
 original twenty, ``pilot`` runs the three host scenarios of the pilot slices
-(K-21, K-23, K-25), and ``stretch-v1`` runs all thirty. Every profile is checked
+(K-21, K-23, K-25), and ``stretch-v1`` runs all thirty-six. Every profile is checked
 against its exact id list and against ``4 * len(ids)`` points, so a slice that
 forgets to register or filters wrongly fails loudly instead of shrinking the
 block.
@@ -44,6 +45,9 @@ MODULES: tuple[str, ...] = (
     "visual_queue",
     "visual_lift",
     "visual_structures",
+    "visual_orbits",
+    "visual_pde",
+    "visual_mech2",
 )
 
 BASELINE_IDS = (
@@ -60,6 +64,7 @@ PILOT_IDS = ("K-21", "K-23", "K-25")
 ALL_IDS = BASELINE_IDS + (
     "K-21", "K-22", "K-23", "K-24", "K-25",
     "K-26", "K-27", "K-28", "K-29", "K-30",
+    "K-31", "K-32", "K-33", "K-34", "K-35", "K-36",
 )
 
 IDS = BASELINE_IDS
@@ -96,7 +101,7 @@ def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
     """The scenarios of the run's profile, each module drawing from its own stream.
 
     Modules outside the profile are not built at all, so a pilot run pays for
-    three scenarios rather than thirty. A module's stream is derived from its
+    three scenarios rather than thirty-six. A module's stream is derived from its
     name, not drawn off a shared cursor, so a scenario is byte-identical no
     matter which modules precede it or whether the slice runs at all. The
     result is re-ordered to the declaration order of ``ALL_IDS`` and must match
