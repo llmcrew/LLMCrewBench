@@ -9,7 +9,6 @@ every memory and speed claim in the report.
 from __future__ import annotations
 
 import hashlib
-import math
 import time
 from pathlib import Path
 
@@ -201,7 +200,7 @@ def test_speed_profile_estimates_sizes_when_the_runtime_reports_none(monkeypatch
     results = measure.speed_profile(provider, RunConfig(), short_tokens=32, long_tokens=32, repeats=1, warmup=0)
 
     row = results[0]
-    assert math.isnan(row.ttft_s), "без TTFT медиана не определена"
+    assert row.ttft_s is None, "без TTFT медиана не определена (None, не NaN)"
     assert row.prompt_tokens >= 1 and row.completion_tokens >= 1, "размеры берутся из оценки"
     assert row.generation_tok_s >= 1
 

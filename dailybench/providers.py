@@ -11,6 +11,7 @@ object carries the timing even when only the text is used.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import http.client
 import json
 import threading
@@ -18,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Iterable, Protocol
+from typing import Any, Callable, Protocol
 
 from .core import ModelReply
 
@@ -34,9 +35,13 @@ class ProviderError(RuntimeError):
     failed for infrastructure reasons; a protocol failure stays a task error.
     """
 
-    def __init__(self, message: str, *, infra: bool = True) -> None:
+    def __init__(self, message: str, *, infra: bool = True, partial: ModelReply | None = None) -> None:
         super().__init__(message)
         self.infra = infra
+        #: What the stream produced before it broke (text, reasoning, usage).
+        #: Already paid for, so the runner records it as a turn instead of
+        #: dropping it; ``finish_reason`` is ``None``.
+        self.partial = partial
 
 
 class Provider(Protocol):
@@ -55,6 +60,7 @@ class Provider(Protocol):
         wall_clock: float | None = None,
         tool_choice: str | None = None,
         contract: "WireContract | None" = None,
+        telemetry: Any | None = None,
     ) -> ModelReply: ...
 
     def tokenize(self, text: str) -> int | None: ...
@@ -330,6 +336,7 @@ class OpenAICompatibleProvider:
         wall_clock: float | None = None,
         tool_choice: str | None = None,
         contract: WireContract | None = None,
+        telemetry: Any | None = None,
     ) -> ModelReply:
         contract = contract or WireContract(
             temperature=temperature,
@@ -368,9 +375,13 @@ class OpenAICompatibleProvider:
         deadline = (time.monotonic() + wall_clock) if wall_clock else None
         try:
             if stream:
-                reply = self._chat_stream(payload, started, deadline, wall_clock, contract)
+                reply = self._chat_stream(
+                    payload, started, deadline, wall_clock, contract, telemetry
+                )
             else:
-                reply = self._chat_blocking(payload, started, deadline, wall_clock, contract)
+                reply = self._chat_blocking(
+                    payload, started, deadline, wall_clock, contract, telemetry
+                )
         except urllib.error.HTTPError as exc:
             body = ""
             with contextlib.suppress(Exception):
@@ -402,6 +413,7 @@ class OpenAICompatibleProvider:
                     wall_clock=retry_budget,
                     tool_choice=tool_choice,
                     contract=retry,
+                    telemetry=telemetry,
                 )
             raise ProviderError(
                 f"HTTP {exc.code} from {self._url('/chat/completions')}: {body}",
@@ -430,6 +442,7 @@ class OpenAICompatibleProvider:
         deadline: float | None,
         wall_clock: float | None,
         contract: WireContract,
+        telemetry: Any | None = None,
     ) -> ModelReply:
         chunks: list[bytes] = []
         received = 0
@@ -452,7 +465,9 @@ class OpenAICompatibleProvider:
             data = json.loads(b"".join(chunks).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ProviderError(f"ответ не является JSON: {exc}") from exc
-        return self._parse_completion(data, time.perf_counter() - started, contract, payload)
+        return self._parse_completion(
+            data, time.perf_counter() - started, contract, payload, telemetry
+        )
 
     def _chat_stream(
         self,
@@ -461,6 +476,7 @@ class OpenAICompatibleProvider:
         deadline: float | None,
         wall_clock: float | None,
         contract: WireContract,
+        telemetry: Any | None = None,
     ) -> ModelReply:
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -470,6 +486,25 @@ class OpenAICompatibleProvider:
         usage: dict[str, Any] = {}
         finish_reason: str | None = None
         received = 0
+
+        last_piece = time.perf_counter()
+        first_seen = False
+
+        def _decode(piece: str | None) -> None:
+            """One content/reasoning fragment: its gap and estimated tokens."""
+            nonlocal last_piece, ttft, first_seen
+            if not piece or telemetry is None:
+                return
+            now = time.perf_counter()
+            if ttft is None:
+                ttft = now - started
+            if not first_seen:
+                first_seen = True
+                telemetry.first_token(ttft_s=ttft, tokens=estimate_tokens(piece))
+            telemetry.decode_chunk(
+                interval_s=now - last_piece, tokens=estimate_tokens(piece), chars=len(piece)
+            )
+            last_piece = now
 
         def _event(raw_line: bytes) -> bool:
             """Consume one SSE line; ``True`` when the stream is complete."""
@@ -504,6 +539,7 @@ class OpenAICompatibleProvider:
                     if piece:
                         if ttft is None:
                             ttft = time.perf_counter() - started
+                        _decode(piece)
                         text_parts.append(piece)
                     key = "reasoning_content" if "reasoning_content" in delta else "reasoning"
                     think = delta.get(key)
@@ -512,6 +548,7 @@ class OpenAICompatibleProvider:
                             ttft = time.perf_counter() - started
                         reasoning_key = key
                         reasoning_parts.append(think)
+                        _decode(think)
                     for tc in delta.get("tool_calls") or []:
                         if ttft is None:
                             ttft = time.perf_counter() - started
@@ -524,6 +561,7 @@ class OpenAICompatibleProvider:
                             slot["name"] = fn["name"]
                         if fn.get("arguments"):
                             slot["arguments"] += fn["arguments"]
+                            _decode(fn["arguments"])
             return False
 
         pending = b""
@@ -554,10 +592,31 @@ class OpenAICompatibleProvider:
 
         if finish_reason is None:
             # EOF without a terminal marker: the runtime died mid-generation.
-            # Accepting it as a reply turned a cut answer into a model verdict.
+            # Accepting it as a reply turned a cut answer into a model verdict,
+            # but dropping the fragments threw away text and usage that were
+            # already generated (and paid for): attach them to the error and let
+            # the runner keep them as a turn.
             received = len("".join(text_parts))
+            reasoning = "".join(reasoning_parts) or None
+            protocol = {reasoning_key: reasoning} if reasoning and reasoning_key else {}
+            partial = None
+            if text_parts or reasoning_parts or tool_calls or usage:
+                partial = self._finish_reply(
+                    "".join(text_parts),
+                    reasoning,
+                    [tool_calls[i] for i in sorted(tool_calls)],
+                    usage,
+                    ttft,
+                    time.perf_counter() - started,
+                    None,
+                    payload,
+                    contract,
+                    protocol,
+                    telemetry,
+                )
             raise ProviderError(
-                f"SSE-поток оборвался без finish_reason ({received} символов получено)"
+                f"SSE-поток оборвался без finish_reason ({received} символов получено)",
+                partial=partial,
             )
         total = time.perf_counter() - started
         reasoning = "".join(reasoning_parts) or None
@@ -575,10 +634,16 @@ class OpenAICompatibleProvider:
             payload,
             contract,
             protocol,
+            telemetry,
         )
 
     def _parse_completion(
-        self, data: dict[str, Any], total: float, contract: WireContract, payload: dict[str, Any]
+        self,
+        data: dict[str, Any],
+        total: float,
+        contract: WireContract,
+        payload: dict[str, Any],
+        telemetry: Any | None = None,
     ) -> ModelReply:
         choices = data.get("choices") or []
         if not choices or not isinstance(choices[0], dict):
@@ -611,6 +676,7 @@ class OpenAICompatibleProvider:
             payload,
             contract,
             protocol,
+            telemetry,
         )
 
     def _finish_reply(
@@ -625,8 +691,18 @@ class OpenAICompatibleProvider:
         payload: dict[str, Any],
         contract: WireContract,
         protocol: dict[str, Any],
+        telemetry: Any | None = None,
     ) -> ModelReply:
         details = usage.get("completion_tokens_details") or {}
+        cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+        if telemetry is not None:
+            telemetry.usage(
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                reasoning_tokens=details.get("reasoning_tokens"),
+                cached_tokens=cached,
+                exact=bool(usage),
+            )
         return ModelReply(
             text=text,
             reasoning=reasoning,
@@ -634,6 +710,7 @@ class OpenAICompatibleProvider:
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
             reasoning_tokens=details.get("reasoning_tokens"),
+            cached_tokens=cached,
             ttft_s=ttft,
             total_s=total,
             finish_reason=finish_reason,
@@ -659,7 +736,10 @@ class OpenAICompatibleProvider:
         """
         if not text:
             return 0
-        key = f"{len(text)}:{hash(text) & 0xFFFFFFFF}"
+        # Keyed on the text itself: length plus ``hash()`` is only 32 random
+        # bits per process, and a collision returned a wrong exact count for two
+        # inputs of equal length — which silently moves the admission decision.
+        key = hashlib.sha1(text.encode("utf-8")).hexdigest()
         with self._lock:
             if key in self._token_cache:
                 return self._token_cache[key]
@@ -746,13 +826,24 @@ class CallableProvider:
         wall_clock: float | None = None,
         tool_choice: str | None = None,
         contract: WireContract | None = None,
+        telemetry: Any | None = None,
     ) -> ModelReply:
         self.calls.append([dict(m) for m in messages])
         started = time.perf_counter()
         out = self.fn(messages, tools)
-        if isinstance(out, ModelReply):
-            return out
-        return ModelReply(text=out, total_s=time.perf_counter() - started)
+        reply = out if isinstance(out, ModelReply) else ModelReply(
+            text=out, total_s=time.perf_counter() - started
+        )
+        if telemetry is not None:
+            telemetry.first_token(ttft_s=reply.ttft_s, tokens=estimate_tokens(reply.text))
+            telemetry.usage(
+                prompt_tokens=reply.prompt_tokens,
+                completion_tokens=reply.completion_tokens,
+                reasoning_tokens=reply.reasoning_tokens,
+                cached_tokens=reply.cached_tokens,
+                exact=reply.completion_tokens is not None,
+            )
+        return reply
 
     def tokenize(self, text: str) -> int | None:
         return None
@@ -774,11 +865,23 @@ class ScriptedProvider:
         return self.images
 
     def chat(self, messages, tools=None, **kwargs) -> ModelReply:
+        telemetry = kwargs.get("telemetry")
         self.calls.append([dict(m) for m in messages])
         if not self.replies:
-            return ModelReply(text="")
-        out = self.replies.pop(0)
-        return out if isinstance(out, ModelReply) else ModelReply(text=out)
+            out: ModelReply | str = ModelReply(text="")
+        else:
+            out = self.replies.pop(0)
+        reply = out if isinstance(out, ModelReply) else ModelReply(text=out)
+        if telemetry is not None:
+            telemetry.first_token(ttft_s=reply.ttft_s, tokens=estimate_tokens(reply.text))
+            telemetry.usage(
+                prompt_tokens=reply.prompt_tokens,
+                completion_tokens=reply.completion_tokens,
+                reasoning_tokens=reply.reasoning_tokens,
+                cached_tokens=reply.cached_tokens,
+                exact=reply.completion_tokens is not None,
+            )
+        return reply
 
     def tokenize(self, text: str) -> int | None:
         return None
@@ -843,44 +946,3 @@ def estimate_tokens(text: str) -> int:
     it only leaves the answer a little more room.
     """
     return max(1, round(len(text) / 2.5))
-
-
-def count_tokens(provider: Provider, text: str, cache: dict[str, int] | None = None) -> tuple[int, bool]:
-    """``(tokens, exact)`` — exact when the runtime can tokenize."""
-    if cache is not None:
-        key = f"{len(text)}:{hash(text) & 0xFFFFFFFF}"
-        if key in cache:
-            return cache[key], cache.get(key + ":exact", True)  # type: ignore[return-value]
-    count = None
-    try:
-        count = provider.tokenize(text)
-    except Exception:
-        count = None
-    if count is None:
-        est = estimate_tokens(text)
-        if cache is not None:
-            cache[f"{len(text)}:{hash(text) & 0xFFFFFFFF}"] = est
-            cache[f"{len(text)}:{hash(text) & 0xFFFFFFFF}:exact"] = False  # type: ignore[assignment]
-        return est, False
-    if cache is not None:
-        cache[f"{len(text)}:{hash(text) & 0xFFFFFFFF}"] = count
-    return count, True
-
-
-def messages_token_estimate(messages: Iterable[Message]) -> int:
-    total = 0
-    for m in messages:
-        content = m.get("content")
-        if isinstance(content, str):
-            total += estimate_tokens(content)
-        elif isinstance(content, list):
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") == "text":
-                    total += estimate_tokens(str(part.get("text") or ""))
-                elif part.get("type") == "image_url":
-                    total += IMAGE_TOKEN_ESTIMATE
-        for tc in m.get("tool_calls") or []:
-            total += estimate_tokens(json.dumps(tc, ensure_ascii=False))
-    return total

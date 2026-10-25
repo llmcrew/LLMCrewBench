@@ -283,9 +283,10 @@ def suite_digest(tasks: Iterable[core.TaskInstance], profile: str = core.DEFAULT
     """Public fingerprint of the fixtures and the grading contract.
 
     The fingerprint covers everything the model actually sees: the prompt, the
-    follow-up dialogue, the workspace contents and the tool schemas. A change
-    in any of them used to leave the digest intact (the plan observed a seed
-    change re-rendering C-3 databases with the same prompt and digest).
+    scenario's own system instruction, the follow-up dialogue, the workspace
+    contents and the tool schemas, plus the meta fields that steer the budget.
+    A change in any of them used to leave the digest intact (the plan observed a
+    seed change re-rendering C-3 databases with the same prompt and digest).
 
     It also covers the denominator, the executable evaluator bundle, the closed
     oracle (hidden tests included) and the applied toolchain: the same fixtures
@@ -308,6 +309,13 @@ def suite_digest(tasks: Iterable[core.TaskInstance], profile: str = core.DEFAULT
             "evaluator_sha256": evaluator_sha(task.category),
             "oracle_sha256": oracle_sha(task),
             "prompt_sha256": hashlib.sha256(task.prompt.encode()).hexdigest(),
+            # The scenario's own system instruction and its meta (budget
+            # headroom, step count, timing) change the task the model faces and
+            # its admission, so they belong to the fingerprint.
+            "system_sha256": hashlib.sha256((task.system or "").encode()).hexdigest(),
+            "meta_sha256": hashlib.sha256(
+                json.dumps(task.meta or {}, ensure_ascii=False, sort_keys=True, default=str).encode()
+            ).hexdigest(),
             "dialogue_sha256": hashlib.sha256(
                 json.dumps(task.dialogue or [], ensure_ascii=False, sort_keys=True).encode()
             ).hexdigest(),

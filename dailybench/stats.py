@@ -6,8 +6,9 @@ honest:
 * an interval is computed by resampling the observed units (tasks), never by
   inventing a distribution around a point estimate;
 * a difference is estimated on the *same* task instances: the interval of the
-  difference comes from a paired, category-stratified bootstrap, so a shared
-  effect survives even when the two marginal intervals overlap. Overlap of the
+  difference comes from a paired bootstrap, stratified by semantic *family* (not
+  by category, whose members are not independent draws), so a shared effect
+  survives even when the two marginal intervals overlap. Overlap of the
   marginals is recorded, but it no longer decides the verdict;
 * the proportion interval of a weighted sum is the bootstrap of that sum, never
   a Wilson interval of an arbitrary ratio.
@@ -49,7 +50,10 @@ SMALL_SAMPLE_CAVEAT = (
 ) % SMALL_SAMPLE
 
 MIN_PAIRS = 2
-"""Below this many shared tasks the difference interval cannot discriminate."""
+"""Below this many shared tasks *inside a stratum* the interval cannot discriminate."""
+
+MIN_PAIRS_UNSTRATIFIED = 3
+"""Global floor when the strata are too thin to reach :data:`MIN_PAIRS` each."""
 
 PairedUnit = tuple[str, float, float, float, float]
 """``(stratum, left_earned, left_possible, right_earned, right_possible)``."""
@@ -201,7 +205,10 @@ def paired_ratio_difference(
 
     Returns the difference in ratio units (left − right), its interval, and
     ``significant``: the whole interval stays on one side of zero. A single
-    shared task cannot discriminate and stays insignificant.
+    shared task cannot discriminate and stays insignificant, and so does a
+    comparison whose strata are all thinner than :data:`MIN_PAIRS`: one shared
+    unit per stratum redraws the same units, the interval collapses to zero
+    width and ``low > 0`` would be trivially true.
     """
     data: list[PairedUnit] = [
         (str(stratum), float(left_earned), float(left_possible), float(right_earned), float(right_possible))
@@ -217,6 +224,7 @@ def paired_ratio_difference(
         "significant": False,
         "n_pairs": len(data),
         "strata": len(strata),
+        "smallest_stratum": min((len(group) for group in strata.values()), default=0),
     }
     if not data:
         return result
@@ -237,7 +245,17 @@ def paired_ratio_difference(
     low, high = _interval(draws, level)
     result["delta"] = delta
     result["ci95"] = (low, high)
-    result["significant"] = len(data) >= MIN_PAIRS and (low > 0.0 or high < 0.0)
+    # Two ways to be allowed to rank: every stratum carries MIN_PAIRS units, or
+    # the comparison is large enough *and* the interval actually has width. The
+    # width check is what kills the degenerate one-unit-per-stratum case, where
+    # every resample redraws the same units and collapses the interval to zero.
+    enough_per_stratum = result["smallest_stratum"] >= MIN_PAIRS
+    result["significant"] = (
+        len(data) >= MIN_PAIRS
+        and (enough_per_stratum
+             or (len(data) >= MIN_PAIRS_UNSTRATIFIED and high > low))
+        and (low > 0.0 or high < 0.0)
+    )
     return result
 
 
@@ -251,16 +269,16 @@ def sample_plan(*, pairs: int, strata: int) -> dict[str, Any]:
     """
     return {
         "population": "общие task_id двух прогонов",
-        "estimand": "разность долей на общих задачах, стратифицированная категориями",
+        "estimand": "разность долей на общих задачах, стратифицированная семействами",
         "method": "paired stratified percentile bootstrap",
         "pairs": pairs,
         "strata": strata,
-        "measured": ["task_id", "category"],
+        "measured": ["task_id", "family"],
         "unmeasured": ["повторы вызова", "независимые сиды"],
         "repeats": None,
         "seeds": None,
         "note": (
-            "Один прогон на модель: пересэмплируются задачи, а не повторы и не сиды. "
+            "Один прогон на модель: пересэмплируются задачи внутри семейства, а не повторы и не сиды. "
             + SMALL_SAMPLE_CAVEAT
         ),
     }

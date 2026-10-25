@@ -34,7 +34,14 @@ from pathlib import Path
 from typing import Any
 
 from . import core, gallery, schema, stats, viz
-from .report import WEIGHT_SCHEMES, compare_summaries, load_run, summarise
+from .report import (
+    WEIGHT_SCHEMES,
+    compare_summaries,
+    contract_key,
+    load_run,
+    rankable,
+    summarise,
+)
 
 SCORED = core.SCORED_CATEGORIES
 SHOWCASE = core.VISUAL_CATEGORIES
@@ -283,18 +290,82 @@ def _suite_line(facts: dict[str, int], *, per_run: bool) -> str:
     return f"{subject} — {facts['tasks']} заданий, из них {scored} {showcase}."
 
 
-def _spend_totals(run: dict[str, Any]) -> dict[str, float]:
+def _spend_totals(run: dict[str, Any]) -> dict[str, Any]:
+    """Task transcripts summed; an unknown contribution is counted, not zeroed.
+
+    A partial sum divided by a complete score reads as a cheap run, so
+    ``answer``/``reasoning``/``total``/``seconds`` are ``None`` as soon as one
+    measured task left the field unknown. ``unknown`` names the fields and
+    ``unknown_tasks`` the number of affected tasks, for the «н/п» text.
+    """
     answer = reason = seconds = tool_calls = 0.0
+    unknown = {"answer": 0, "reasoning": 0, "seconds": 0}
+    tasks = 0
     for entry in run.get("tasks") or []:
         spend = (entry.get("transcript") or {}).get("spend") or {}
+        if not spend:
+            continue
+        tasks += 1
+        unknown["answer"] += spend.get("answer_tokens") is None
+        unknown["reasoning"] += spend.get("reasoning_tokens") is None
+        unknown["seconds"] += spend.get("generate_s") is None
         answer += spend.get("answer_tokens") or 0
         reason += spend.get("reasoning_tokens") or 0
         seconds += spend.get("generate_s") or 0
         tool_calls += spend.get("tool_calls") or 0
-    total = answer + reason
-    return {"answer": answer, "reasoning": reason, "seconds": seconds, "tool_calls": tool_calls,
-            "total": total, "reasoning_share": reason / total if total else 0.0,
-            "answer_per_min": answer / (seconds / 60) if seconds > 1 else 0.0}
+    total_known = not unknown["answer"] and not unknown["reasoning"] and bool(tasks)
+    total = answer + reason if total_known else None
+    return {
+        "answer": answer if tasks and not unknown["answer"] else None,
+        "reasoning": reason if tasks and not unknown["reasoning"] else None,
+        "seconds": seconds if tasks and not unknown["seconds"] else None,
+        "tool_calls": tool_calls,
+        "total": total,
+        "reasoning_share": (reason / total) if total else None,
+        "unknown": unknown,
+        "unknown_tasks": sum(
+            1
+            for entry in run.get("tasks") or []
+            if (spend := (entry.get("transcript") or {}).get("spend") or {})
+            and any(spend.get(key) is None for key in ("answer_tokens", "reasoning_tokens", "generate_s"))
+        ),
+        "tasks": tasks,
+    }
+
+
+def _kv(value: float | None) -> str:
+    return "н/п" if value is None else f"{value / 1000:.0f}K"
+
+
+def _minutes(seconds: float | None, digits: int = 0) -> str:
+    return "н/п" if seconds is None else f"{seconds / 60:.{digits}f} мин"
+
+
+def _num(value: float | None, digits: int = 0) -> str:
+    return "н/п" if value is None else f"{value:.{digits}f}"
+
+
+def _per_min(summary: dict[str, Any], spend: dict[str, Any]) -> float | None:
+    """Earned points per generation minute — ``None`` without a known time."""
+    seconds = spend.get("seconds")
+    if seconds is None or seconds / 60 < 1e-9:
+        return None
+    return summary["headline_earned"] / (seconds / 60)
+
+
+def _spend_note(spend: dict[str, Any]) -> str:
+    unknown = spend.get("unknown_tasks") or 0
+    return f" <span class='th-sub'>(н/п у {unknown} из {spend['tasks']})</span>" if unknown else ""
+
+
+def _task_spend(spend: dict[str, Any], key: str) -> str:
+    """One task's number: «—» when no transcript, «н/п» when it went unreported."""
+    if not spend:
+        return "—"
+    value = spend.get(key)
+    if value is None:
+        return "н/п"
+    return f"{value:.1f}" if key == "generate_s" else f"{int(value)}"
 
 
 def _json_script(payload: Any) -> str:
@@ -329,30 +400,26 @@ def _column_name(run: dict[str, Any]) -> str:
 
 
 def _contract_key(run: dict[str, Any]) -> str:
-    """Immutable contract identity of a run: the suite digest sha256.
-
-    Runs built from different suite bytes, profiles or evaluator contracts have
-    different denominators; their percentages are not ranks of one another.
-    """
-    return str((run.get("suite") or {}).get("sha256") or "")
+    """Immutable contract identity of a run (see :func:`report.contract_key`)."""
+    return contract_key(run)
 
 
 def _contract_label(contract: str) -> str:
     return f"<code>{_cell(contract[:16])}</code>" if contract else "без контракта"
 
 
-def _rankable(summary: dict[str, Any]) -> bool:
-    """Only a complete, infrastructure-clean measurement may be ranked.
+def _rank_key(pair: tuple[dict[str, Any], dict[str, Any]]) -> tuple[bool, float]:
+    """Order inside one contract: earned points against the profile denominator.
 
-    A skipped *scored* category shrinks the denominator and would silently
-    reward the run, so ``unsupported`` is not hidden inside a rank either.
-    A skipped showcase task (K/L) does not touch the verdict.
+    The denominator is fixed per profile, so a run that offered fewer points
+    cannot outrank more earned ones by a smaller number. A failed admission
+    shrinks its own headline denominator, so it sorts after the admitted runs
+    of the same contract instead of pretending to lead.
     """
-    return (
-        bool(summary.get("eligible"))
-        and bool(summary.get("full_suite"))
-        and not summary.get("skipped_scored")
-    )
+    summary = pair[1]
+    profile = str(summary.get("profile") or core.DEFAULT_PROFILE)
+    total = core.scored_total(profile) or 1.0
+    return (summary.get("admission_state") == "failed", -summary["headline_earned"] / total)
 
 
 def _group_contracts(
@@ -370,9 +437,9 @@ def _group_contracts(
         groups.setdefault(_contract_key(pair[0]), []).append(pair)
     ordered: list[tuple[str, list[tuple[dict[str, Any], dict[str, Any]]], list[tuple[dict[str, Any], dict[str, Any]]]]] = []
     for contract, pairs in groups.items():
-        ranked = [pair for pair in pairs if _rankable(pair[1])]
-        rest = [pair for pair in pairs if not _rankable(pair[1])]
-        ranked.sort(key=lambda pair: -pair[1]["headline_earned"] / (pair[1]["headline_possible"] or 1))
+        ranked = [pair for pair in pairs if rankable(pair[1])]
+        rest = [pair for pair in pairs if not rankable(pair[1])]
+        ranked.sort(key=_rank_key)
         rest.sort(
             key=lambda pair: (
                 not pair[1].get("eligible"),
@@ -385,10 +452,7 @@ def _group_contracts(
     ordered.sort(
         key=lambda item: (
             not item[1],
-            -max(
-                (pair[1]["headline_earned"] / (pair[1]["headline_possible"] or 1) for pair in item[1]),
-                default=0.0,
-            ),
+            _rank_key(min(item[1], key=_rank_key)) if item[1] else (False, 0.0),
         )
     )
     return ordered
@@ -547,9 +611,10 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_
             f"<div class='sub'>симуляции K: <b>{summary['showcase_earned']:.0f}/{summary['showcase_possible']:.0f}</b> · L — оценка человеком · "
             f"заданий с потерей: <b>{failed}</b> (нулевых {zero})</div>"
             f"<div class='sub'>категории с потерей: {_cell(', '.join(failed_cats) or 'нет')}</div>"
-            f"<div class='sub spend'>токенов: <b>{spend['total'] / 1000:.0f}K</b> "
-            f"(reasoning {100 * spend['reasoning_share']:.0f}%) · <b>{spend['seconds'] / 60:.0f} мин</b> "
-            f"· балл/мин <b>{summary['headline_earned'] / max(spend['seconds'] / 60, 1e-9):.2f}</b></div>"
+            f"<div class='sub spend'>токенов: <b>{_kv(spend['total'])}</b>{_spend_note(spend)}"
+            f" · reasoning {_num(None if spend['reasoning_share'] is None else 100 * spend['reasoning_share'])}%"
+            f" · <b>{_minutes(spend['seconds'])}</b>"
+            f" · балл/мин <b>{_num(_per_min(summary, spend), 2)}</b></div>"
             f"<div class='sub'>{_cell(config.get('quant') or '')} · {_cell(_endpoint(config.get('base_url', '')))}</div>"
             f"{link}"
             "</div>"
@@ -560,32 +625,45 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_
 def _comparison_block(runs: list[dict[str, Any]]) -> str:
     """Paired difference, category vector and weight sensitivity.
 
-    The first run is the baseline. Significance is read from the interval of
-    the paired difference on shared task ids, stratified by category; whether
-    the separate bands overlap is shown beside it so the conservative reading
-    stays visible.
+    ``runs`` is in the *caller's* order and the first entry is the baseline —
+    the same rule and the same baseline as ``comparison.md``. Significance is
+    read from the interval of the paired difference on shared task ids,
+    stratified by family; whether the separate bands overlap is shown beside it
+    so the conservative reading stays visible. Only a complete, infrastructure-
+    clean run inside the baseline's contract takes part in the verdict; any
+    other row is marked «не ранжируется» and does not count.
     """
     if len(runs) < 2:
         return ""
     summaries = [(run, summarise(run["scores"], run.get("suite"))) for run in runs]
     base_run, base = summaries[0]
+    base_contract = _contract_key(base_run)
     rows = []
     sensitivities = []
     for run, summary in summaries[1:]:
-        comparison = compare_summaries(base, summary)
+        comparison = compare_summaries(
+            base, summary, same_contract=_contract_key(run) == base_contract
+        )
         overall = comparison["overall"]
         band = overall["delta_ci95"]
         shown = f"{band[0]:+.2f} … {band[1]:+.2f} п.п." if band else "n/a"
         delta = overall["delta"]
-        delta_text = "" if delta is None else f"{delta:+.2f}"
-        verdict = "значимо" if overall["significant"] else "незначимо"
+        delta_text = "n/a" if delta is None else f"{delta:+.2f}"
+        if overall["ranked"]:
+            verdict = "значимо" if overall["significant"] else "незначимо"
+            tone = "good" if overall["significant"] else "sub"
+        else:
+            verdict = f"не ранжируется: {_cell(overall['unranked_reason'])}"
+            tone = "sub"
         rows.append(
             f"<tr><td class='model'>{_cell(_model_name(run))}</td>"
             f"<td class='num'>{delta_text}</td>"
             f"<td class='num'>{_cell(shown)}</td>"
-            f"<td class='num'>{overall['pairs']}</td>"
+            f"<td class='num'>{_cell(_pct(base.get('headline_earned', 0), base.get('headline_possible', 0)))}</td>"
+            f"<td class='num'>{_cell(_pct(summary.get('headline_earned', 0), summary.get('headline_possible', 0)))}</td>"
+            f"<td class='num'>{overall['pairs'] or 'n/a'}</td>"
             f"<td class='num'>{'да' if overall['overlap'] else 'нет'}</td>"
-            f"<td class='num {'good' if overall['significant'] else 'sub'}'>{verdict}</td></tr>"
+            f"<td class='num {tone}'>{verdict}</td></tr>"
         )
         sensitivities.append((run, comparison["weight_sensitivity"]))
     sensitivity_rows = []
@@ -594,9 +672,12 @@ def _comparison_block(runs: list[dict[str, Any]]) -> str:
         for run, sensitivity in sensitivities:
             entry = sensitivity["schemes"][scheme]
             delta = entry["delta"]
+            unknown = entry["unknown"]
             cells.append(
                 f"<td class='num'>{'' if delta is None else f'{delta:+.2f}'} "
-                f"<span class='sub'>{_cell(entry['winner'] or 'n/a')}</span></td>"
+                f"<span class='sub'>{_cell(entry['winner'] or 'n/a')}"
+                + (f" · не измерено {unknown:.0f}% веса" if unknown else "")
+                + "</span></td>"
             )
         sensitivity_rows.append(f"<tr><th>{_cell(scheme)}</th>{''.join(cells)}</tr>")
     vector_head = "".join(f"<th>{_cell(key)}</th>" for key in sorted(core.CATEGORY_POINTS))
@@ -610,18 +691,23 @@ def _comparison_block(runs: list[dict[str, Any]]) -> str:
     stable = all(sensitivity["stable"] for _, sensitivity in sensitivities)
     return (
         '<h2>Парное сравнение: разность и её интервал</h2>'
-        f"<p class='hint'>База — <b>{_cell(_model_name(base_run))}</b>. Одинаковые задания сравниваются "
-        "парами, стратифицированно по категориям; решает 95 % интервал разности, а не перекрытие "
-        "отдельных полос. Один прогон на модель: повторы и сиды не измеряются.</p>"
-        "<table class='grid'><thead><tr><th>Модель</th><th>Δ, п.п.</th><th>95 % ДИ разности</th>"
-        "<th>Общих задач</th><th>Полосы перекрываются</th><th>Вердикт</th></tr></thead>"
+        f"<p class='hint'>База — <b>{_cell(_model_name(base_run))}</b>, первый прогон в порядке "
+        "вызова; та же база в comparison.md. Одинаковые задания сравниваются парами, "
+        "стратифицированно по семействам; Δ — парная разность на общих задачах, а доли сторон от "
+        "их собственных наборов стоят отдельными колонками. Решает 95 % интервал разности, а не "
+        "перекрытие отдельных полос. Прогон вне контракта базы или неполный в вердикте не участвует.</p>"
+        "<table class='grid'><thead><tr><th>Модель</th><th>Δ (парная), п.п.</th><th>95 % ДИ разности</th>"
+        "<th>База, %</th><th>Модель, %</th><th>Общих задач</th><th>Полосы перекрываются</th>"
+        "<th>Вердикт</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
         "<h2>Вектор категорий</h2>"
         "<p class='hint'>Один итог — смесь весов, поэтому публикуется и вектор по категориям, %.</p>"
         f"<table class='grid'><thead><tr><th>Модель</th>{vector_head}</tr></thead>"
         f"<tbody>{''.join(vector_rows)}</tbody></table>"
         "<h2>Чувствительность к весам</h2>"
-        "<p class='hint'>Дельта под каждой политикой весов: вывод "
+        "<p class='hint'>Дельта под каждой политикой весов: знаменатель — полный вес профиля, "
+        "поэтому непомеренная категория не даёт бесплатного прохода, а её доля веса подписана. "
+        "Вывод "
         + ("устойчив к смеси.</p>" if stable else "зависит от смеси — это свойство весов, не модели.</p>")
         + "<table class='grid'><thead><tr><th>Политика</th>"
         + "".join(f"<th>{_cell(_model_name(run))}</th>" for run, _ in sensitivities)
@@ -683,8 +769,8 @@ def _verdict_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> st
                 f"<td class='num show'>{'—' if pct is None else f'{pct:.0f}%'}"
                 f"{f'<div class=\"ci-scale small\">{band}</div>' if band else ''}</td>"
             )
-        cells.append(f"<td class='num'>{spend['total'] / 1000:.0f}K</td>")
-        cells.append(f"<td class='num'>{spend['seconds'] / 60:.0f}</td>")
+        cells.append(f"<td class='num'>{_kv(spend['total'])}{_spend_note(spend)}</td>")
+        cells.append(f"<td class='num'>{_minutes(spend['seconds'])}</td>")
         body.append("<tr>" + "".join(cells) + "</tr>")
     return f"<table class='grid verdict-table'><thead><tr>{''.join(f'<th>{h}</th>' for h in head)}</tr></thead><tbody>{''.join(body)}</tbody></table>"
 
@@ -825,9 +911,9 @@ def _task_rows(run: dict[str, Any]) -> str:
         rows.append(
             f"<tr class='{klass}'><td>{_cell(task_id)}</td><td>{_cell(title)}{badge}</td>"
             f"<td class='num'>{score.get('earned', 0):.1f}/{score.get('possible', 0):.0f}</td>"
-            f"<td class='num small'>{spend.get('answer_tokens') or 0}</td>"
-            f"<td class='num small'>{spend.get('reasoning_tokens') or 0}</td>"
-            f"<td class='num small'>{round(spend.get('generate_s') or 0, 1)}</td>"
+            f"<td class='num small'>{_task_spend(spend, 'answer_tokens')}</td>"
+            f"<td class='num small'>{_task_spend(spend, 'reasoning_tokens')}</td>"
+            f"<td class='num small'>{_task_spend(spend, 'generate_s')}</td>"
             f"<td>{_cell(stop)}</td><td class='detail'>{detail}</td></tr>"
         )
     return "".join(rows)
@@ -971,11 +1057,13 @@ def _charts_payload(runs: list[dict[str, Any]]) -> dict[str, Any]:
         payload["showcase"].append([_pct(showcase.get(k, {}).get("earned", 0),
                                          showcase.get(k, {}).get("possible", 0)) for k in core.SHOWCASE_CATEGORIES])
         spend = _spend_totals(run)
+        minutes = None if spend["seconds"] is None else spend["seconds"] / 60
         payload["spend"].append({"model": name, "answer": spend["answer"], "reasoning": spend["reasoning"],
-                                 "minutes": spend["seconds"] / 60})
+                                 "minutes": minutes})
         payload["cost"].append({"model": name, "score": summary["headline_earned"],
-                                "minutes": spend["seconds"] / 60, "reasoning": spend["reasoning"] / 1000,
-                                "per_min": summary["headline_earned"] / max(spend["seconds"] / 60, 1e-9)})
+                                "minutes": minutes,
+                                "reasoning": None if spend["reasoning"] is None else spend["reasoning"] / 1000,
+                                "per_min": _per_min(summary, spend)})
     return payload
 
 
@@ -1006,7 +1094,8 @@ def _heatmap_payload(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> 
     rows = []
     for run, _ in summaries:
         buckets: dict[str, dict[str, float]] = {
-            family: {"earned": 0.0, "possible": 0.0, "tasks": 0, "failed": 0} for family in families
+            family: {"earned": 0.0, "possible": 0.0, "tasks": 0, "measured": 0, "failed": 0}
+            for family in families
         }
         for score in run["scores"]:
             family = schema.family_for(score.get("category", "")) or score.get("category", "?")
@@ -1014,6 +1103,10 @@ def _heatmap_payload(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> 
             bucket["tasks"] += 1
             if score.get("skipped"):
                 continue
+            # A skip leaves numerator and denominator alone, so the percentage
+            # does not move — but the cell must still show that fewer tasks
+            # were measured, otherwise the skip silently reads as full cover.
+            bucket["measured"] += 1
             earned, possible = float(score.get("earned", 0) or 0), float(score.get("possible", 0) or 0)
             bucket["earned"] += earned
             bucket["possible"] += possible
@@ -1023,8 +1116,9 @@ def _heatmap_payload(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> 
             "name": _model_name(run),
             "values": {
                 family: {
-                    "pct": _pct(bucket["earned"], bucket["possible"]) if bucket["tasks"] else None,
-                    "tasks": bucket["tasks"], "failed": bucket["failed"],
+                    "pct": _pct(bucket["earned"], bucket["possible"]) if bucket["measured"] else None,
+                    "tasks": bucket["tasks"], "measured": bucket["measured"],
+                    "failed": bucket["failed"],
                 }
                 for family, bucket in buckets.items()
             },
@@ -1173,7 +1267,7 @@ def _gallery(entries: list[dict[str, Any]]) -> str:
             f"<span class='score {tone}'>{_cell(status)}</span></figcaption>"
             f"<div class='who'>{_cell(item['model'])}</div>{media}"
             f"<div class='checks'>{_cell(_verdict_text(item['category'], failed))}"
-            f"<span class='sub'> · {spend.get('answer_tokens') or 0} ток. ответ / {spend.get('reasoning_tokens') or 0} reasoning</span></div>"
+            f"<span class='sub'> · {_task_spend(spend, 'answer_tokens')} ток. ответ / {_task_spend(spend, 'reasoning_tokens')} reasoning</span></div>"
             f"<div class='row'><button class='open' data-page='{_cell(page)}' data-window='{window_name}'>"
             f"сцена в новом окне</button>"
             f"<button class='open cmp-solo' data-page='{_cell(page)}'>сравнить</button></div>"
@@ -1209,6 +1303,9 @@ def render_html(
     runs = [load_run(directory) for directory in run_dirs]
     if compare:
         runs = _select_runs(runs, compare)
+    # The paired comparison keeps the caller's order: its first run is the
+    # baseline, the same one comparison.md uses. Ranking re-sorts a *copy*.
+    comparison_runs = list(runs)
     page_dir = page_dir or Path(run_dirs[0]).parent
 
     gallery.ensure_vendor(page_dir)
@@ -1231,8 +1328,10 @@ def render_html(
     groups = _group_contracts(summaries)
     ranks: dict[str, int | None] = {}
     flat: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    place = 1
     for _contract, ranked, rest in groups:
+        # A place is only meaningful inside one contract, so the numbering
+        # restarts there instead of continuing across incomparable suites.
+        place = 1
         for pair in ranked:
             ranks[_run_id(pair[0])] = place
             place += 1
@@ -1242,7 +1341,7 @@ def render_html(
     all_runs = [run for run, _ in flat]
     summaries = flat
     cards = _model_cards(flat, per_run=per_run, ranks=ranks)
-    comparison = "" if per_run else _comparison_block([run for run, _ in summaries])
+    comparison = "" if per_run else _comparison_block(comparison_runs)
     if per_run:
         ranking = cards
     else:
@@ -1482,10 +1581,10 @@ def render_html(
  <table class="grid"><thead><tr><th>Модель</th><th>Токены ответа</th><th>Токены reasoning</th>
  <th>Минут генерации</th><th>Балл за минуту</th><th>Вызовов инструментов</th></tr></thead><tbody>
  {''.join(f"<tr><td class='model'>{_cell(_model_name(run))}</td>"
-          f"<td class='num'>{_spend_totals(run)['answer']:.0f}</td>"
-          f"<td class='num'>{_spend_totals(run)['reasoning']:.0f}</td>"
-          f"<td class='num'>{_spend_totals(run)['seconds'] / 60:.1f}</td>"
-          f"<td class='num'>{summary['headline_earned'] / max(_spend_totals(run)['seconds'] / 60, 1e-9):.2f}</td>"
+          f"<td class='num'>{_num(_spend_totals(run)['answer'])}{_spend_note(_spend_totals(run))}</td>"
+          f"<td class='num'>{_num(_spend_totals(run)['reasoning'])}</td>"
+          f"<td class='num'>{_minutes(_spend_totals(run)['seconds'], 1)}</td>"
+          f"<td class='num'>{_num(_per_min(summary, _spend_totals(run)), 2)}</td>"
           f"<td class='num'>{_spend_totals(run)['tool_calls']:.0f}</td></tr>" for run, summary in summaries)}
  </tbody></table>
  <h2>Как читать отчёт</h2>
@@ -1599,10 +1698,10 @@ function drawCharts() {{
 
   Plotly.newPlot('ch-cost', [
     {{ type:'bar', name:'балл за минуту', x: DATA.cost.map(c => c.model), y: DATA.cost.map(c => c.per_min),
-       marker:{{color:'#56d4dd'}}, text: DATA.cost.map(c => c.per_min.toFixed(2)), textposition:'outside',
+       marker:{{color:'#56d4dd'}}, text: DATA.cost.map(c => c.per_min === null ? 'н/п' : c.per_min.toFixed(2)), textposition:'outside',
        yaxis:'y', hovertemplate: '%{{x}}: %{{y:.2f}} балла за минуту<extra></extra>' }},
     {{ type:'scatter', mode:'markers+text', name:'минут генерации', x: DATA.cost.map(c => c.model),
-       y: DATA.cost.map(c => c.minutes), text: DATA.cost.map(c => c.minutes.toFixed(1) + ' мин'),
+       y: DATA.cost.map(c => c.minutes), text: DATA.cost.map(c => c.minutes === null ? 'н/п' : c.minutes.toFixed(1) + ' мин'),
        textposition:'top center', marker:{{color:'#ff7b72', size:11}}, yaxis:'y2',
        hovertemplate: '%{{x}}: %{{y:.1f}} минут<extra></extra>' }},
   ], Object.assign({{}}, LAYOUT, {{
