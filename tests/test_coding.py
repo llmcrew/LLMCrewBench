@@ -12,11 +12,15 @@ public answer contract (the file is compiled and imported) still holds.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import json
 import os
 import random
 import re
 import sys
+import zipfile
 from pathlib import Path
 
 from dailybench import ModelReply, RunConfig, Transcript, Turn
@@ -1094,8 +1098,8 @@ def test_n2_prompt_declares_the_contract():
         "order_id,region,product,cents,status",
         "invalid batch:",
         "код 2",
-        "код 64",
-        "томарн",
+        "64",
+        "томарность",
         "protected",
     ):
         assert needle in prompt
@@ -1130,9 +1134,755 @@ def test_n2_is_stretch_only_and_registered_by_profile():
     stretch = coding.generate(random.Random(1), RunConfig(profile="stretch-v1"))
     pilot = coding.generate(random.Random(1), RunConfig(profile="pilot"))
     assert [task.id for task in stretch] == list(coding.STRETCH_IDS)
-    assert "N-2" in coding.STRETCH_IDS and coding.STRETCH_IDS[-1] == "N-2"
+    assert "N-2" in coding.STRETCH_IDS
     assert "N-2" not in [task.id for task in pilot]
     category = core.REGISTRY["C"]
     assert category.expected_ids_for("stretch-v1") == coding.STRETCH_IDS
     assert category.expected_ids_for("pilot") == coding.PILOT_IDS
     assert category.expected_ids_for("baseline-20261020") == coding.BASELINE_IDS
+
+
+# --------------------------------------------------------------------------- #
+# C-7 — library composition (base64 ZIP → CSV → SQLite)
+# --------------------------------------------------------------------------- #
+
+C7_POINTS = 8.0
+
+
+def _c7(seed: int = 1):
+    return coding_python.generate_c7(random.Random(seed), RunConfig(profile="stretch-v1"))
+
+
+_C7_PARTIAL = '''def command_import(path: Path) -> int:
+    declared = entries()
+    header = columns()
+    allowed = regions()
+    BUILD.mkdir(exist_ok=True)
+    connection = sqlite3.connect(DB)
+    applied = 0
+    try:
+        connection.execute(TABLE)
+        with zipfile.ZipFile(io.BytesIO(decode(path))) as archive:
+            for batch in declared:
+                name = str(batch["member"])
+                with archive.open(name) as member:
+                    with io.TextIOWrapper(member, encoding="utf-8", newline="") as stream:
+                        text = stream.read()
+                if hashlib.sha256(text.encode("utf-8")).hexdigest() != batch["sha256"]:
+                    raise Invalid(f"sha256 {name}")
+                rows = []
+                reader = csv.reader(io.StringIO(text, newline=""))
+                next(reader, None)
+                for fields in reader:
+                    order_id, region, product, cents, status = fields
+                    rows.append((int(order_id), region, product, int(cents), status))
+                connection.executemany(
+                    "INSERT INTO events (order_id, region, product, cents, status, batch)"
+                    " VALUES (?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT(order_id) DO UPDATE SET"
+                    " region = excluded.region, product = excluded.product,"
+                    " cents = excluded.cents, status = excluded.status, batch = excluded.batch",
+                    [(a, b, c, d, e, name) for a, b, c, d, e in rows],
+                )
+                connection.commit()
+                applied += len(rows)
+        payload = summary(connection)
+    except Invalid as exc:
+        return fail(str(exc))
+    finally:
+        connection.close()
+    publish(payload)
+    print(f"ok: rows={applied}")
+    return 0
+
+
+'''
+
+
+def _c7_mutant(reference: str, kind: str) -> str:
+    if kind == "leaked_handles":
+        source = _replace(
+            reference,
+            'STATUSES = ("paid", "refunded")',
+            'STATUSES = ("paid", "refunded")\n_OPEN: list = []',
+        )
+        source = _replace(
+            source,
+            "with zipfile.ZipFile(io.BytesIO(decode(path))) as archive:",
+            "archive = zipfile.ZipFile(io.BytesIO(decode(path)))\n"
+            "    _OPEN.append(archive)\n"
+            "    if True:",
+        )
+        return _replace(
+            source,
+            "    finally:\n        connection.close()",
+            "    finally:\n        _OPEN.append(connection)",
+        )
+    if kind == "partial_write":
+        return _replace_block(
+            reference, "def command_import", "def command_report", _C7_PARTIAL
+        )
+    if kind == "no_newline":
+        source = _replace(
+            reference,
+            'io.TextIOWrapper(member, encoding="utf-8", newline="")',
+            'io.TextIOWrapper(member, encoding="utf-8")',
+        )
+        return _replace(source, 'io.StringIO(text, newline="")', "io.StringIO(text)")
+    if kind == "unsorted_region":
+        return _replace(
+            reference, "GROUP BY region ORDER BY region", "GROUP BY region ORDER BY region DESC"
+        )
+    raise AssertionError(kind)
+
+
+def test_c7_library_composition_reference_scores_full():
+    task = _c7()
+    score = _score(task, task.oracle["reference"])
+    assert score.earned == score.possible == C7_POINTS
+    assert [check.name for check in score.checks] == list(task.oracle["checks"])
+
+
+@pytest.mark.parametrize(
+    ("kind", "failed"),
+    [
+        ("leaked_handles", "resources_closed"),
+        ("partial_write", "invalid_sha_atomic"),
+        ("no_newline", "pinned_apis"),
+        ("unsorted_region", "report_content"),
+    ],
+)
+def test_c7_library_composition_mutant_does_not_score_full(kind, failed):
+    task = _c7()
+    score = _score(task, _c7_mutant(task.oracle["reference"], kind))
+    assert score.earned < C7_POINTS
+    assert not next(check for check in score.checks if check.name == failed).passed
+
+
+def test_c7_library_composition_garbage_scores_zero():
+    assert _score(_c7(), "#!/usr/bin/env python3\nmain(\n").earned == 0.0
+
+
+@pytest.mark.parametrize("seed", DEV_SEEDS)
+def test_c7_library_composition_reference_is_full_on_every_dev_seed(seed):
+    task = _c7(seed)
+    assert task.id == "C-7" and task.max_points == C7_POINTS
+    assert _score(task, task.oracle["reference"]).earned == C7_POINTS
+
+
+def test_c7_library_composition_oracle_report_is_recomputed_independently():
+    """The report is derived here from the structured rows, not from the
+    module's own helper, so the generator cannot agree with itself."""
+    task = _c7(3)
+    rows = [tuple(row) for row in task.oracle["expected_rows"]]
+    by_region: dict[str, list[int]] = {}
+    by_product: dict[str, int] = {}
+    for _, region, product, cents, _status in rows:
+        bucket = by_region.setdefault(region, [0, 0])
+        bucket[0] += 1
+        bucket[1] += cents
+        by_product[product] = by_product.get(product, 0) + cents
+    expected = {
+        "by_region": [
+            {"region": region, "rows": by_region[region][0], "cents": by_region[region][1]}
+            for region in sorted(by_region)
+        ],
+        "rows": len(rows),
+        "top_product": min(by_product, key=lambda name: (-by_product[name], name)),
+        "total_cents": sum(row[3] for row in rows),
+    }
+    assert task.oracle["expected_report"] == expected
+    totals = sorted(by_product.values(), reverse=True)
+    assert totals[0] == totals[1]
+    assert task.oracle["expected_report"]["top_product"] == "alpha"
+
+
+@pytest.mark.parametrize("seed", DEV_SEEDS)
+def test_c7_library_composition_fixture_is_valid_and_bounded(seed):
+    task = _c7()
+    manifest = json.loads(task.workspace["data/manifest.json"])
+    archive = zipfile.ZipFile(io.BytesIO(base64.b64decode(task.workspace["data/exports.zip.b64"])))
+    try:
+        members = {info.filename: archive.read(info) for info in archive.infolist()}
+    finally:
+        archive.close()
+    header = task.workspace["config/columns.txt"].strip()
+    regions = set(task.workspace["config/regions.txt"].split())
+    assert sorted(members) == sorted(batch["member"] for batch in manifest["batches"])
+    seen: list[str] = []
+    for batch in manifest["batches"]:
+        data = members[batch["member"]].decode("utf-8")
+        assert hashlib.sha256(data.encode("utf-8")).hexdigest() == batch["sha256"]
+        lines = data.splitlines()
+        assert lines[0] == header
+        rows = [line.split(",") for line in lines[1:]]
+        assert len(rows) == batch["rows"] == len(set(map(tuple, rows)))
+        for order_id, region, product, cents, status in rows:
+            assert order_id.isdigit() and int(order_id) > 0
+            assert region in regions and product and cents.isdigit() and int(cents) > 0
+            assert status in ("paid", "refunded")
+        seen.extend(row[0] for row in rows)
+    assert 14 == len(seen) and len(set(seen)) == 12
+    assert sorted(map(int, set(seen))) == [row[0] for row in task.oracle["expected_rows"]]
+
+
+def test_c7_library_composition_prompt_declares_the_contract():
+    task = _c7()
+    prompt = task.prompt
+    for needle in (
+        "bin/import.py",
+        "build/warehouse.db",
+        "reports/summary.json",
+        "config/columns.txt",
+        "order_id,region,product,cents,status",
+        "invalid archive:",
+        "код 2",
+        "код 64",
+        "os.replace",
+        'newline=""',
+        "top_product",
+        "sha256",
+    ):
+        assert needle in prompt
+    assert task.oracle["reference"] not in prompt
+    assert task.oracle["answer_file"] == task.oracle["target_file"] == "bin/import.py"
+    assert task.oracle["answer_file"] in task.workspace
+    assert task.languages == ["ru"]
+    assert task.meta["scenario"] == "C-7"
+
+
+def test_c7_library_composition_agent_mode_grades_the_file_on_disk(tmp_path):
+    task = _c7()
+    work = tmp_path / "copy"
+    for rel, content in task.workspace.items():
+        target = work / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    (work / task.oracle["answer_file"]).write_text(task.oracle["reference"], encoding="utf-8")
+    transcript = Transcript(
+        task_id=task.id,
+        category=task.category,
+        turns=[Turn(messages=[], reply=ModelReply(text="готово"))],
+        extra={"harness": "agent", "work_dir": str(work)},
+    )
+    score = coding.evaluate(task, transcript)
+    assert score.earned == C7_POINTS
+
+
+def test_c7_library_composition_is_stretch_only():
+    stretch = coding.generate(random.Random(1), RunConfig(profile="stretch-v1"))
+    pilot = coding.generate(random.Random(1), RunConfig(profile="pilot"))
+    assert [task.id for task in stretch] == list(coding.STRETCH_IDS)
+    assert "C-7" in coding.STRETCH_IDS
+    assert "C-7" not in [task.id for task in pilot]
+    category = core.REGISTRY["C"]
+    assert category.expected_ids_for("stretch-v1") == coding.STRETCH_IDS
+
+
+# --------------------------------------------------------------------------- #
+# N-9 (stretch): program from spec — a package with commands, Decimal money,
+# idempotent repeats and an atomic error. Only the public CLI is graded.
+# --------------------------------------------------------------------------- #
+
+from decimal import ROUND_HALF_UP, Decimal  # noqa: E402
+
+from dailybench.tasks import coding_program  # noqa: E402
+
+N9_POINTS = 1.0
+
+
+def _n9(seed: int = 1):
+    return coding_program.generate(random.Random(seed), RunConfig(profile="stretch-v1"))
+
+
+def _n9_answer(files: dict[str, str]) -> str:
+    return "\n".join(f"### FILE: {rel}\n```python\n{body}```" for rel, body in files.items())
+
+
+def _n9_score(task, files: dict[str, str]):
+    transcript = Transcript(
+        task_id=task.id,
+        category=task.category,
+        turns=[Turn(messages=[], reply=ModelReply(text=_n9_answer(files)))],
+    )
+    return coding.evaluate(task, transcript)
+
+
+class _N9Alternative:
+    """A second correct solution: another module split and another state file."""
+
+    MONEY = '''"""Rendering of money values."""
+
+from decimal import ROUND_HALF_UP, Decimal
+
+CENT = Decimal("0.01")
+
+
+def render(value: Decimal) -> str:
+    return format(value.quantize(CENT, rounding=ROUND_HALF_UP), "f")
+'''
+
+    MAIN = r'''#!/usr/bin/env python3
+"""Ledger over a JSONL journal, written as an independent second solution."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from decimal import Decimal
+from pathlib import Path
+
+from .money import render
+
+JOURNAL = Path("state/journal.jsonl")
+REPORT = Path("reports/statement.json")
+CONFIG = Path("config")
+USAGE = "usage: python3 -m ledger post <batch> | statement | unpost <key>"
+ID = re.compile(r"TX-[0-9]{4}\Z")
+KEY = re.compile(r"[a-z0-9-]{3,32}\Z")
+MONEY = re.compile(r"(0|[1-9][0-9]*)\.[0-9]{4}\Z")
+FIELDS = ("id", "account", "amount", "key")
+
+
+def report(message: str, code: int) -> int:
+    print(message, file=sys.stderr)
+    return code
+
+
+def config() -> tuple[dict[str, str], dict[str, Decimal]]:
+    accounts = {
+        item["code"]: item["currency"]
+        for item in json.loads((CONFIG / "accounts.json").read_text())["accounts"]
+    }
+    rates = {
+        code: Decimal(value) for code, value in json.loads((CONFIG / "rates.json").read_text()).items()
+    }
+    return accounts, rates
+
+
+def journal() -> list[dict[str, str]]:
+    if not JOURNAL.exists():
+        return []
+    return [json.loads(line) for line in JOURNAL.read_text(encoding="utf-8").splitlines() if line]
+
+
+def rewrite(entries: list[dict[str, str]]) -> None:
+    JOURNAL.parent.mkdir(parents=True, exist_ok=True)
+    staging = JOURNAL.parent / "journal.next"
+    staging.write_text(
+        "".join(json.dumps(entry, separators=(",", ":")) + "\n" for entry in entries),
+        encoding="utf-8",
+    )
+    os.replace(staging, JOURNAL)
+
+
+def check(line: str, accounts: dict[str, str], rates: dict[str, Decimal]) -> dict[str, str] | None:
+    try:
+        item = json.loads(line)
+    except ValueError:
+        return None
+    if type(item) is not dict or tuple(item) != FIELDS:
+        return None
+    if any(type(item[name]) is not str for name in FIELDS):
+        return None
+    if not ID.match(item["id"]) or not KEY.match(item["key"]):
+        return None
+    if item["account"] not in accounts or accounts[item["account"]] not in rates:
+        return None
+    if not MONEY.match(item["amount"]):
+        return None
+    if not Decimal("0") < Decimal(item["amount"]) <= Decimal("1000000"):
+        return None
+    return {name: item[name] for name in FIELDS}
+
+
+def batch(path: str) -> tuple[list[dict[str, str]] | None, list[int]]:
+    target = Path(path)
+    if not target.is_file():
+        return None, []
+    accounts, rates = config()
+    good: list[dict[str, str]] = []
+    bad: list[int] = []
+    keys: set[str] = set()
+    ids: set[str] = set()
+    for number, line in enumerate(target.read_text(encoding="utf-8").splitlines(), 1):
+        entry = check(line, accounts, rates) if line.strip() else None
+        if entry is None or entry["key"] in keys or entry["id"] in ids:
+            bad.append(number)
+            continue
+        keys.add(entry["key"])
+        ids.add(entry["id"])
+        good.append(entry)
+    return good, bad
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        return report(USAGE, 64)
+    if argv[0] == "post":
+        if len(argv) != 2:
+            return report(USAGE, 64)
+        good, bad = batch(argv[1])
+        if good is None:
+            return report(f"invalid batch: missing {argv[1]}", 2)
+        if bad:
+            return report("invalid batch: " + ",".join(map(str, bad)), 2)
+        current = journal()
+        known = {entry["key"] for entry in current}
+        applied = skipped = 0
+        for entry in good:
+            if entry["key"] in known:
+                skipped += 1
+                continue
+            known.add(entry["key"])
+            current.append(entry)
+            applied += 1
+        if applied:
+            rewrite(current)
+        print(f"ok: applied={applied} skipped={skipped}")
+        return 0
+    if argv[0] == "unpost":
+        if len(argv) != 2:
+            return report(USAGE, 64)
+        current = journal()
+        kept = [entry for entry in current if entry["key"] != argv[1]]
+        if len(kept) == len(current):
+            return report(f"missing key: {argv[1]}", 3)
+        rewrite(kept)
+        print("ok: removed=1")
+        return 0
+    if argv[0] == "statement":
+        if len(argv) != 1:
+            return report(USAGE, 64)
+        accounts, rates = config()
+        groups: dict[str, list[Decimal]] = {}
+        for entry in journal():
+            groups.setdefault(entry["account"], []).append(
+                Decimal(entry["amount"]) * rates[accounts[entry["account"]]]
+            )
+        payload = {
+            "accounts": [
+                {"account": code, "entries": len(values), "eur_total": render(sum(values, Decimal("0")))}
+                for code, values in sorted(groups.items())
+            ],
+            "rows": sum(len(values) for values in groups.values()),
+            "grand_total": render(sum((sum(values, Decimal("0")) for values in groups.values()), Decimal("0"))),
+        }
+        REPORT.parent.mkdir(parents=True, exist_ok=True)
+        staging = REPORT.parent / "statement.next"
+        staging.write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
+        os.replace(staging, REPORT)
+        return 0
+    return report(USAGE, 64)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
+'''
+
+    @classmethod
+    def files(cls) -> dict[str, str]:
+        return {
+            "ledger/__init__.py": '"""Ledger package."""\n',
+            "ledger/money.py": cls.MONEY,
+            "ledger/__main__.py": cls.MAIN,
+        }
+
+
+_FLOAT_STATEMENT = '''    totals: dict[str, list[float]] = {}
+    for entry in current:
+        bucket = totals.setdefault(entry["account"], [0, 0.0])
+        bucket[0] += 1
+        bucket[1] += float(entry["amount"]) * float(rate_table[known[entry["account"]]])
+    grand = sum(bucket[1] for bucket in totals.values())'''
+
+_PARTIAL_WRITE = '''    if bad:
+        current = load()
+        have = {entry["key"] for entry in current}
+        for entry in entries:
+            if entry["key"] not in have:
+                current.append(entry)
+                have.add(entry["key"])
+        if entries:
+            save(current)
+        return fail("invalid batch: " + ",".join(str(number) for number in bad))'''
+
+
+def _n9_mutant(task, kind: str) -> dict[str, str]:
+    files = dict(task.oracle["reference"])
+    main = files["ledger/__main__.py"]
+    if kind == "float_statement":
+        main = _replace(
+            main,
+            '''    totals: dict[str, list[Any]] = {}
+    for entry in current:
+        bucket = totals.setdefault(entry["account"], [0, Decimal("0")])
+        bucket[0] += 1
+        bucket[1] += Decimal(entry["amount"]) * rate_table[known[entry["account"]]]
+    grand = sum((bucket[1] for bucket in totals.values()), Decimal("0"))''',
+            _FLOAT_STATEMENT,
+        )
+        main = _replace(
+            main,
+            '"eur_total": money(totals[account][1])',
+            '"eur_total": f"{totals[account][1]:.2f}"',
+        )
+        main = _replace(main, '"grand_total": money(grand),', '"grand_total": f"{grand:.2f}",')
+    elif kind == "duplicate_post":
+        main = _replace(main, '    have = {entry["key"] for entry in current}', "    have: set[str] = set()")
+    elif kind == "partial_write":
+        main = _replace(
+            main,
+            '''    if bad:
+        return fail("invalid batch: " + ",".join(str(number) for number in bad))''',
+            _PARTIAL_WRITE,
+        )
+    else:  # pragma: no cover - guard for a typo in the parametrisation
+        raise AssertionError(kind)
+    files["ledger/__main__.py"] = main
+    return files
+
+
+def test_n9_program_reference_scores_full():
+    task = _n9()
+    score = _n9_score(task, task.oracle["reference"])
+    assert score.earned == score.possible == N9_POINTS
+    assert [check.name for check in score.checks] == task.oracle["checks"]
+    assert len(task.oracle["checks"]) * coding_program._POINTS_PER_CHECK == N9_POINTS
+
+
+def test_n9_program_alternative_implementation_scores_full():
+    """Another module split and another state layout still satisfy the spec."""
+    task = _n9(2)
+    score = _n9_score(task, _N9Alternative.files())
+    assert score.earned == score.possible == N9_POINTS
+
+
+@pytest.mark.parametrize(
+    ("kind", "failed"),
+    [
+        ("float_statement", "statement_values"),
+        ("duplicate_post", "idempotent_repost"),
+        ("partial_write", "invalid_atomic_restore"),
+    ],
+)
+def test_n9_program_mutant_does_not_score_full(kind, failed):
+    task = _n9(1)
+    score = _n9_score(task, _n9_mutant(task, kind))
+    assert score.earned < N9_POINTS
+    assert not next(check for check in score.checks if check.name == failed).passed
+
+
+def test_n9_program_garbage_scores_zero():
+    task = _n9()
+    assert _n9_score(task, {"ledger/__init__.py": "", "ledger/__main__.py": "def broken(:\n"}).earned == 0.0
+    assert _n9_score(task, {}).earned == 0.0
+
+
+@pytest.mark.parametrize("seed", DEV_SEEDS)
+def test_n9_program_reference_is_full_on_every_dev_seed(seed):
+    task = _n9(seed)
+    assert task.id == "N-9" and task.max_points == N9_POINTS
+    assert task.oracle["reference"]["ledger/__main__.py"] not in task.prompt
+    assert _n9_score(task, task.oracle["reference"]).earned == N9_POINTS
+
+
+def _n9_independent_report(rows: list[dict[str, str]], accounts: dict[str, str], rates: dict[str, str]) -> dict:
+    exact: dict[str, Decimal] = {}
+    counts: dict[str, int] = {}
+    for row in rows:
+        exact[row["account"]] = exact.get(row["account"], Decimal("0")) + Decimal(row["amount"]) * Decimal(
+            rates[accounts[row["account"]]]
+        )
+        counts[row["account"]] = counts.get(row["account"], 0) + 1
+    total = sum(exact.values(), Decimal("0"))
+    return {
+        "accounts": [
+            {
+                "account": account,
+                "entries": counts[account],
+                "eur_total": str(exact[account].quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+            }
+            for account in sorted(counts)
+        ],
+        "rows": len(rows),
+        "grand_total": str(total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+    }
+
+
+def _n9_rates(task) -> tuple[dict[str, str], dict[str, str]]:
+    payload = json.loads(task.workspace[coding_program.ACCOUNTS_PATH])
+    rates = json.loads(task.workspace[coding_program.RATES_PATH])
+    return {item["code"]: item["currency"] for item in payload["accounts"]}, rates
+
+
+def test_n9_program_oracle_is_recomputed_independently():
+    task = _n9(3)
+    accounts, rates = _n9_rates(task)
+    rows = task.oracle["entries"]
+    assert task.oracle["expected_report"] == _n9_independent_report(rows, accounts, rates)
+    # The ties are real: each XDR total ends in a half at two decimals and a
+    # binary float sum drifts below it, so half-up and float disagree.
+    expected = {item["account"]: item["eur_total"] for item in task.oracle["expected_report"]["accounts"]}
+    ties = drifts = 0
+    for account in sorted({row["account"] for row in rows}):
+        if accounts[account] != "XDR":
+            continue
+        exact = sum(
+            (Decimal(row["amount"]) * Decimal(rates[accounts[account]]) for row in rows if row["account"] == account),
+            Decimal("0"),
+        )
+        assert re.search(r"\.\d\d50$", f"{exact:.4f}")
+        drift = sum(
+            (float(row["amount"]) * float(rates[accounts[account]]) for row in rows if row["account"] == account),
+            0.0,
+        )
+        ties += 1
+        drifts += f"{drift:.2f}" != expected[account]
+    assert ties == 2
+    assert drifts >= 1
+    known = {row["key"] for row in rows}
+    fresh = [
+        json.loads(line)
+        for line in task.workspace[coding_program.MIXED_BATCH].splitlines()
+        if json.loads(line)["key"] not in known
+    ]
+    after_mixed = rows + fresh
+    assert task.oracle["expected_mixed_report"] == _n9_independent_report(after_mixed, accounts, rates)
+    unposted = [row for row in after_mixed if row["key"] != task.oracle["unpost_key"]]
+    assert task.oracle["expected_unpost_report"] == _n9_independent_report(unposted, accounts, rates)
+
+
+def _n9_valid_line(line: str, accounts: dict[str, str], rates: dict[str, str], seen_keys: set, seen_ids: set) -> bool:
+    try:
+        item = json.loads(line)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(item, dict) or list(item) != ["id", "account", "amount", "key"]:
+        return False
+    if not re.fullmatch(r"TX-[0-9]{4}", item["id"]) or not re.fullmatch(r"[a-z0-9-]{3,32}", item["key"]):
+        return False
+    if item["account"] not in accounts or accounts[item["account"]] not in rates:
+        return False
+    if not re.fullmatch(r"(0|[1-9][0-9]*)\.[0-9]{4}", item["amount"]):
+        return False
+    if not 0 < Decimal(item["amount"]) <= Decimal("1000000"):
+        return False
+    if item["key"] in seen_keys or item["id"] in seen_ids:
+        return False
+    seen_keys.add(item["key"])
+    seen_ids.add(item["id"])
+    return True
+
+
+@pytest.mark.parametrize("seed", DEV_SEEDS)
+def test_n9_program_fixtures_are_valid_and_bounded(seed):
+    task = _n9(seed)
+    accounts, rates = _n9_rates(task)
+    valid = task.workspace[coding_program.VALID_BATCH].splitlines()
+    assert 12 <= len(valid) <= 18
+    seen_keys: set[str] = set()
+    seen_ids: set[str] = set()
+    for line in valid:
+        assert _n9_valid_line(line, accounts, rates, seen_keys, seen_ids)
+    invalid = task.workspace[coding_program.INVALID_BATCH].splitlines()
+    bad_lines = task.oracle["invalid_lines"]
+    assert len(bad_lines) == 8
+    seen_keys = set()
+    seen_ids = set()
+    detected: list[int] = []
+    for number, line in enumerate(invalid, start=1):
+        if not _n9_valid_line(line, accounts, rates, seen_keys, seen_ids):
+            detected.append(number)
+    assert detected == bad_lines
+    # The valid prefix stays untouched, and every mixed line is fresh or a known key.
+    mixed = task.workspace[coding_program.MIXED_BATCH].splitlines()
+    assert len(mixed) == 4
+    known = {json.loads(line)["key"] for line in valid}
+    fresh = [line for line in mixed if json.loads(line)["key"] not in known]
+    assert len(fresh) == task.oracle["fresh_entries"] == 2
+
+
+def test_n9_program_prompt_declares_the_contract():
+    task = _n9()
+    prompt = task.prompt
+    for needle in (
+        "python3 -m ledger post",
+        "python3 -m ledger statement",
+        "python3 -m ledger unpost",
+        "invalid batch:",
+        "missing key:",
+        "64",
+        "томарность",
+        "decimal.Decimal",
+        "половина вверх",
+        "### FILE:",
+        task.oracle["report_path"],
+        task.oracle["state_dir"],
+        coding_program.MAIN_FILE,
+        coding_program.INIT_FILE,
+        "Защищённые файлы",
+    ):
+        assert needle in prompt
+    assert task.oracle["answer_file"] == task.oracle["target_file"] == coding_program.MAIN_FILE
+    assert coding_program.MAIN_FILE in task.workspace
+    for rel in coding_program.PROTECTED:
+        assert rel in task.workspace
+        assert rel in prompt
+    assert task.fresh_after == "2026-10-15"
+    assert task.languages == ["ru"]
+
+
+def test_n9_program_answer_protocol_ignores_extra_paths():
+    reply = (
+        "Вот пакет.\n\n"
+        "### FILE: notes.txt\n```\nignored\n```\n"
+        "### FILE: ledger/__main__.py\n```python\nprint('hi')\n```\n"
+        "### FILE: ../escape.py\n```python\nprint('no')\n```\n"
+    )
+    assert coding_program._parse_answer(reply) == {"ledger/__main__.py": "print('hi')\n"}
+
+
+def test_n9_program_agent_mode_grades_the_package_on_disk(tmp_path):
+    task = _n9()
+    work = tmp_path / "copy"
+    for rel, content in task.workspace.items():
+        target = work / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    for rel, content in task.oracle["reference"].items():
+        target = work / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    transcript = Transcript(
+        task_id=task.id,
+        category=task.category,
+        turns=[Turn(messages=[], reply=ModelReply(text="готово"))],
+        extra={"harness": "agent", "work_dir": str(work)},
+    )
+    assert coding.evaluate(task, transcript).earned == N9_POINTS
+    # A missing package on disk is an honest zero, not the printed stub.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    blank = Transcript(
+        task_id=task.id,
+        category=task.category,
+        turns=[Turn(messages=[], reply=ModelReply(text=_n9_answer(task.oracle["reference"])))],
+        extra={"harness": "agent", "work_dir": str(empty)},
+    )
+    assert coding.evaluate(task, blank).earned == 0.0
+
+
+def test_n9_program_is_stretch_only_and_registered_by_profile():
+    stretch = coding.generate(random.Random(1), RunConfig(profile="stretch-v1"))
+    pilot = coding.generate(random.Random(1), RunConfig(profile="pilot"))
+    research = coding.generate(random.Random(1), RunConfig(profile="research-v1"))
+    assert [task.id for task in stretch] == list(coding.STRETCH_IDS)
+    assert "N-9" in coding.STRETCH_IDS and coding.STRETCH_IDS[-1] == "N-9"
+    assert "N-9" not in [task.id for task in pilot]
+    assert "N-9" not in [task.id for task in research]
+    category = core.REGISTRY["C"]
+    assert category.expected_ids_for("stretch-v1") == coding.STRETCH_IDS
+    assert category.expected_ids_for("research-v1") == coding.RESEARCH_IDS == ("N-2",)

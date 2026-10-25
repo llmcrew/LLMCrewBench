@@ -61,12 +61,26 @@ class Provider(Protocol):
 
     def describe(self) -> dict[str, Any]: ...
 
+    def probe_images(self) -> bool | None:
+        """Whether the endpoint accepts an ``image_url`` content part.
+
+        ``True``/``False`` are a measured answer; ``None`` means the probe
+        itself could not decide (the transport was down). The runner turns a
+        ``False`` into a skipped, not-verified row instead of a fake accuracy.
+        """
+        ...
+
 
 #: Fields the harness owns per request. ``fixed`` sends them all and verifies
 #: them on the final payload; ``native`` leaves sampling and thinking to the
 #: server and keeps only the answer limit, which the window still has to fit.
 WIRE_REQUIRED = ("model", "messages", "max_tokens", "stream")
 WIRE_FIXED = ("temperature", "top_p")
+
+#: 1×1 transparent PNG: the smallest valid image part for a capability probe.
+_PROBE_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
 
 
 @dataclass(frozen=True)
@@ -165,7 +179,52 @@ class OpenAICompatibleProvider:
 
     _token_cache: dict[str, int] = field(default_factory=dict, repr=False)
     _tokenize_supported: bool | None = field(default=None, repr=False)
+    _images: bool | None = field(default=None, repr=False)
+    _images_probed: bool = field(default=False, repr=False)
+    image_probe_note: str = field(default="", repr=False)
+    """Why the image probe ended the way it did; travel with the transcript."""
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def probe_images(self) -> bool | None:
+        """Send one tiny image part once, and cache the answer.
+
+        A text-only endpoint rejects the content array with a 4xx, which is a
+        protocol answer (``False``), not an outage. An ``infra`` failure says
+        nothing about images, so it stays ``None`` and the task runs normally.
+        Image bytes are fixed here rather than taken from a fixture: the probe
+        is about the endpoint, and the same 1×1 PNG is sent to every model.
+        """
+        with self._lock:
+            if self._images_probed:
+                return self._images
+            self._images_probed = True
+        message = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Ответь одним словом."},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{_PROBE_PNG}"},
+                },
+            ],
+        }
+        try:
+            self.chat(
+                [message],
+                max_new_tokens=8,
+                stream=False,
+                wall_clock=min(60.0, self.timeout or 60.0),
+            )
+        except ProviderError as exc:
+            self._images = None if getattr(exc, "infra", True) else False
+            self.image_probe_note = str(exc)[:240]
+        except Exception as exc:  # pragma: no cover - defensive
+            self._images = None
+            self.image_probe_note = f"{type(exc).__name__}: {exc}"[:240]
+        else:
+            self._images = True
+            self.image_probe_note = "endpoint принял image_url"
+        return self._images
 
     # -- transport --------------------------------------------------------- #
 
@@ -668,7 +727,11 @@ class CallableProvider:
 
     fn: Callable[[list[Message], list[dict[str, Any]] | None], ModelReply | str]
     name: str = "callable"
+    images: bool | None = None
     calls: list[list[Message]] = field(default_factory=list)
+
+    def probe_images(self) -> bool | None:
+        return self.images
 
     def chat(
         self,
@@ -704,7 +767,11 @@ class ScriptedProvider:
 
     replies: list[ModelReply | str]
     name: str = "scripted"
+    images: bool | None = None
     calls: list[list[Message]] = field(default_factory=list)
+
+    def probe_images(self) -> bool | None:
+        return self.images
 
     def chat(self, messages, tools=None, **kwargs) -> ModelReply:
         self.calls.append([dict(m) for m in messages])
@@ -749,8 +816,18 @@ class RecordingProvider:
     def tokenize(self, text: str) -> int | None:
         return self.inner.tokenize(text)
 
+    def probe_images(self) -> bool | None:
+        return self.inner.probe_images()
+
     def describe(self) -> dict[str, Any]:
         return {"provider": self.name, "inner": self.inner.describe()}
+
+
+#: Reserved prompt cost of one presented image. A 768×512 PNG packs into a few
+#: hundred vision tokens; the base64 characters are not counted because they are
+#: an encoding, not text (treating 200 KB of base64 as tokens crushed the answer
+#: budget of every scenario).
+IMAGE_TOKEN_ESTIMATE = 800
 
 
 def estimate_tokens(text: str) -> int:
@@ -796,6 +873,14 @@ def messages_token_estimate(messages: Iterable[Message]) -> int:
         content = m.get("content")
         if isinstance(content, str):
             total += estimate_tokens(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    total += estimate_tokens(str(part.get("text") or ""))
+                elif part.get("type") == "image_url":
+                    total += IMAGE_TOKEN_ESTIMATE
         for tc in m.get("tool_calls") or []:
             total += estimate_tokens(json.dumps(tc, ensure_ascii=False))
     return total

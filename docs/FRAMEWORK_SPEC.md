@@ -303,7 +303,8 @@ base, `SOURCE_DATE_EPOCH`, lock-файлы, SBOM (syft) и подпись (cosig
 
 cgroups v2: `cpu.max`, `memory.max`, `memory.swap.max=0`, `io.max`.
 Watchdog: absolute deadline задачи → SIGKILL дерева (Job Object на Windows).
-OOM/таймаут даёт статус `evaluator_unavailable`, не ноль модели.
+OOM/таймаут даёт исход `resource_exhausted` (не `evaluator_failure`), не ноль
+модели.
 
 [12]: https://gvisor.dev/docs/architecture_guide/security/
 [13]: https://www.sitepoint.com/isolate-untrusted-code-rootless-docker-gvisor/

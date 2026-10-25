@@ -21,6 +21,7 @@ MODULES: tuple[str, ...] = (
     "review",
     "visual",
     "art",
+    "visual_input",
 )
 
 _loaded = False

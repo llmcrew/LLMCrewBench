@@ -1268,8 +1268,8 @@ _ENDPOINT_MARKERS = ("HTTP 5", "HTTP 429", "HTTP 408", "Connection", "ECONN", "u
 def _failure_of(text: str) -> str:
     """Taxonomy kind of an agent failure: endpoint down or protocol broken."""
     if any(marker in text for marker in _ENDPOINT_MARKERS):
-        return "provider_unavailable"
-    return "model_protocol_failure"
+        return "infra_failure"
+    return "model_failure"
 
 
 def _stop_error(events: list[dict[str, Any]]) -> str | None:
@@ -1500,7 +1500,7 @@ def run(
                         stderr_path=stderr_path,
                         ok=False,
                         error=f"агент не уложился в {deadline:.0f} с",
-                        failure="candidate_resource_exhausted",
+                        failure="resource_exhausted",
                         secret=cfg.api_key,
                         pin=pin,
                     )
@@ -1511,7 +1511,7 @@ def run(
                         stderr_path=stderr_path,
                         ok=False,
                         error=f"контейнер убит по памяти ({sandbox.memory if sandbox else ''})",
-                        failure="candidate_resource_exhausted",
+                        failure="resource_exhausted",
                         secret=cfg.api_key,
                         pin=pin,
                     )
@@ -1522,7 +1522,7 @@ def run(
                         stderr_path=stderr_path,
                         ok=False,
                         error=f"песочница: {report.get('error')}",
-                        failure="evaluator_unavailable",
+                        failure="evaluator_failure",
                         secret=cfg.api_key,
                         pin=pin,
                     )
@@ -1571,7 +1571,7 @@ def run(
                         stderr_path=stderr_path,
                         ok=False,
                         error=f"агент не уложился в {deadline:.0f} с",
-                        failure="candidate_resource_exhausted",
+                        failure="resource_exhausted",
                         secret=cfg.api_key,
                         pin=pin,
                     )
@@ -1584,7 +1584,7 @@ def run(
             stderr_path=stderr_path,
             ok=False,
             error=f"не удалось запустить агента: {exc}",
-            failure="evaluator_unavailable",
+            failure="evaluator_failure",
             secret=cfg.api_key,
             pin=pin,
         )
@@ -1613,7 +1613,7 @@ def run(
         result.ok = False
     elif not events:
         result.error = "агент не выдал ни одного события"
-        result.failure = "incomplete_scenario"
+        result.failure = "infra_failure"
     else:
         # ``pi`` returns process exit 0 on an HTTP 400 and reports the fault only
         # as ``stopReason: error``: the process state alone used to read ``ok``.

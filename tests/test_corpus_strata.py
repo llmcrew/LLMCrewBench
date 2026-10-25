@@ -24,8 +24,8 @@ from dailybench.suite import build_suite, public_prompts
 from dailybench.tasks import instruction, reasoning
 
 DEV_SEEDS = (11, 12, 13, 14, 15)
-NEW_A = ("IF-7", "IF-7-KK", "IF-8", "IF-9", "IF-10")
-NEW_B = ("R-17", "R-17-KK")
+NEW_A = ("IF-7", "IF-7-KK", "IF-7-EN", "IF-8", "IF-9", "IF-10")
+NEW_B = ("R-17", "R-17-KK", "R-18")
 
 
 def _transcript(task: core.TaskInstance, answer: str) -> core.Transcript:
@@ -53,7 +53,7 @@ def _by_id(tasks: list[core.TaskInstance], task_id: str) -> core.TaskInstance:
 
 
 def _if7(seed: int, lang: str) -> core.TaskInstance:
-    return _by_id(_if_tasks(seed), "IF-7" if lang == "ru" else "IF-7-KK")
+    return _by_id(_if_tasks(seed), {"ru": "IF-7", "kk": "IF-7-KK", "en": "IF-7-EN"}[lang])
 
 
 def _r17(seed: int, lang: str) -> core.TaskInstance:
@@ -107,15 +107,19 @@ def test_old_private_marks_are_exactly_the_declared_ones():
 
 def test_if7_twins_speak_their_own_language_and_calendar():
     for seed in DEV_SEEDS:
-        ru, kk = _if7(seed, "ru"), _if7(seed, "kk")
-        assert ru.languages == ["ru"] and ru.cultures == ["kz"]
+        ru, kk, en = _if7(seed, "ru"), _if7(seed, "kk"), _if7(seed, "en")
+        assert ru.languages == ["ru"] and ru.cultures == ["ru"]
         assert kk.languages == ["kk"] and kk.cultures == ["kz"]
-        assert ru.meta["languages"] == ["ru"] and ru.meta["cultures"] == ["kz"]
+        assert en.languages == ["en"] and en.cultures == ["en-GB"]
+        assert ru.meta["languages"] == ["ru"] and ru.meta["cultures"] == ["ru"]
         assert kk.meta["languages"] == ["kk"] and kk.meta["cultures"] == ["kz"]
+        assert en.meta["languages"] == ["en"] and en.meta["cultures"] == ["en-GB"]
         assert "ГГГГ-ММ-ДД" in ru.prompt and any(month in ru.prompt for month in instruction.RU_MONTHS)
         assert "ЖЖЖЖ-АА-КК" in kk.prompt and any(month in kk.prompt for month in instruction.KK_MONTHS)
-        assert ru.prompt != kk.prompt
-        assert ru.oracle["reference"] != kk.oracle["reference"]
+        assert "YYYY-MM-DD" in en.prompt and any(month in en.prompt for month in instruction.EN_MONTHS)
+        assert "1 200,0 кг" in ru.prompt and "1 200,0 кг" in kk.prompt and "1,200.0 kg" in en.prompt
+        assert len({ru.prompt, kk.prompt, en.prompt}) == 3
+        assert len({ru.oracle["reference"], kk.oracle["reference"], en.oracle["reference"]}) == 3
 
 
 def test_r17_twins_name_kazakh_holidays_in_their_own_language():

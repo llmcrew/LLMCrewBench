@@ -838,3 +838,44 @@ def test_different_suite_contracts_get_separate_tables(tmp_path: Path):
     assert "вторая" in page[head_second:head_first]
     assert "первая" in page[head_first:]
     assert "2 разных контракта" in page
+
+
+def _outcome_run(tmp_path: Path, name: str, model: str, failure: str, sha: str = "sha-outcome") -> Path:
+    """A one-task run whose only task carries a stored outcome kind."""
+    directory = tmp_path / name
+    directory.mkdir(parents=True)
+    scores = [{
+        "task_id": "A-1", "category": "A", "earned": 0.0, "possible": 1.0,
+        "error": "прогон прерван", "failure": failure,
+        "checks": [{"name": "answer", "passed": False, "detail": "", "points": 1.0}],
+    }]
+    (directory / "scores.json").write_text(json.dumps(scores), encoding="utf-8")
+    (directory / "config.json").write_text(json.dumps({"model": model}), encoding="utf-8")
+    (directory / "suite.json").write_text(json.dumps({
+        "tasks": 1, "sha256": sha,
+        "per_task": [{"id": "A-1", "category": "A", "max_points": 1.0}],
+    }), encoding="utf-8")
+    return directory
+
+
+def test_an_integrity_violation_refuses_attestation(tmp_path: Path):
+    """An integrity outcome is not plain infrastructure; the page says so."""
+    good = _tier_run(tmp_path, "run-good", "чистая", 1, 1, sha="sha-mix")
+    bad = _outcome_run(tmp_path, "run-bad", "подмена", "integrity_violation", sha="sha-mix")
+
+    page = render_html([good, bad])
+    assert "удостоверение отозвано" in page
+    assert "отказ в удостоверении" in page
+    assert page.index("data-model='чистая'") < page.index("data-model='подмена'")
+
+
+def test_legacy_failure_names_keep_their_label_and_gate(tmp_path: Path):
+    """An old bundle is counted under the canonical kind and stays unrankable."""
+    good = _tier_run(tmp_path, "run-good", "чистая", 1, 1, sha="sha-old")
+    bad = _outcome_run(tmp_path, "run-bad", "старая", "provider_unavailable", sha="sha-old")
+
+    page = render_html([good, bad])
+    assert core.failure_label("provider_unavailable") == "провайдер недоступен"
+    assert "инфраструктура недоступна" in page
+    assert "не ранжируется" in page
+    assert page.index("data-model='чистая'") < page.index("data-model='старая'")

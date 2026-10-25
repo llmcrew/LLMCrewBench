@@ -132,7 +132,8 @@ def test_status_classification_keeps_the_cause_apart():
     assert viz.classify({"checks": [{"name": "answer", "passed": False, "detail": "мимо"}]}) == "checked"
     assert viz.task_statuses([{"skipped": "x"}, {"checks": []}]) == {
         "checked": 1, "not_run": 1, "model_failed": 0,
-        "capture_failed": 0, "evaluator_unavailable": 0, "media_missing": 0,
+        "capture_failed": 0, "evaluator_unavailable": 0, "integrity_violation": 0,
+        "media_missing": 0,
     }
 
 

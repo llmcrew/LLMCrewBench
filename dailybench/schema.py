@@ -13,12 +13,14 @@ CLI can print all problems of a document in one go.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 import sys
 from datetime import date
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
 SCHEMA_VERSION = "dailybench/task/2"
@@ -42,12 +44,13 @@ FAMILIES: tuple[str, ...] = (
 )
 """Families of the taxonomy; the prefix is fixed by :data:`BLOCKS`."""
 
-CATEGORIES: tuple[str, ...] = tuple("ABCDEFGHIJKL")
+CATEGORIES: tuple[str, ...] = tuple("ABCDEFGHIJKLV")
 
 CATEGORY_BLOCK: dict[str, str] = {
     **{key: "deterministic" for key in "ABCDEFGHIJ"},
     "K": "open",
     "L": "open",
+    "V": "open",
 }
 """Direction is a property of the category, not of a hand-written field."""
 
@@ -64,6 +67,7 @@ CATEGORY_FAMILY: dict[str, str] = {
     "J": "det/code",
     "K": "vis/sim",
     "L": "vis/art",
+    "V": "vis/vqa",
 }
 """Default family of a category (a category may host more than one)."""
 
@@ -90,6 +94,7 @@ _TASK_FIELDS = (
     "prompt",
     "system",
     "workspace",
+    "assets",
     "tools",
     "dialogue",
     "meta",
@@ -294,6 +299,8 @@ def task_to_dict(task: Any) -> dict[str, Any]:
     doc = {"schema": SCHEMA_VERSION}
     for name in _TASK_FIELDS:
         value = getattr(task, name, None)
+        if name == "assets" and value:
+            value = [asset.as_dict() if hasattr(asset, "as_dict") else asset for asset in value]
         doc[name] = list(value) if isinstance(value, tuple) else value
     doc["points"] = float(getattr(task, "max_points"))
     return doc
@@ -313,6 +320,92 @@ def _id_schema() -> re.Pattern[str]:
     from . import gallery
 
     return gallery._ID_SCHEMA
+
+
+def _png_errors(raw: bytes, where: str) -> list[str]:
+    """PNG signature, 8-bit RGB and the one fixed geometry."""
+    from . import core
+
+    if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return [f"{where}: not a PNG file"]
+    if len(raw) < 26 or raw[12:16] != b"IHDR":
+        return [f"{where}: missing IHDR chunk"]
+    width = int.from_bytes(raw[16:20], "big")
+    height = int.from_bytes(raw[20:24], "big")
+    depth, color = raw[24], raw[25]
+    errors: list[str] = []
+    if (width, height) != core.ASSET_SIZE:
+        errors.append(f"{where}: size {width}x{height} != {core.ASSET_SIZE[0]}x{core.ASSET_SIZE[1]}")
+    if depth != 8 or color != 2:
+        errors.append(f"{where}: expected 8-bit RGB PNG, got depth {depth}, color type {color}")
+    return errors
+
+
+def _asset_errors(doc: Mapping[str, Any], prefix: str) -> list[str]:
+    """Assets must be local files of the fixture, not URL references.
+
+    The path is the only way the model learns the name of the presented file, so
+    the workspace is required and the path is checked against it: an absolute
+    path or ``..`` would leave the fixture, and a collision with a text file
+    would present different bytes on disk and in the oracle.
+    """
+    from . import core
+
+    category = doc.get("category")
+    assets = doc.get("assets")
+    errors: list[str] = []
+    if assets is None:
+        if category == "V":
+            errors.append(f"{prefix}/assets: an image-input task needs at least one asset")
+        return errors
+    if not isinstance(assets, list) or not assets:
+        errors.append(f"{prefix}/assets: expected a non-empty array")
+        return errors
+    workspace = doc.get("workspace")
+    if not isinstance(workspace, Mapping):
+        errors.append(f"{prefix}/assets: an asset needs a fixture workspace to live in")
+        workspace = {}
+    seen: set[str] = set()
+    for index, asset in enumerate(assets):
+        where = f"{prefix}/assets/{index}"
+        if not isinstance(asset, Mapping):
+            errors.append(f"{where}: expected object")
+            continue
+        path = asset.get("path")
+        if not isinstance(path, str) or not path:
+            errors.append(f"{where}/path: expected a non-empty relative path")
+            continue
+        pure = PurePosixPath(path)
+        if pure.is_absolute() or "\\" in path or pure.as_posix() != path:
+            errors.append(f"{where}/path: {path!r} is not a normalised relative path")
+        elif any(part in ("", ".", "..") for part in pure.parts):
+            errors.append(f"{where}/path: {path!r} leaves the fixture workspace")
+        elif path in seen:
+            errors.append(f"{where}/path: duplicate asset path {path!r}")
+        elif path in workspace:
+            errors.append(f"{where}/path: {path!r} collides with a workspace file")
+        seen.add(path)
+        media_type = asset.get("media_type")
+        if media_type not in core.ASSET_MEDIA_TYPES:
+            errors.append(f"{where}/media_type: expected one of {list(core.ASSET_MEDIA_TYPES)}")
+        digest = asset.get("sha256")
+        data = asset.get("data")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            errors.append(f"{where}/sha256: expected a lowercase sha256 hex digest")
+        if not isinstance(data, str) or not data:
+            errors.append(f"{where}/data: expected base64 bytes")
+            continue
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError):
+            errors.append(f"{where}/data: invalid base64")
+            continue
+        import hashlib
+
+        if isinstance(digest, str) and hashlib.sha256(raw).hexdigest() != digest:
+            errors.append(f"{where}/sha256: does not match the data")
+        errors.extend(_png_errors(raw, where))
+    return errors
 
 
 def _semantic_task_errors(doc: Mapping[str, Any], prefix: str, *, cross_only: bool = False) -> list[str]:
@@ -347,6 +440,8 @@ def _semantic_task_errors(doc: Mapping[str, Any], prefix: str, *, cross_only: bo
             f"{prefix}/id: invalid task id {identifier!r}: expected the file-name form K-1 "
             "(letters, digits and inner dashes; no '/')"
         )
+
+    errors.extend(_asset_errors(doc, prefix))
 
     if cross_only:
         return errors
@@ -455,16 +550,18 @@ def validate_profile(doc: Any, prefix: str = "profile") -> list[str]:
     return errors
 
 
-def _private_stub(task: Any) -> dict[str, Any]:
-    """Published form of a private task: metadata, denominator and hashes.
+def _hash_stub(task: Any, *, split: str | None = None, publish_seeds: bool = True) -> dict[str, Any]:
+    """Published form of a hidden task: metadata, denominator and hashes.
 
     Fields are taken from the serialised document, so a mapping and a stub
-    whose ``prompt`` is already ``None`` hash exactly what is published.
+    whose ``prompt`` is already ``None`` hash exactly what is published. A
+    holdout stub additionally names its split and withholds the seeds: the
+    public generator plus a published seed would rebuild the fixture.
     """
-    from .decontam import prompt_hashes
+    from .holdout import fingerprint
 
     doc = task_to_dict(task)
-    return {
+    stub: dict[str, Any] = {
         "schema": doc["schema"],
         "id": doc["id"],
         "category": doc["category"],
@@ -474,11 +571,22 @@ def _private_stub(task: Any) -> dict[str, Any]:
         "cultures": doc["cultures"],
         "fresh_after": doc["fresh_after"],
         "private": True,
-        "holdout_seeds": doc["holdout_seeds"],
         "points": doc["points"],
         "prompt": None,
-        **prompt_hashes(doc),
+        **fingerprint(doc),
     }
+    if split is not None:
+        stub["split"] = split
+    if publish_seeds:
+        stub["holdout_seeds"] = doc["holdout_seeds"]
+    else:
+        stub["holdout_seed_count"] = len(doc["holdout_seeds"] or [])
+    return stub
+
+
+def _private_stub(task: Any) -> dict[str, Any]:
+    """Published form of a private task: stub with the seeds still shown."""
+    return _hash_stub(task)
 
 
 def _document_is_private(task: Any) -> bool:
@@ -487,24 +595,36 @@ def _document_is_private(task: Any) -> bool:
     return getattr(task, "private", False) is True
 
 
+def _document_id(task: Any) -> str | None:
+    identifier = task.get("id") if isinstance(task, Mapping) else getattr(task, "id", None)
+    return str(identifier) if identifier is not None else None
+
+
 def export_document(
     profile: str,
     tasks: Iterable[Any],
     *,
     include_private: bool = False,
+    hidden: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Suite document ready to be written as JSON or YAML.
 
     A private task is exported as its hash stub: the denominator stays whole
     and the prompt text never leaves the machine unless ``include_private`` is
-    set.
+    set. ``hidden`` maps task IDs of the audit/closed-eval splits to their
+    split names; a hidden task is always a stub, even with ``include_private``,
+    because the holdout gate outranks the convenience flag.
     """
-    items = [
-        task_to_dict(task)
-        if include_private or not _document_is_private(task)
-        else _private_stub(task)
-        for task in tasks
-    ]
+    hidden = dict(hidden or {})
+    items = []
+    for task in tasks:
+        split = hidden.get(_document_id(task) or "")
+        if split is not None:
+            items.append(_hash_stub(task, split=split, publish_seeds=False))
+        elif include_private or not _document_is_private(task):
+            items.append(task_to_dict(task))
+        else:
+            items.append(_private_stub(task))
     return {
         "schema": SUITE_SCHEMA_VERSION,
         "profile": profile_document(profile),

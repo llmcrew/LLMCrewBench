@@ -51,9 +51,10 @@ Every category is scored 0–100 % inside the run report, and the total is the s
 of the earned points (100 possible in the baseline).
 
 The counts above are the baseline. `stretch-v1` adds a sixth instruction task
-(IF-6), the ru/kk ledger twins IF-7/IF-7-KK, the RTL/NFC edge case IF-8, the
+(IF-6), the ru/kk/en ledger twins IF-7/IF-7-KK/IF-7-EN, the RTL/NFC edge case IF-8, the
 composite selection pair IF-9/IF-10, the
-ru/kk schedule twins R-17/R-17-KK, C-5/C-6, T-8/T-9, LC-6/LC-7/LC-8, F-2,
+ru/kk schedule twins R-17/R-17-KK, the bounded optimiser R-18,
+C-5/C-6, T-8/T-9, LC-6/LC-7/LC-8, F-2,
 G-5, H-4/H-5, I-3/I-4 and J-3/J-4/J-5 without changing the 100 A–J points: the
 category total is divided evenly over the category's tasks
 (`suite.apply_profile_weights`, see *Profiles*).
@@ -67,8 +68,8 @@ and `suite.json`, and `resume`/`rescore` refuse to mix them.
 |---|---|
 | `baseline-20261020` (default) | Frozen ranked suite: 47 A–J tasks, 100 points, K-1…K-20, L-1…L-29 |
 | `pilot` | Only the scenarios not admitted to the ranking: IF-6, R-16, C-4, T-8, LC-6, F-2, G-5, H-4, I-3, J-3, visual hosts K-21, K-23, K-25 and L-1…L-29 — 42 tasks |
-| `stretch-v1` | Baseline plus the pilot tasks and the rest of the new ones: IF-7, IF-7-KK, IF-8, IF-9, IF-10, R-17, R-17-KK, C-5, C-6, T-9, LC-7, LC-8, H-5, I-4, J-4, J-5, K-21…K-30, L-30…L-39 — 79 A–J, 30 K and 39 L tasks; at least a fifth of every A–J category is private |
-| `research-v1` | Nine research scenarios only: IF-9, IF-10, N-2, T-10, T-11, LC-8, F-3, I-5, J-5. Seven categories (A, C, D, E, F, I, J), 71 points; B, G, H, K and L are absent, so the profile is never ranked against a baseline run |
+| `stretch-v1` | Baseline plus the pilot tasks and the rest of the new ones: IF-7, IF-7-KK, IF-7-EN, IF-8, IF-9, IF-10, R-17, R-17-KK, R-18, C-5, C-6, C-7, N-2, N-9, T-8, T-9, T-10, T-11, LC-7, LC-8, H-5, I-4, I-5, J-4, J-5, K-21…K-30, L-30…L-39 — 82 A–J, 30 K and 39 L tasks; at least a fifth of every A–J category is private |
+| `research-v1` | Ten text research scenarios (IF-9, IF-10, N-2, T-10, T-11, T-12, LC-8, F-3, I-5, J-5) plus the VQA track V-1…V-3 (showcase-only). Seven scored categories (A, C, D, E, F, I, J), 71 points; B, G, H, K and L are absent, so the profile is never ranked against a baseline run |
 
 `pilot` is not collapsed into a new `/100`: A–J tasks keep the per-task weights
 their modules declare, and each task is read on its own. `stretch-v1` keeps the

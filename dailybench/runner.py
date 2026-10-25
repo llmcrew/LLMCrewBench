@@ -9,6 +9,7 @@ module owns the fixture and the scoring.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import shutil
@@ -30,12 +31,15 @@ from .rng import derived_seed
 SYSTEM_SENTINEL = "<<system>>"
 
 #: Bumped when the meaning of a checkpoint changes; a resume must not mix
-#: records written by a different harness contract. Contract 4: the agentic
-#: categories execute in a container (host execution is a marked fallback), so a
-#: boundary change is a different measurement. Contract 3 covered the executed
-#: evaluator bundle, closed oracle, toolchain and agent binary, and the agent
-#: harness pins its release.
-HARNESS_CONTRACT = 4
+#: records written by a different harness contract. Contract 5 adds the
+#: multimodal user message: an image is presented as a local ``image_url`` part,
+#: so a transcript whose wire carried pictures is not interchangeable with one
+#: produced before that. Contract 4: the agentic categories execute in a
+#: container (host execution is a marked fallback), so a boundary change is a
+#: different measurement. Contract 3 covered the executed evaluator bundle,
+#: closed oracle, toolchain and agent binary, and the agent harness pins its
+#: release.
+HARNESS_CONTRACT = 5
 
 #: Config fields that belong to the identity of a run. ``only`` is a selection
 #: over the same suite, ``out_dir`` is the location, and the key is local.
@@ -102,12 +106,21 @@ def _prompt_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]] |
     over. Without them the budget overshoots the window and the runtime rejects
     the request with HTTP 400.
     """
-    from .providers import estimate_tokens
+    from .providers import IMAGE_TOKEN_ESTIMATE, estimate_tokens
 
     total = 0
     for message in messages:
         content = message.get("content") or ""
-        total += estimate_tokens(content if isinstance(content, str) else str(content))
+        if isinstance(content, str):
+            total += estimate_tokens(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    total += estimate_tokens(str(part.get("text") or ""))
+                elif part.get("type") == "image_url":
+                    total += IMAGE_TOKEN_ESTIMATE
         for call in message.get("tool_calls") or []:
             total += estimate_tokens(str(call.get("function", {}).get("arguments") or ""))
     if tools:
@@ -137,7 +150,16 @@ def _request_size(
     tokens and left every LC request at the floor. The source travels with the
     number: an approximated budget must not look measured.
     """
-    text = "\n".join(str(message.get("content") or "") for message in messages)
+    from .providers import IMAGE_TOKEN_ESTIMATE
+
+    text = "\n".join(_message_text(messages))
+    images = sum(
+        1
+        for message in messages
+        if isinstance(message.get("content"), list)
+        for part in message.get("content") or []
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    )
     if tools:
         text += "\n" + json.dumps(tools, ensure_ascii=False)
     try:
@@ -145,7 +167,9 @@ def _request_size(
     except Exception:  # pragma: no cover - transport dependent
         exact = None
     if exact is not None:
-        return int(exact), "tokenizer"
+        # The base64 body is not what the runtime tokenizes: the image becomes a
+        # fixed vision-token reserve instead of 50K characters of encoding.
+        return int(exact) + images * IMAGE_TOKEN_ESTIMATE, "tokenizer"
     ratio = float(meta_ratio or cfg.task_ratios.get(task_id) or 0)
     if ratio > 0:
         return max(1, round(len(text) / ratio)), "task-coefficient"
@@ -223,6 +247,50 @@ def transcript_from_dict(data: dict[str, Any], task: core.TaskInstance) -> core.
     return transcript
 
 
+def _message_text(messages: list[dict[str, Any]]) -> list[str]:
+    """The text a tokenizer should see, with image parts left out.
+
+    A multimodal ``content`` array is not a string; casting it whole would send
+    the base64 body to ``/tokenize`` and count an encoding as prompt text.
+    """
+    chunks: list[str] = []
+    for message in messages:
+        content = message.get("content") or ""
+        if isinstance(content, str):
+            chunks.append(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    chunks.append(str(part.get("text") or ""))
+    return chunks
+
+
+def user_content(task: core.TaskInstance, work_dir: Path) -> str | list[dict[str, Any]]:
+    """The first user message: plain text, or text plus local image parts.
+
+    The bytes are read back from the materialised fixture and checked against
+    the declared digest, so what travels on the wire is exactly the frozen
+    picture. ``image_url`` carries a ``data:`` URL — no external fetch and no
+    base64 hidden in the prompt text.
+    """
+    if not task.assets:
+        return task.prompt
+    parts: list[dict[str, Any]] = [{"type": "text", "text": task.prompt}]
+    for asset in task.assets:
+        raw = (work_dir / asset.path).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != asset.sha256:
+            raise ValueError(f"asset {asset.path!r} изменён после генерации")
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{asset.media_type};base64,{base64.b64encode(raw).decode('ascii')}"
+                },
+            }
+        )
+    return parts
+
+
 def materialise(task: core.TaskInstance, parent: Path | None = None) -> Path:
     """Write ``task.workspace`` into a fresh temp directory."""
     work_dir = Path(tempfile.mkdtemp(prefix=f"dailybench-{task.id.lower()}-", dir=parent))
@@ -230,6 +298,10 @@ def materialise(task: core.TaskInstance, parent: Path | None = None) -> Path:
         target = work_dir / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+    for asset in task.assets or []:
+        target = work_dir / asset.path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(asset.data)
     return work_dir
 
 
@@ -261,6 +333,32 @@ class Runner:
         self._template: dict[str, Any] | None = None
         self._template_probed = False
         self._sandbox_state: tuple[bool, str] | None = None
+        self._vision_state: tuple[bool | None, str] | None = None
+
+    def _vision_support(self) -> tuple[bool | None, str]:
+        """One cached capability answer for the whole run: can it take images?
+
+        The probe is cached like the sandbox probe — it is a property of the
+        endpoint, not of a task. ``None`` means the probe could not decide and
+        the task is attempted; only a measured ``False`` skips the row.
+        """
+        if self._vision_state is None:
+            probe = getattr(self.provider, "probe_images", None)
+            if callable(probe):
+                try:
+                    supported = probe()
+                except Exception as exc:  # pragma: no cover - defensive
+                    supported = None
+                    note = f"проба изображений упала: {type(exc).__name__}: {exc}"
+                else:
+                    note = str(getattr(self.provider, "image_probe_note", "") or "")
+                    if not note:
+                        note = "endpoint принимает изображения" if supported else "endpoint не принимает изображения"
+            else:
+                supported = getattr(self.provider, "images", None)
+                note = "провайдер не объявляет поддержку изображений"
+            self._vision_state = (supported, note)
+        return self._vision_state
 
     def _sandbox_usable(self) -> tuple[bool, str]:
         """Whether a container can run at all, checked once per run.
@@ -369,6 +467,26 @@ class Runner:
             score.max_points = task.max_points
             return TaskRun(task=task, transcript=transcript, score=score)
 
+        if task.assets:
+            supported, note = self._vision_support()
+            if supported is False:
+                reason = (
+                    "модель не принимает изображения (capability probe): "
+                    f"{note or 'endpoint отклонил image_url'}"
+                )
+                transcript = core.Transcript(
+                    task_id=task.id,
+                    category=task.category,
+                    extra={"skipped": reason, "vision_probe": {"supported": False, "note": note}},
+                )
+                score = core.Score(
+                    task_id=task.id, category=task.category, skipped=reason, notes=[reason]
+                )
+                # Not verified: zero possible, so a text-only model is not read
+                # as having failed the picture.
+                score.max_points = task.max_points
+                return TaskRun(task=task, transcript=transcript, score=score)
+
         agent_mode = self._uses_agent(task)
         # One root per task, removed in the ``finally`` below: the working copy,
         # the agent's config and its logs live inside it. A shared parent let two
@@ -392,6 +510,13 @@ class Runner:
             },
         )
         sandbox = self._sandbox(work_dir) if agent_mode and self.cfg.sandbox else None
+        if task.assets:
+            supported, note = self._vision_support()
+            transcript.extra["vision_probe"] = {"supported": supported, "note": note}
+            transcript.extra["assets"] = [
+                {"path": asset.path, "media_type": asset.media_type, "sha256": asset.sha256}
+                for asset in task.assets
+            ]
         if agent_mode:
             transcript.extra["sandbox"] = (
                 sandbox.record()
@@ -448,7 +573,7 @@ class Runner:
         messages: list[dict[str, Any]] = []
         if self.cfg.system_prompt:
             messages.append({"role": "system", "content": self.cfg.system_prompt})
-        messages.append({"role": "user", "content": task.prompt})
+        messages.append({"role": "user", "content": user_content(task, work_dir)})
         started = time.perf_counter()  # elapsed metric only
         # One absolute deadline for the whole task, not one per request: the
         # old per-request ceiling was multiplied by every tool turn and doubled
@@ -499,7 +624,7 @@ class Runner:
                             transcript.error = (
                                 f"бюджет генерации исчерпан ({total_limit}) до ответа"
                             )
-                            transcript.extra["failure"] = "incomplete_scenario"
+                            transcript.extra["failure"] = "resource_exhausted"
                         break
                     # The dialogue turn or the release turn is still owed:
                     # stopping here would grade a half-presented scenario as ok.
@@ -521,7 +646,7 @@ class Runner:
                     # A declared per-task ceiling is a property of the test, not
                     # of the endpoint: the scenario is exhausted, not
                     # unavailable, and stays in the denominator.
-                    transcript.extra["failure"] = "candidate_resource_exhausted"
+                    transcript.extra["failure"] = "resource_exhausted"
                     break
                 request_budget = min(float(self.cfg.request_wall_clock or left), left)
                 size, size_source = _request_size(
@@ -694,11 +819,10 @@ class Runner:
                     marker in text
                     for marker in ("обрыв соединения", "unreachable", "сокет", "ConnectionReset", "RemoteDisconnected")
                 )
-                transcript.extra["failure"] = (
-                    "transport_unavailable" if transport else "provider_unavailable"
-                )
+                transcript.extra["failure_source"] = "transport" if transport else "provider"
+                transcript.extra["failure"] = "infra_failure"
             else:
-                transcript.extra["failure"] = "model_protocol_failure"
+                transcript.extra["failure"] = "model_failure"
         except Exception as exc:  # pragma: no cover - defensive
             transcript.error = f"{type(exc).__name__}: {exc}"
 
@@ -793,7 +917,7 @@ class Runner:
             run = agent.run(prompt, work_dir, self.cfg, agent_dir=agent_dir, sandbox=sandbox)
         except Exception as exc:  # pragma: no cover - environment dependent
             transcript.error = f"{type(exc).__name__}: {exc}"
-            transcript.extra["failure"] = "evaluator_unavailable"
+            transcript.extra["failure"] = "evaluator_failure"
             transcript.duration_s = time.perf_counter() - started
             return
         if sandbox is not None:
@@ -822,7 +946,7 @@ class Runner:
         transcript.extra["agent"]["turns_reported"] = run.turns
         if run.error:
             transcript.error = run.error
-            transcript.extra["failure"] = run.failure or "model_protocol_failure"
+            transcript.extra["failure"] = run.failure or "model_failure"
 
     def _score(self, task: core.TaskInstance, transcript: core.Transcript) -> core.Score:
         module = core.REGISTRY.get(task.category)
@@ -831,7 +955,7 @@ class Runner:
                 task_id=task.id,
                 category=task.category,
                 error="category not registered",
-                failure="evaluator_unavailable",
+                failure="evaluator_failure",
                 max_points=task.max_points,
             )
         try:
@@ -843,7 +967,7 @@ class Runner:
                 task_id=task.id,
                 category=task.category,
                 error=f"evaluator failed: {type(exc).__name__}: {exc}",
-                failure="evaluator_unavailable",
+                failure="evaluator_failure",
             )
             score.add("evaluator", False, task.max_points,
                       f"оценка не выполнена: {type(exc).__name__}: {exc}")
@@ -854,7 +978,7 @@ class Runner:
         score.fit_points()
         if transcript.error:
             score.error = transcript.error
-            score.failure = transcript.extra.get("failure")
+            score.failure = transcript.extra.get("failure") or "infra_failure"
             score.notes.append(f"прогон прерван: {transcript.error}")
         return score
 

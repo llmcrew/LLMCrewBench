@@ -13,6 +13,8 @@ import json
 import re
 import unicodedata
 from dataclasses import replace
+from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
 
@@ -293,7 +295,9 @@ def test_if6_is_a_pilot_scenario_only() -> None:
     assert module.expected_ids_for() == instruction.IDS
     assert module.expected_ids_for("pilot") == ("IF-6",)
     assert module.expected_ids_for("stretch-v1") == instruction.STRETCH_IDS
-    assert instruction.STRETCH_IDS == instruction.IDS + ("IF-6", "IF-7", "IF-7-KK", "IF-8", "IF-9", "IF-10")
+    assert instruction.STRETCH_IDS == instruction.IDS + (
+        "IF-6", "IF-7", "IF-7-KK", "IF-7-EN", "IF-8", "IF-9", "IF-10"
+    )
 
     def generated(profile: str) -> list[TaskInstance]:
         return instruction.generate(task_rng(1, "A"), RunConfig(profile=profile))
@@ -304,11 +308,11 @@ def test_if6_is_a_pilot_scenario_only() -> None:
 
     stretch = generated("stretch-v1")
     assert [task.id for task in stretch] == list(instruction.STRETCH_IDS)
-    # The stretch profile splits the fixed category total over its eleven tasks.
+    # The stretch profile splits the fixed category total over its twelve tasks.
     apply_profile_weights(stretch, "stretch-v1")
     assert sum(task.max_points for task in stretch) == core.CATEGORY_POINTS["A"] == 10.0
-    # 10 / 11 leaves a 1e-4-scale rounding tail on the last task.
-    assert max(task.max_points for task in stretch) - min(task.max_points for task in stretch) <= 0.0002
+    # 10 / 12 rounds to four places and parks the remainder tail on the last task.
+    assert max(task.max_points for task in stretch) - min(task.max_points for task in stretch) <= 0.0005
 
 
 def test_if6_registered_evaluator_is_the_dispatched_one() -> None:
@@ -604,7 +608,7 @@ def test_n7_is_a_stretch_scenario_only() -> None:
     assert all(task.private for task in stretch if task.id in ("IF-9", "IF-10"))
     apply_profile_weights(stretch, "stretch-v1")
     assert sum(task.max_points for task in stretch) == core.CATEGORY_POINTS["A"] == 10.0
-    assert max(task.max_points for task in stretch) - min(task.max_points for task in stretch) <= 0.0002
+    assert max(task.max_points for task in stretch) - min(task.max_points for task in stretch) <= 0.0005
 
 
 def test_n7_registered_evaluator_is_the_dispatched_one() -> None:
@@ -615,3 +619,341 @@ def test_n7_registered_evaluator_is_the_dispatched_one() -> None:
         assert [check.name for check in score.checks] == ["json_format", "records", "ordering"]
     with pytest.raises(KeyError):
         instruction.evaluate(replace(_n7_task(1), id="IF-99"), _transcript(_n7_task(1), ""))
+
+
+# --------------------------------------------------------------------------- #
+# IF-7 ru/en/kk language pair: one semantic case, three self-contained locales
+#
+# The twins must share the case (same days, masses, invoice numbers) while each
+# states its own calendar, separators and Unicode form. The parsers below are
+# written here from the brief, not reused from the module, so a prompt that is
+# merely a translated template fails them.
+# --------------------------------------------------------------------------- #
+
+PAIR_LANGS = ("ru", "kk", "en")
+PAIR_IDS = dict(zip(PAIR_LANGS, instruction.IF7_IDS))
+PAIR_THRESHOLD_TENTHS = 12_000
+
+PAIR_MONTHS = {
+    "ru": ("января", "февраля", "марта", "апреля", "мая", "июня",
+           "июля", "августа", "сентября", "октября", "ноября", "декабря"),
+    "kk": ("қаңтар", "ақпан", "наурыз", "сәуір", "мамыр", "маусым",
+           "шілде", "тамыз", "қыркүйек", "қазан", "қараша", "желтоқсан"),
+    "en": ("January", "February", "March", "April", "May", "June",
+           "July", "August", "September", "October", "November", "December"),
+}
+
+PAIR_DATES = {
+    "ru": re.compile(r"(\d{1,2}) (" + "|".join(PAIR_MONTHS["ru"]) + r") (\d{4}) г\."),
+    "kk": re.compile(r"(\d{4}) жылғы (\d{1,2}) (" + "|".join(PAIR_MONTHS["kk"]) + r")"),
+    "en": re.compile(r"(\d{1,2}) (" + "|".join(PAIR_MONTHS["en"]) + r") (\d{4})"),
+}
+
+PAIR_MASSES = {
+    "ru": re.compile(r"(\d{1,3}(?: \d{3})*),(\d)"),
+    "kk": re.compile(r"(\d{1,3}(?: \d{3})*),(\d)"),
+    "en": re.compile(r"(\d{1,3}(?:,\d{3})*)\.(\d)"),
+}
+
+
+def _pair_task(seed: int, lang: str) -> TaskInstance:
+    tasks = instruction.generate(task_rng(seed, "A"), RunConfig(profile="stretch-v1"))
+    return next(task for task in tasks if task.id == PAIR_IDS[lang])
+
+
+def _pair_listing(task: TaskInstance) -> list[str]:
+    """The fixture block between the two blank lines of the prompt."""
+    return task.prompt.split("\n\n")[1].splitlines()
+
+
+def _pair_read_date(raw: str, lang: str) -> date:
+    match = PAIR_DATES[lang].fullmatch(raw)
+    assert match, f"{lang} brief would not write {raw!r}"
+    if lang == "kk":
+        year, day, month = int(match.group(1)), int(match.group(2)), match.group(3)
+    else:
+        day, month, year = int(match.group(1)), match.group(2), int(match.group(3))
+    return date(year, PAIR_MONTHS[lang].index(month) + 1, day)
+
+
+def _pair_read_mass(raw: str, lang: str) -> int:
+    """Tenths of a kilogram under the language's declared separators."""
+    match = PAIR_MASSES[lang].fullmatch(raw)
+    assert match, f"{lang} brief would not write {raw!r}"
+    whole = match.group(1).replace(" ", "").replace(",", "")
+    return int(whole) * 10 + int(match.group(2))
+
+
+def _pair_read_listing(lines: list[str], lang: str) -> list[tuple[str, date, int]]:
+    rows = []
+    for line in lines:
+        invoice, raw_date, raw_mass = line.split("; ")
+        rows.append((invoice, _pair_read_date(raw_date, lang), _pair_read_mass(raw_mass, lang)))
+    return rows
+
+
+def _pair_write_date(day: date, lang: str) -> str:
+    if lang == "kk":
+        return f"{day.year} жылғы {day.day} {PAIR_MONTHS['kk'][day.month - 1]}"
+    if lang == "en":
+        return f"{day.day} {PAIR_MONTHS['en'][day.month - 1]} {day.year}"
+    return f"{day.day} {PAIR_MONTHS['ru'][day.month - 1]} {day.year} г."
+
+
+def _pair_write_mass(tenths: int, lang: str) -> str:
+    whole, fraction = divmod(tenths, 10)
+    if lang == "en":
+        return f"{whole:,}.{fraction}"
+    return f"{whole:,}".replace(",", " ") + f",{fraction}"
+
+
+def _pair_select(
+    rows: list[tuple[str, date, int]], window: tuple[str, str]
+) -> list[tuple[str, date, int]]:
+    """Independent recomputation: latest record per NFC key, then the window."""
+    start, end = (date.fromisoformat(edge) for edge in window)
+    latest: dict[str, tuple[str, date, int]] = {}
+    for invoice, day, tenths in rows:
+        key = unicodedata.normalize("NFC", invoice)
+        if key not in latest or day >= latest[key][1]:
+            latest[key] = (invoice, day, tenths)
+    picked = [
+        row for row in latest.values()
+        if start <= row[1] <= end and row[2] >= PAIR_THRESHOLD_TENTHS
+    ]
+    picked.sort(key=lambda row: (row[1], unicodedata.normalize("NFC", row[0])))
+    return picked
+
+
+def _pair_tonnes(tenths: int) -> Decimal:
+    return (Decimal(tenths) / 1000).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+
+
+def test_if7_lang_pair_has_its_own_id_metadata_and_prompt() -> None:
+    tasks = {lang: _pair_task(1, lang) for lang in PAIR_LANGS}
+    assert [tasks[lang].id for lang in PAIR_LANGS] == list(instruction.IF7_IDS)
+    assert tasks["ru"].cultures == ["ru"]
+    assert tasks["kk"].cultures == ["kz"]
+    assert tasks["en"].cultures == ["en-GB"]
+    assert len({tasks[lang].prompt for lang in PAIR_LANGS}) == 3
+    assert len({tasks[lang].oracle["reference"] for lang in PAIR_LANGS}) == 3
+    for lang in PAIR_LANGS:
+        assert tasks[lang].languages == [lang]
+        assert tasks[lang].meta["languages"] == [lang]
+        assert tasks[lang].meta["cultures"] == tasks[lang].cultures
+        assert tasks[lang].private is True
+        assert tasks[lang].max_points == 2.0
+
+
+def test_if7_lang_pair_shares_one_semantic_fixture() -> None:
+    """Same seed, same case: the languages may not drift to their own data."""
+    for seed in DEV_SEEDS:
+        tasks = [_pair_task(seed, lang) for lang in PAIR_LANGS]
+        shapes = [
+            sorted((row["identity"], row["day"], row["tenths"], row["decomposed"]) for row in task.oracle["records"])
+            for task in tasks
+        ]
+        assert shapes[0] == shapes[1] == shapes[2]
+        numbers = [
+            {row["identity"]: row["invoice"].split("-")[1].split("/")[0] for row in task.oracle["records"]}
+            for task in tasks
+        ]
+        assert numbers[0] == numbers[1] == numbers[2]
+        picked = [
+            [(row["date"], row["invoice"].split("-")[1].split("/")[0], row["tonnes"]) for row in task.oracle["rows"]]
+            for task in tasks
+        ]
+        assert picked[0] == picked[1] == picked[2]
+        for task in tasks:
+            assert len(task.oracle["rows"]) == 3
+
+
+def test_if7_lang_pair_states_its_own_calendar_and_separators() -> None:
+    for seed in DEV_SEEDS:
+        for lang in PAIR_LANGS:
+            task = _pair_task(seed, lang)
+            parsed = _pair_read_listing(_pair_listing(task), lang)
+            expected = [
+                (row["invoice"], date.fromisoformat(row["day"]), row["tenths"])
+                for row in sorted(task.oracle["records"], key=lambda row: (row["day"], row["invoice"]))
+            ]
+            assert sorted(parsed) == sorted(expected), lang
+            for other in PAIR_LANGS:
+                if other == lang:
+                    continue
+                foreign = [month for month in PAIR_MONTHS[other] if month not in PAIR_MONTHS[lang]]
+                assert not any(month in task.prompt for month in foreign), (lang, other)
+            if lang == "en":
+                assert "1,200.0 kg" in task.prompt
+                assert "1 200,0" not in task.prompt
+                assert "YYYY-MM-DD" in task.prompt and "(half up)" in task.prompt
+            elif lang == "kk":
+                assert "1 200,0 кг" in task.prompt
+                assert "1,200.0" not in task.prompt
+                assert "ЖЖЖЖ-АА-КК" in task.prompt
+            else:
+                assert "1 200,0 кг" in task.prompt
+                assert "1,200.0" not in task.prompt
+                assert "ГГГГ-ММ-ДД" in task.prompt
+
+
+def test_if7_lang_pair_oracle_is_recomputed_in_every_language() -> None:
+    for seed in DEV_SEEDS:
+        for lang in PAIR_LANGS:
+            task = _pair_task(seed, lang)
+            picked = _pair_select(_pair_read_listing(_pair_listing(task), lang), task.oracle["window"])
+            assert [
+                (row["date"], row["invoice"], row["tonnes"]) for row in task.oracle["rows"]
+            ] == [
+                (day.isoformat(), unicodedata.normalize("NFC", invoice), _pair_tonnes(tenths))
+                for invoice, day, tenths in picked
+            ]
+            assert sum((row["tonnes"] for row in task.oracle["rows"]), Decimal("0")) == task.oracle["total_tonnes"]
+
+
+def test_if7_lang_pair_records_keep_both_unicode_forms() -> None:
+    for seed in DEV_SEEDS:
+        for lang in PAIR_LANGS:
+            task = _pair_task(seed, lang)
+            for identity in (2, 3):
+                pair = [row for row in task.oracle["records"] if row["identity"] == identity]
+                assert len(pair) == 2
+                left, right = (unicodedata.normalize("NFC", row["invoice"]) for row in pair)
+                assert left == right
+                # The twins are printed in the two opposite forms, never alike.
+                assert sorted(
+                    row["invoice"] == unicodedata.normalize("NFC", row["invoice"]) for row in pair
+                ) == [False, True]
+                assert pair[0]["invoice"] != pair[1]["invoice"]
+                assert sorted((row["decomposed"] for row in pair)) == [False, True]
+                assert pair[0]["day"] < pair[1]["day"]
+                winner = next(row for row in task.oracle["rows"] if row["invoice"] == left)
+                assert winner["date"] == pair[1]["day"] == max(row["day"] for row in pair)
+            assert task.oracle["decomposed_rows"] >= 4
+            assert any(row["invoice"] != unicodedata.normalize("NFC", row["invoice"])
+                       for row in task.oracle["records"])
+
+
+def test_if7_lang_pair_reference_scores_full_and_garbage_zero() -> None:
+    for seed in DEV_SEEDS:
+        for lang in PAIR_LANGS:
+            task = _pair_task(seed, lang)
+            good = instruction.evaluate(task, _transcript(task, task.oracle["reference"]))
+            assert good.earned == good.possible == 2.0
+            assert _checks(good) == {"json_format": True, "rows": True, "total": True}
+            assert instruction.evaluate(task, _transcript(task, "не знаю")).earned == 0.0
+            assert instruction.evaluate(task, _transcript(task, "")).earned == 0.0
+
+
+def test_if7_lang_pair_is_deterministic_per_seed() -> None:
+    for lang in PAIR_LANGS:
+        for seed in DEV_SEEDS:
+            first, second = _pair_task(seed, lang), _pair_task(seed, lang)
+            assert (first.prompt, first.oracle, first.meta) == (second.prompt, second.oracle, second.meta)
+        assert _pair_task(17, lang).prompt != _pair_task(18, lang).prompt
+
+
+def test_if7_lang_pair_is_a_stretch_scenario_only() -> None:
+    def generated(profile: str) -> list[TaskInstance]:
+        return instruction.generate(task_rng(1, "A"), RunConfig(profile=profile))
+
+    assert not set(instruction.IF7_IDS) & {task.id for task in generated(core.DEFAULT_PROFILE)}
+    assert not set(instruction.IF7_IDS) & {task.id for task in generated("pilot")}
+    assert not set(instruction.IF7_IDS) & {task.id for task in generated("research-v1")}
+    stretch = generated("stretch-v1")
+    assert [task.id for task in stretch if task.id in instruction.IF7_IDS] == list(instruction.IF7_IDS)
+    assert set(instruction.IF7_IDS) <= instruction.PRIVATE_IDS
+    assert core.REGISTRY["A"].expected_ids_for("stretch-v1") == instruction.STRETCH_IDS
+
+
+# --------------------------------------------------------------------------- #
+# Language-pair mutants
+# --------------------------------------------------------------------------- #
+
+
+def test_lang_pair_translated_template_without_locale_check_fails() -> None:
+    """One Russian rendering for every locale: ru parses, en and kk do not."""
+    seed = 1
+    for lang in ("en", "kk"):
+        task = _pair_task(seed, lang)
+        translated = [
+            f"{row['invoice']}; {_pair_write_date(date.fromisoformat(row['day']), 'ru')}; "
+            f"{_pair_write_mass(row['tenths'], 'ru')}"
+            for row in task.oracle["records"]
+        ]
+        with pytest.raises(AssertionError):
+            _pair_read_listing(translated, lang)
+
+    ru_task = _pair_task(seed, "ru")
+    left_as_ru = [
+        f"{row['invoice']}; {_pair_write_date(date.fromisoformat(row['day']), 'ru')}; "
+        f"{_pair_write_mass(row['tenths'], 'ru')}"
+        for row in ru_task.oracle["records"]
+    ]
+    assert sorted(_pair_read_listing(left_as_ru, "ru")) == sorted(_pair_read_listing(_pair_listing(ru_task), "ru"))
+    # And the English brief does state its own convention, so the reader can tell.
+    assert "comma between thousands" in _pair_task(seed, "en").prompt
+    assert "мыңдық разряд бос орынмен" in _pair_task(seed, "kk").prompt
+
+
+def test_lang_pair_swapped_thousands_separator_fails() -> None:
+    """Grouping is semantic: the value is right, its spelling belongs elsewhere."""
+    for lang in PAIR_LANGS:
+        task = _pair_task(2, lang)
+        swap = "en" if lang != "en" else "ru"
+        lines = [
+            f"{row['invoice']}; {_pair_write_date(date.fromisoformat(row['day']), lang)}; "
+            f"{_pair_write_mass(row['tenths'], swap)}"
+            for row in task.oracle["records"]
+        ]
+        with pytest.raises(AssertionError):
+            _pair_read_listing(lines, lang)
+        # A lenient reader that ignores the declared locale reads another value.
+        raw = lines[0].split("; ")[2]
+        scrubbed = raw.replace(",", "") if swap == "en" else raw.replace(" ", "").replace(",", ".")
+        assert int(Decimal(scrubbed) * 10) == task.oracle["records"][0]["tenths"]
+        assert raw != _pair_write_mass(task.oracle["records"][0]["tenths"], lang)
+
+
+def test_lang_pair_nfd_key_in_the_answer_loses_the_rows() -> None:
+    task = _pair_task(1, "en")
+    row = next(item for item in task.oracle["rows"] if item["invoice"] != unicodedata.normalize("NFD", item["invoice"]))
+    payload = json.loads(task.oracle["reference"])
+    payload["rows"][0]["invoice"] = unicodedata.normalize("NFD", row["invoice"])
+    score = instruction.evaluate(task, _transcript(task, _answer(payload)))
+    assert _checks(score) == {"json_format": True, "rows": False, "total": True}
+
+
+def test_lang_pair_unmerged_nfd_twin_loses_the_rows() -> None:
+    """A reader that never normalises sees two invoices instead of one record."""
+    task = _pair_task(1, "ru")
+    shadow = next(
+        row for row in task.oracle["records"]
+        if row["identity"] == 2 and row["day"] < max(
+            other["day"] for other in task.oracle["records"] if other["identity"] == 2
+        )
+    )
+    payload = json.loads(task.oracle["reference"])
+    payload["rows"].append({
+        "date": shadow["day"],
+        "invoice": unicodedata.normalize("NFC", shadow["invoice"]),
+        "tonnes": float(_pair_tonnes(shadow["tenths"])),
+    })
+    payload["rows"].sort(key=lambda item: (item["date"], item["invoice"]))
+    payload["total_tonnes"] = round(payload["total_tonnes"] + float(_pair_tonnes(shadow["tenths"])), 3)
+    score = instruction.evaluate(task, _transcript(task, _answer(payload)))
+    assert _checks(score)["rows"] is False
+
+
+def test_lang_pair_native_date_in_the_answer_loses_the_rows() -> None:
+    for lang, sample in (
+        ("en", "5 January 2026"),
+        ("kk", "2026 жылғы 5 қаңтар"),
+        ("ru", "5 января 2026 г."),
+    ):
+        task = _pair_task(3, lang)
+        payload = json.loads(task.oracle["reference"])
+        payload["rows"][0]["date"] = sample
+        score = instruction.evaluate(task, _transcript(task, _answer(payload)))
+        assert _checks(score)["rows"] is False
+        assert score.earned < 2.0

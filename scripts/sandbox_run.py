@@ -7,7 +7,7 @@ no new privileges, seccomp allow-list, pids limit, cgroup v2 limits) and an
 absolute deadline, then reports a machine-readable status.
 
 The status vocabulary is deliberate: ``timeout``, ``oom`` and ``infra_error``
-are infrastructure outcomes and must map to ``evaluator_unavailable``, never to
+are infrastructure outcomes and must map to ``evaluator_failure``, never to
 a zero score for the model.  Docker reserves exit code 125 for its own
 failures (daemon gone, image pulled away, name collision) and 126/127 for exec
 failures *inside* the container; the first is infra, the latter two are the

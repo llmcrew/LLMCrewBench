@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://llmcrewbench/schema/holdout.schema.json",
+  "title": "DailyBench holdout manifest and material rights record",
+  "description": "Two contracts: the split manifest that keeps closed-eval material out of the public layer, and one rights record per external material. A missing licence is a refusal to import, not an assumption of MIT.",
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "fingerprint": {
+      "type": "object",
+      "description": "Hashes of the bytes actually shown to a candidate. No text, seeds or oracle payload.",
+      "required": [
+        "prompt_sha256",
+        "dialogue_sha256",
+        "workspace_sha256",
+        "tools_sha256",
+        "system_sha256",
+        "assets_sha256",
+        "oracle_sha256"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "prompt_sha256": { "$ref": "#/$defs/sha256" },
+        "dialogue_sha256": { "$ref": "#/$defs/sha256" },
+        "workspace_sha256": { "$ref": "#/$defs/sha256" },
+        "tools_sha256": { "$ref": "#/$defs/sha256" },
+        "system_sha256": { "$ref": "#/$defs/sha256" },
+        "assets_sha256": { "$ref": "#/$defs/sha256" },
+        "oracle_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "required": ["id", "hashes"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "hashes": { "$ref": "#/$defs/fingerprint" }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "required": ["schema", "profile", "policy", "splits", "composition", "digest"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "const": "dailybench/holdout/1" },
+        "profile": { "type": "string", "minLength": 1 },
+        "seed": { "type": "integer", "minimum": 0 },
+        "policy": {
+          "type": "object",
+          "required": ["closed_share", "audit_share"],
+          "additionalProperties": false,
+          "properties": {
+            "closed_share": { "type": "number", "minimum": 0, "maximum": 1 },
+            "audit_share": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "splits": {
+          "type": "object",
+          "required": ["public-dev", "audit", "closed-eval"],
+          "additionalProperties": false,
+          "properties": {
+            "public-dev": { "type": "array", "items": { "$ref": "#/$defs/entry" } },
+            "audit": { "type": "array", "items": { "$ref": "#/$defs/entry" } },
+            "closed-eval": { "type": "array", "items": { "$ref": "#/$defs/entry" } }
+          }
+        },
+        "composition": {
+          "type": "object",
+          "description": "SHA-256 of the ordered composition of each split; the digest is the composition hashed once more.",
+          "required": ["public-dev", "audit", "closed-eval"],
+          "additionalProperties": false,
+          "properties": {
+            "public-dev": { "$ref": "#/$defs/sha256" },
+            "audit": { "$ref": "#/$defs/sha256" },
+            "closed-eval": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "digest": { "$ref": "#/$defs/sha256" },
+        "note": { "type": "string" }
+      }
+    },
+    "license": {
+      "type": "string",
+      "description": "A concrete SPDX identifier; NOASSERTION is not accepted because it does not authorise an import.",
+      "enum": [
+        "Apache-2.0",
+        "MIT",
+        "BSD-2-Clause",
+        "BSD-3-Clause",
+        "ISC",
+        "MPL-2.0",
+        "CC0-1.0",
+        "CC-BY-4.0",
+        "CC-BY-SA-4.0",
+        "ODbL-1.0",
+        "PDDL-1.0"
+      ]
+    },
+    "material": {
+      "type": "object",
+      "title": "Rights record of one external material",
+      "required": [
+        "schema",
+        "id",
+        "origin",
+        "revision",
+        "upstream_id",
+        "code_license",
+        "data_license",
+        "attribution",
+        "redistribution",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "const": "dailybench/license/1" },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "origin": { "type": "string", "pattern": "^https?://" },
+        "revision": { "type": "string", "minLength": 1 },
+        "upstream_id": { "type": "string", "minLength": 1 },
+        "code_license": { "$ref": "#/$defs/license" },
+        "data_license": { "$ref": "#/$defs/license" },
+        "attribution": { "type": "string", "minLength": 1 },
+        "redistribution": {
+          "description": "allowed — may be shipped; restricted — ship only under the named note; forbidden — reference only.",
+          "enum": ["allowed", "restricted", "forbidden"]
+        },
+        "status": {
+          "description": "verified — licence text was read; unverified — record exists but rights are unclear; blocked — known obstacle.",
+          "enum": ["verified", "unverified", "blocked"]
+        },
+        "adapter": { "type": "string", "maxLength": 64 },
+        "recorded": { "type": "string", "format": "date" },
+        "repository": { "type": "string", "pattern": "^https?://" },
+        "note": { "type": "string" },
+        "limitations": { "type": "array", "items": { "type": "string" } },
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "role", "license"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "role": { "type": "string", "minLength": 1 },
+              "license": { "type": "string", "minLength": 1 },
+              "url": { "type": "string", "pattern": "^https?://" },
+              "revision": { "type": "string" },
+              "split": { "type": "string" },
+              "version": { "type": "string" },
+              "note": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

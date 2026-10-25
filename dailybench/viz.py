@@ -22,6 +22,8 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from . import core
+
 EMPTY = "нет данных"
 
 # A frame comes from a run artefact, not from a trusted encoder. PIL's own
@@ -36,6 +38,7 @@ STATUS_ORDER = (
     "model_failed",
     "capture_failed",
     "evaluator_unavailable",
+    "integrity_violation",
     "media_missing",
 )
 
@@ -45,6 +48,7 @@ STATUS_LABELS = {
     "model_failed": "сбой модели/транспорта",
     "capture_failed": "страница не отрисовалась",
     "evaluator_unavailable": "evaluator недоступен",
+    "integrity_violation": "удостоверение отозвано",
     "media_missing": "кадр/медиа отсутствует",
 }
 
@@ -55,6 +59,7 @@ STATUS_MARKS = {
     "model_failed": "✕",
     "capture_failed": "◍",
     "evaluator_unavailable": "⚙",
+    "integrity_violation": "⊘",
     "media_missing": "▣",
 }
 
@@ -64,6 +69,7 @@ STATUS_COLORS = {
     "model_failed": "#ff7b72",
     "capture_failed": "#e3b341",
     "evaluator_unavailable": "#d2a8ff",
+    "integrity_violation": "#ffa657",
     "media_missing": "#56d4dd",
 }
 
@@ -317,9 +323,13 @@ def classify(score: Mapping[str, Any]) -> str:
     """
     if score.get("skipped"):
         return "not_run"
-    failure = str(score.get("failure") or "")
-    if failure == "evaluator_unavailable":
+    failure = core.canonical_failure(score.get("failure"))
+    if failure in ("evaluator_failure", "infra_failure"):
         return "evaluator_unavailable"
+    if failure == "integrity_violation":
+        return "integrity_violation"
+    if failure == "unsupported":
+        return "not_run"
     error = str(score.get("error") or "")
     if error:
         low = error.lower()

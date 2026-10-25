@@ -1329,7 +1329,7 @@ def render(
         return RenderResult(
             ok=False,
             reason=f"рендер-процесс не запустился: {exc}",
-            failure="evaluator_unavailable",
+            failure="evaluator_failure",
         )
 
     deadline = time.monotonic() + timeout_ms / 1000
@@ -1349,7 +1349,7 @@ def render(
         return RenderResult(
             ok=False,
             reason=f"{type(exc).__name__}: {str(exc)[:200]}",
-            failure="evaluator_unavailable",
+            failure="evaluator_failure",
         )
     if result is None:
         _kill_worker()
@@ -1360,7 +1360,7 @@ def render(
             ok=False,
             errors=[f"{stage}: TimeoutError: дедлайн рендера {timeout_ms} мс исчерпан"],
             reason=f"дедлайн рендера {timeout_ms} мс исчерпан: страница не вернула управление",
-            failure="candidate_resource_exhausted",
+            failure="resource_exhausted",
             duration_s=time.time() - started,
         )
     result.duration_s = time.time() - started

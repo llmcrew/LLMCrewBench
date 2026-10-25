@@ -9,12 +9,17 @@ as a real value, hits not extending the TTL and no surviving background tasks.
 
 from __future__ import annotations
 
+import base64
+import csv
+import hashlib
+import io
 import json
 import random
 import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -1415,4 +1420,756 @@ def evaluate_c4(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 
     if "class AsyncTTLCache" not in code or "def invalidate" not in code:
         score.notes.append("в ответе не найден класс AsyncTTLCache или метод invalidate")
+    return score
+
+
+# --------------------------------------------------------------------------- #
+# Scenario C-7 (stretch) — library composition: base64 ZIP → CSV → SQLite
+#
+# Not another pure function: the candidate composes five pinned stdlib APIs
+# (``base64``, ``zipfile``, ``csv``/``io.TextIOWrapper``, ``hashlib``,
+# ``sqlite3`` plus ``os.replace``) and the hidden checks watch the observable
+# result: rows and report on a valid archive, unchanged state on four declared
+# failure classes, no leaked handles and the declared usage code. The oracle of
+# every expected value is recomputed in the hidden test from the fixture CSVs.
+# --------------------------------------------------------------------------- #
+
+C7_TARGET_FILE = "bin/import.py"
+
+CHECK_ORDER_C7 = (
+    ("happy_rows", "test_imports_every_row"),
+    ("idempotent_reimport", "test_reimport_is_idempotent"),
+    ("report_content", "test_report_is_exact"),
+    ("invalid_sha_atomic", "test_sha_mismatch_is_atomic"),
+    ("path_traversal", "test_traversal_member_rejected"),
+    ("header_mismatch", "test_header_mismatch_rejected"),
+    ("bad_base64", "test_bad_base64_is_a_clean_failure"),
+    ("resources_closed", "test_no_resource_leaks"),
+    ("usage_code", "test_usage_exit_code"),
+    ("pinned_apis", "test_pinned_apis_are_used"),
+)
+
+_C7_HEADER = "order_id,region,product,cents,status"
+
+_C7_STUB = '''#!/usr/bin/env python3
+"""CLI: import a checksummed export archive into the warehouse."""
+
+from __future__ import annotations
+
+import sys
+
+
+def main(argv: list[str]) -> int:
+    raise NotImplementedError
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
+'''
+
+_C7_REFERENCE = r'''#!/usr/bin/env python3
+"""Import the checksummed export archive into the warehouse database."""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import csv
+import hashlib
+import io
+import json
+import os
+import sqlite3
+import sys
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+CONFIG = ROOT / "config"
+BUILD = ROOT / "build"
+REPORTS = ROOT / "reports"
+DB = BUILD / "warehouse.db"
+MANIFEST = ROOT / "data" / "manifest.json"
+SUMMARY = REPORTS / "summary.json"
+STATUSES = ("paid", "refunded")
+
+TABLE = """CREATE TABLE IF NOT EXISTS events (
+    order_id INTEGER PRIMARY KEY,
+    region TEXT NOT NULL,
+    product TEXT NOT NULL,
+    cents INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    batch TEXT NOT NULL
+)"""
+
+
+class Invalid(Exception):
+    """The archive violates the declared format."""
+
+
+def fail(message: str) -> int:
+    print(f"invalid archive: {message}", file=sys.stderr)
+    return 2
+
+
+def usage(message: str) -> int:
+    print(f"usage: {message}", file=sys.stderr)
+    return 64
+
+
+def columns() -> list[str]:
+    text = (CONFIG / "columns.txt").read_text(encoding="utf-8")
+    return [value for value in text.strip().split(",")]
+
+
+def regions() -> set[str]:
+    return set((CONFIG / "regions.txt").read_text(encoding="utf-8").split())
+
+
+def entries() -> list[dict[str, object]]:
+    document = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    batches = document.get("batches") if isinstance(document, dict) else None
+    if not isinstance(batches, list) or not batches:
+        raise Invalid("manifest")
+    for batch in batches:
+        if not isinstance(batch, dict):
+            raise Invalid("manifest")
+        if not isinstance(batch.get("member"), str) or not isinstance(batch.get("rows"), int):
+            raise Invalid("manifest")
+        if not isinstance(batch.get("sha256"), str):
+            raise Invalid("manifest")
+    return batches
+
+
+def decode(path: Path) -> bytes:
+    try:
+        text = path.read_text(encoding="ascii")
+        return base64.b64decode(text.strip(), validate=True)
+    except (OSError, UnicodeDecodeError, binascii.Error, ValueError):
+        raise Invalid("not base64") from None
+
+
+def safe(name: str) -> bool:
+    if not name or name != name.strip():
+        return False
+    piece = Path(name)
+    return not piece.is_absolute() and ".." not in piece.parts
+
+
+def plan(path: Path) -> list[tuple[str, list[tuple[int, str, str, int, str]]]]:
+    """Read-only pass: the whole archive is validated before a row is written."""
+    declared = entries()
+    header = columns()
+    allowed = regions()
+    result: list[tuple[str, list[tuple[int, str, str, int, str]]]] = []
+    with zipfile.ZipFile(io.BytesIO(decode(path))) as archive:
+        corrupt = archive.testzip()
+        if corrupt is not None:
+            raise Invalid(f"crc {corrupt}")
+        names = [info.filename for info in archive.infolist()]
+        if len(set(names)) != len(names):
+            raise Invalid("duplicate member")
+        for name in names:
+            if not safe(name):
+                raise Invalid(f"unsafe member {name}")
+        listed = [str(batch["member"]) for batch in declared]
+        for name in listed:
+            if name not in names:
+                raise Invalid(f"missing member {name}")
+        for name in names:
+            if name not in listed:
+                raise Invalid(f"extra member {name}")
+        for batch in declared:
+            name = str(batch["member"])
+            with archive.open(name) as member:
+                with io.TextIOWrapper(member, encoding="utf-8", newline="") as stream:
+                    text = stream.read()
+            if hashlib.sha256(text.encode("utf-8")).hexdigest() != batch["sha256"]:
+                raise Invalid(f"sha256 {name}")
+            rows: list[tuple[int, str, str, int, str]] = []
+            reader = csv.reader(io.StringIO(text, newline=""))
+            if next(reader, None) != header:
+                raise Invalid(f"header {name}")
+            for line, fields in enumerate(reader, start=2):
+                if len(fields) != len(header):
+                    raise Invalid(f"row {line} {name}")
+                raw_id, region, product, raw_cents, status = fields
+                if not raw_id.isdigit() or int(raw_id) <= 0:
+                    raise Invalid(f"row {line} {name}")
+                if region not in allowed or not product:
+                    raise Invalid(f"row {line} {name}")
+                if not raw_cents.isdigit() or int(raw_cents) <= 0:
+                    raise Invalid(f"row {line} {name}")
+                if status not in STATUSES:
+                    raise Invalid(f"row {line} {name}")
+                rows.append((int(raw_id), region, product, int(raw_cents), status))
+            if len(rows) != batch["rows"]:
+                raise Invalid(f"rows {name}")
+            result.append((name, rows))
+    return result
+
+
+def summary(connection: sqlite3.Connection) -> dict[str, object]:
+    count, total = connection.execute(
+        "SELECT COUNT(*), COALESCE(SUM(cents), 0) FROM events"
+    ).fetchone()
+    by_region = [
+        {"region": region, "rows": rows, "cents": cents}
+        for region, rows, cents in connection.execute(
+            "SELECT region, COUNT(*), SUM(cents) FROM events GROUP BY region ORDER BY region"
+        )
+    ]
+    best = connection.execute(
+        "SELECT product FROM events GROUP BY product"
+        " ORDER BY SUM(cents) DESC, product ASC LIMIT 1"
+    ).fetchone()
+    return {
+        "by_region": by_region,
+        "rows": count,
+        "top_product": best[0] if best else "",
+        "total_cents": total,
+    }
+
+
+def publish(payload: dict[str, object]) -> str:
+    text = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    REPORTS.mkdir(exist_ok=True)
+    temporary = SUMMARY.with_name(SUMMARY.name + ".tmp")
+    temporary.write_text(text, encoding="utf-8")
+    os.replace(temporary, SUMMARY)
+    return text
+
+
+def command_import(path: Path) -> int:
+    try:
+        batches = plan(path)
+    except Invalid as exc:
+        return fail(str(exc))
+    BUILD.mkdir(exist_ok=True)
+    connection = sqlite3.connect(DB)
+    try:
+        with connection:
+            connection.execute(TABLE)
+            for name, rows in batches:
+                connection.executemany(
+                    "INSERT INTO events (order_id, region, product, cents, status, batch)"
+                    " VALUES (?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT(order_id) DO UPDATE SET"
+                    " region = excluded.region, product = excluded.product,"
+                    " cents = excluded.cents, status = excluded.status, batch = excluded.batch",
+                    [(order_id, region, product, cents, status, name)
+                     for order_id, region, product, cents, status in rows],
+                )
+        payload = summary(connection)
+    finally:
+        connection.close()
+    publish(payload)
+    print(f"ok: rows={sum(len(rows) for _, rows in batches)}")
+    return 0
+
+
+def command_report() -> int:
+    if not DB.exists():
+        return fail("no database")
+    connection = sqlite3.connect(DB)
+    try:
+        text = publish(summary(connection))
+    finally:
+        connection.close()
+    print(text, end="")
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        return usage("import <archive> | report")
+    command, *rest = argv
+    if command == "import":
+        if len(rest) != 1:
+            return usage("import <archive>")
+        return command_import(Path(rest[0]))
+    if command == "report":
+        if rest:
+            return usage("report")
+        return command_report()
+    return usage(f"unknown command {command}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
+'''
+
+_C7_HIDDEN = r'''"""Hidden acceptance tests for the archive import pipeline (C-7).
+
+Every expectation about content is recomputed here from the fixture CSVs with
+``csv`` alone; the failure variants are built by rewriting the archive in the
+test. The candidate is loaded by path from a fresh copy of the working tree, so
+the tests never trust the module's own helpers.
+"""
+
+import base64
+import contextlib
+import csv
+import gc
+import importlib.util
+import io
+import json
+import shutil
+import sqlite3
+import sys
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+REPO = Path(sys.argv[1]).resolve()
+HEADER = (REPO / "config" / "columns.txt").read_text(encoding="utf-8").strip()
+
+
+def load(repo: Path):
+    spec = importlib.util.spec_from_file_location("candidate_import", repo / "bin" / "import.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="c7-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.repo = self.root / "repo"
+        shutil.copytree(REPO, self.repo, ignore=shutil.ignore_patterns("__pycache__"))
+        self.archive = self.repo / "data" / "exports.zip.b64"
+        self.manifest_path = self.repo / "data" / "manifest.json"
+        self.db = self.repo / "build" / "warehouse.db"
+        self.summary = self.repo / "reports" / "summary.json"
+        self.module = load(self.repo)
+
+    # -- fixture helpers ---------------------------------------------------- #
+
+    def unpack(self):
+        raw = base64.b64decode(self.archive.read_text(encoding="ascii"))
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            return {name: archive.read(name) for name in archive.namelist()}
+
+    def repack(self, members):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name, data in members.items():
+                info = zipfile.ZipInfo(name, date_time=(2026, 10, 1, 0, 0, 0))
+                archive.writestr(info, data)
+        self.archive.write_text(base64.b64encode(buffer.getvalue()).decode("ascii"), encoding="ascii")
+
+    def manifest(self):
+        return json.loads(self.manifest_path.read_text(encoding="utf-8"))
+
+    def write_manifest(self, payload):
+        self.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def rows(self):
+        if not self.db.exists():
+            return None
+        connection = sqlite3.connect(self.db)
+        try:
+            return [
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT order_id, region, product, cents, status FROM events ORDER BY order_id"
+                )
+            ]
+        finally:
+            connection.close()
+
+    def expected(self):
+        members = self.unpack()
+        result = {}
+        for batch in self.manifest()["batches"]:
+            reader = csv.reader(io.StringIO(members[batch["member"]].decode("utf-8"), newline=""))
+            next(reader)
+            for order_id, region, product, cents, status in reader:
+                result[int(order_id)] = (int(order_id), region, product, int(cents), status)
+        return result
+
+    def expected_report(self):
+        by_region = {}
+        by_product = {}
+        rows = list(self.expected().values())
+        for _order_id, region, product, cents, _status in rows:
+            bucket = by_region.setdefault(region, [0, 0])
+            bucket[0] += 1
+            bucket[1] += cents
+            by_product[product] = by_product.get(product, 0) + cents
+        return {
+            "by_region": [
+                {"region": region, "rows": by_region[region][0], "cents": by_region[region][1]}
+                for region in sorted(by_region)
+            ],
+            "rows": len(rows),
+            "top_product": min(by_product, key=lambda name: (-by_product[name], name)),
+            "total_cents": sum(row[3] for row in rows),
+        }
+
+    def run_import(self):
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            code = self.module.main(["import", str(self.archive)])
+        return code, errors.getvalue()
+
+    def snapshot(self):
+        return {
+            str(path.relative_to(self.repo)): path.read_bytes()
+            for folder in ("config", "data", "docs")
+            for path in sorted((self.repo / folder).rglob("*"))
+            if path.is_file()
+        }
+
+    def mutate(self, mutate):
+        """Rewrite the archive and the manifest from their own current content."""
+        members = self.unpack()
+        manifest = self.manifest()
+        mutate(members, manifest)
+        self.repack(members)
+        self.write_manifest(manifest)
+
+    # -- tests -------------------------------------------------------------- #
+
+    def test_imports_every_row(self):
+        before = self.snapshot()
+        self.assertEqual(self.run_import()[0], 0)
+        self.assertEqual(self.rows(), sorted(self.expected().values()))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_reimport_is_idempotent(self):
+        self.assertEqual(self.run_import()[0], 0)
+        first = self.rows()
+        self.assertEqual(self.run_import()[0], 0)
+        self.assertEqual(self.rows(), first)
+
+    def test_report_is_exact(self):
+        self.assertEqual(self.run_import()[0], 0)
+        expected = self.expected_report()
+        self.assertEqual(json.loads(self.summary.read_text(encoding="utf-8")), expected)
+        canonical = json.dumps(expected, sort_keys=True, separators=(",", ":")) + "\n"
+        self.assertEqual(self.summary.read_text(encoding="utf-8"), canonical)
+
+    def test_sha_mismatch_is_atomic(self):
+        self.assertEqual(self.run_import()[0], 0)
+        before_rows, before_report = self.rows(), self.summary.read_text(encoding="utf-8")
+
+        def flip(members, manifest):
+            name = manifest["batches"][-1]["member"]
+            text = members[name].decode("utf-8")
+            head, _, last = text.rstrip("\n").rpartition("\n")
+            status = "refunded" if last.endswith(",paid") else "paid"
+            members[name] = (head + "\n" + last.rsplit(",", 1)[0] + "," + status + "\n").encode("utf-8")
+
+        self.mutate(flip)
+        code, errors = self.run_import()
+        self.assertEqual(code, 2)
+        self.assertTrue(errors.startswith("invalid archive:"), errors)
+        self.assertEqual(self.rows(), before_rows)
+        self.assertEqual(self.summary.read_text(encoding="utf-8"), before_report)
+
+    def test_traversal_member_rejected(self):
+        def escape(members, manifest):
+            text = members[manifest["batches"][0]["member"]]
+            import hashlib
+
+            name = "../escape.csv"
+            members[name] = text
+            manifest["batches"].append(
+                {"member": name, "rows": 1, "sha256": hashlib.sha256(text).hexdigest()}
+            )
+
+        self.mutate(escape)
+        code, errors = self.run_import()
+        self.assertEqual(code, 2)
+        self.assertIn("unsafe", errors)
+
+    def test_header_mismatch_rejected(self):
+        def rename(members, manifest):
+            import hashlib
+
+            batch = manifest["batches"][0]
+            name = batch["member"]
+            data = members[name].replace(b"order_id,", b"id,", 1)
+            members[name] = data
+            batch["sha256"] = hashlib.sha256(data).hexdigest()
+
+        self.mutate(rename)
+        code, errors = self.run_import()
+        self.assertEqual(code, 2)
+        self.assertIn("header", errors)
+
+    def test_bad_base64_is_a_clean_failure(self):
+        self.archive.write_text("not base64!!\n", encoding="ascii")
+        code, errors = self.run_import()
+        self.assertEqual(code, 2)
+        self.assertTrue(errors.startswith("invalid archive:"), errors)
+        self.assertNotIn("Traceback", errors)
+        self.assertIsNone(self.rows())
+
+    def test_no_resource_leaks(self):
+        def leaks():
+            gc.collect()
+            found = []
+            for obj in list(gc.get_objects()):
+                if isinstance(obj, zipfile.ZipFile):
+                    if obj.fp is not None:
+                        found.append("ZipFile")
+                elif isinstance(obj, sqlite3.Connection):
+                    try:
+                        obj.execute("PRAGMA schema_version").fetchone()
+                    except sqlite3.ProgrammingError:
+                        continue
+                    found.append("Connection")
+            return found
+
+        self.assertEqual(self.run_import()[0], 0)
+        self.assertEqual(self.module.main(["report"]), 0)
+        self.assertEqual(leaks(), [])
+        self.archive.write_text("broken\n", encoding="ascii")
+        self.assertEqual(self.run_import()[0], 2)
+        self.assertEqual(leaks(), [])
+
+    def test_usage_exit_code(self):
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(self.module.main([]), 64)
+            self.assertEqual(self.module.main(["frobnicate"]), 64)
+            self.assertEqual(self.module.main(["import"]), 64)
+        text = errors.getvalue()
+        self.assertIn("usage:", text)
+        self.assertNotIn("Traceback", text)
+
+    def test_pinned_apis_are_used(self):
+        source = (self.repo / "bin" / "import.py").read_text(encoding="utf-8")
+        for needle in (
+            "import zipfile",
+            "import csv",
+            "import sqlite3",
+            "import base64",
+            "import hashlib",
+            "os.replace",
+            'newline=""',
+            "validate=True",
+            "ZipFile",
+        ):
+            self.assertIn(needle, source)
+
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+
+_C7_PROMPT = """Рабочая копия — конвейер приёма выгрузок. Нужен исполняемый файл {target}
+(Python 3.12, только стандартная библиотека). У него две команды:
+
+  import <archive>   принять архив в build/warehouse.db и обновить reports/summary.json
+  report             пересчитать reports/summary.json по текущей БД и напечатать его
+
+<archive> — путь к текстовому файлу с base64-представлением ZIP-архива;
+data/exports.zip.b64 — предъявленный пример. data/manifest.json перечисляет
+обязательные члены архива в порядке применения:
+{{"batches": [{{"member": "<имя в архиве>", "rows": <число>, "sha256": "<hex>"}}]}}.
+
+Каждый член — UTF-8 CSV с заголовком ровно из config/columns.txt
+({header}), разделитель «,», концы строк LF; после заголовка ровно rows строк.
+Допустимая запись: order_id — десятичное > 0, region из config/regions.txt,
+product непустой, cents — десятичное > 0, status — paid или refunded.
+
+Архив обязан содержать ровно перечисленные члены: отсутствующий или лишний
+член, дубль имени, абсолютный путь или «..» в имени — ошибка. CRC каждого
+члена и sha256 его содержимого должны сойтись с манифестом.
+
+Порядок:
+
+1. Сначала полностью проверить архив и все батчи, ничего не записывая.
+2. Затем одной транзакцией применить все батчи по порядку манифеста;
+   повторный order_id перезаписывается последней записью.
+3. После закрытия транзакции атомарно (os.replace) заменить
+   reports/summary.json.
+
+На ошибочном входе build/warehouse.db не создаётся, а существующие БД и
+reports/summary.json остаются побайтово прежними: код 2, в stderr одна строка
+`invalid archive: <причина>`, без traceback. Неизвестная команда или неверное
+число аргументов: код 64, в stderr строка `usage: ...`. Успешный import: код 0
+и stdout `ok: rows=<применено>`.
+
+Таблица: events(order_id INTEGER PRIMARY KEY, region TEXT NOT NULL,
+product TEXT NOT NULL, cents INTEGER NOT NULL, status TEXT NOT NULL,
+batch TEXT NOT NULL); создаётся при необходимости. Отчёт — компактный
+канонический JSON (json.dumps(..., sort_keys=True, separators=(",", ":")) плюс
+завершающий LF) с полями rows, total_cents, by_region (список
+{{region, rows, cents}} по возрастанию region) и top_product (product с
+наибольшей суммой cents, при равенстве — лексикографически меньший).
+
+Открытые файлы и соединения обязаны закрываться до возврата из команды;
+пути считать от расположения самого файла, не от cwd. Обязательные API
+stdlib: zipfile.ZipFile/.open, csv.reader поверх io.TextIOWrapper(..., newline=""),
+sqlite3, base64.b64decode(..., validate=True), hashlib.sha256, os.replace.
+Файлы config/, data/ и docs/ менять запрещено.
+
+Верни ТОЛЬКО полный текст файла {target} целиком, в одном блоке кода.
+
+Файл {target} в рабочей копии:
+
+```python
+{stub}```"""
+
+
+def _c7_rows(rng: random.Random, regions: list[str]) -> tuple[list, list]:
+    ids = rng.sample(range(1000, 9999), 14)
+    plan = [
+        (ids[0], 700, "alpha"),
+        (ids[1], 500, "alpha"),
+        (ids[2], 300, "alpha"),
+        (ids[3], 800, "beta"),
+        (ids[4], 400, "beta"),
+        (ids[5], 300, "beta"),
+        (ids[6], 150, "gamma"),
+        (ids[7], 90, "delta"),
+        (ids[6], 200, "gamma"),
+        (ids[7], 95, "delta"),
+        (ids[8], 40, "epsilon"),
+        (ids[9], 30, "gamma"),
+        (ids[10], 20, "delta"),
+        (ids[11], 10, "epsilon"),
+    ]
+    first, second = [], []
+    for index, (order_id, cents, product) in enumerate(plan):
+        row = (order_id, rng.choice(regions), product, cents, rng.choice(("paid", "refunded")))
+        (first if index < 8 else second).append(row)
+    return first, second
+
+
+def _c7_csv(rows: list[tuple[int, str, str, int, str]]) -> str:
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerow(_C7_HEADER.split(","))
+    writer.writerows(rows)
+    return stream.getvalue()
+
+
+def _c7_archive(batches: list[list[tuple[int, str, str, int, str]]]) -> tuple[str, str]:
+    buffer = io.BytesIO()
+    manifest: dict[str, list[dict[str, Any]]] = {"batches": []}
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for index, rows in enumerate(batches, start=1):
+            name = f"orders/batch_2026_10_{index:02d}.csv"
+            data = _c7_csv(rows)
+            archive.writestr(zipfile.ZipInfo(name, date_time=(2026, 10, 1, 0, 0, 0)), data)
+            manifest["batches"].append(
+                {
+                    "member": name,
+                    "rows": len(rows),
+                    "sha256": hashlib.sha256(data.encode("utf-8")).hexdigest(),
+                }
+            )
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii") + "\n"
+    return encoded, json.dumps(manifest, indent=2) + "\n"
+
+
+def _c7_report(rows: list[tuple[int, str, str, int, str]]) -> dict[str, Any]:
+    by_region: dict[str, list[int]] = {}
+    by_product: dict[str, int] = {}
+    for _, region, product, cents, _status in rows:
+        bucket = by_region.setdefault(region, [0, 0])
+        bucket[0] += 1
+        bucket[1] += cents
+        by_product[product] = by_product.get(product, 0) + cents
+    return {
+        "by_region": [
+            {"region": region, "rows": by_region[region][0], "cents": by_region[region][1]}
+            for region in sorted(by_region)
+        ],
+        "rows": len(rows),
+        "top_product": min(by_product, key=lambda name: (-by_product[name], name)),
+        "total_cents": sum(row[3] for row in rows),
+    }
+
+
+_DOCS = """# Формат выгрузки
+
+Архив приходит base64-файлом, члены перечислены в `data/manifest.json`
+вместе с числом строк и sha256. Заголовок CSV обязан совпадать с
+`config/columns.txt`; регионы берутся из `config/regions.txt`.
+
+Валидация выполняется целиком до первой записи, затем батчи применяются
+одной транзакцией в порядке манифеста. Повторный `order_id` перезаписывается
+последней записью. Отчёт публикуется `os.replace` только после коммита.
+"""
+
+
+def generate_c7(rng: random.Random, cfg: Any) -> core.TaskInstance:
+    regions = ["north", "south", "east", "west"]
+    first, second = _c7_rows(rng, regions)
+    encoded, manifest = _c7_archive([first, second])
+    final: dict[int, tuple[int, str, str, int, str]] = {}
+    for row in first + second:
+        final[row[0]] = row
+    rows = [final[key] for key in sorted(final)]
+    workspace = {
+        C7_TARGET_FILE: _C7_STUB,
+        "config/columns.txt": _C7_HEADER + "\n",
+        "config/regions.txt": "\n".join(regions) + "\n",
+        "data/manifest.json": manifest,
+        "data/exports.zip.b64": encoded,
+        "docs/format.md": _DOCS,
+        "README.md": "# warehouse import\n\nПриём выгрузок в SQLite.\n",
+    }
+    return core.TaskInstance(
+        id="C-7",
+        category="C",
+        title="Python archive import",
+        prompt=_C7_PROMPT.format(target=C7_TARGET_FILE, header=_C7_HEADER, stub=_C7_STUB),
+        max_points=8.0,
+        workspace=workspace,
+        oracle={
+            "reference": _C7_REFERENCE,
+            "solution": _C7_REFERENCE,
+            "hidden_tests": _C7_HIDDEN,
+            "runner": _RUNNER,
+            "target_file": C7_TARGET_FILE,
+            "answer_file": C7_TARGET_FILE,
+            "checks": [name for name, _ in CHECK_ORDER_C7],
+            "expected_rows": [list(row) for row in rows],
+            "expected_report": _c7_report(rows),
+        },
+        meta={"scenario": "C-7"},
+    )
+
+
+def evaluate_c7(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
+    score = core.Score(task_id=task.id, category="C")
+    code = code_of(task, tr)
+    if not code:
+        for name, _ in CHECK_ORDER_C7:
+            score.add(name, False, _POINTS_PER_CHECK, "ответ не содержит кода файла")
+        score.notes.append("не удалось извлечь файл из ответа")
+        return score
+
+    sandbox = Path(tempfile.mkdtemp(prefix="dailybench-c7-"))
+    repo = sandbox / "repo"
+    repo.mkdir(parents=True)
+    for rel, content in task.workspace.items():
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    (repo / C7_TARGET_FILE).write_text(code, encoding="utf-8")
+
+    try:
+        results = _run_hidden(
+            sandbox,
+            repo,
+            tests_name="test_import_hidden.py",
+            hidden=_C7_HIDDEN,
+            order=CHECK_ORDER_C7,
+        )
+        for name, _ in CHECK_ORDER_C7:
+            passed, detail = results[name]
+            score.add(name, passed, _POINTS_PER_CHECK, detail)
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+    if "def main" not in code:
+        score.notes.append("в ответе не найдена точка входа main(argv)")
     return score
