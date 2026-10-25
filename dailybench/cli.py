@@ -77,6 +77,15 @@ def _config_from(args: argparse.Namespace) -> RunConfig:
         cfg.only = tuple(part.strip() for part in args.only.split(",") if part.strip())
     if getattr(args, "max_new_tokens", None):
         cfg.max_new_tokens = args.max_new_tokens
+        # The flag is an upper bound on one answer, not a table value the window
+        # branch may ignore: 259834 used to go out after ``--max-new-tokens 32``.
+        cfg.answer_cap = args.max_new_tokens
+    if getattr(args, "max_total_tokens", None):
+        cfg.max_total_tokens = args.max_total_tokens
+    if getattr(args, "generation_mode", ""):
+        cfg.generation_mode = args.generation_mode
+    if getattr(args, "reasoning_budget", None) is not None:
+        cfg.reasoning_budget = args.reasoning_budget
     if getattr(args, "context_window", None):
         cfg.context_window = args.context_window
     if getattr(args, "no_system_prompt", False):
@@ -88,6 +97,8 @@ def _config_from(args: argparse.Namespace) -> RunConfig:
         cfg = reference.apply_to_run_config(cfg, resolved)
     if getattr(args, "agent", True) is False:
         cfg.agent = False
+    if getattr(args, "sandbox", True) is False:
+        cfg.sandbox = False
     if getattr(args, "agent_categories", ""):
         cfg.agent_categories = tuple(
             part.strip().upper() for part in args.agent_categories.split(",") if part.strip()
@@ -95,6 +106,16 @@ def _config_from(args: argparse.Namespace) -> RunConfig:
     if getattr(args, "unsupported", ""):
         extra = tuple(part.strip().upper() for part in args.unsupported.split(",") if part.strip())
         cfg.unsupported = tuple(dict.fromkeys(cfg.unsupported + extra))
+    # Provenance lanes from ``bench``/``sweep``: what the runtime reported and
+    # what the launcher really sent. Absent under plain ``run``.
+    provenance: dict = {}
+    provenance_path = getattr(args, "provenance", "")
+    if provenance_path and Path(provenance_path).is_file():
+        provenance = json.loads(Path(provenance_path).read_text(encoding="utf-8"))
+    cfg.observed = dict(getattr(args, "observed", None) or provenance.get("observed") or {})
+    cfg.launch_executed = dict(getattr(args, "executed", None) or provenance.get("executed") or {})
+    if provenance.get("weights_sha256") and not cfg.weights_sha256:
+        cfg.weights_sha256 = str(provenance["weights_sha256"])
     return cfg
 
 
@@ -359,9 +380,21 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # Provenance of the executor is captured once per run: the digest joins
     # the identity below, so a rebuilt image is a different run, and the
-    # report can state what the numbers were measured on.
-    environment = generation.environment()
+    # report can state what the numbers were measured on. ``container_ran`` is
+    # decided up front by the same probe the runner uses, so a run that will
+    # execute in a container does not first claim to be a host run.
+    from . import isolation
+
+    sandbox_usable, sandbox_reason = isolation.ready() if cfg.sandbox else (False, "")
+    environment = generation.environment(container_ran=cfg.sandbox and sandbox_usable)
     cfg.image_digest = str(environment.get("image_digest") or "")
+    if not cfg.sandbox:
+        environment["executor_status"] = "host_run"
+        environment["executor_reason"] = "sandbox выключен (--no-sandbox)"
+    elif not sandbox_usable:
+        environment["executor_reason"] = (
+            f"контейнер недоступен ({sandbox_reason}); агент пойдёт на хосте"
+        )
     if environment.get("status") != "verified":
         print(
             f"среда песочницы не проверена: {environment.get('reason') or 'нет данных'}",
@@ -414,7 +447,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             flush=True,
         )
 
-    runner = Runner(cfg, provider)
+    runner = Runner(cfg, provider, environment=environment)
     started = datetime.now()
     print(
         f"Запуск {len(tasks)} заданий: model={cfg.model} quant={cfg.quant or 'n/a'} "
@@ -489,6 +522,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"живые сцены: make serve DIR={cfg.out_dir.parent}")
     if summary["errors"]:
         print(f"Прогонов с ошибками: {summary['errors']} (см. tasks.json)", file=sys.stderr)
+    if not summary["eligible"]:
+        kinds = ", ".join(
+            f"{core.failure_label(kind)} x{count}" for kind, count in summary["infra_failures"].items()
+        )
+        print(f"прогон неранжируем: инфраструктура — {kinds}", file=sys.stderr)
+    if not summary.get("rankable_with_baseline", True):
+        print(
+            f"профиль {cfg.profile} не ранжируется с baseline: он несёт свой набор "
+            f"категорий и знаменатель {core.scored_total(cfg.profile):.0f}",
+            file=sys.stderr,
+        )
     infra = [run for run in attempted if run.transcript.extra.get("infra_error")]
     if attempted and len(infra) == len(attempted):
         # Transport/protocol failure is not a wrong answer: every chat request
@@ -508,33 +552,62 @@ def cmd_bench(args: argparse.Namespace) -> int:
     ``run`` assumes a model is already serving; this composes the steps the
     reference workflow needs in order, so a single model can be measured with
     one command and the same code path the sweep uses.
+
+    The effective configuration is resolved exactly once here and handed to the
+    launcher, the preflight and the run: resolving the window separately in each
+    step was what let the same entry run at two different windows. A launcher
+    failure ends the command — otherwise the previous model would be measured
+    under the new entry's name.
     """
     from . import launch, reference
 
     cfg = _config_from(args)
-    entry: dict = {}
-    if args.config:
-        entry = dict(reference.resolve(args.config, args.configs_path or None).entry)
+    resolved = reference.resolve(args.config, args.configs_path or None) if args.config else None
+    if resolved is not None:
+        effective = resolved.effective()
+        # The run must use the entry's own window, not the CLI default.
+        args.context_window = effective["context_window"]
 
-    if entry and not args.no_launch:
-        ok, note, key = launch.up(entry)
+    if resolved is not None and not args.no_launch:
+        ok, note, key = launch.up(effective)
         print(f"runtime: {note}", flush=True)
         if not ok:
             print(
-                f"не удалось поднять рантайм; продолжаю с endpoint'ом {cfg.base_url}",
+                f"рантайм не поднялся ({note}); прогон не начат",
                 file=sys.stderr,
             )
-        elif key and not args.api_key:
+            return 2
+        if key and not args.api_key:
             args.api_key = key
 
-    if args.config and not args.no_preflight:
-        report = reference.preflight(reference.resolve(args.config, args.configs_path or None))
+    observed: dict = {}
+    if resolved is not None and not args.no_preflight:
+        # ``full`` is not optional here: without the window probe the admission
+        # claim (32K of context on the card) was never measured.
+        report = reference.preflight(resolved, full=True, hash_weights=True)
         print(report.render(), flush=True)
         if not report.ok:
             print("preflight отклонил конфигурацию: прогон не начат", file=sys.stderr)
             return 1
+        if not report.eligible:
+            print(
+                "preflight не подтвердил конфигурацию целиком ("
+                + ", ".join(report.unverified)
+                + "): результат нельзя ранжировать по весам",
+                file=sys.stderr,
+            )
+            if not args.allow_unverified:
+                print("прогон не начат; повторить можно с --allow-unverified", file=sys.stderr)
+                return 3
+        observed = dict(report.observed)
 
-    return cmd_run(build_parser().parse_args(_bench_run_argv(args)))
+    run_args = build_parser().parse_args(_bench_run_argv(args))
+    # The observed snapshot and the executed load come from the steps above, not
+    # from the command line: passing them through the namespace keeps the report
+    # from presenting the launch template as the executed command.
+    run_args.observed = observed
+    run_args.executed = dict(effective.get("executed") or {}) if resolved is not None else {}
+    return cmd_run(run_args)
 
 
 def _bench_run_argv(args: argparse.Namespace) -> list[str]:
@@ -554,6 +627,9 @@ def _bench_run_argv(args: argparse.Namespace) -> list[str]:
         "--sql-backend", args.sql_backend,
         "--context-window", str(args.context_window),
         "--max-new-tokens", str(args.max_new_tokens),
+        "--max-total-tokens", str(args.max_total_tokens),
+        "--generation-mode", args.generation_mode,
+        "--reasoning-budget", str(args.reasoning_budget),
         "--offload", args.offload,
     ]
     for flag, value in (
@@ -582,6 +658,8 @@ def _bench_run_argv(args: argparse.Namespace) -> list[str]:
         argv += ["--no-html"]
     if not args.agent:
         argv += ["--no-agent"]
+    if not getattr(args, "sandbox", True):
+        argv += ["--no-sandbox"]
     if args.agent_categories:
         argv += ["--agent-categories", args.agent_categories]
     if args.resume:
@@ -674,6 +752,17 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
+    from . import generation
+    from .report import load_run
+
+    # A broken manifest is quarantined: report it instead of reporting root
+    # bytes that no longer belong to any sealed checkpoint.
+    for directory in args.directories:
+        try:
+            load_run(directory)
+        except generation.IntegrityError as exc:
+            print(f"integrity: {exc}", file=sys.stderr)
+            return 2
     paths = write_reports(args.directories)
     if not getattr(args, "no_html", False):
         from .htmlreport import write_html, write_report_html
@@ -694,7 +783,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     for path in paths:
         print(path)
     for directory in args.directories:
-        data = json.loads((Path(directory) / "scores.json").read_text(encoding="utf-8"))
+        data = load_run(directory)["scores"]
         summary = summarise(data)
         print(f"{directory}: {summary['verdict']}, заданий с ошибкой: {summary['errors']}")
     return 0
@@ -975,10 +1064,12 @@ def _merge_run(runs: list, run: Any) -> None:
 
 
 def _hardware() -> dict:
+    """Host sampler reading: the harness machine, not the serving one."""
     gpus = gpu_inventory()
+    source = "client sampler (хост харнесса, не сервер)"
     if not gpus:
-        return {"gpu": "unknown", "vram_used_mib_now": used_mib()}
-    return {**gpus[0], "vram_used_mib_now": used_mib()}
+        return {"gpu": "unknown", "vram_used_mib_now": used_mib(), "source": source}
+    return {**gpus[0], "vram_used_mib_now": used_mib(), "source": source}
 
 
 def _load_for_render(directory: Path) -> dict:
@@ -1006,7 +1097,8 @@ def build_parser() -> argparse.ArgumentParser:
             default=core.DEFAULT_PROFILE,
             choices=core.PROFILES,
             help="версия сьюта: baseline-20261020 (рейтинг), pilot (только пилотные), "
-                 "stretch-v1 (baseline + новые сценарии, те же 100 баллов)",
+                 "stretch-v1 (baseline + новые сценарии, те же 100 баллов), "
+                 "research-v1 (девять research-сценариев, 71 балл, не ранжируется с baseline)",
         )
         target.add_argument("--only", default="", help="категории или ID заданий через запятую (A,B / IF-1,R-7)")
         target.add_argument("--limit", type=int, default=0, help="ограничить число заданий (для дымового прогона)")
@@ -1026,8 +1118,27 @@ def build_parser() -> argparse.ArgumentParser:
                 "--context-window", type=int, default=DEFAULT_CONTEXT_WINDOW,
                 help="окно контекста в токенах (по умолчанию 262144; --config задаёт своё окно)",
             )
-            target.add_argument("--max-new-tokens", type=int, default=4096)
+            target.add_argument(
+                "--max-new-tokens", type=int, default=4096,
+                help="верхняя граница ответа; меньшее из неё и свободного окна уходит в запрос",
+            )
+            target.add_argument(
+                "--max-total-tokens", type=int, default=16384,
+                help="потолок генерации на задание (ответы считаются суммой)",
+            )
+            target.add_argument(
+                "--generation-mode", choices=("fixed", "native"), default="fixed",
+                help="fixed — пришпилить sampling/seed/reasoning; native — отдать серверу",
+            )
+            target.add_argument(
+                "--reasoning-budget", type=int, default=2048,
+                help="серверный потолок thinking в токенах (только fixed)",
+            )
             target.add_argument("--weights", default="", help="путь к файлу весов для SHA-256")
+            target.add_argument(
+                "--provenance", default="",
+                help="JSON от bench/sweep: observed-снимок runtime и выполненная загрузка",
+            )
             target.add_argument("--no-system-prompt", action="store_true")
             target.add_argument(
                 "--no-html",
@@ -1045,6 +1156,12 @@ def build_parser() -> argparse.ArgumentParser:
                 "--agent-categories",
                 default="",
                 help="какие категории отдать агенту (по умолчанию C,K,L)",
+            )
+            target.add_argument(
+                "--no-sandbox",
+                dest="sandbox",
+                action="store_false",
+                help="исполнять агента на хосте, а не в контейнере",
             )
 
     doctor = sub.add_parser("doctor", help="проверить GPU, toolchain и endpoint")
@@ -1113,6 +1230,10 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--no-calibrate", dest="calibrate", action="store_false")
     bench.add_argument("--no-launch", action="store_true", help="не поднимать рантайм, работать с запущенным")
     bench.add_argument("--no-preflight", action="store_true", help="не проверять конфигурацию перед прогоном")
+    bench.add_argument(
+        "--allow-unverified", action="store_true",
+        help="идти в прогон, даже если preflight не подтвердил конфигурацию (результат не ранжируется)",
+    )
     bench.add_argument("--resume", action="store_true", help="догрузить прерванный прогон в тот же каталог")
     bench.set_defaults(func=cmd_bench)
 

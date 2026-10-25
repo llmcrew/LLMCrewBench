@@ -44,6 +44,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import json
+import math
 import random
 import re
 from typing import Any
@@ -53,6 +54,8 @@ from .. import core, text
 BASELINE_IDS = ("G-1", "G-2", "G-3", "G-4")
 PILOT_IDS = ("G-5",)
 ALL_IDS = BASELINE_IDS + PILOT_IDS
+RESEARCH_IDS: tuple[str, ...] = ()
+"""The research profile measures no structured-output scenario."""
 # The historical name the baseline tests use.
 IDS = BASELINE_IDS
 
@@ -140,13 +143,15 @@ def _type_matches(value: Any, expected: str) -> bool:
         return isinstance(value, (int, float)) and not isinstance(value, bool)
     if expected == "integer":
         # JSON Schema: an integer is any mathematical integer, written with or
-        # without a fraction part — `2752.0` is a valid `integer`. Bool and
-        # fractional values stay out.
-        return (
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and float(value).is_integer()
-        )
+        # without a fraction part — `2752.0` is a valid `integer`. Bool,
+        # fractional, infinite and NaN values stay out. Python ints are checked
+        # directly: ``float(10**400)`` overflows, so a float round-trip is not
+        # safe here.
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return True
+        return isinstance(value, float) and math.isfinite(value) and value.is_integer()
     return _json_type(value) == expected
 
 
@@ -767,6 +772,8 @@ def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
     profile = core.profile_of(cfg)
     if profile == "pilot":
         tasks = [_g5(rng)]
+    elif profile == "research-v1":
+        tasks = []
     else:
         tasks = [builder(rng) for _, builder in _SCENARIOS]
         if profile == "stretch-v1":
@@ -810,5 +817,7 @@ core.register(
     generate=generate,
     evaluate=evaluate,
     expected_ids=BASELINE_IDS,
-    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": ALL_IDS},
+    expected_ids_by_profile={
+        "pilot": PILOT_IDS, "stretch-v1": ALL_IDS, "research-v1": RESEARCH_IDS
+    },
 )

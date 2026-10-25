@@ -209,7 +209,9 @@ def test_runner_sends_every_follow_up() -> None:
         provider = ScriptedProvider(replies=list(replies))
         run = Runner(cfg, provider).run_task(task)
 
-        assert run.transcript.error is None, task.id
+        # The scripted provider reports no usage, so the token budget is
+        # unconfirmed by design (H09); the dialogue itself must still be complete.
+        assert run.transcript.error is None or run.transcript.extra.get("usage_unconfirmed"), task.id
         assert len(run.transcript.turns) == 1 + len(task.dialogue or []), task.id
         # Every follow-up reached the model as the newest user message.
         last_messages = run.transcript.turns[-1].messages
@@ -482,7 +484,9 @@ def test_runner_replays_new_dialogues() -> None:
         provider = ScriptedProvider(replies=list(replies))
         run = Runner(RunConfig(seed=SEED, profile=profile), provider).run_task(task)
 
-        assert run.transcript.error is None, task.id
+        # The scripted provider reports no usage, so the token budget is
+        # unconfirmed by design (H09); the dialogue itself must still be complete.
+        assert run.transcript.error is None or run.transcript.extra.get("usage_unconfirmed"), task.id
         assert len(run.transcript.turns) == 1 + len(task.dialogue or []), task.id
         assert provider.calls and provider.calls[-1][-1]["content"] == task.dialogue[-1]
         assert run.score.earned == task.max_points, task.id

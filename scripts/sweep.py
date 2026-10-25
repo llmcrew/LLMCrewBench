@@ -38,12 +38,17 @@ def _suite_size(cfg_id: str, profile: str) -> int:
 
 def run_one(entry: dict, args: argparse.Namespace) -> dict:
     cfg_id = entry["id"]
-    base_url = str(entry.get("base_url") or "http://127.0.0.1:8888/v1")
+    resolved = reference.resolve(cfg_id)
+    # One resolved view: the launcher gets the same window the preflight and the
+    # run will use, instead of the policy fallback in one step and the entry in
+    # another.
+    effective = resolved.effective()
+    base_url = str(effective.get("base_url") or "http://127.0.0.1:8888/v1")
     result: dict = {"id": cfg_id, "label": entry.get("label"), "profile": args.profile,
                     "vram_before_mib": used_mib()}
 
-    key = launch.ensure_server(base_url, entry)
-    ok, note = launch.load_entry(base_url, key, entry)
+    key = launch.ensure_server(base_url, effective)
+    ok, note = launch.load_entry(base_url, key, effective)
     result["loaded"] = ok
     result["load_note"] = note
     if not ok:
@@ -51,7 +56,6 @@ def run_one(entry: dict, args: argparse.Namespace) -> dict:
         return result
     result["vram_after_load_mib"] = used_mib()
 
-    resolved = reference.resolve(cfg_id)
     report = reference.preflight(resolved, full=not args.no_full)
     preflight_path = ROOT / "runs" / f"preflight-{cfg_id}.md"
     preflight_path.write_text(report.render() + "\n", encoding="utf-8")
@@ -59,12 +63,35 @@ def run_one(entry: dict, args: argparse.Namespace) -> dict:
     result["preflight_probes"] = {probe.name: probe.status for probe in report.probes}
     result["preflight_metrics"] = report.metrics
 
+    result["preflight_eligible"] = report.eligible
     if report.verdict == "rejected":
         result["verdict"] = "отклонена preflight'ом"
         return result
+    if not report.eligible and not args.allow_unverified:
+        result["verdict"] = "не допущена к ранжированию: " + ", ".join(report.unverified)
+        return result
+
+    # The run is a separate process: hand it the observed snapshot and the
+    # executed load, otherwise its report falls back to the launch template.
+    run_dir = ROOT / "runs" / cfg_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    provenance_path = run_dir / "provenance.json"
+    provenance_path.write_text(
+        json.dumps(
+            {
+                "observed": report.observed,
+                "executed": effective.get("executed") or {},
+                "weights_sha256": report.metrics.get("weights_sha256") or "",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     argv = ["run", "--config", cfg_id, "--name", cfg_id, "--speed", "--speed-long", "4096",
-            "--speed-repeats", "2", "--profile", args.profile]
+            "--speed-repeats", "2", "--profile", args.profile,
+            "--provenance", str(provenance_path)]
     if args.limit:
         argv += ["--limit", str(args.limit)]
     if args.tasks:
@@ -76,7 +103,6 @@ def run_one(entry: dict, args: argparse.Namespace) -> dict:
     result["run_seconds"] = round(time.time() - started, 1)
     result["run_exit_code"] = code
 
-    run_dir = ROOT / "runs" / cfg_id
     scores_path = run_dir / "scores.json"
     if scores_path.is_file():
         from dailybench.report import summarise
@@ -106,6 +132,10 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0, help="ограничить число заданий в прогоне")
     parser.add_argument("--tasks", default="", help="ограничить сьют заданиями (id через запятую)")
     parser.add_argument("--no-full", action="store_true", help="не заполнять окно в preflight")
+    parser.add_argument(
+        "--allow-unverified", action="store_true",
+        help="идти в прогон, даже если preflight не подтвердил конфигурацию (результат не ранжируется)",
+    )
     parser.add_argument("--skip-calibration", action="store_true")
     parser.add_argument("--profile", default=core.DEFAULT_PROFILE, choices=core.PROFILES,
                         help="версия сьюта: baseline-20261020 (по умолчанию) или stretch-v1")

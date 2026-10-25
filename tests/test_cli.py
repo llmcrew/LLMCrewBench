@@ -204,7 +204,7 @@ def test_resume_replays_a_task_whose_agent_died(endpoint, tmp_path: Path):
     from dailybench.cli import _resume_tasks
 
     cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "cut",
-                    model="test-model", base_url=base_url)
+                    model="test-model", base_url=base_url, answer_cap=4096)
     missing, kept = _resume_tasks(cfg, build_suite(cfg))
     assert [task.id for task in missing] == ["IF-2"], "оборванное задание обязано уйти в повтор"
     assert [run.task.id for run in kept] == ["IF-1"]
@@ -229,7 +229,7 @@ def test_resume_replays_a_task_killed_mid_generation(endpoint, tmp_path: Path):
     from dailybench.cli import _resume_tasks
 
     cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "torn",
-                    model="test-model", base_url=base_url)
+                    model="test-model", base_url=base_url, answer_cap=4096)
     missing, kept = _resume_tasks(cfg, build_suite(cfg))
     assert [task.id for task in missing] == ["IF-2"], "убитая посреди генерации задача обязана уйти в повтор"
     assert [run.task.id for run in kept] == ["IF-1"]
@@ -244,11 +244,12 @@ def test_resume_rebuilds_from_transcripts_when_tasks_json_is_corrupt(endpoint, t
     base_url, _server = endpoint
     out = tmp_path / "runs"
     assert _run(base_url, out, "--only", "IF-1,IF-2", "--name", "torn") == 0
-    (out / "torn" / "tasks.json").write_text('{"broken": ', encoding="utf-8")
+    run_dir = out / "torn"
+    (run_dir / "tasks.json").write_text('{"broken": ', encoding="utf-8")
 
     from dailybench.cli import _resume_tasks
     cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "torn",
-                    model="test-model", base_url=base_url)
+                    model="test-model", base_url=base_url, answer_cap=4096)
     missing, kept = _resume_tasks(cfg, build_suite(cfg))
     assert [run.task.id for run in kept] == ["IF-1", "IF-2"], "записи обязаны подняться из transcripts/"
     assert missing == []
@@ -272,7 +273,7 @@ def test_resume_refuses_to_mix_two_models(endpoint, tmp_path: Path):
         _resume_tasks(cfg, build_suite(cfg))
 
     same = RunConfig(seed=SEED, only=("IF-1",), out_dir=out / "mix",
-                     model="test-model", base_url=base_url)
+                     model="test-model", base_url=base_url, answer_cap=4096)
     missing, kept = _resume_tasks(same, build_suite(same))
     assert missing == [] and [run.task.id for run in kept] == ["IF-1"]
 
@@ -646,6 +647,44 @@ def test_rescore_keeps_the_score_when_the_recorded_prompt_drifted(endpoint, tmp_
     assert cli.main(["rescore", str(out)]) == 0
     marker = _read(out / "rescored.json")
     assert marker["changed"] and "prompt_sha256" in marker["changed"][0]["status"]
+
+
+def test_rescore_records_both_grading_contracts_and_recomputes_the_identity(
+    endpoint, tmp_path: Path, monkeypatch
+):
+    """A re-score is a new grading contract, not the old run under a marker.
+
+    Keeping the old identity hid that the evaluator moved; only a recollected
+    pair of contracts lets a reader tell which numbers belong to which build.
+    """
+    base_url, _ = endpoint
+    assert _run(base_url, tmp_path, "--only", "IF-2", "--limit", "1", "--name", "smoke") == 0
+    out = tmp_path / "smoke"
+    old_config = _read(out / "config.json")
+    old_identity = old_config["identity"]
+    old_suite = _read(out / "suite.json")
+
+    from dailybench import suite as suite_module
+
+    real = suite_module.evaluator_sha
+    monkeypatch.setattr(suite_module, "evaluator_sha", lambda category: real(category)[::-1])
+
+    assert cli.main(["rescore", str(out)]) == 0
+    marker = _read(out / "rescored.json")
+    seal = _read(out / "manifest.json")
+
+    assert marker["source_identity"] == old_identity
+    assert marker["identity"] != old_identity
+    assert marker["source_generation"]
+    assert marker["grading_contract"]["source"]["sha256"] == old_suite["sha256"]
+    assert marker["grading_contract"]["current"]["sha256"] != old_suite["sha256"]
+    source_eval = marker["grading_contract"]["source"]["evaluator"]["IF-2"]
+    assert source_eval == old_suite["per_task"][0]["evaluator_sha256"]
+    assert source_eval == real("A")
+    assert marker["grading_contract"]["current"]["evaluator"]["A"] == real("A")[::-1]
+    assert marker["grading_contract"]["current"]["evaluator"]["A"] != old_suite["per_task"][0]["evaluator_sha256"]
+    assert seal["identity"] == marker["identity"]
+    assert _read(out / "config.json")["identity"] == marker["identity"]
 
 
 # --------------------------------------------------------------------------- #

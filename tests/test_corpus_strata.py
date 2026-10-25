@@ -24,7 +24,7 @@ from dailybench.suite import build_suite, public_prompts
 from dailybench.tasks import instruction, reasoning
 
 DEV_SEEDS = (11, 12, 13, 14, 15)
-NEW_A = ("IF-7", "IF-7-KK", "IF-8")
+NEW_A = ("IF-7", "IF-7-KK", "IF-8", "IF-9", "IF-10")
 NEW_B = ("R-17", "R-17-KK")
 
 
@@ -199,7 +199,7 @@ def test_every_new_task_scores_its_reference_and_rejects_garbage(task_id: str):
         good = (instruction if task.category == "A" else reasoning).evaluate(
             task, _transcript(task, task.oracle["reference"])
         )
-        assert good.earned == good.possible == 2.0 if task.category == "A" else good.earned == good.possible == 1.0
+        assert good.earned == good.possible == task.max_points
         bad = (instruction if task.category == "A" else reasoning).evaluate(task, _transcript(task, "не знаю"))
         assert bad.earned == 0.0
 

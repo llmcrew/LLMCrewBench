@@ -10,10 +10,12 @@ never zero).
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import random
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -63,10 +65,11 @@ def test_looks_like_document_rejects_shortcuts():
     assert not bad and "html" in why
     bad, why = visual.looks_like_document("<html><script>1</script></html>")
     assert not bad and "three.module.js" in why
-    bad, why = visual.looks_like_document(
-        '<html><script src="https://cdn.example/three.module.js"></script></html>'
-    )
-    assert not bad and "внешние ресурсы" in why
+    # A remote URL is not a static veto: the renderer refuses it and charges
+    # ``runtime``, the same as a WebSocket handshake (M09).
+    remote = '<html><script src="https://cdn.example/three.module.js"></script></html>'
+    assert visual.looks_like_document(remote)[0]
+    assert visual.remote_urls(remote) == ["https://cdn.example/three.module.js"]
 
 
 def test_path_of_walks_dicts_and_lists():
@@ -125,11 +128,38 @@ def test_image_predicates_use_frame_statistics():
     assert not visual.image_region(0, visual.warm, "верх")(pixels)[0]
 
 
+def test_frame_statistics_come_from_the_png_not_the_page():
+    """H17: the picture is measured outside the untrusted page realm."""
+    import io
+
+    from PIL import Image
+
+    image = Image.new("RGB", (100, 80), (10, 16, 32))
+    for x in range(10, 30):
+        for y in range(10, 30):
+            image.putpixel((x, y), (255, 136, 0))
+    buf = io.BytesIO()
+    image.save(buf, "PNG")
+    stats = browser.frame_stats(buf.getvalue())
+    assert stats["width"] == 100 and stats["height"] == 80
+    assert 0.03 < stats["warm"]["fraction"] < 0.07
+    assert stats["warm"]["centroid"][0] < 0.3 and stats["warm"]["centroid"][1] < 0.3
+    assert stats["bright"]["count"] > 0
+
+    black = io.BytesIO()
+    Image.new("RGB", (100, 80), (0, 0, 0)).save(black, "PNG")
+    dark = browser.frame_stats(black.getvalue())
+    assert dark["warm"]["fraction"] == 0.0 and dark["mean"] == 0.0
+
+    assert browser.frame_stats(None) == {}
+    assert browser.frame_stats(b"not a png") == {}
+
+
 def _task(rng: random.Random) -> core.TaskInstance:
     spec = visual.VisualSpec(
         scene=[visual.contains_all("objects", ["ground"])],
         simulation=[visual.near("t", 1.0, 1e-3)],
-        image=[visual.image_min("changed_fraction", 0.1)],
+        image=[visual.image_min("changed_fraction", 0.02)],
         steps=60,
         dt=1 / 60,
     )
@@ -178,40 +208,145 @@ def test_missing_browser_is_unverified_not_zero(monkeypatch):
     assert score.checks == [], "непроверенное задание не должно выглядеть как проваленные проверки"
 
 
-def test_a_broken_page_loses_all_four_checks(monkeypatch):
+def test_a_broken_page_loses_every_check(monkeypatch):
     task = _task(random.Random(1))
     monkeypatch.setattr(browser, "availability", lambda: (True, ""))
     monkeypatch.setattr(browser, "render", lambda *a, **kw: browser.RenderResult(ok=False, reason="страница не отрисовалась"))
     transcript = core.Transcript(task_id=task.id, category="K")
     transcript.turns.append(core.Turn(messages=[], reply=core.ModelReply(text=FENCE_DOC)))
     score = visual.evaluate(task, transcript)
-    assert [c.passed for c in score.checks] == [False, False, False, False]
+    assert [c.passed for c in score.checks] == [False] * len(visual.CHECK_NAMES)
     assert "рендер не удался" in score.checks[0].detail
 
 
-def test_an_external_request_is_reported_as_a_failure(monkeypatch):
-    task = _task(random.Random(1))
-    result = browser.RenderResult(
-        ok=True,
-        external=["https://cdn.example/three.module.js"],
-        probe={"objects": ["ground"], "t": 1.0},
-        stepped={"objects": ["ground"], "t": 1.0},
-        pixels={"width": 800, "height": 600, "changed_fraction": 0.5, "warm": {"fraction": 0.0, "count": 0, "centroid": None}, "regions": [[0, 0, 0]] * 9},
-        shot=b"png",
-        shot_sha="a",
-        shot_sha_again="a",
+# --------------------------------------------------------------------------- #
+# Rubric separation (M09) and frame proof (H17) on real browser negatives
+# --------------------------------------------------------------------------- #
+
+#: A page that really animates one warm box and reports the simulation state.
+#: ``{extra}`` receives the fault under test.
+SCENE_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8">
+<style>html,body{{margin:0;background:#0a1020;overflow:hidden}}canvas{{display:block}}</style>
+</head><body>
+<script type="module">
+import * as THREE from './vendor/three.module.js';
+const canvas = document.createElement('canvas');
+canvas.width = 800; canvas.height = 600;
+document.body.appendChild(canvas);
+const ctx = canvas.getContext('2d');
+let x = 0;
+const draw = () => {{
+  ctx.fillStyle = '#0a1020'; ctx.fillRect(0, 0, 800, 600);
+  ctx.fillStyle = '#ff8800'; ctx.fillRect(Math.round(120 + x * 240), 240, 140, 140);
+}};
+const round = (value) => Math.round(value * 1e4) / 1e4;
+window.__probe = () => ({{objects: ['ground', 'box'], x: round(x)}});
+window.__step = (dt) => {{ x += dt; draw(); }};
+window.__ready = true;
+draw();
+{extra}
+</script></body></html>"""
+
+
+def _page(extra: str = "") -> str:
+    return SCENE_PAGE.format(extra=extra)
+
+
+def _scene_task() -> core.TaskInstance:
+    spec = visual.VisualSpec(
+        scene=[visual.contains_all("objects", ["box"])],
+        simulation=[visual.near("x", 1.0, 1e-3)],
+        image=[visual.image_min("changed_fraction", 0.02), visual.image_color("warm", 0.002, "виден ящик")],
+        steps=60,
+        dt=1 / 60,
     )
-    monkeypatch.setattr(browser, "availability", lambda: (True, ""))
-    monkeypatch.setattr(browser, "render", lambda *a, **kw: result)
-    monkeypatch.setattr(visual, "_cached_render", lambda html, steps, dt: (result, True))
-    monkeypatch.setattr(visual, "shot_path", lambda html, steps, dt: visual.cache_dir() / "нет.png")
+    return visual.build_task(
+        task_id="K-T",
+        title="рубрика",
+        prompt="Нарисуй ящик.",
+        spec=spec,
+        golden=_page(),
+    )
+
+
+def _score(page: str, monkeypatch, tmp_path) -> core.Score:
+    monkeypatch.setenv(visual.CACHE_ENV, str(tmp_path))
+    task = _scene_task()
     transcript = core.Transcript(task_id=task.id, category="K")
-    transcript.turns.append(core.Turn(messages=[], reply=core.ModelReply(text=FENCE_DOC)))
-    score = visual.evaluate(task, transcript)
-    assert not score.checks[0].passed
-    assert "внешние запросы" in score.checks[0].detail
-    assert score.checks[1].passed and score.checks[2].passed and score.checks[3].passed
-    assert transcript.extra["visual"]["same_frame"] is True
+    transcript.turns.append(core.Turn(messages=[], reply=core.ModelReply(text=f"```html\n{page}\n```")))
+    return visual.evaluate(task, transcript)
+
+
+def _failed(score: core.Score) -> list[str]:
+    return [check.name for check in score.checks if not check.passed]
+
+
+@pytest.mark.parametrize("page_kind", ["golden", "console", "overlay", "unrelated", "protocol"])
+def test_the_rubric_separates_protocol_runtime_html_and_frame(page_kind, monkeypatch, tmp_path):
+    """M09/H17: each fault costs its own check and nothing else.
+
+    Golden — all checks; one ``console.error`` — only ``runtime``; a black
+    overlay over the canvas — only ``image``; a picture unrelated to the probe —
+    only ``image``; a missing protocol — ``html``, ``scene`` and ``simulation``
+    while the real picture still earns ``image``.
+    """
+    usable, reason = browser.availability()
+    if not usable:
+        pytest.skip(f"браузер недоступен: {reason}")
+
+    pages = {
+        "golden": _page(),
+        "console": _page('console.error("fixture");'),
+        "overlay": _page(
+            "const overlay = document.createElement('div');"
+            "overlay.style.cssText='position:fixed;inset:0;background:#000;z-index:9';"
+            "document.body.appendChild(overlay);"
+        ),
+        # the drawing never moves while the probe reports a moving number
+        "unrelated": _page("").replace(
+            "window.__step = (dt) => { x += dt; draw(); };",
+            "window.__step = (dt) => { x += dt; };",
+        ),
+        "protocol": _page()
+        .replace("window.__probe = () => ({objects: ['ground', 'box'], x: round(x)});", "")
+        .replace("window.__step = (dt) => { x += dt; draw(); };", "")
+        .replace("window.__ready = true;", ""),
+    }
+    expected = {
+        "golden": [],
+        "console": ["runtime"],
+        "overlay": ["image"],
+        "unrelated": ["image"],
+        "protocol": ["html", "scene", "simulation"],
+    }
+    score = _score(pages[page_kind], monkeypatch, tmp_path)
+
+    assert _failed(score) == expected[page_kind]
+    assert score.possible == 4.0
+
+
+def test_every_check_is_one_fifth_of_the_task(monkeypatch, tmp_path):
+    score = _score(_page(), monkeypatch, tmp_path)
+    assert [check.name for check in score.checks] == list(visual.CHECK_NAMES)
+    assert all(check.points == visual.POINTS_PER_CHECK for check in score.checks)
+    assert score.earned == 4.0
+
+
+def test_an_http_and_a_websocket_escape_cost_the_same_point(monkeypatch, tmp_path):
+    """M09: both are refused requests; one rubric, one weight."""
+    usable, reason = browser.availability()
+    if not usable:
+        pytest.skip(f"браузер недоступен: {reason}")
+
+    http_page = _page("const blocked = new Image(); blocked.src = 'https://example.invalid/x.png';")
+    ws_page = _page("new WebSocket('ws://127.0.0.1:9/ch');")
+    http_score = _score(http_page, monkeypatch, tmp_path)
+    ws_score = _score(ws_page, monkeypatch, tmp_path)
+
+    assert _failed(http_score) == _failed(ws_score) == ["runtime"]
+    assert http_score.earned == ws_score.earned
+    assert "http" in http_score.checks[1].detail and "websocket" in ws_score.checks[1].detail
 
 
 def test_render_without_a_document_is_refused():
@@ -262,7 +397,11 @@ def test_live_render_keeps_a_screenshot_when_page_errors_and_external_load_fails
     assert not result.ok
     assert result.shot and result.shot.startswith(b"\x89PNG\r\n\x1a\n")
     assert any("pageerror:" in error for error in result.errors)
-    assert any(url.startswith("https://example.invalid/") for url in result.external)
+    assert any(
+        browser.external_class(url) == browser.BLOCKED_HTTP
+        and url.split(": ", 1)[-1].startswith("https://example.invalid/")
+        for url in result.external
+    )
 
 
 def test_availability_reports_a_reason_when_usable():
@@ -482,17 +621,73 @@ def test_the_frame_key_is_stable_for_one_profile(monkeypatch, tmp_path):
         assert art._frame_key("<html></html>") == art._frame_key("<html></html>")
 
 
+def _fake_browser(tmp_path, revision: int, body: bytes = b"") -> Path:
+    """Фальшивый executable: ревизия в пути, версия — в ответе на ``--version``."""
+    folder = tmp_path / f"chromium_headless_shell-{revision}" / "chrome-headless-shell-mac-arm64"
+    folder.mkdir(parents=True, exist_ok=True)
+    executable = folder / "chrome-headless-shell"
+    executable.write_bytes(b"#!/bin/sh\necho 'Google Chrome for Testing 153.0.8010.12'\n" + body)
+    executable.chmod(0o755)
+    return executable
+
+
+def test_the_fingerprint_follows_the_real_executable(monkeypatch, tmp_path):
+    """M10: подмена executable меняет отпечаток даже при том же playwright.
+
+    Ни версия пакета, ни каталоги установки не говорят, какой бинарь реально
+    запустится; отпечаток обязан идти от самого executable.
+    """
+    with _vendor(monkeypatch, tmp_path):
+
+        def fingerprint(executable) -> str:
+            monkeypatch.setattr(visual, "_browser_executable", lambda: executable)
+            visual._render_fingerprint.cache_clear()
+            return visual._render_fingerprint()
+
+        executable = _fake_browser(tmp_path, 1000, b"first")
+        first = fingerprint(executable)
+        assert fingerprint(executable) == first, "один executable — один отпечаток"
+
+        executable.write_bytes(b"#!/bin/sh\necho 'Google Chrome for Testing 153.0.8010.12'\nrebuilt")
+        assert fingerprint(executable) != first, "пересобранный executable обязан сменить отпечаток"
+
+        other = _fake_browser(tmp_path, 1001, b"other")
+        assert fingerprint(other) != fingerprint(executable), "другая ревизия — другой отпечаток"
+
+
+def test_the_frame_record_keeps_the_fingerprint_build_and_platform(monkeypatch, tmp_path):
+    """M10: executable и платформа сохраняются с кадром, а не только в хеше."""
+    monkeypatch.setenv(visual.CACHE_ENV, str(tmp_path))
+    executable = _fake_browser(tmp_path, 1000)
+    monkeypatch.setattr(visual, "_browser_executable", lambda: executable)
+    monkeypatch.setattr(browser, "render", lambda html, **kw: _k_frame())
+    visual._render_fingerprint.cache_clear()
+    try:
+        visual._cached_render("<html>1</html>", 30, 1 / 60)
+    finally:
+        visual._render_fingerprint.cache_clear()
+
+    record = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    environment = record["environment"]
+    assert environment["platform"].count("/") == 1, "платформа записывается как os/arch"
+    build = environment["launch_executables"][0]
+    assert build["path"] == str(executable)
+    assert build["revision"] == "1000"
+    assert build["version"] == "Google Chrome for Testing 153.0.8010.12"
+    assert build["sha"] == hashlib.sha256(executable.read_bytes()).hexdigest()
+
+
 def test_the_manual_version_is_not_the_only_discriminator(monkeypatch, tmp_path):
     """Vendor identity works without bumping ``FRAME_VERSION``."""
     with _vendor(monkeypatch, tmp_path, b"a"):
         before = visual._frame_key("<html></html>", 10, 1 / 60)
-        assert visual.FRAME_VERSION == 1
+        assert visual.FRAME_VERSION == 2
     with _vendor(monkeypatch, tmp_path, b"b"):
         assert visual._frame_key("<html></html>", 10, 1 / 60) != before
     # …and the manual version still counts on its own.
     with _vendor(monkeypatch, tmp_path, b"b"):
         unchanged = visual._frame_key("<html></html>", 10, 1 / 60)
-        monkeypatch.setattr(visual, "FRAME_VERSION", 2)
+        monkeypatch.setattr(visual, "FRAME_VERSION", 3)
         assert visual._frame_key("<html></html>", 10, 1 / 60) != unchanged
 
 
@@ -673,7 +868,7 @@ def test_the_registry_lists_every_slice_and_three_profiles() -> None:
 
 
 def test_the_declared_profiles_are_the_three_known_ones() -> None:
-    assert set(tasks_visual.PROFILE_IDS) == {"pilot", "stretch-v1"}
+    assert set(tasks_visual.PROFILE_IDS) == {"pilot", "stretch-v1", "research-v1"}
     assert set(tasks_visual.PILOT_IDS) <= set(tasks_visual.ALL_IDS)
 
 

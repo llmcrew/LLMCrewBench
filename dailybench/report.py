@@ -33,15 +33,17 @@ def _file_name(task_id: str) -> str:
 
 def load_run(directory: Path | str) -> dict[str, Any]:
     directory = Path(directory)
-    # A committed generation is one consistent checkpoint. The root copies are
-    # for tools that treat a run as plain files; readers must not mix them when
-    # a save was interrupted between two of them.
-    base = generation.committed(directory)
+    # A committed generation is one consistent checkpoint. A broken manifest is
+    # quarantined instead of falling back to the root copies, and an edited
+    # root export is reported while the sealed bytes keep being served.
+    base, integrity, problems = generation.resolve(directory)
     scores_path = base / "scores.json"
     if not scores_path.is_file():
         raise FileNotFoundError(f"{scores_path} not found — run the suite first")
     data: dict[str, Any] = {
         "dir": str(directory),
+        "integrity": integrity,
+        "integrity_problems": problems,
         "scores": json.loads(scores_path.read_text(encoding="utf-8")),
     }
     for name in (
@@ -99,6 +101,12 @@ def summarise(
     """
     scored = set(core.SCORED_CATEGORIES)
     showcase = set(core.VISUAL_CATEGORIES)
+    profile = core.DEFAULT_PROFILE
+    if isinstance(suite_tasks, dict):
+        profile = str(suite_tasks.get("profile") or core.DEFAULT_PROFILE)
+    # A profile that carries a subset of the categories is read on its own: its
+    # denominator is smaller, so its percentage says nothing about a baseline one.
+    rankable = core.comparable_with_baseline(profile)
 
     def blank() -> dict[str, Any]:
         return {
@@ -114,6 +122,8 @@ def summarise(
             "ci95": None,
             "provisional": False,
             "samples": [],
+            "units": {},
+            "failures": {},
         }
 
     per_category: dict[str, dict[str, Any]] = {key: blank() for key in core.CATEGORY_POINTS}
@@ -148,9 +158,18 @@ def summarise(
             # failed admission earned nothing in this metric.
             row["samples"].append((float(score.get("earned", 0.0)
                                         if admission is not False else 0.0), float(possible)))
+            # The same task keeps its id so a later comparison can pair it with
+            # the identical instance instead of averaging two unrelated draws.
+            row["units"][str(score.get("task_id") or f"{category}-{row['tasks']}")] = (
+                float(score.get("earned", 0.0) if admission is not False else 0.0),
+                float(possible),
+            )
             row["n"] += 1
         if score.get("error"):
             row["errors"] += 1
+        kind = score.get("failure")
+        if kind:
+            row["failures"][kind] = row["failures"].get(kind, 0) + 1
         if admission is False:
             row["admission"] = "failed"
             row["admitted"] = False
@@ -172,7 +191,19 @@ def summarise(
     errors = sum(row["errors"] for row in per_category.values())
     ran = sum(row["tasks"] for row in per_category.values())
     ran_showcase = sum(row["tasks"] for row in per_showcase.values())
-    skipped_total = sum(row["skipped"] for row in per_category.values())
+    skipped_scored = sum(row["skipped"] for row in per_category.values())
+    skipped_showcase = sum(row["skipped"] for row in per_showcase.values())
+    skipped_total = skipped_scored + skipped_showcase
+    failure_counts: dict[str, int] = {}
+    for row in list(per_category.values()) + list(per_showcase.values()):
+        for kind, count in row["failures"].items():
+            failure_counts[kind] = failure_counts.get(kind, 0) + count
+    infra_failures = {
+        kind: count for kind, count in failure_counts.items() if core.is_infra_failure(kind)
+    }
+    # Infrastructure-incomplete means the numbers say nothing about the model:
+    # such a run is shown, but never ranked against complete ones.
+    eligible = not infra_failures
 
     showcase_earned = round(sum(row["earned"] for key, row in per_showcase.items() if key in core.SHOWCASE_CATEGORIES), 3)
     showcase_possible = round(sum(row["possible"] for key, row in per_showcase.items() if key in core.SHOWCASE_CATEGORIES), 3)
@@ -212,14 +243,17 @@ def summarise(
     if expected_scored:
         full_suite = ran >= expected_scored
     else:
-        full_suite = possible_total >= core.FULL_TOTAL - 1e-9
+        full_suite = possible_total >= core.scored_total(profile) - 1e-9
     verdict = f"{headline_earned:.0f}/{headline_possible:.0f}"
     if admission_state == "failed":
         verdict += " (из доступных баллов: long context не прошёл допуск)"
     elif admission_state == "unverified":
         verdict += " (допуск не подтверждён: runtime не сообщил размер входа)"
     if not full_suite:
-        verdict += f" (частичный прогон: {possible_total:.0f} из {core.FULL_TOTAL:.0f} баллов сьюта)"
+        verdict += (
+            f" (частичный прогон: {possible_total:.0f} из {core.scored_total(profile):.0f}"
+            " баллов сьюта)"
+        )
     if skipped_total:
         skipped_categories = [
             key for key, row in per_category.items() if row["skipped"] and row["skipped"] == row["tasks"]
@@ -228,6 +262,23 @@ def summarise(
             f" (не проверялось: {', '.join(skipped_categories) or skipped_total} —"
             " результат не входит ни в числитель, ни в знаменатель)"
         )
+    if not rankable:
+        verdict += (
+            f" (не ранжируется с baseline: профиль {profile} — свой набор категорий,"
+            f" знаменатель {core.scored_total(profile):.0f})"
+        )
+    if infra_failures:
+        names = ", ".join(
+            f"{core.failure_label(kind)} x{count}" for kind, count in sorted(infra_failures.items())
+        )
+        verdict += f" (не ранжируется: инфраструктура — {names})"
+    elif failure_counts:
+        # A model outcome (exhausted budget, unfinished scenario) is a real
+        # verdict and stays in the denominator; it is named, not excused.
+        names = ", ".join(
+            f"{core.failure_label(kind)} x{count}" for kind, count in sorted(failure_counts.items())
+        )
+        verdict += f" (исходы модели: {names})"
 
     return {
         "per_category": per_category,
@@ -249,23 +300,120 @@ def summarise(
         "ran": ran,
         "ran_showcase": ran_showcase,
         "skipped": skipped_total,
+        "skipped_scored": skipped_scored,
+        "incomplete": skipped_scored > 0 or not full_suite,
+        "failures": failure_counts,
+        "infra_failures": infra_failures,
+        "eligible": eligible,
+        "profile": profile,
+        "rankable_with_baseline": rankable,
         "verdict": verdict,
     }
 
 
-def _compare_pair(left: dict[str, Any] | None, right: dict[str, Any] | None) -> dict[str, Any]:
-    """One metric's difference, significant only on disjoint 95 % intervals."""
+WEIGHT_SCHEMES: dict[str, dict[str, float]] = {
+    "published": dict(core.CATEGORY_POINTS),
+    "equal": {key: 1.0 for key in core.CATEGORY_POINTS},
+    # A second, deliberately different policy: if the ordering only survives
+    # one weight mixture it is a property of the mixture, not of the model.
+    "coding_heavy": {key: 2.0 if key == "C" else 1.5 if key == "B" else 1.0
+                     for key in core.CATEGORY_POINTS},
+}
+"""Weight mixtures the verdict is recomputed under."""
+
+
+def _paired_units(
+    left: dict[str, Any] | None, right: dict[str, Any] | None, key: str
+) -> list[stats.PairedUnit]:
+    """Shared task instances of two category rows, tagged with the category."""
+    left_units = (left or {}).get("units") or {}
+    right_units = (right or {}).get("units") or {}
+    units: list[stats.PairedUnit] = []
+    for task_id, (left_earned, left_possible) in left_units.items():
+        pair = right_units.get(task_id)
+        if pair is None or left_possible <= 0 or pair[1] <= 0:
+            continue
+        units.append((key, left_earned, left_possible, pair[0], pair[1]))
+    return units
+
+
+def _overlaps(
+    left: tuple[float, float] | None, right: tuple[float, float] | None
+) -> bool | None:
+    """Whether the two marginal intervals touch; ``None`` when one is missing."""
+    if not left or not right:
+        return None
+    return not stats.disjoint(left, right)
+
+
+def _weighted_pct(summary: dict[str, Any], weights: dict[str, float]) -> float | None:
+    """Score under one weight mixture; ``None`` when nothing was measured."""
+    total = earned = 0.0
+    for key, weight in weights.items():
+        row = summary["per_category"].get(key) or {}
+        possible = row.get("possible") or 0.0
+        if possible <= 0:
+            continue
+        earned += weight * row.get("earned", 0.0) / possible
+        total += weight
+    return round(100.0 * earned / total, 2) if total else None
+
+
+def _weight_sensitivity(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """Whether the ordering survives a different policy, not just the published one."""
+    schemes: dict[str, Any] = {}
+    for name, weights in WEIGHT_SCHEMES.items():
+        left_pct = _weighted_pct(left, weights)
+        right_pct = _weighted_pct(right, weights)
+        delta = None if left_pct is None or right_pct is None else round(left_pct - right_pct, 2)
+        schemes[name] = {
+            "weights": dict(weights),
+            "left": left_pct,
+            "right": right_pct,
+            "delta": delta,
+            "winner": None if delta is None else ("left" if delta > 0 else "right" if delta < 0 else "tie"),
+        }
+    published = schemes["published"]["winner"]
+    return {
+        "schemes": schemes,
+        "winner": published,
+        "stable": published is not None and all(
+            entry["winner"] == published for entry in schemes.values()
+        ),
+    }
+
+
+def _category_vector(summary: dict[str, Any]) -> dict[str, float | None]:
+    """The per-category percentages as a standalone published vector."""
+    return {key: _pct_of(summary["per_category"].get(key)) for key in sorted(core.CATEGORY_POINTS)}
+
+
+def _compare_pair(
+    left: dict[str, Any] | None, right: dict[str, Any] | None, key: str
+) -> dict[str, Any]:
+    """One category's paired difference.
+
+    Significance comes from the interval of the paired difference, restricted
+    to the shared tasks of that category. ``overlap`` only records whether the
+    two marginal intervals happen to touch.
+    """
     left_ci = (left or {}).get("ci95")
     right_ci = (right or {}).get("ci95")
     left_pct = _pct_of(left)
     right_pct = _pct_of(right)
+    test = stats.paired_ratio_difference(_paired_units(left, right, key))
+    delta_ci = test["ci95"]
     return {
         "left_ci95": left_ci,
         "right_ci95": right_ci,
         "left_pct": left_pct,
         "right_pct": right_pct,
         "delta": None if left_pct is None or right_pct is None else round(left_pct - right_pct, 2),
-        "significant": stats.disjoint(left_ci, right_ci),
+        "delta_ci95": None if delta_ci is None
+        else (round(100.0 * delta_ci[0], 2), round(100.0 * delta_ci[1], 2)),
+        "pairs": test["n_pairs"],
+        "significant": test["significant"],
+        "overlap": _overlaps(left_ci, right_ci),
         "provisional": bool((left or {}).get("provisional") or (right or {}).get("provisional")),
     }
 
@@ -276,13 +424,25 @@ def _pct_of(row: dict[str, Any] | None) -> float | None:
     return round(100.0 * row.get("earned", 0.0) / row["possible"], 2)
 
 
-def compare_summaries(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
-    """Compare two summaries; ``significant`` means the 95 % intervals do not overlap.
+def _headline_keys(summary: dict[str, Any]) -> tuple[str, ...]:
+    """Categories the headline of that run counts, mirroring :func:`summarise`."""
+    return SHORT_ORDER if summary.get("admission_state") == "failed" else core.SCORED_CATEGORIES
 
-    The one place a significance flag appears: a single run alone has no
-    comparison, and two overlapping intervals are reported as "незначимо"
-    rather than as an ordering.
+
+def compare_summaries(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """Compare two summaries on shared tasks; ``significant`` is a paired test.
+
+    The estimand is the difference of the two ratios over the *same* task
+    instances, stratified by category. Two separate intervals overlapping does
+    not block the verdict: a consistent 0.05-per-task edge is significant even
+    when both marginals share a band. Which side wins is published per weight
+    mixture, because the published weights are product policy.
     """
+    keys = tuple(key for key in _headline_keys(left) if key in _headline_keys(right))
+    units = [unit for key in keys
+             for unit in _paired_units(left["per_category"].get(key), right["per_category"].get(key), key)]
+    test = stats.paired_ratio_difference(units)
+    delta_ci = test["ci95"]
     overall = {
         "left_ci95": left.get("headline_ci95"),
         "right_ci95": right.get("headline_ci95"),
@@ -291,15 +451,23 @@ def compare_summaries(left: dict[str, Any], right: dict[str, Any]) -> dict[str, 
         "right_pct": round(100.0 * right["headline_earned"] / right["headline_possible"], 2)
         if right.get("headline_possible") else None,
         "delta": None,
-        "significant": stats.disjoint(left.get("headline_ci95"), right.get("headline_ci95")),
+        "delta_ci95": None if delta_ci is None
+        else (round(100.0 * delta_ci[0], 2), round(100.0 * delta_ci[1], 2)),
+        "pairs": test["n_pairs"],
+        "significant": test["significant"],
+        "overlap": _overlaps(left.get("headline_ci95"), right.get("headline_ci95")),
         "provisional": bool(left.get("headline_provisional") or right.get("headline_provisional")),
     }
     if overall["left_pct"] is not None and overall["right_pct"] is not None:
         overall["delta"] = round(overall["left_pct"] - overall["right_pct"], 2)
     return {
+        "method": "paired stratified bootstrap",
         "overall": overall,
+        "sample_plan": stats.sample_plan(pairs=test["n_pairs"], strata=test["strata"]),
+        "category_vector": {"left": _category_vector(left), "right": _category_vector(right)},
+        "weight_sensitivity": _weight_sensitivity(left, right),
         "categories": {
-            key: _compare_pair(left["per_category"].get(key), right["per_category"].get(key))
+            key: _compare_pair(left["per_category"].get(key), right["per_category"].get(key), key)
             for key in sorted(core.CATEGORY_POINTS)
         },
     }
@@ -322,6 +490,18 @@ def _environment(record: dict[str, Any]) -> list[str]:
     if not record:
         return []
     verified = str(record.get("status") or "") == "verified"
+    container = str(record.get("executor_status") or "") == "container_run"
+    # A verified image says the tag resolves to an immutable id — not that the
+    # run used it. Reporting "подтверждено" next to ``host_run`` read as a
+    # contradiction, so the status names the executor too.
+    if verified and container:
+        status = "подтверждено"
+    elif verified:
+        status = "образ подтверждён, но не применялся"
+    else:
+        status = "не проверено"
+    if record.get("reason"):
+        status += f": {record['reason']}"
     lines = [
         "## Среда",
         "",
@@ -329,9 +509,7 @@ def _environment(record: dict[str, Any]) -> list[str]:
         "| --- | --- |",
         f"| Образ | `{record.get('image') or '—'}` |",
         f"| Digest образа | `{record.get('image_digest') or '—'}` |",
-        f"| Статус | {'подтверждено' if verified else 'не проверено'}"
-        + (f": {record.get('reason')}" if record.get("reason") else "")
-        + " |",
+        f"| Статус образа | {status} |",
         f"| Runtime | `{record.get('runtime') or '—'}`"
         + ("" if record.get("runtime_verified") else " (не подтверждён)")
         + " |",
@@ -356,6 +534,50 @@ def _environment(record: dict[str, Any]) -> list[str]:
         lines.append("</details>")
         lines.append("")
     return lines
+
+
+def _observed(observed: dict[str, Any]) -> list[str]:
+    """Observed lane: what the runtime said about the loaded server.
+
+    ``unknown`` is written out, never omitted: a short table would otherwise
+    read as "nothing to report" and the declared value would fill the gap by
+    itself.
+    """
+    from .reference import OBSERVED_FIELDS
+
+    if not observed:
+        return []
+    lines = [
+        "## Наблюдённая конфигурация",
+        "",
+        "Со слов runtime (`/props`). `unknown` — не измерено, а не равно объявленному.",
+        "",
+        "| Поле | Значение |",
+        "| --- | --- |",
+    ]
+    for key, title in OBSERVED_FIELDS:
+        lines.append(f"| {title} | {observed.get(key) or 'unknown'} |")
+    lines.append("")
+    return lines
+
+
+def _launch_lanes(config: dict[str, Any], lines: list[str]) -> None:
+    """Executed load first, declared template second — never one as the other."""
+    executed = config.get("launch_executed") or {}
+    if executed:
+        lines.append("Выполненная загрузка (executed):")
+        lines.append("")
+        lines.append("```json")
+        lines.append(json.dumps(executed, ensure_ascii=False, indent=2))
+        lines.append("```")
+        lines.append("")
+    if config.get("launch"):
+        lines.append("Объявленный шаблон загрузки (declared — не запись исполнения):")
+        lines.append("")
+        lines.append("```")
+        lines.append(str(config["launch"]))
+        lines.append("```")
+        lines.append("")
 
 
 def render_markdown(run: dict[str, Any]) -> str:
@@ -403,7 +625,7 @@ def render_markdown(run: dict[str, Any]) -> str:
                  f"max_total_tokens={config.get('max_total_tokens')}, max_tool_calls={config.get('max_tool_calls')} |")
     if hardware:
         lines.append(
-            f"| GPU | {hardware.get('gpu') or hardware.get('name', 'n/a')} "
+            f"| GPU сэмплера (хост харнесса) | {hardware.get('gpu') or hardware.get('name', 'unknown')} "
             f"({hardware.get('vram_total_mib', '?')} MiB, driver {hardware.get('driver', '?')}) |"
         )
     lines.append(f"| Suite SHA-256 | `{suite.get('sha256', 'n/a')}` |")
@@ -413,14 +635,25 @@ def render_markdown(run: dict[str, Any]) -> str:
         lines.append(f"| Не проверялось | {', '.join(config['unsupported'])} |")
     lines.append("")
     lines.extend(_environment(run.get("environment") or {}))
-    if config.get("launch"):
-        lines.append("Загрузка конфигурации (для воспроизведения):")
-        lines.append("")
-        lines.append("```")
-        lines.append(str(config["launch"]))
-        lines.append("```")
-        lines.append("")
+    lines.extend(_observed(config.get("observed") or {}))
+    _launch_lanes(config, lines)
     lines.append(f"**Итог: {summary['verdict']}**")
+    lines.append("")
+    lines.append(
+        "Ранг: "
+        + (
+            f"не ранжируется с baseline (профиль `{summary.get('profile')}` — свой набор "
+            "категорий, знаменатель не совпадает)"
+            if not summary.get("rankable_with_baseline", True)
+            else "допущен (полное измерение, инфраструктура чиста)"
+            if not summary.get("incomplete") and summary.get("eligible")
+            else "не ранжируется: " + (
+                "инфраструктурный провал"
+                if not summary.get("eligible")
+                else "прогон неполон — знаменатель урезан"
+            )
+        )
+    )
     if summary.get("headline_ci95"):
         low, high = summary["headline_ci95"]
         note = stats.note(summary.get("headline_n") or 0)
@@ -469,17 +702,20 @@ def render_markdown(run: dict[str, Any]) -> str:
             lines.append(f"| {score['task_id']} | не проверялось | — | — | {score['skipped']} |")
             continue
         failed = [c["name"] for c in score.get("checks", []) if not c["passed"]]
+        error_text = score.get("error") or "—"
+        if score.get("failure"):
+            error_text = f"{core.failure_label(score['failure'])}: {error_text}"
         if score.get("category") in core.ART_CATEGORIES:
             status = "отрисовано" if not failed and score.get("earned") else "не отрисовалось"
             lines.append(
                 f"| {score['task_id']} | {status} | {_stop_reason(runs_by_id.get(score['task_id']))} | "
-                f"{score.get('error') or '—'} | {', '.join(failed) if failed else '—'} |"
+                f"{error_text} | {', '.join(failed) if failed else '—'} |"
             )
             continue
         lines.append(
             f"| {score['task_id']} | {score.get('earned', 0):.0f}/{score.get('possible', 0):.0f} | "
             f"{_stop_reason(runs_by_id.get(score['task_id']))} | "
-            f"{score.get('error') or '—'} | {', '.join(failed) if failed else '—'} |"
+            f"{error_text} | {', '.join(failed) if failed else '—'} |"
         )
     lines.append("")
 
@@ -548,7 +784,16 @@ def render_markdown(run: dict[str, Any]) -> str:
 
 def compare_markdown(runs: list[dict[str, Any]]) -> str:
     """Side-by-side table across runs: quality first, then memory and speed."""
+    from . import reference as reference_module
+
     lines = ["# Сравнение конфигураций", ""]
+    mismatches = reference_module.controlled_mismatches([run.get("config") or {} for run in runs])
+    if mismatches:
+        lines.append("**Это не сравнение весов**: контролируемые параметры расходятся, поэтому "
+                     "разница в баллах включает их, а не только веса.")
+        lines.append("")
+        lines.extend(f"- {line}" for line in mismatches)
+        lines.append("")
     header = ["Модель", "Профиль", "Квант", "Итог"]
     for key in sorted(core.CATEGORY_POINTS):
         header.append(f"{key}, %")
@@ -558,6 +803,7 @@ def compare_markdown(runs: list[dict[str, Any]]) -> str:
     lines.append("| " + " | ".join(header) + " |")
     lines.append("|" + "---|" * len(header))
 
+    compared: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for run in runs:
         config = run.get("config", {})
         summary = summarise(run["scores"], run.get("suite") or {})
@@ -603,6 +849,7 @@ def compare_markdown(runs: list[dict[str, Any]]) -> str:
         row.append(_fmt(long_row.get("generation_tok_s") if long_row else None, 1))
         row.append(str(summary["errors"]))
         lines.append("| " + " | ".join(row) + " |")
+        compared.append((run, summary))
 
     lines.append("")
     lines.append("Пик VRAM и TTFT берутся из длинного профиля: это измерение при заполненном "
@@ -610,7 +857,84 @@ def compare_markdown(runs: list[dict[str, Any]]) -> str:
     lines.append("")
     lines.append("Колонки витрины показывают визуальный блок: он измеряется отдельно и в итог "
                  "не входит — отсутствие браузера на машине измерения не должно двигать балл.")
+    if len(compared) > 1:
+        lines.extend(_paired_markdown(compared))
     return "\n".join(lines)
+
+
+def _label(run: dict[str, Any]) -> str:
+    """A markdown-safe model label for the comparison sections."""
+    return str((run.get("config") or {}).get("model") or run.get("dir") or "?")
+
+
+def _paired_markdown(compared: list[tuple[dict[str, Any], dict[str, Any]]]) -> list[str]:
+    """Difference intervals, the category vector and the weight sensitivity.
+
+    The first run is the baseline. ``significant`` is the paired test, not the
+    overlap of two marginal bands — that overlap is printed next to it so a
+    conservative reading is still possible.
+    """
+    baseline_run, baseline = compared[0]
+    results = [compare_summaries(baseline, summary) for _, summary in compared[1:]]
+    lines = [
+        "",
+        "## Парное сравнение: разность и её интервал",
+        "",
+        f"База — `{_label(baseline_run)}`. Сравниваются одинаковые task_id, "
+        "стратифицированно по категориям. Значимость — 95 % интервал разности не содержит нуля; "
+        "перекрытие отдельных ДИ указано рядом и вердикт не блокирует.",
+        "",
+        "| Модель | Δ, п.п. | 95 % ДИ разности | Общих задач | Перекрытие отдельных ДИ | Значимо |",
+        "| --- | ---: | --- | ---: | --- | --- |",
+    ]
+    for (run, _), result in zip(compared[1:], results):
+        overall = result["overall"]
+        ci = overall["delta_ci95"]
+        band = f"{ci[0]:+.2f} … {ci[1]:+.2f}" if ci else "n/a"
+        lines.append(
+            f"| {_label(run)} | {_fmt(overall['delta'], 2)} | {band} | {overall['pairs']} | "
+            f"{'да' if overall['overlap'] else 'нет'} | {'да' if overall['significant'] else 'нет'} |"
+        )
+    plan = results[0]["sample_plan"]
+    lines += [
+        "",
+        f"Популяция: {plan['population']}; оцениваемое: {plan['estimand']}. "
+        f"Не измеряются: {', '.join(plan['unmeasured'])}. {plan['note']}",
+        "",
+        "## Вектор категорий",
+        "",
+        "Один итог — это смесь весов, поэтому публикуется и вектор по категориям.",
+        "",
+        "| Модель | " + " | ".join(sorted(core.CATEGORY_POINTS)) + " |",
+        "| --- |" + "---:|" * len(core.CATEGORY_POINTS),
+    ]
+    for run, summary in compared:
+        vector = _category_vector(summary)
+        lines.append(
+            f"| {_label(run)} | "
+            + " | ".join(_fmt(vector[key]) for key in sorted(core.CATEGORY_POINTS)) + " |"
+        )
+    lines += [
+        "",
+        "## Чувствительность к весам",
+        "",
+        "Дельта под каждой политикой весов: устойчивый вывод не зависит от смеси.",
+        "",
+        "| Политика | " + " | ".join(_label(run) for run, _ in compared[1:]) + " |",
+        "| --- |" + "---:|" * max(0, len(compared) - 1),
+    ]
+    for scheme in WEIGHT_SCHEMES:
+        cells = []
+        for result in results:
+            entry = result["weight_sensitivity"]["schemes"][scheme]
+            cells.append(f"{_fmt(entry['delta'], 2)} ({entry['winner'] or 'n/a'})")
+        lines.append(f"| {scheme} | " + " | ".join(cells) + " |")
+    stable = all(result["weight_sensitivity"]["stable"] for result in results)
+    lines.append("")
+    lines.append(
+        "Вывод " + ("устойчив к весам." if stable else "меняется вместе с весами — это свойство смеси.")
+    )
+    return lines
 
 
 def _shot_of(entry: dict[str, Any], run_dir: Path) -> str:

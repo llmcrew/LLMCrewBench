@@ -42,6 +42,8 @@ from .. import core, text
 BASELINE_IDS = ("H-1", "H-2", "H-3")
 PILOT_IDS = ("H-4",)
 ALL_IDS = BASELINE_IDS + PILOT_IDS + ("H-5",)
+RESEARCH_IDS: tuple[str, ...] = ()
+"""The research profile measures no dialogue scenario."""
 
 IDS = BASELINE_IDS
 PRIVATE_IDS = frozenset({"H-2"})
@@ -719,6 +721,8 @@ def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
         ids = PILOT_IDS
     elif profile == "stretch-v1":
         ids = ALL_IDS
+    elif profile == "research-v1":
+        ids = RESEARCH_IDS
     else:
         ids = BASELINE_IDS
     tasks = [_BUILDERS[task_id](rng) for task_id in ids]
@@ -739,5 +743,7 @@ core.register(
     generate=generate,
     evaluate=evaluate,
     expected_ids=BASELINE_IDS,
-    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": ALL_IDS},
+    expected_ids_by_profile={
+        "pilot": PILOT_IDS, "stretch-v1": ALL_IDS, "research-v1": RESEARCH_IDS
+    },
 )

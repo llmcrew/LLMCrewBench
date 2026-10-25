@@ -225,27 +225,50 @@ def count_nonempty_lines(text: str) -> int:
     return len(answer_lines(text))
 
 
+_NUMBERED_LINE = re.compile(r"\s*(\d{1,2})\s*[.)\]:-]\s*(.+?)\s*$")
+
+
+def numbered_answer(text: str, expected: int) -> tuple[list[str] | None, list[str]]:
+    """Parse a closed numbered answer. Returns ``(values, extras)``.
+
+    ``values`` is ``None`` when the numbering is missing, duplicated or not
+    exactly ``1..expected``. ``extras`` are the non-empty lines outside that
+    numbering (including indices past ``expected``), so a caller can demand a
+    fully closed grammar instead of silently ignoring surrounding text (H16).
+    """
+    inner, _ = strip_fence(text)
+    found: dict[int, str] = {}
+    extras: list[str] = []
+    for line in inner.splitlines():
+        m = _NUMBERED_LINE.match(line)
+        if not m:
+            if line.strip():
+                extras.append(clean_line(line))
+            continue
+        idx = int(m.group(1))
+        # A repeated index is an extra line, not an override: first-wins
+        # parsing let a duplicate "6. KNOWN: ..." smuggle an invented
+        # answer while keeping full marks (T5).
+        if idx in found:
+            return None, extras
+        if not 1 <= idx <= expected:
+            extras.append(clean_line(line))
+            continue
+        found[idx] = clean_line(m.group(2))
+    if sorted(found) != list(range(1, expected + 1)):
+        return None, extras
+    return [found[i] for i in range(1, expected + 1)], extras
+
+
 def numbered_lines(text: str, expected: int) -> list[str] | None:
     """Split a ``1. ...`` style answer into exactly ``expected`` values.
 
     Returns ``None`` when the numbering is missing or the count is wrong, so a
-    caller can award 0 per line instead of guessing an alignment.
+    caller can award 0 per line instead of guessing an alignment. Surrounding
+    prose is tolerated here; use :func:`numbered_answer` to reject it.
     """
-    inner, _ = strip_fence(text)
-    found: dict[int, str] = {}
-    for line in inner.splitlines():
-        m = re.match(r"\s*(\d{1,2})\s*[.)\]:-]\s*(.+?)\s*$", line)
-        if m:
-            idx = int(m.group(1))
-            # A repeated index is an extra line, not an override: first-wins
-            # parsing let a duplicate "6. KNOWN: ..." smuggle an invented
-            # answer while keeping full marks (T5).
-            if idx in found:
-                return None
-            found[idx] = clean_line(m.group(2))
-    if sorted(found) != list(range(1, expected + 1)):
-        return None
-    return [found[i] for i in range(1, expected + 1)]
+    values, _ = numbered_answer(text, expected)
+    return values
 
 
 def known_unknown(value: str) -> tuple[str, str] | None:

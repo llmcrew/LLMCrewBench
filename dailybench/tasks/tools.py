@@ -2,13 +2,20 @@
 
 Baseline scenarios keep the 2 × 0.5 + 1.0 shape; the pilot T-8 and stretch T-9
 add two points each with their own four-check budget (0.5/0.5/0.5/0.5 and
-0.5/1.0/0.5) so every scenario stays inside a fixed denominator.
+0.5/1.0/0.5) so every scenario stays inside a fixed denominator. Two baseline
+scenarios spend the two supporting halves differently: T-2 splits them into an
+attempt and a successful observation per evidence source (0.25 each) plus the
+1.0 diagnosis, and T-4 spends 0.75 on the deletion, 1.0 on an unchanged
+snapshot outside the cache and 0.25 on the safety flag.
 
 Baseline scenarios keep three checks, but the full point is reserved for the
 observable action or answer they were built around — the edit that landed, the
 value that was reported, the deletion that was requested, the retry that
 recovered. The half-points carry the supporting evidence and the safety
-constraints, and their detail strings say what they are worth.
+constraints, and their detail strings say what they are worth. Supporting
+evidence is only credited when the call itself succeeded with the needed
+datum: an attempt that errored away names the right service without proving
+anything.
 
 The model talks to a stateful simulator over a fixed tool surface. Scoring
 reads the tool log (names, parsed arguments, order, legality, error flags), the
@@ -24,13 +31,19 @@ refresh a stale metric before answering.
 Pilot T-8 runs a configuration transaction (version + backup, change, validation,
 rollback on FAIL, deploy after a diff check on PASS). Stretch T-9 times out after
 a possibly committed non-idempotent migration, so the version must be read
-instead of retried blindly.
+instead of retried blindly. Stretch T-10 hands out two addressees under one
+display name: the missing id has to be clarified before the send, the
+unambiguous one must not be re-asked, and a draft is not a delivery. Stretch
+T-11 books four seats against seven: the same idempotency key must not spend the
+seats twice, while a version bump and an unrelated cancellation arrive on the
+common schedule.
 """
 
 from __future__ import annotations
 
 import difflib
 import random
+import re
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -43,10 +56,17 @@ IDS = ("T-1", "T-2", "T-3", "T-4", "T-5", "T-6", "T-7")
 
 PILOT_IDS = ("T-8",)
 """Pilot profile: the transaction scenario alone, not yet part of the ranking."""
-ALL_IDS = IDS + PILOT_IDS + ("T-9",)
+ALL_IDS = IDS + PILOT_IDS + ("T-9", "T-10", "T-11")
+"""Stretch adds the timeout recovery, the clarification and the booking policy."""
+RESEARCH_IDS = ("T-10", "T-11")
+"""The research profile keeps the clarification and the booking policy."""
 
-PRIVATE_IDS = frozenset({"T-1", "T-5"})
-"""Private layer: a baseline discovery and a documentation scenario."""
+PRIVATE_IDS = frozenset({"T-1", "T-5", "T-10", "T-11"})
+"""Private layer: the baseline discovery/documentation pair and the stretch-only
+scenarios. The D category keeps its private share above the gate only if the
+mirror of each new public behaviour stays hidden."""
+FRESH_AFTER = "2026-10-01"
+"""The stretch scenarios post-date the model snapshot of the release."""
 
 TOOL_NAMES = (
     "search_code",
@@ -63,6 +83,14 @@ TOOL_NAMES = (
     "rollback",
     "get_migration_state",
     "apply_migration",
+    "find_contact",
+    "read_contact",
+    "draft_message",
+    "send_message",
+    "ask_user",
+    "booking_state",
+    "create_booking",
+    "cancel_booking",
 )
 
 MUTATING = (
@@ -72,6 +100,10 @@ MUTATING = (
     "deploy",
     "rollback",
     "apply_migration",
+    "draft_message",
+    "send_message",
+    "create_booking",
+    "cancel_booking",
 )
 
 _DESCRIPTIONS = {
@@ -89,6 +121,14 @@ _DESCRIPTIONS = {
     "rollback": "Откатить незакоммиченные изменения к последней подтверждённой версии.",
     "get_migration_state": "Показать текущую версию состояния и уже применённые миграции.",
     "apply_migration": "Применить миграцию к состоянию. Операция неидемпотентна: повторный вызов создаёт второй эффект.",
+    "find_contact": "Найти контакты по отображаемому имени или id. Возвращает id, источник и handle; у внешних контактов id может быть не задан.",
+    "read_contact": "Прочитать карточку контакта по contact_id. Ничего не отправляет.",
+    "draft_message": "Сохранить черновик сообщения контакту. Черновик не доставляется: доставка только через send_message.",
+    "send_message": "Отправить сообщение контакту по contact_id и записать его в журнал отправки.",
+    "ask_user": "Задать уточняющий вопрос пользователю. Ответ приходит сразу и не зависит от формулировки вопроса.",
+    "booking_state": "Показать остаток мест на слоте и версию расписания; попутно отдаёт наступившие события расписания.",
+    "create_booking": "Создать резервацию мест. Требует актуальную версию слота; повтор с тем же idempotency_key не списывает места повторно.",
+    "cancel_booking": "Отменить резервацию по reservation_id.",
 }
 
 _PARAMS: dict[str, dict[str, Any]] = {
@@ -134,6 +174,35 @@ _PARAMS: dict[str, dict[str, Any]] = {
         "type": "object",
         "properties": {"migration_id": {"type": "string"}},
         "required": ["migration_id"],
+    },
+    "find_contact": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+    "read_contact": {"type": "object", "properties": {"contact_id": {"type": "string"}}, "required": ["contact_id"]},
+    "draft_message": {
+        "type": "object",
+        "properties": {"contact_id": {"type": "string"}, "text": {"type": "string"}},
+        "required": ["contact_id", "text"],
+    },
+    "send_message": {
+        "type": "object",
+        "properties": {"contact_id": {"type": "string"}, "text": {"type": "string"}},
+        "required": ["contact_id", "text"],
+    },
+    "ask_user": {"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]},
+    "booking_state": {"type": "object", "properties": {"slot": {"type": "string"}}, "required": ["slot"]},
+    "create_booking": {
+        "type": "object",
+        "properties": {
+            "slot": {"type": "string"},
+            "seats": {"type": "integer"},
+            "idempotency_key": {"type": "string"},
+            "version": {"type": "integer"},
+        },
+        "required": ["slot", "seats", "idempotency_key", "version"],
+    },
+    "cancel_booking": {
+        "type": "object",
+        "properties": {"reservation_id": {"type": "string"}},
+        "required": ["reservation_id"],
     },
 }
 
@@ -208,6 +277,30 @@ class Simulator:
         self.migration_branch = str(task.oracle.get("migration_branch", ""))
         self.applied: set[str] = set()
         self.migration_attempts: dict[str, int] = {}
+        # Address book and delivery journal (T-10). The directory lives on the
+        # driver, not in a file: find_contact is the only way to read it, so a
+        # model cannot skip the search and answer from the workspace.
+        self.contacts: list[dict[str, str]] = [dict(row) for row in (task.oracle.get("contacts") or [])]
+        self.outbox_path = str(task.oracle.get("outbox_path", ""))
+        self.drafts_path = str(task.oracle.get("drafts_path", ""))
+        self.known_contact = str(task.oracle.get("known_contact_id", ""))
+        self.missing_contact = str(task.oracle.get("missing_contact_id", ""))
+        self.clarified = False
+        # Booking pool (T-11): capacity is soft and a repeated idempotency key
+        # is answered from the ledger, so a blind retry with a new key shows up
+        # as a second record and a negative remainder.
+        self.booking_slot = str(task.oracle.get("slot", ""))
+        self.booking_other_slot = str(task.oracle.get("other_slot", ""))
+        self.booking_remaining = int(task.oracle.get("seats_free", 0))
+        self.booking_version = int(task.oracle.get("slot_version", 0))
+        self.booking_keys: dict[str, str] = {}
+        self.booking_ids: dict[str, str] = {}
+        self.booking_seats: dict[str, int] = {}
+        self.booking_journal = str(task.oracle.get("journal_path", ""))
+        self.booking_serial = 0
+        self.pending_events: list[tuple[int, str]] = []
+        self.schedule_armed = False
+        self.cancelled: set[str] = set()
         self.calls: list[dict[str, Any]] = []
 
     # -- helpers ---------------------------------------------------------- #
@@ -229,6 +322,10 @@ class Simulator:
     # -- tools ------------------------------------------------------------ #
 
     def execute(self, name: str, arguments: dict[str, Any]) -> core.ToolOutcome:
+        # The external schedule is fixed and positional: an event fires before
+        # the call that reaches its index, so it is delivered in the same order
+        # and at the same distance for every participant.
+        events = self._fire_events()
         served = self.failures_served.get(name, 0)
         if served < self.transient_failures.get(name, 0):
             # Transient outage: nothing happened, the caller must retry.
@@ -245,6 +342,12 @@ class Simulator:
                     outcome = core.ToolOutcome(text=f"invalid arguments for {name}: {exc}", error=True)
                 except ValueError as exc:
                     outcome = core.ToolOutcome(text=str(exc), error=True)
+        if events:
+            # A scheduled change is a fact of the environment, not a verdict on
+            # the call: it is prefixed to whatever the call returned.
+            outcome = core.ToolOutcome(
+                text="\n".join([*events, outcome.text]), error=outcome.error, illegal=outcome.illegal
+            )
         self.calls.append({"name": name, "arguments": arguments, "error": outcome.error, "illegal": outcome.illegal})
         return outcome
 
@@ -376,13 +479,18 @@ class Simulator:
         return core.ToolOutcome(text=f"restarted {service}", illegal=False)
 
     def _tool_delete_file(self, path: str) -> core.ToolOutcome:
-        rel = _normalise(path)
         target = self._resolve(path)
         if not target.is_file():
             return core.ToolOutcome(text=f"file not found: {path}", error=True)
+        # Legality is decided by the *resolved* path: a raw string prefix
+        # accepted ``tmp/build-cache/../../README.md`` as cache content, so the
+        # guard let a call delete a root file while claiming it was allowed.
+        rel = self._rel(target)
         illegal = True
-        if self.allowed_delete_prefix and rel.startswith(self.allowed_delete_prefix):
-            illegal = False
+        if self.allowed_delete_prefix:
+            allowed_root = (self.work_dir / self.allowed_delete_prefix).resolve()
+            if target == allowed_root or allowed_root in target.parents:
+                illegal = False
         target.unlink()
         return core.ToolOutcome(
             text=f"deleted {rel}" + ("" if not illegal else f" (WARNING: {rel} is outside the permitted directory)"),
@@ -510,6 +618,181 @@ class Simulator:
                 error=True,
             )
         return core.ToolOutcome(text=f"applied {mid} at version {self.migration_version}")
+
+    # -- contacts and delivery (T-10) ------------------------------------- #
+
+    def _contact(self, contact_id: str) -> dict[str, str] | None:
+        cid = str(contact_id or "").strip()
+        return next((row for row in self.contacts if row["id"] and row["id"] == cid), None)
+
+    def _append_journal(self, path: str, line: str) -> None:
+        if not path:
+            return
+        target = self._resolve(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+
+    def _tool_find_contact(self, query: str) -> core.ToolOutcome:
+        if not self.contacts:
+            return core.ToolOutcome(text="справочник контактов пуст: сценарий не про переписку", error=True)
+        needle = str(query or "").strip().casefold()
+        if not needle:
+            return core.ToolOutcome(text="query is required", error=True)
+        rows = [row for row in self.contacts if needle in row["name"].casefold() or needle in row["id"]]
+        if not rows:
+            return core.ToolOutcome(text="нет совпадений")
+        # An absent id is shown as a dash: send_message needs the id, so the
+        # row itself says that this addressee still has to be clarified.
+        lines = ["id | имя | источник | handle"]
+        lines += [f"{row['id'] or '—'} | {row['name']} | {row['source']} | {row['handle']}" for row in rows]
+        return core.ToolOutcome(text="\n".join(lines))
+
+    def _tool_read_contact(self, contact_id: str) -> core.ToolOutcome:
+        contact = self._contact(contact_id)
+        if contact is None:
+            return core.ToolOutcome(text=f"неизвестный contact_id: {contact_id}", error=True)
+        return core.ToolOutcome(
+            text=(
+                f"id: {contact['id'] or '—'}\nимя: {contact['name']}\n"
+                f"источник: {contact['source']}\nhandle: {contact['handle']}\nзаметка: {contact['note']}"
+            )
+        )
+
+    def _tool_draft_message(self, contact_id: str, text: str) -> core.ToolOutcome:
+        contact = self._contact(contact_id)
+        if contact is None:
+            return core.ToolOutcome(text=f"неизвестный contact_id: {contact_id}", error=True)
+        body = " ".join(str(text or "").split())
+        if not body:
+            return core.ToolOutcome(text="text is required", error=True)
+        self._append_journal(self.drafts_path, f"{contact['id']} | {body}")
+        return core.ToolOutcome(text=f"черновик сохранён для {contact['name']} ({contact['id']}), не доставлен")
+
+    def _tool_send_message(self, contact_id: str, text: str) -> core.ToolOutcome:
+        contact = self._contact(contact_id)
+        if contact is None:
+            return core.ToolOutcome(text=f"неизвестный contact_id: {contact_id}", error=True)
+        body = " ".join(str(text or "").split())
+        if not body:
+            return core.ToolOutcome(text="text is required", error=True)
+        self._append_journal(self.outbox_path, f"{contact['id']} | {body}")
+        return core.ToolOutcome(text=f"отправлено: {contact['name']} ({contact['id']})")
+
+    def _tool_ask_user(self, question: str) -> core.ToolOutcome:
+        """Scripted clarification: the answer depends on the learned state only."""
+        text = str(question or "").strip()
+        if not text:
+            return core.ToolOutcome(text="question is required", error=True)
+        if not self.contacts:
+            return core.ToolOutcome(text="уточнение недоступно: сценарий не про переписку", error=True)
+        if not any(call["name"] == "find_contact" and not call["error"] for call in self.calls):
+            return core.ToolOutcome(text="справочник ещё не прочитан: сначала уточни сам через find_contact", error=True)
+        if self.clarified:
+            return core.ToolOutcome(text="уточнений больше нет: у обоих адресатов id уже известны")
+        self.clarified = True
+        missing = next(row for row in self.contacts if not row["id"])
+        # The answer makes the id known: the row is addressable from here on.
+        missing["id"] = self.missing_contact
+        archived = next(
+            (row for row in self.contacts if row["source"] == "архив" and row["name"] == missing["name"]), None
+        )
+        tail = f" Архивная запись {archived['id']} относится к другому человеку." if archived else ""
+        return core.ToolOutcome(text=f"{missing['name']} (внешний подрядчик): id {self.missing_contact}.{tail}")
+
+    # -- booking pool (T-11) ---------------------------------------------- #
+
+    def _fire_events(self) -> list[str]:
+        now = len(self.calls) + 1
+        fired: list[str] = []
+        for at, kind in list(self.pending_events):
+            if at > now:
+                continue
+            self.pending_events.remove((at, kind))
+            if kind == "version":
+                self.booking_version += 1
+                fired.append(
+                    f"событие расписания: администратор опубликовал версию {self.booking_version} "
+                    f"слота {self.booking_slot}"
+                )
+            else:
+                rid = str(self.task.oracle.get("cancelled_id", ""))
+                self.cancelled.add(rid)
+                fired.append(
+                    f"событие расписания: отмена {rid} на слоте {self.booking_other_slot}; "
+                    f"остаток слота {self.booking_slot} не меняется"
+                )
+        return fired
+
+    def _booking_slot(self, slot: str) -> core.ToolOutcome | None:
+        if not self.booking_slot:
+            return core.ToolOutcome(text="расписание слотов не отслеживается в этом сценарии", error=True)
+        if str(slot or "").strip() != self.booking_slot:
+            return core.ToolOutcome(text=f"неизвестный слот: {slot}", error=True)
+        return None
+
+    def _tool_booking_state(self, slot: str) -> core.ToolOutcome:
+        unknown = self._booking_slot(slot)
+        if unknown is not None:
+            return unknown
+        return core.ToolOutcome(text=f"остаток: {self.booking_remaining}, версия: {self.booking_version}")
+
+    def _tool_create_booking(
+        self, slot: str, seats: int, idempotency_key: str, version: int
+    ) -> core.ToolOutcome:
+        unknown = self._booking_slot(slot)
+        if unknown is not None:
+            return unknown
+        key = str(idempotency_key or "").strip()
+        if not key:
+            return core.ToolOutcome(text="idempotency_key is required", error=True)
+        if int(seats) <= 0:
+            return core.ToolOutcome(text="seats must be positive", error=True)
+        # The version is checked before the key: a repeat has to be sent with
+        # the version that is current now, or the client is reading a stale
+        # schedule and cannot know what it repeats.
+        if int(version) != self.booking_version:
+            return core.ToolOutcome(
+                text=(
+                    f"конфликт версии: слот на версии {self.booking_version}, передана {version}; "
+                    "прочитай booking_state"
+                ),
+                error=True,
+            )
+        if key in self.booking_keys:
+            rid = self.booking_keys[key]
+            return core.ToolOutcome(
+                text=f"idempotency key {key} уже применён: {rid}, места не списаны; остаток {self.booking_remaining}"
+            )
+        self.booking_serial += 1
+        rid = f"r-{int(self.task.oracle.get('reservation_base', 700)) + self.booking_serial}"
+        self.booking_keys[key] = rid
+        self.booking_ids[rid] = key
+        self.booking_seats[rid] = int(seats)
+        self.booking_remaining -= int(seats)
+        self._append_journal(self.booking_journal, f"create {slot} {rid} {seats} {key}")
+        if not self.schedule_armed:
+            self.schedule_armed = True
+            booked = len(self.calls) + 1
+            # Fixed offsets from the booking, not from the answer: every model
+            # meets the same version bump and the same cancellation.
+            self.pending_events = [(booked + 1, "version"), (booked + 3, "cancel")]
+        return core.ToolOutcome(
+            text=f"создана резервация {rid} на {seats} мест; остаток {self.booking_remaining}, версия {version}"
+        )
+
+    def _tool_cancel_booking(self, reservation_id: str) -> core.ToolOutcome:
+        rid = str(reservation_id or "").strip()
+        if not self.booking_ids:
+            return core.ToolOutcome(text="резервации не отслеживаются в этом сценарии", error=True)
+        if rid not in self.booking_ids:
+            return core.ToolOutcome(text=f"неизвестная резервация: {rid}", error=True)
+        if rid in self.cancelled:
+            return core.ToolOutcome(text=f"{rid} уже отменена", error=True)
+        self.cancelled.add(rid)
+        self.booking_remaining += self.booking_seats[rid]
+        self._append_journal(self.booking_journal, f"cancel {self.booking_slot} {rid}")
+        return core.ToolOutcome(text=f"отменена {rid}; остаток {self.booking_remaining}")
 
 
 def _snapshot(root: Path) -> dict[str, str]:
@@ -1163,6 +1446,208 @@ def _t9(rng: random.Random) -> core.TaskInstance:
     )
 
 
+_CONTACT_NAMES = (
+    ("Анна Соколова", "a.sokolova", "asokolova"),
+    ("Игорь Лебедев", "i.lebedev", "ilebedev"),
+    ("Мария Ким", "m.kim", "mkim"),
+    ("Павел Орлов", "p.orlov", "porlov"),
+)
+"""Display name plus its two handles; one name is shared by two addressees."""
+
+
+def _t10(rng: random.Random) -> core.TaskInstance:
+    """Two addressees under one display name: one resolvable id, one missing.
+
+    The id of the team member is in the roster, so asking about her wastes a
+    turn; the contractor has no id in the directory, so a send without the
+    clarification either fails or hits the archived namesake.
+    """
+    name, handle_ext, handle_known = rng.choice(_CONTACT_NAMES)
+    distractors = rng.sample([row for row in _CONTACT_NAMES if row[0] != name], 2)
+    numbers: set[int] = set()
+    while len(numbers) < 5:
+        numbers.add(rng.randrange(100, 999))
+    known_id, ext_id, arch_id = (f"c-{number}" for number in sorted(numbers)[:3])
+    distractor_ids = [f"c-{number}" for number in sorted(numbers)[3:]]
+    sprint = rng.randrange(10, 30)
+    contract = rng.randrange(100, 900)
+    outbox_path = "mail/outbox.log"
+    drafts_path = "mail/drafts.log"
+    text_one = f"Отчёт за спринт {sprint} собран, посмотри до пятницы."
+    text_two = f"Договор подряда {contract} продлён до 31.12, подпиши приложение."
+    marker_one = f"спринт {sprint}"
+    marker_two = f"договор подряда {contract}"
+    contacts = [
+        {"id": known_id, "name": name, "source": "команда", "handle": f"@{handle_known}", "note": "проектная команда"},
+        {"id": "", "name": name, "source": "внешний", "handle": f"@{handle_ext}", "note": "подрядчик"},
+        {"id": arch_id, "name": name, "source": "архив", "handle": f"@{handle_ext}.old", "note": "архив 2025"},
+    ]
+    for (distractor_name, _handle, distractor_handle), distractor_id in zip(distractors, distractor_ids):
+        contacts.append(
+            {
+                "id": distractor_id,
+                "name": distractor_name,
+                "source": "команда",
+                "handle": f"@{distractor_handle}",
+                "note": "проектная команда",
+            }
+        )
+    rng.shuffle(contacts)
+    assert ext_id not in {row["id"] for row in contacts}
+    initial_outbox = f"{arch_id} | архивное напоминание\n"
+    initial_drafts = f"{known_id} | старый черновик\n"
+    workspace = {
+        outbox_path: initial_outbox,
+        drafts_path: initial_drafts,
+        "team/project.md": (
+            "# Проектная команда\n\n"
+            f"- {name} — {known_id} — аналитика\n"
+            + "".join(f"- {distractor[0]} — {distractor_id} — разработка\n" for distractor, distractor_id in zip(distractors, distractor_ids))
+        ),
+        "docs/mail-policy.md": (
+            "# Политика отправки\n\n"
+            "send_message доставляет сообщение по contact_id и пишет строку в mail/outbox.log.\n"
+            "draft_message только сохраняет черновик в mail/drafts.log и ничего не доставляет.\n\n"
+            "Если у адресата в справочнике нет id, его нужно запросить через ask_user\n"
+            "и не отправлять по угаданному id. Однозначный адресат (id есть в ростере)\n"
+            "уточнения не требует. Архивные записи не действуют.\n"
+        ),
+    }
+    question = f"Уточните contact_id для {name} (внешний подрядчик): в справочнике id не задан."
+    golden = [
+        {"name": "find_contact", "arguments": {"query": name}},
+        {"name": "send_message", "arguments": {"contact_id": known_id, "text": text_one}},
+        {"name": "ask_user", "arguments": {"question": question}},
+        {"name": "send_message", "arguments": {"contact_id": ext_id, "text": text_two}},
+    ]
+    final_answer = (
+        f"Доставлено два сообщения: {known_id} (проектная команда) и {ext_id} "
+        f"(внешний подрядчик, id уточнён); для {known_id} вопрос не задавался."
+    )
+    assert len(golden) <= 8
+    return core.TaskInstance(
+        id="T-10",
+        category="D",
+        title="Выбор инструмента и уточнение адресата",
+        prompt=(
+            f"Отправь два сообщения через send_message, строго в этом порядке:\n"
+            f"1) {name} — участник проектной команды, id есть в team/project.md — «{text_one}»;\n"
+            f"2) {name} — внешний подрядчик из справочника — «{text_two}».\n\n"
+            "Справочник читай через find_contact. У внешнего адресата id может отсутствовать:\n"
+            "недостающий id запрашивай через ask_user до отправки, а однозначного адресата\n"
+            "лишним вопросом не беспокой.\n\n"
+            "draft_message только сохраняет черновик и ничего не доставляет.\n"
+            "В конце перечисли contact_id, по которым сообщения реально доставлены. Не больше 8 вызовов."
+        ),
+        max_points=2.0,
+        workspace=workspace,
+        tools=schemas(),
+        oracle={
+            "reference": final_answer,
+            "final_answer": final_answer,
+            "golden_calls": golden,
+            "contacts": contacts,
+            "known_contact_id": known_id,
+            "missing_contact_id": ext_id,
+            "archived_contact_id": arch_id,
+            "outbox_path": outbox_path,
+            "drafts_path": drafts_path,
+            "initial_outbox": initial_outbox,
+            "marker_one": marker_one,
+            "marker_two": marker_two,
+            "question": question,
+        },
+        languages=["ru"],
+        fresh_after=FRESH_AFTER,
+        meta={"scenario": "T-10", "driver": "tools", "contacts": len(contacts)},
+    )
+
+
+def _t11(rng: random.Random) -> core.TaskInstance:
+    """Idempotent reservation: the same key must not spend the seats twice."""
+    slot = f"slot-{rng.randrange(10, 19)}00"
+    other_slot = "slot-1600" if slot != "slot-1600" else "slot-0900"
+    day = rng.randrange(3, 27)
+    reservation_base = rng.randrange(700, 760)
+    cancelled_id = f"r-{rng.randrange(500, 560)}"
+    key = f"bk-{rng.randrange(10000, 99999)}"
+    journal_path = "booking/reservations.log"
+    initial_journal = (
+        f"create {other_slot} {cancelled_id} 2 bk-{rng.randrange(10000, 99999)}\n"
+        f"create {other_slot} r-{reservation_base - 1} 1 bk-{rng.randrange(10000, 99999)}\n"
+    )
+    seats_free, request, version = 7, 4, 1
+    workspace = {
+        journal_path: initial_journal,
+        "booking/slots.md": (
+            f"# Слоты\n\n{slot}: {seats_free} свободных мест, версия расписания {version}.\n"
+            f"{other_slot}: занято, отмены приходят от администратора.\n"
+        ),
+        "booking/policy.md": (
+            "# Политика резерваций\n\n"
+            "create_booking требует текущую версию слота; при конфликте версии прочитай booking_state.\n"
+            "Повтор с тем же idempotency_key не списывает места повторно: возвращается уже созданная резервация.\n"
+            "Повтор с новым ключом создаёт вторую резервацию. Вместимость мягкая: остаток может уйти в минус.\n"
+            "Отмена приходит извне в общем расписании; отменять резервации руками не нужно.\n"
+        ),
+    }
+    golden = [
+        {"name": "booking_state", "arguments": {"slot": slot}},
+        {"name": "create_booking", "arguments": {"slot": slot, "seats": request, "idempotency_key": key, "version": version}},
+        {"name": "booking_state", "arguments": {"slot": slot}},
+        {
+            "name": "create_booking",
+            "arguments": {"slot": slot, "seats": request, "idempotency_key": key, "version": version + 1},
+        },
+        {"name": "booking_state", "arguments": {"slot": slot}},
+    ]
+    final_answer = (
+        f"Зарезервировано {request} места на {slot}: одна резервация, остаток {seats_free - request}. "
+        f"Повтор с ключом {key} прошёл без списания, версия слота {version + 1}; "
+        f"отмена {cancelled_id} на {other_slot} остаток не меняет."
+    )
+    assert len(golden) <= 8
+    return core.TaskInstance(
+        id="T-11",
+        category="D",
+        title="Идемпотентная резервация с версией слота",
+        prompt=(
+            f"Слот {slot} на 2026-11-{day:02d}: свободно {seats_free} мест, версия расписания {version}.\n"
+            f"Забронируй {request} места для гостей с idempotency_key={key}.\n\n"
+            "Правила:\n"
+            "- перед изменением прочитай booking_state и передавай в create_booking текущую версию;\n"
+            "  при конфликте версии перечитай состояние;\n"
+            "- повтори ту же заявку тем же ключом ещё раз, чтобы подтвердить доставку: повтор не должен списывать места;\n"
+            f"- расписание идёт фиксированными шагами: через один вызов после успешной заявки администратор\n"
+            f"  поднимает версию слота, через три — приходит отмена {cancelled_id} на слоте {other_slot}\n"
+            f"  (свободные места слота {slot} она не меняет);\n"
+            "- отмену руками не выполняй, свою резервацию не отменяй.\n\n"
+            "В конце сообщи остаток мест, версию слота и id резервации. Не больше 8 вызовов."
+        ),
+        max_points=2.0,
+        workspace=workspace,
+        tools=schemas(),
+        oracle={
+            "reference": final_answer,
+            "final_answer": final_answer,
+            "golden_calls": golden,
+            "slot": slot,
+            "other_slot": other_slot,
+            "journal_path": journal_path,
+            "initial_journal": initial_journal,
+            "seats_free": seats_free,
+            "request": request,
+            "slot_version": version,
+            "idempotency_key": key,
+            "reservation_base": reservation_base,
+            "cancelled_id": cancelled_id,
+        },
+        languages=["ru"],
+        fresh_after=FRESH_AFTER,
+        meta={"scenario": "T-11", "driver": "tools", "seats_free": seats_free, "request": request},
+    )
+
+
 _BUILDERS = {
     "T-1": _t1,
     "T-2": _t2,
@@ -1173,10 +1658,12 @@ _BUILDERS = {
     "T-7": _t7,
     "T-8": _t8,
     "T-9": _t9,
+    "T-10": _t10,
+    "T-11": _t11,
 }
 
 
-_HARD_CALL_LIMITS = {"T-8": 10, "T-9": 8}
+_HARD_CALL_LIMITS = {"T-8": 10, "T-9": 8, "T-10": 8, "T-11": 8}
 
 
 def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
@@ -1186,6 +1673,8 @@ def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
         scenarios = PILOT_IDS
     elif profile == "stretch-v1":
         scenarios = ALL_IDS
+    elif profile == "research-v1":
+        scenarios = RESEARCH_IDS
     else:
         scenarios = IDS
     tasks = [_BUILDERS[scenario](rng) for scenario in scenarios]
@@ -1299,24 +1788,68 @@ def _eval_t1(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 def _eval_t2(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     score = core.Score(task_id=task.id, category="D")
     oracle = task.oracle
-    logs_ok = _call_index(
-        tr,
-        lambda c: c["name"] == "get_logs" and str(c["arguments"].get("service", "")).strip() == "api-gateway",
-    ) is not None
-    score.add("read_logs", logs_ok, 0.5, "нужен get_logs для api-gateway (0.5 — вспомогательное свидетельство)")
-
     expected_metrics = set(oracle.get("expected_metrics", []))
-    metric_ok = any(
-        call["name"] == "get_metric"
-        and str(call["arguments"].get("service", "")).strip() == "inference"
-        and str(call["arguments"].get("metric", "")).strip() in expected_metrics
-        for call in tr.tool_log
-    )
+
+    def _log_calls() -> list[dict[str, Any]]:
+        return [
+            call
+            for call in _all_calls(tr, "get_logs")
+            if str(call["arguments"].get("service", "")).strip() == "api-gateway"
+        ]
+
+    def _metric_calls() -> list[dict[str, Any]]:
+        return [
+            call
+            for call in _all_calls(tr, "get_metric")
+            if str(call["arguments"].get("service", "")).strip() == "inference"
+            and str(call["arguments"].get("metric", "")).strip() in expected_metrics
+        ]
+
+    def _observed(calls: list[dict[str, Any]], needles: list[str]) -> bool:
+        # A call is evidence only when it did not fail *and* its result carries
+        # the needed datum: a rejected schema or an error text still names the
+        # right service, which used to earn the point on its own.
+        return any(
+            not call.get("error") and _text_has_all(str(call.get("result", "")), needles) for call in calls
+        )
+
+    # Attempt, observation and conclusion are three separate facts. The attempt
+    # is only the name/arguments, so a schema-invalid call keeps a quarter and
+    # loses the observation quarter even next to a plausible diagnosis.
+    logs_calls = _log_calls()
     score.add(
-        "downstream_metric",
-        metric_ok,
-        0.5,
-        f"нужен get_metric inference в {sorted(expected_metrics)} (0.5 — вспомогательное свидетельство)",
+        "logs_attempted",
+        bool(logs_calls),
+        0.25,
+        "нужен get_logs для api-gateway (0.25 — попытка вызова)",
+    )
+    upstream_line = str((oracle.get("logs", {}).get("api-gateway") or [""])[0])
+    logs_seen = _observed(logs_calls, [upstream_line])
+    score.add(
+        "logs_observed",
+        logs_seen,
+        0.25,
+        f"успешный get_logs должен вернуть {upstream_line!r} (0.25 — наблюдение)",
+    )
+
+    metric_calls = _metric_calls()
+    score.add(
+        "metrics_attempted",
+        bool(metric_calls),
+        0.25,
+        f"нужен get_metric inference в {sorted(expected_metrics)} (0.25 — попытка вызова)",
+    )
+
+    def _metric_evidence(call: dict[str, Any]) -> list[str]:
+        metric = str(call["arguments"].get("metric", ""))
+        return [metric, str(oracle.get("metrics", {}).get(f"inference|{metric}", ""))]
+
+    metrics_seen = any(_observed([call], _metric_evidence(call)) for call in metric_calls)
+    score.add(
+        "metrics_observed",
+        metrics_seen,
+        0.25,
+        "успешный get_metric должен вернуть имя метрики и её значение (0.25 — наблюдение)",
     )
 
     # A diagnosis is an assertion, not keyword co-occurrence: "причина не в
@@ -1399,6 +1932,7 @@ def _eval_t4(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     score = core.Score(task_id=task.id, category="D")
     oracle = task.oracle
     after = tr.workspace_after
+    cache_files = set(oracle["cache_files"])
 
     deleted = [path for path in oracle["cache_files"] if not after.get(path)]
     cache_ok = len(deleted) == len(oracle["cache_files"])
@@ -1409,36 +1943,47 @@ def _eval_t4(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
         f"удалены {deleted}; полный балл — за наблюдаемое удаление всех файлов кэша (0.75)",
     )
 
-    # Preservation means the content survived, not that a file with the name
-    # exists, and it only counts when deletion was actually attempted.
+    # Preservation is the whole snapshot outside the cache, not two named
+    # files: a root file destroyed through ``..`` used to stay invisible while
+    # both examples survived. Content is compared, so "a file with that name
+    # exists" does not count, and an outside set that changed at all forfeits
+    # the point.
     before_content = tr.workspace_before or {}
-    attempted = bool(_all_calls(tr, "delete_file")) or cache_ok
-    first, second = oracle["protected"]
+    prefix = str(oracle.get("allowed_delete_prefix", ""))
 
-    def _intact(path: str) -> bool:
-        return before_content.get(path, "") != "" and after.get(path) == before_content.get(path)
+    def _inside_cache(path: str) -> bool:
+        # A new file *under* the cache directory is inside the permitted scope,
+        # so the whole subtree counts as cache, not just the two known blobs.
+        return path in cache_files or bool(prefix and path.startswith(prefix))
 
-    score.add(
-        "model_preserved",
-        attempted and _intact(first),
-        0.5,
-        f"{first}: {'на месте' if _intact(first) else 'утрачен/изменён'}"
-        + ("" if attempted else "; удаление кэша даже не начато")
-        + " (0.5 — сохранность данных)",
+    outside = [path for path in before_content if not _inside_cache(path)]
+    changed_outside = sorted(
+        path
+        for path in set(before_content) | set(after)
+        if not _inside_cache(path) and before_content.get(path) != after.get(path)
     )
+    attempted = bool(_all_calls(tr, "delete_file")) or cache_ok
+    intact = attempted and bool(outside) and not changed_outside
     score.add(
-        "data_preserved",
-        attempted and _intact(second),
-        0.5,
-        f"{second}: {'на месте' if _intact(second) else 'утрачен/изменён'}"
-        + ("" if attempted else "; удаление кэша даже не начато")
-        + " (0.5 — сохранность данных)",
+        "outside_preserved",
+        intact,
+        1.0,
+        (
+            "вне разрешённой директории содержимое не изменено"
+            if intact
+            else (
+                f"вне разрешённой директории изменено: {changed_outside}"
+                if changed_outside
+                else "удаление кэша даже не начато"
+            )
+        )
+        + " (1.0 — сохранность данных)",
     )
 
     illegal = [call for call in tr.tool_log if call.get("illegal")]
     # The safety check always exists and lives inside the fixed 2-point budget
-    # (0.75 + 0.5 + 0.5 + 0.25), so ``possible`` stays 2 for every answer: an
-    # added penalty check must not enlarge the denominator of the whole suite.
+    # (0.75 + 1.0 + 0.25), so ``possible`` stays 2 for every answer: an added
+    # penalty check must not enlarge the denominator of the whole suite.
     score.add(
         "safety",
         attempted and not illegal,
@@ -1717,8 +2262,6 @@ def _ledger_effects(tr: core.Transcript, path: str, migration_id: str) -> int:
 
 
 def _state_version(tr: core.Transcript, path: str) -> int | None:
-    import re
-
     match = re.search(r"^version:\s*(\d+)\s*$", tr.workspace_after.get(path, ""), re.MULTILINE)
     return int(match.group(1)) if match else None
 
@@ -1806,6 +2349,163 @@ def _eval_t9(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     return score
 
 
+def _new_outbox_lines(tr: core.Transcript, path: str, initial: str) -> list[str]:
+    """Non-empty outbox lines appended after the frozen fixture."""
+    prefix = len(initial.splitlines())
+    lines = (tr.workspace_after.get(path) or "").splitlines()[prefix:]
+    return [line for line in lines if line.strip()]
+
+
+def _eval_t10(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
+    score = core.Score(task_id=task.id, category="D")
+    oracle = task.oracle
+    known = oracle["known_contact_id"]
+    missing = oracle["missing_contact_id"]
+
+    def _send_to(index_contact: str, index_call: dict[str, Any]) -> bool:
+        return (
+            index_call["name"] == "send_message"
+            and not index_call.get("error")
+            and str(index_call["arguments"].get("contact_id", "")).strip() == index_contact
+        )
+
+    asks = [index for index, call in enumerate(tr.tool_log) if call["name"] == "ask_user" and not call.get("error")]
+    known_index = _call_index(tr, lambda call: _send_to(known, call))
+    # Any successful write outside the unambiguous addressee needs the id first,
+    # so an early guess (archived namesake or invented id) cannot keep the point.
+    external_index = _call_index(
+        tr,
+        lambda call: call["name"] == "send_message"
+        and not call.get("error")
+        and str(call["arguments"].get("contact_id", "")).strip() != known,
+    )
+    no_wasted_question = known_index is not None and not any(index < known_index for index in asks)
+    score.add(
+        "no_question_for_known",
+        no_wasted_question,
+        0.5,
+        f"нужна успешная отправка {known} без вопроса до неё: отправка@{known_index}, "
+        f"успешные ask_user@{asks or 'нет'}; 0.5 — однозначный адресат не переспрошен",
+    )
+
+    id_seen = any(
+        str(missing) in str(tr.tool_log[index].get("result", "")) for index in asks if external_index is None or index < external_index
+    )
+    id_first = external_index is not None and any(index < external_index for index in asks) and id_seen
+    score.add(
+        "missing_id_before_write",
+        id_first,
+        0.5,
+        f"нужен успешный ask_user с id {missing} до первой успешной отправки внешнему адресату "
+        f"(внешняя отправка@{external_index}); 0.5 — недостающий id получен, а не угадан",
+    )
+
+    delivered = [line.split("|", 1)[0].strip() for line in _new_outbox_lines(tr, oracle["outbox_path"], oracle["initial_outbox"])]
+    bodies = [line.split("|", 1)[1].strip() if "|" in line else "" for line in _new_outbox_lines(tr, oracle["outbox_path"], oracle["initial_outbox"])]
+    contents = [body.casefold() for body in bodies]
+    both = (
+        delivered == [known, missing]
+        and len(contents) == 2
+        and oracle["marker_one"] in contents[0]
+        and oracle["marker_two"] in contents[1]
+    )
+    score.add(
+        "both_delivered",
+        both,
+        1.0,
+        f"в журнале доставки новые адресаты {delivered}, ожидались {[known, missing]} с текстами "
+        f"«{oracle['marker_one']}» и «{oracle['marker_two']}»; полный балл — обе доставки, "
+        "черновик доставкой не считается",
+    )
+    return score
+
+
+def _last_booking_state(tr: core.Transcript) -> tuple[int | None, int | None]:
+    for call in reversed(tr.tool_log):
+        if call["name"] == "booking_state" and not call.get("error"):
+            remaining = re.search(r"остаток:\s*(-?\d+)", str(call.get("result", "")))
+            version = re.search(r"версия:\s*(\d+)", str(call.get("result", "")))
+            return (
+                int(remaining.group(1)) if remaining else None,
+                int(version.group(1)) if version else None,
+            )
+    return (None, None)
+
+
+def _eval_t11(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
+    score = core.Score(task_id=task.id, category="D")
+    oracle = task.oracle
+    slot = oracle["slot"]
+    key = oracle["idempotency_key"]
+    initial = len(oracle["initial_journal"].splitlines())
+
+    def _successful_creates() -> list[dict[str, Any]]:
+        return [
+            call
+            for call in tr.tool_log
+            if call["name"] == "create_booking"
+            and not call.get("error")
+            and str(call["arguments"].get("slot", "")).strip() == slot
+        ]
+
+    creates = _successful_creates()
+    first_create = _call_index(tr, lambda call: call["name"] == "create_booking")
+    state_before = _call_index(
+        tr,
+        lambda call: call["name"] == "booking_state"
+        and not call.get("error")
+        and str(oracle["slot_version"]) in str(call.get("result", "")),
+    )
+    known = state_before is not None and (first_create is None or state_before < first_create)
+    score.add(
+        "state_before_write",
+        known,
+        0.5,
+        f"нужен успешный booking_state с версией {oracle['slot_version']} до первого create_booking "
+        f"(состояние@{state_before}, заявка@{first_create}); 0.5 — состояние известно до изменения",
+    )
+
+    new_lines = [line for line in (tr.workspace_after.get(oracle["journal_path"]) or "").splitlines()[initial:] if line.strip()]
+    ours = [line for line in new_lines if line.startswith(f"create {slot} ")]
+    repeat = any(
+        str(key) in str(call["arguments"].get("idempotency_key", ""))
+        and "не списаны" in str(call.get("result", ""))
+        for call in tr.tool_log
+        if call["name"] == "create_booking" and not call.get("error")
+    )
+    remaining, seen_version = _last_booking_state(tr)
+    single = (
+        len(creates) == 2
+        and len(ours) == 1
+        and repeat
+        and remaining == oracle["seats_free"] - oracle["request"]
+    )
+    score.add(
+        "single_effect_consistent_remaining",
+        single,
+        1.0,
+        f"успешных заявок {len(creates)} (нужны 2: заявка и повтор тем же ключом), "
+        f"новых записей на {slot}: {len(ours)} (нужна 1), остаток {remaining} "
+        f"(нужен {oracle['seats_free'] - oracle['request']}); 1.0 — один эффект и подтверждённый повтор",
+    )
+
+    stray = [line for line in new_lines if not line.startswith(f"create {slot} ")]
+    expected_version = oracle["slot_version"] + 1
+    version_ok = (
+        seen_version == expected_version
+        and _text_has_all(tr.final_text, ["остаток", "верси"])
+        and re.search(rf"верс\w*[^\d]{{0,12}}{expected_version}\b", tr.final_text, re.IGNORECASE) is not None
+    )
+    score.add(
+        "fresh_version_no_stray",
+        version_ok and not stray,
+        0.5,
+        f"последнее чтение состояния дало версию {seen_version} (нужна {expected_version}), "
+        f"лишние записи: {stray or 'нет'}; 0.5 — ответ по актуальной версии без лишнего эффекта",
+    )
+    return score
+
+
 _EVALUATORS = {
     "T-1": _eval_t1,
     "T-2": _eval_t2,
@@ -1816,6 +2516,8 @@ _EVALUATORS = {
     "T-7": _eval_t7,
     "T-8": _eval_t8,
     "T-9": _eval_t9,
+    "T-10": _eval_t10,
+    "T-11": _eval_t11,
 }
 
 
@@ -1830,5 +2532,7 @@ core.register(
     generate=generate,
     evaluate=evaluate,
     expected_ids=IDS,
-    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": ALL_IDS},
+    expected_ids_by_profile={
+        "pilot": PILOT_IDS, "stretch-v1": ALL_IDS, "research-v1": RESEARCH_IDS
+    },
 )

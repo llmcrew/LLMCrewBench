@@ -13,8 +13,17 @@ foreign ones and can stop pagination early; J-4 (stretch) is deduplication on
 the payload instead of the idempotency key, so a new operation is swallowed and
 a retry from another user is charged twice.
 
-Both scenarios ship a small repository whose public test file is green, and a
-one-line defect. The model must return strict JSON with the file, the defect
+J-5 (stretch) is the repository-repair scenario and deliberately leaves the
+one-line contract: a small release journal (CLI, JSON config, append-only store)
+picks the last arrived entry as the current one instead of the highest active
+version, so a correction that arrives late, or a retirement, serves the wrong
+record. The reply is a map of complete files — the patch may touch one file or
+several, add a module, sort, filter or index differently. Only behaviour is
+scored, through an external CLI process on fresh journals, an independent
+version replay and the old import/export/format scenarios.
+
+The four review scenarios ship a small repository whose public test file is
+green, and a one-line defect. The model must return strict JSON with the file, the defect
 line and the complete corrected file; scoring is behavioural — the returned
 ``fix`` is written into a temporary copy of the repository and the hidden tests
 run there, so a plausible-sounding answer that does not actually repair the
@@ -46,16 +55,27 @@ from .. import core, text
 IDS = ("J-1", "J-2")
 PILOT_IDS = ("J-3",)
 """Scenario of the pilot profile: the multi-tenant pagination review."""
-ALL_IDS = IDS + ("J-3", "J-4")
-"""Scenarios of the stretch profile: the baseline plus both extensions."""
-_POINTS = {"J-1": 3.0, "J-2": 2.0, "J-3": 2.0, "J-4": 2.0}
+ALL_IDS = IDS + ("J-3", "J-4", "J-5")
+"""Scenarios of the stretch profile: the baseline plus the three extensions."""
+RESEARCH_IDS = ("J-5",)
+"""The research profile keeps only the repository-repair review."""
+_POINTS = {"J-1": 3.0, "J-2": 2.0, "J-3": 2.0, "J-4": 2.0, "J-5": 2.0}
 
-PRIVATE_IDS = frozenset({"J-2"})
-"""Private layer: the module-cache key defect scenario."""
+PRIVATE_IDS = frozenset({"J-2", "J-5"})
+"""Private layer: the module-cache key defect and the repository repair."""
+FRESH_AFTER = "2026-10-01"
+"""The repository-repair scenario post-dates the model snapshot of the release."""
+
+#: J-5 has its own contract: the reply carries files, not one line, so its
+#: budget is split between applying a patch, keeping the old behaviour and the
+#: repaired versioning. The shares always sum to one.
+_J5_SHARES = {"patch_applied": 0.25, "legacy_behaviour": 0.3, "new_journal_versioning": 0.45}
+_J5_CHECKS = ("patch_applied", "legacy_behaviour", "new_journal_versioning")
+_J5_MAX_FILES = 12
 
 #: Per-task shares of the budget for the shape and the location; the repair gets
 #: the remainder, so the three checks always sum to ``max_points`` even when a
-#: profile redistributes the category total (J-3/J-4 average 1.25 in stretch).
+#: profile redistributes the category total (the stretch scenarios average 1.0).
 #: Finding the defect is worth the same in both baseline scenarios; a review
 #: that mislocates the line still gets paid for a fix that really works.
 _SHARES = {
@@ -287,6 +307,15 @@ _TABLE = (
 DEFAULT_LIMIT = @LIMIT@
 
 
+def _has_more(rows: list[dict], tenant: str, after: int) -> bool:
+    """Is there a visible row after ``after``?
+
+    Being on a full page is not enough — the page may be the last one, and a
+    cursor there would make the caller ask for an empty page instead of stopping.
+    """
+    return any(row["id"] > after and row["tenant"] == tenant for row in rows)
+
+
 def @FUNC@(tenant: str, cursor: int = 0, limit: int = DEFAULT_LIMIT) -> dict:
     """Return the next page of ``tenant`` rows after ``cursor``.
 
@@ -299,8 +328,9 @@ def @FUNC@(tenant: str, cursor: int = 0, limit: int = DEFAULT_LIMIT) -> dict:
         return {"items": [], "next_cursor": None}
     rows = [row for row in _TABLE if row["id"] > cursor]
     window = rows[:limit]
-    visible = [row for row in window if row["tenant"] == tenant]
-    nxt = visible[-1]["id"] if len(visible) == limit else None
+    nxt = None
+    if len(window) == limit and _has_more(rows, tenant, window[-1]["id"]):
+        nxt = window[-1]["id"]
     return {"items": [dict(row) for row in window], "next_cursor": nxt}
 '''
 
@@ -388,6 +418,17 @@ class AccessTests(unittest.TestCase):
         result = @FUNC@(TENANT, last - 1, 5)
         self.assertEqual(_ids(result), [last])
         self.assertIsNone(result["next_cursor"])
+
+    def test_full_last_page_has_no_next_cursor(self) -> None:
+        """A full page is not a licence for a cursor: with nothing left it is None."""
+        result = @FUNC@(TENANT, @TAIL_CURSOR@, 2)
+        self.assertEqual(_ids(result), [@TAIL_IDS@])
+        self.assertIsNone(result["next_cursor"])
+
+    def test_full_page_with_a_row_left_still_has_a_cursor(self) -> None:
+        result = @FUNC@(TENANT, @HEAD_CURSOR@, 2)
+        self.assertEqual(_ids(result), [@HEAD_IDS@])
+        self.assertEqual(result["next_cursor"], @HEAD_CURSOR_NEXT@)
 
     def test_cursor_past_the_end_is_empty(self) -> None:
         self.assertEqual(@FUNC@(TENANT, 999, 3), {"items": [], "next_cursor": None})
@@ -586,6 +627,645 @@ if __name__ == "__main__":
     unittest.main()
 '''
 
+_J5_INIT = '''"""Журнал версий записей."""
+
+__all__ = ["cli", "config", "format", "store"]
+'''
+
+_J5_CONFIG = '''"""Конфигурация журнала: один JSON-файл рядом с пакетом."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+FORMAT_VERSION = 2
+
+
+class ConfigError(ValueError):
+    """Конфигурация отсутствует или не соответствует формату."""
+
+
+def _path(explicit: str | None = None) -> Path:
+    return Path(explicit or os.environ.get("JOURNAL_CONFIG") or "journal.conf.json")
+
+
+def verify(doc: object) -> dict:
+    """Проверить документ конфигурации; вернуть его же."""
+    if not isinstance(doc, dict):
+        raise ConfigError("конфигурация должна быть JSON-объектом")
+    if doc.get("format_version") != FORMAT_VERSION:
+        raise ConfigError(f"поддерживается только format_version {FORMAT_VERSION}")
+    if not isinstance(doc.get("data_dir"), str) or not doc["data_dir"].strip():
+        raise ConfigError("data_dir должен быть непустой строкой")
+    if not isinstance(doc.get("default_actor"), str) or not doc["default_actor"].strip():
+        raise ConfigError("default_actor должен быть непустой строкой")
+    return doc
+
+
+def load(explicit: str | None = None) -> dict:
+    """Прочитать конфигурацию; ``JOURNAL_DATA`` перекрывает ``data_dir``."""
+    path = _path(explicit)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConfigError(f"не читается {path}: {exc}") from exc
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{path} — не JSON: {exc}") from exc
+    verify(doc)
+    override = os.environ.get("JOURNAL_DATA")
+    if override:
+        doc["data_dir"] = override
+    return doc
+'''
+
+_J5_FORMAT = '''"""Проводной формат записей журнала: один JSON-объект на строку.
+
+Формат версии 2: ``format``, ``key``, ``version``, ``status``, ``actor``,
+``note``, ``seq``. Экспорт пишет ровно те же строки, что лежат на диске,
+отсортированные по ключу, версии и порядку прибытия, поэтому два экспорта
+одного журнала совпадают побайтно, а импорт принимает собственный экспорт.
+"""
+
+from __future__ import annotations
+
+import json
+
+FORMAT_VERSION = 2
+STATUSES = ("active", "retired")
+FIELDS = ("format", "key", "version", "status", "actor", "note", "seq")
+
+
+class RecordError(ValueError):
+    """Строка журнала не соответствует формату."""
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RecordError(message)
+
+
+def check(entry: dict) -> dict:
+    """Проверить запись целиком; вернуть её же."""
+    for field in FIELDS:
+        require(field in entry, f"нет поля {field}")
+    require(entry["format"] == FORMAT_VERSION, f"неизвестная версия формата {entry['format']!r}")
+    require(isinstance(entry["key"], str) and entry["key"], "пустой ключ")
+    version = entry["version"]
+    require(isinstance(version, int) and not isinstance(version, bool) and version > 0, "версия должна быть целым > 0")
+    require(entry["status"] in STATUSES, f"неизвестный статус {entry['status']!r}")
+    require(isinstance(entry["seq"], int) and entry["seq"] > 0, "seq должен быть целым > 0")
+    require(isinstance(entry["actor"], str) and entry["actor"], "пустой actor")
+    require(isinstance(entry["note"], str), "note должен быть строкой")
+    return entry
+
+
+def dumps(entry: dict) -> str:
+    """Одна строка файла журнала."""
+    return json.dumps(check(entry), ensure_ascii=False, sort_keys=True)
+
+
+def loads(line: str) -> dict:
+    """Разобрать и проверить одну строку файла журнала."""
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise RecordError(f"строка не является JSON: {exc}") from exc
+    require(isinstance(entry, dict), "строка журнала должна быть объектом")
+    return check(entry)
+
+
+def dumps_export(entries: list[dict]) -> str:
+    """Весь журнал в стабильном порядке: ключ, версия, прибытие."""
+    ordered = sorted(entries, key=lambda entry: (entry["key"], entry["version"], entry["seq"]))
+    return "".join(dumps(entry) + "\\n" for entry in ordered)
+'''
+
+_J5_STORE = '''"""Журнал по ключам: каталог данных, файл на ключ, запись только в конец."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from . import config
+from .format import FORMAT_VERSION, RecordError, dumps, dumps_export, loads
+
+
+def root() -> Path:
+    """Каталог журнала из конфигурации; создаётся при первом обращении."""
+    base = Path(config.load()["data_dir"])
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def path_for(key: str) -> Path:
+    """Файл ключа; всё, что не буква, цифра, точка, дефис или подчёркивание, заменяется."""
+    if not key:
+        raise RecordError("пустой ключ")
+    name = "".join(char if char.isalnum() or char in "-_." else "_" for char in key)
+    return root() / f"{name.lower()}.jsonl"
+
+
+def read(key: str) -> list[dict]:
+    """Записи ключа в порядке прибытия; пустой список, если ключ не заведён."""
+    path = path_for(key)
+    if not path.exists():
+        return []
+    entries: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            entries.append(loads(line))
+    return entries
+
+
+def append(key: str, version: int, status: str, actor: str, note: str, seq: int | None = None) -> dict:
+    """Дописать прибытие; та же версия допустима только как ``retired``.
+
+    ``seq`` задаётся при импорте, чтобы вернуть журнал байт в байт; иначе
+    берётся следующий номер прибытия ключа.
+    """
+    entries = read(key)
+    if status == "active" and any(entry["version"] == version for entry in entries):
+        raise RecordError(f"версия {version} ключа {key!r} уже записана")
+    entry = {
+        "format": FORMAT_VERSION,
+        "key": key,
+        "version": version,
+        "status": status,
+        "actor": actor,
+        "note": note,
+        "seq": seq if seq is not None else max((row["seq"] for row in entries), default=0) + 1,
+    }
+    with path_for(key).open("a", encoding="utf-8") as handle:
+        handle.write(dumps(entry) + "\\n")
+    return entry
+
+
+def history(key: str) -> list[dict]:
+    """Все прибытия ключа в порядке версий, внутри версии — в порядке прибытия."""
+    return sorted(read(key), key=lambda entry: (entry["version"], entry["seq"]))
+
+
+def current(key: str) -> dict | None:
+    """Запись, которую обязан прочитать потребитель: наибольшая действующая версия.
+
+    Действующей считается версия со статусом ``active``; версия, помеченная
+    ``retired``, не действует, даже если запись с ней раньше была ``active``.
+    """
+    entries = read(key)
+    if not entries:
+        return None
+    latest = entries[-1]
+    return latest if latest["status"] == "active" else None
+
+
+def keys() -> list[str]:
+    """Все заведённые ключи, по алфавиту."""
+    return sorted(path.stem for path in root().glob("*.jsonl"))
+
+
+def export() -> str:
+    """Экспорт всего журнала в формате хранения и стабильном порядке."""
+    entries: list[dict] = []
+    for key in keys():
+        entries.extend(read(key))
+    return dumps_export(entries)
+
+
+def load_export(blob: str) -> int:
+    """Импорт экспорта: строки дописываются как новые прибытия, версии и статусы сохраняются."""
+    count = 0
+    for line in blob.splitlines():
+        if not line.strip():
+            continue
+        entry = loads(line)
+        append(entry["key"], entry["version"], entry["status"], entry["actor"], entry["note"], entry["seq"])
+        count += 1
+    return count
+
+
+def check() -> dict:
+    """Самопроверка: конфигурация, все файлы журнала и уникальность действующих версий."""
+    report = {"format": config.load()["format_version"], "keys": 0, "entries": 0}
+    for key in keys():
+        entries = read(key)
+        report["keys"] += 1
+        report["entries"] += len(entries)
+        active = [entry["version"] for entry in entries if entry["status"] == "active"]
+        if len(active) != len(set(active)):
+            raise RecordError(f"ключ {key!r}: действующая версия записана дважды")
+    return report
+'''
+
+_J5_CLI = '''"""Командная строка журнала версий."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+from . import config, store
+from .format import RecordError
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="journal", description="Аппенд-only журнал версий записей")
+    parser.add_argument("--data-dir", help="каталог журнала (перекрывает конфигурацию)")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    add = sub.add_parser("add", help="дописать прибытие версии")
+    add.add_argument("--key", required=True)
+    add.add_argument("--version", required=True, type=int)
+    add.add_argument("--note", default="")
+    add.add_argument("--status", default="active", choices=("active", "retired"))
+    add.add_argument("--actor")
+
+    cur = sub.add_parser("current", help="действующая версия записи")
+    cur.add_argument("--key", required=True)
+
+    hist = sub.add_parser("history", help="все прибытия ключа")
+    hist.add_argument("--key", required=True)
+
+    exp = sub.add_parser("export", help="экспорт всего журнала в файл")
+    exp.add_argument("path")
+
+    imp = sub.add_parser("import", help="импорт экспорта")
+    imp.add_argument("path")
+
+    sub.add_parser("check", help="проверить конфигурацию и журнал")
+    return parser
+
+
+def _dump(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    if args.data_dir:
+        os.environ["JOURNAL_DATA"] = args.data_dir
+    try:
+        if args.command == "add":
+            actor = args.actor or config.load()["default_actor"]
+            print(_dump(store.append(args.key, args.version, args.status, actor, args.note)))
+        elif args.command == "current":
+            print(_dump(store.current(args.key)))
+        elif args.command == "history":
+            print(_dump(store.history(args.key)))
+        elif args.command == "export":
+            blob = store.export()
+            Path(args.path).write_text(blob, encoding="utf-8")
+            print(len(blob.splitlines()))
+        elif args.command == "import":
+            blob = Path(args.path).read_text(encoding="utf-8")
+            print(store.load_export(blob))
+        else:
+            print(_dump(store.check()))
+    except (config.ConfigError, RecordError, OSError) as exc:
+        print(f"ошибка: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+_J5_README = '''# release-journal
+
+Аппенд-only журнал версий записей релизного конвейера: по файлу на ключ
+компонента в `<data_dir>/<key>.jsonl`. Записи неизменяемы: исправление —
+новая запись с тем же ключом и следующим номером версии, а `retired`
+помечает версию недействующей.
+
+    python -m journal.cli add --key api --version 3 --note "..." --actor @ACTOR@
+    python -m journal.cli current --key api
+    python -m journal.cli history --key api
+    python -m journal.cli export dump.jsonl
+    python -m journal.cli import dump.jsonl
+    python -m journal.cli check
+
+Формат хранения и экспорта — версия 2 (`journal/format.py`), конфигурация —
+`journal.conf.json`. Экспорт и импорт обязаны остаться совместимыми с уже
+сохранёнными файлами: порядок строк в экспорте стабилен, импорт принимает
+собственный экспорт.
+'''
+
+_J5_PUBLIC_TEST = '''"""Публичный тест: объявленное поведение CLI журнала."""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+VERSIONS = (@VERSIONS@,)
+
+
+def run(*args: str, data: Path) -> subprocess.CompletedProcess:
+    env = dict(os.environ, JOURNAL_CONFIG=str(REPO / "journal.conf.json"), JOURNAL_DATA=str(data))
+    return subprocess.run(
+        [sys.executable, "-m", "journal.cli", *args],
+        cwd=str(REPO),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+class JournalTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._dir = tempfile.TemporaryDirectory()
+        self.data = Path(self._dir.name)
+
+    def tearDown(self) -> None:
+        self._dir.cleanup()
+
+    def add(self, version: int, note: str = "") -> subprocess.CompletedProcess:
+        return run("add", "--key", "@KEY@", "--version", str(version), "--note", note,
+                   "--actor", "@ACTOR@", data=self.data)
+
+    def current(self) -> object:
+        done = run("current", "--key", "@KEY@", data=self.data)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_versions_are_appended_in_ascending_order(self) -> None:
+        for version in VERSIONS:
+            self.assertEqual(self.add(version).returncode, 0)
+        self.assertEqual(self.current()["version"], VERSIONS[-1])
+
+    def test_history_lists_every_arrival(self) -> None:
+        for version in VERSIONS:
+            self.add(version, f"правка {version}")
+        done = run("history", "--key", "@KEY@", data=self.data)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        rows = json.loads(done.stdout)
+        self.assertEqual([row["version"] for row in rows], list(VERSIONS))
+        self.assertEqual([row["status"] for row in rows], ["active"] * len(rows))
+
+    def test_unknown_key_is_null(self) -> None:
+        self.assertIsNone(self.current())
+
+    def test_duplicate_active_version_is_rejected(self) -> None:
+        self.add(VERSIONS[0])
+        done = self.add(VERSIONS[0])
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("уже записана", done.stderr)
+
+    def test_export_import_roundtrip_is_byte_stable(self) -> None:
+        for version in VERSIONS:
+            self.add(version, f"правка {version}")
+        first = self.data / "first.jsonl"
+        self.assertEqual(run("export", str(first), data=self.data).returncode, 0)
+        with tempfile.TemporaryDirectory() as name:
+            other = Path(name)
+            self.assertEqual(run("import", str(first), data=other).returncode, 0)
+            second = other / "second.jsonl"
+            self.assertEqual(run("export", str(second), data=other).returncode, 0)
+            self.assertEqual(first.read_text(encoding="utf-8"), second.read_text(encoding="utf-8"))
+
+    def test_check_reports_the_format(self) -> None:
+        self.add(VERSIONS[0])
+        done = run("check", data=self.data)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout)["format"], 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+
+_J5_HIDDEN_TESTS = '''"""Скрытые приёмочные тесты журнала версий (не показываются модели).
+
+Каждое обращение к журналу — внешний процесс CLI на собственном каталоге
+данных: ни состояние импортированного пакета, ни вид одного файла не
+подменяют наблюдаемое поведение. Ожидаемая действующая версия считается
+независимым replay'ем списка прибытий, а не кодом репозитория. Префикс
+``test_legacy_`` отделяет старые сценарии (импорт, экспорт, формат) от
+исправленного выбора версии.
+"""
+
+import json as _json
+import os as _os
+import subprocess as _sp
+import sys as _sys
+import tempfile as _tf
+import unittest
+from pathlib import Path as _Path
+
+import journal  # импорт пакета — тоже часть контракта
+
+REPO = _Path(journal.__file__).resolve().parent.parent
+KEY = "@KEY@"
+OTHER_KEY = "@OTHER_KEY@"
+ACTOR = "@ACTOR@"
+#: Прибытия в порядке поступления: (версия, статус, заметка).
+OPS = [@OPS@]
+
+
+def _env(data: _Path) -> dict:
+    return dict(_os.environ, JOURNAL_CONFIG=str(REPO / "journal.conf.json"), JOURNAL_DATA=str(data))
+
+
+def cli(*args: str, data: _Path) -> _sp.CompletedProcess:
+    return _sp.run(
+        [_sys.executable, "-m", "journal.cli", *args],
+        cwd=str(REPO),
+        env=_env(data),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
+def add(data: _Path, version: int, status: str, note: str, key: str = KEY) -> _sp.CompletedProcess:
+    return cli("add", "--key", key, "--version", str(version), "--status", status,
+               "--note", note, "--actor", ACTOR, data=data)
+
+
+def replay(until: int) -> int | None:
+    """Независимый пересчёт: действует наибольшая версия без retired."""
+    active: dict = {}
+    retired: set = set()
+    for version, status, note in OPS[:until]:
+        if status == "retired":
+            retired.add(version)
+            active.pop(version, None)
+        elif version not in retired:
+            active[version] = note
+    return max(active) if active else None
+
+
+def version_of(data: _Path, key: str = KEY) -> object:
+    done = cli("current", "--key", key, data=data)
+    if done.returncode != 0:
+        raise AssertionError(done.stderr)
+    entry = _json.loads(done.stdout)
+    return None if entry is None else entry["version"]
+
+
+def history_of(data: _Path, key: str = KEY) -> list:
+    done = cli("history", "--key", key, data=data)
+    if done.returncode != 0:
+        raise AssertionError(done.stderr)
+    return _json.loads(done.stdout)
+
+
+def seed() -> _Path:
+    """Один общий журнал на прогон модуля: тесты только читают его.
+
+    Модуль исполняется без ``TestSuite``, поэтому ``setUpClass`` не
+    вызывается — журнал создаётся при импорте.
+    """
+    data = _Path(_tf.mkdtemp(prefix="journal-hidden-"))
+    for version, status, note in OPS:
+        done = add(data, version, status, note)
+        if done.returncode != 0:
+            raise AssertionError(done.stderr)
+    return data
+
+
+DATA = seed()
+
+
+class VersionTests(unittest.TestCase):
+
+    def test_every_arrival_keeps_the_highest_active_version(self) -> None:
+        with _tf.TemporaryDirectory() as name:
+            data = _Path(name)
+            for index, (version, status, note) in enumerate(OPS, 1):
+                done = add(data, version, status, note)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(version_of(data), replay(index), f"после прибытия {index}")
+
+    def test_late_arrival_below_the_head_does_not_win(self) -> None:
+        expected = replay(len(OPS))
+        self.assertIsNotNone(expected)
+        self.assertNotEqual(expected, OPS[-1][0])
+        entry = _json.loads(cli("current", "--key", KEY, data=DATA).stdout)
+        self.assertEqual(entry["version"], expected)
+        self.assertEqual(entry["status"], "active")
+        self.assertNotIn(entry["version"], {version for version, status, _ in OPS if status == "retired"})
+
+    def test_retired_latest_arrival_is_not_current(self) -> None:
+        last_version, last_status, _ = OPS[-1]
+        self.assertEqual(last_status, "retired")
+        entry = _json.loads(cli("current", "--key", KEY, data=DATA).stdout)
+        self.assertIsNotNone(entry)
+        self.assertNotEqual(entry["version"], last_version)
+
+    def test_history_replays_arrivals_in_version_order(self) -> None:
+        expected = [row for _, row in sorted(enumerate(OPS), key=lambda pair: (pair[1][0], pair[0]))]
+        got = history_of(DATA)
+        self.assertEqual([row["version"] for row in got], [version for version, _, _ in expected])
+        self.assertEqual([row["status"] for row in got], [status for _, status, _ in expected])
+        counts = {version: [status for v, status, _ in expected if v == version] for version, _, _ in expected}
+        for version, statuses in counts.items():
+            self.assertEqual([row["status"] for row in got if row["version"] == version], statuses)
+
+    def test_keys_do_not_share_state_and_unknown_key_is_null(self) -> None:
+        before = version_of(DATA)
+        done = add(DATA, 99, "active", "другой ключ", key=OTHER_KEY)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(version_of(DATA), before)
+        self.assertEqual(version_of(DATA, OTHER_KEY), 99)
+        self.assertIsNone(version_of(DATA, "nobody"))
+
+    def test_import_chooses_by_version_not_by_file_order(self) -> None:
+        with _tf.TemporaryDirectory() as name:
+            dump = _Path(name) / "dump.jsonl"
+            self.assertEqual(cli("export", str(dump), data=DATA).returncode, 0)
+            with _tf.TemporaryDirectory() as other:
+                fresh = _Path(other)
+                self.assertEqual(cli("import", str(dump), data=fresh).returncode, 0)
+                self.assertEqual(version_of(fresh), replay(len(OPS)))
+
+    def test_legacy_help_lists_the_commands(self) -> None:
+        done = cli("--help", data=DATA)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        for command in ("add", "current", "history", "export", "import", "check"):
+            self.assertIn(command, done.stdout)
+
+    def test_legacy_check_keeps_the_stored_format(self) -> None:
+        done = cli("check", data=DATA)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(_json.loads(done.stdout)["format"], 2)
+
+    def test_legacy_export_import_roundtrip_is_byte_stable(self) -> None:
+        with _tf.TemporaryDirectory() as name:
+            first = _Path(name) / "first.jsonl"
+            self.assertEqual(cli("export", str(first), data=DATA).returncode, 0)
+            with _tf.TemporaryDirectory() as other:
+                fresh = _Path(other)
+                self.assertEqual(cli("import", str(first), data=fresh).returncode, 0)
+                second = _Path(name) / "second.jsonl"
+                self.assertEqual(cli("export", str(second), data=fresh).returncode, 0)
+                rows = history_of(fresh)
+            self.assertEqual(first.read_text(encoding="utf-8"), second.read_text(encoding="utf-8"))
+        self.assertEqual(sorted(row["note"] for row in rows), sorted(note for _, _, note in OPS))
+        self.assertTrue(all(row["actor"] == ACTOR for row in rows), rows)
+
+    def test_legacy_duplicate_active_version_is_rejected(self) -> None:
+        version = OPS[0][0]
+        done = add(DATA, version, "active", "повтор")
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("уже записана", done.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+
+_J5_PROMPT = """Перед тобой рабочая копия небольшого сервиса release-journal: CLI, JSON-
+конфигурация и аппенд-only хранилище версий записей. Потребитель обязан
+получать наибольшую ДЕЙСТВУЮЩУЮ версию записи, но хранилище отдаёт последнее
+прибытие: запоздавшая правка нижней версии или пометка `retired` подменяет
+ответ. Импорт, экспорт и формат хранения при этом должны сохраниться.
+
+Файлы рабочей копии:
+
+{files}
+Поведение, которое проверяется:
+
+* `current --key K` печатает запись с наибольшим номером версии среди
+  действующих. Версия действует, если у неё есть прибытие `active` и нет
+  прибытия `retired`; версия, помеченная `retired`, не действует, даже если
+  раньше была `active`. Если действующих версий нет — печатается `null`.
+  Порядок прибытия на выбор версии не влияет.
+* `history --key K` печатает все прибытия по возрастанию версии, внутри
+  версии — в порядке прибытия.
+* `add` дописывает прибытие; повторная запись той же версии со статусом
+  `active` отклоняется с кодом 2 и текстом про уже записанную версию.
+* `export PATH` и `import PATH` остаются взаимно совместимыми с уже
+  сохранённым форматом: экспорт стабилен и побайтно повторяем, импорт
+  принимает собственный экспорт и сохраняет версии, статусы, автора и заметки.
+* `check` продолжает печатать версию формата 2 и не падает на корректном
+  журнале. Импорт пакета и вызовы CLI не должны ломаться.
+
+Правка не обязана быть однострочной: можно менять одну функцию, несколько
+файлов и добавлять новые модули внутри пакета. Оценивается поведение, а не
+совпадение с эталонным diff.
+
+Верни ТОЛЬКО JSON, без markdown-обёртки и текста вокруг:
+
+{{"files": {{"<путь>": "<полный текст файла>", ...}}}}
+
+* "files" — только изменённые или новые файлы, путь относительно корня
+  рабочей копии, ровно как в списке выше. Новые файлы — только `.py` внутри
+  пакета. Текст файла — полный, без diff, многоточий и сокращений.
+* Файлы, которые не менялись, можно не присылать.
+"""
+
 _PROMPT = """В рабочей копии репозитория ровно один файл содержит дефект: поведение
 расходится с тем, что обещает docstring, и с намерением публичных тестов.
 Дефект укладывается ровно в одну строку — исправлять нужно только её.
@@ -614,9 +1294,15 @@ travelled over stdin is appended: rows alone are not proof that the run
 finished, because the candidate may write the file itself and call
 ``os._exit(0)``.
 
-The grader state (``Recorder`` methods, ``TestCase.assert*``) is snapshotted
-*before* any candidate import and restored before each module runs, so a fix
-that patched ``assert*`` cannot silence the hidden failures (C4).
+The grader state (``Recorder`` methods, ``TestCase``/``IsolatedAsyncioTestCase``
+callables, ``TestLoader``) is snapshotted *before* any candidate import and
+restored before every single test: a fix that patched ``assert*`` cannot silence
+the hidden failures (C4), and one that rebinds ``Recorder.addFailure`` cannot
+turn them into passes (C01). Tests run one at a time, so a patched
+``TestSuite.run`` cannot swallow them either, and each test must prove it really
+executed through the ``_callTestMethod`` counter. Canaries of both the sync and
+the async shape run first; a silently skipped method is an integrity failure
+rather than a pass. The loaded test set must equal the executed one.
 """
 
 import builtins
@@ -631,31 +1317,15 @@ _open = builtins.open
 _dumps = json.dumps
 
 
-def _snapshot() -> dict:
-    case = unittest.TestCase
-    state = {"result": unittest.TestResult.__dict__.copy()}
-    state["case"] = {name: getattr(case, name) for name in vars(case)
-                     if callable(getattr(case, name, None))}
-    return state
-
-
-def _restore(state: dict) -> None:
-    for name, value in state["result"].items():
-        try:
-            setattr(unittest.TestResult, name, value)
-        except (AttributeError, TypeError):
-            pass
-    for name, value in state["case"].items():
-        try:
-            setattr(unittest.TestCase, name, value)
-        except (AttributeError, TypeError):
-            pass
-
-
 class Recorder(unittest.TestResult):
     def __init__(self) -> None:
         super().__init__()
         self.rows = []
+        # Bound per instance: the candidate may rebind the class at any moment
+        # (some fixes patch from inside the function under test, i.e. after the
+        # restore that preceded the test), and an instance attribute wins.
+        for name in _RESULT_METHODS:
+            setattr(self, name, _ORIG_RESULT[name].__get__(self))
 
     def addSuccess(self, test) -> None:
         self.rows.append((test.id(), True, ""))
@@ -670,18 +1340,157 @@ class Recorder(unittest.TestResult):
         self.rows.append((test.id(), False, f"skipped: {reason}"))
 
 
+_RESULT_METHODS = ("addSuccess", "addFailure", "addError", "addSkip")
+_ORIG_RESULT = {name: getattr(Recorder, name) for name in _RESULT_METHODS}
+
+_EXECUTED = {"n": 0}
+_ORIG_CALL = unittest.TestCase._callTestMethod
+_ORIG_ASYNC_CALL = unittest.IsolatedAsyncioTestCase._callTestMethod
+
+
+def _counting_call(self, method):
+    _EXECUTED["n"] += 1
+    return _ORIG_CALL(self, method)
+
+
+def _counting_async_call(self, method):
+    _EXECUTED["n"] += 1
+    return _ORIG_ASYNC_CALL(self, method)
+
+
+unittest.TestCase._callTestMethod = _counting_call
+unittest.IsolatedAsyncioTestCase._callTestMethod = _counting_async_call
+
+_ORIG_LOAD = unittest.TestLoader.loadTestsFromModule
+_LOADER = unittest.TestLoader()
+
+#: ``label, owner, attribute, what must be there`` -- detection only; the full
+#: restore below puts every callable back from the snapshot.
+_OWNED = (
+    ("TestCase.run", unittest.TestCase, "run", unittest.TestCase.run),
+    (
+        "IsolatedAsyncioTestCase.run",
+        unittest.IsolatedAsyncioTestCase,
+        "run",
+        unittest.IsolatedAsyncioTestCase.run,
+    ),
+    ("TestCase._callTestMethod", unittest.TestCase, "_callTestMethod", _counting_call),
+    (
+        "IsolatedAsyncioTestCase._callTestMethod",
+        unittest.IsolatedAsyncioTestCase,
+        "_callTestMethod",
+        _counting_async_call,
+    ),
+    ("TestLoader.loadTestsFromModule", unittest.TestLoader, "loadTestsFromModule", _ORIG_LOAD),
+) + tuple((f"Recorder.{name}", Recorder, name, _ORIG_RESULT[name]) for name in _RESULT_METHODS)
+
+
+def _snapshot() -> dict:
+    case = unittest.TestCase
+    async_case = unittest.IsolatedAsyncioTestCase
+    return {
+        "result": unittest.TestResult.__dict__.copy(),
+        "case": {name: getattr(case, name) for name in vars(case)
+                 if callable(getattr(case, name, None))},
+        "async_case": {name: getattr(async_case, name) for name in vars(async_case)
+                       if callable(getattr(async_case, name, None))},
+        "recorder": dict(_ORIG_RESULT),
+        "loader": _ORIG_LOAD,
+    }
+
+
+def _restore(state: dict) -> "list[str]":
+    tampered = [label for label, owner, attribute, expected in _OWNED
+                if getattr(owner, attribute, None) is not expected]
+    for name, value in state["result"].items():
+        try:
+            setattr(unittest.TestResult, name, value)
+        except (AttributeError, TypeError):
+            pass
+    for owner, key in (
+        (unittest.TestCase, "case"),
+        (unittest.IsolatedAsyncioTestCase, "async_case"),
+        (Recorder, "recorder"),
+    ):
+        for name, value in state[key].items():
+            try:
+                setattr(owner, name, value)
+            except (AttributeError, TypeError):
+                pass
+    unittest.TestCase._callTestMethod = _counting_call
+    unittest.IsolatedAsyncioTestCase._callTestMethod = _counting_async_call
+    unittest.TestLoader.loadTestsFromModule = state["loader"]
+    return tampered
+
+
+def _flatten(suite):
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            yield from _flatten(item)
+        else:
+            yield item
+
+
+_CANARY = {"sync": 0, "async": 0}
+
+
+class _Canary(unittest.TestCase):
+    def test_canary(self) -> None:
+        _CANARY["sync"] += 1
+
+
+class _AsyncCanary(unittest.IsolatedAsyncioTestCase):
+    async def test_canary(self) -> None:
+        _CANARY["async"] += 1
+
+
+def _run_one(test) -> "tuple[Recorder, bool]":
+    """Run one test against a fresh recorder; say whether its method ran."""
+    before = _EXECUTED["n"]
+    recorder = Recorder()
+    test.run(recorder)
+    return recorder, _EXECUTED["n"] > before
+
+
 def run_module(label: str, path: str, state: dict, rows: list) -> None:
     _restore(state)
     spec = importlib.util.spec_from_file_location(f"dailybench_review_{label}", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)  # the untrusted candidate runs here
+    tampered = _restore(state)
+
+    notes = [f"кандидат подменил {name}" for name in tampered]
+    before = dict(_CANARY)
     _restore(state)
-    suite = unittest.defaultTestLoader.loadTestsFromModule(module)
-    recorder = Recorder()
-    recorder.rows = []  # candidate import may have re-bound the class; fresh run
-    suite.run(recorder)
-    rows.extend((label, name, ok, detail) for name, ok, detail in recorder.rows)
+    _run_one(_Canary("test_canary"))
+    _run_one(_AsyncCanary("test_canary"))
+    for kind in ("sync", "async"):
+        if _CANARY[kind] == before[kind]:
+            notes.append(f"канарейка {kind} не исполнилась")
+
+    suite = _ORIG_LOAD(_LOADER, module)
+    tests = list(_flatten(suite))
+    expected = [test.id() for test in tests]
+    if not expected:
+        notes.append("модуль не объявил ни одного теста")
+    if len(set(expected)) != len(expected):
+        notes.append("состав тестов повторяется")
+    if notes:
+        detail = "integrity: " + "; ".join(notes)
+        rows.append((label, f"{label}.<import>", False, detail[:400]))
+        return
+
+    for test in tests:
+        name = test.id()
+        _restore(state)
+        recorder, executed = _run_one(test)
+        if not executed:
+            rows.append((label, name, False, "integrity: метод теста не исполнился"))
+        elif len(recorder.rows) != 1 or recorder.rows[0][0] != name:
+            rows.append((label, name, False, f"integrity: тест оставил {len(recorder.rows)} строк вместо одной"))
+        else:
+            rows.append((label, *recorder.rows[0]))
 
 
 def main() -> None:
@@ -909,7 +1718,7 @@ def _fill(template: str, **values: str) -> str:
 def _render_files(files: dict[str, str]) -> str:
     blocks = []
     for rel, content in files.items():
-        lang = "markdown" if rel.endswith(".md") else "python"
+        lang = "python" if rel.endswith(".py") else "markdown" if rel.endswith(".md") else "json"
         blocks.append(f"### {rel}\n\n```{lang}\n{content}```\n")
     return "\n".join(blocks)
 
@@ -995,9 +1804,12 @@ def _run_modules(
 
 
 def _run_test_modules(
-    task: core.TaskInstance, target_source: str, labels: tuple[str, ...]
+    task: core.TaskInstance,
+    target_source: str | None,
+    labels: tuple[str, ...],
+    files: dict[str, str] | None = None,
 ) -> tuple[dict[str, dict[str, tuple[bool, str]]], str]:
-    """Materialise the workspace, overwrite the reviewed file, run the tests."""
+    """Materialise the workspace, apply the patch, run the tests."""
     sandbox = Path(tempfile.mkdtemp(prefix=f"dailybench-{task.id.lower()}-review-"))
     repo = sandbox / "repo"
     repo.mkdir(parents=True)
@@ -1005,7 +1817,14 @@ def _run_test_modules(
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-    (repo / task.oracle["target_file"]).write_text(target_source, encoding="utf-8")
+    # A multi-file patch (J-5) may add files; the single-file scenarios overwrite
+    # the one reviewed file instead.
+    for rel, content in (files or {}).items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    if target_source is not None:
+        (repo / task.oracle["target_file"]).write_text(target_source, encoding="utf-8")
 
     modules: list[tuple[str, Path]] = []
     for label in labels:
@@ -1035,7 +1854,18 @@ def _hidden_summary(results: dict[str, tuple[bool, str]]) -> tuple[bool, str]:
 
 def _verify_fixture(task: core.TaskInstance, source: str, *, expect_hidden_pass: bool) -> None:
     """Assert a claim the scenario makes about its own fixture."""
-    rows, note = _run_test_modules(task, source, ("hidden", "public"))
+    _verify_run(task, source, None, expect_hidden_pass=expect_hidden_pass)
+
+
+def _verify_run(
+    task: core.TaskInstance,
+    source: str | None,
+    files: dict[str, str] | None,
+    *,
+    expect_hidden_pass: bool,
+) -> None:
+    """Assert the fixture claim for a single-file or multi-file candidate."""
+    rows, note = _run_test_modules(task, source, ("hidden", "public"), files)
     assert not note, f"{task.id}: {note}"
     public = rows.get("public", {})
     assert public, f"{task.id}: публичные тесты не выполнились"
@@ -1172,6 +2002,10 @@ def _oracle_page(rows: list[dict], tenant: str, cursor: int, limit: int) -> tupl
 
     Deliberately not the page function itself: a plain scan that knows nothing
     about slicing, so a wrong filter order cannot confirm its own bug.
+
+    The cursor is only valid when a row of the tenant *follows* the page: a
+    full page can still be the last one, and reporting a cursor there makes the
+    caller request an empty page instead of stopping.
     """
     allowed: list[int] = []
     for row in rows:
@@ -1180,8 +2014,10 @@ def _oracle_page(rows: list[dict], tenant: str, cursor: int, limit: int) -> tupl
         allowed.append(row["id"])
         if len(allowed) >= limit:
             break
-    nxt = allowed[-1] if allowed and len(allowed) == limit else None
-    return allowed, nxt
+    if not allowed or len(allowed) < limit:
+        return allowed, None
+    follows = any(row["id"] > allowed[-1] and row["tenant"] == tenant for row in rows)
+    return allowed, (allowed[-1] if follows else None)
 
 
 def _walk_oracle(rows: list[dict], tenant: str, limit: int) -> list[list[int]]:
@@ -1212,14 +2048,14 @@ def _scenario_j3(rng: random.Random) -> core.TaskInstance:
     events = [_J3_EVENTS[rng.randrange(len(_J3_EVENTS))] for _ in range(10)]
 
     # The first two rows are ours (so the public first page is green on the
-    # buggy file), then one of theirs interleaves ours. Positions 3-6 are fixed
-    # so the hidden second page has to skip a foreign row; the tail is random
-    # but must keep both tenants present.
-    pattern = [us, us, them, us, them, us]
-    pattern += [rng.choice((us, them)) for _ in range(4)]
-    if them not in pattern[6:]:
+    # buggy file), then one of theirs interleaves ours. Positions 3-7 are fixed
+    # so the hidden second page has to skip a foreign row and is still not the
+    # last page; the tail is random but must keep both tenants present.
+    pattern = [us, us, them, us, them, us, us]
+    pattern += [rng.choice((us, them)) for _ in range(3)]
+    if them not in pattern[7:]:
         pattern[-1] = them
-    if us not in pattern[6:]:
+    if us not in pattern[7:]:
         pattern[-2] = us
     rows = [
         {"id": index, "tenant": tenant, "event": events[index - 1]}
@@ -1228,8 +2064,19 @@ def _scenario_j3(rng: random.Random) -> core.TaskInstance:
     allowed = [row["id"] for row in rows if row["tenant"] == us]
     second, second_cursor = _oracle_page(rows, us, 2, 2)
     first_ids, first_cursor = _oracle_page(rows, us, 0, 2)
+    # The last two rows are ours, and the row before them is ours too, so the
+    # tail page is exactly full and terminal while the page before it is full
+    # with a row still left: a cursor derived from "the page is full" alone is
+    # right on the second and wrong on the first.
+    tail_cursor, tail_ids = allowed[-3], allowed[-2:]
+    head_cursor = allowed[-4]
+    head_ids, head_cursor_next = _oracle_page(rows, us, head_cursor, 2)
     assert second and second_cursor is not None
     assert second[0] != 3 and any(row["tenant"] == them for row in rows[2:4])
+    assert len(tail_ids) == 2 and tail_ids[-1] == allowed[-1]
+    assert _oracle_page(rows, us, tail_cursor, 2) == (tail_ids, None)
+    assert head_ids == [allowed[-3], allowed[-2]]
+    assert head_cursor_next == allowed[-2]
 
     limit = 2
     buggy = _fill(_J3_PAGING, FUNC=func, ROWS=_render_rows(rows), LIMIT=str(limit))
@@ -1260,6 +2107,11 @@ def _scenario_j3(rng: random.Random) -> core.TaskInstance:
         ALL_IDS=", ".join(str(value) for value in allowed),
         SECOND_IDS=", ".join(str(value) for value in second),
         SECOND_CURSOR=str(second_cursor),
+        TAIL_CURSOR=str(tail_cursor),
+        TAIL_IDS=", ".join(str(value) for value in tail_ids),
+        HEAD_CURSOR=str(head_cursor),
+        HEAD_IDS=", ".join(str(value) for value in head_ids),
+        HEAD_CURSOR_NEXT=str(head_cursor_next),
     )
 
     workspace = {
@@ -1357,14 +2209,139 @@ def _reference_reply(target_file: str, line: int, source: str) -> str:
     return json.dumps({"file": target_file, "line": line, "fix": source}, ensure_ascii=False)
 
 
+_J5_KEYS = ("api", "worker", "gateway", "scheduler", "indexer")
+_J5_ACTORS = ("nora", "ivan", "mei", "oleg")
+
+
+def _j5_reference(buggy: str) -> str:
+    """Correct versioning: the highest active version, retired versions skipped.
+
+    Deliberately not the smallest edit — the whole selection is rewritten, so
+    nothing in the scenario pretends the repair is a one-line contract.
+    """
+    old = """    entries = read(key)
+    if not entries:
+        return None
+    latest = entries[-1]
+    return latest if latest["status"] == "active" else None
+"""
+    new = """    entries = read(key)
+    retired = {entry["version"] for entry in entries if entry["status"] == "retired"}
+    active = [
+        entry
+        for entry in entries
+        if entry["status"] == "active" and entry["version"] not in retired
+    ]
+    if not active:
+        return None
+    return max(active, key=lambda entry: entry["version"])
+"""
+    assert old in buggy
+    return buggy.replace(old, new)
+
+
+def _scenario_j5(rng: random.Random) -> core.TaskInstance:
+    key = rng.choice(_J5_KEYS)
+    other_key = rng.choice([name for name in _J5_KEYS if name != key])
+    actor = rng.choice(_J5_ACTORS)
+    versions = sorted(rng.sample(range(2, 17), 5))
+    first, second, third, fourth, fifth = versions
+    notes = [f"правка {rng.randrange(100, 999)}" for _ in range(6)]
+    # Arrival order is the defect's whole point: the head version lands early,
+    # a correction of a lower version and the retirement of a never-published
+    # version land after it, then the head itself is retired.
+    ops = [
+        (first, "active", notes[0]),
+        (third, "active", notes[1]),
+        (fifth, "active", notes[2]),
+        (second, "active", notes[3]),
+        (fourth, "retired", notes[4]),
+        (fifth, "retired", notes[5]),
+    ]
+    # Four versions are published as active (the fifth is only ever retired),
+    # and each is appended at most once as active.
+    assert len({version for version, status, _ in ops if status == "active"}) == 4
+
+    buggy = _J5_STORE
+    reference = _j5_reference(buggy)
+    line = _defect_line(buggy, "    latest = entries[-1]")
+    changed = [
+        index
+        for index, (before, after) in enumerate(zip(buggy.splitlines(), reference.splitlines()), 1)
+        if before != after
+    ]
+    assert len(changed) > 1, "J-5 перестал быть не однострочным"
+    assert line in changed
+
+    public_test = "tests/test_journal_public.py"
+    public = _fill(
+        _J5_PUBLIC_TEST,
+        KEY=key,
+        ACTOR=actor,
+        VERSIONS=", ".join(str(version) for version in versions),
+    )
+    hidden = _fill(
+        _J5_HIDDEN_TESTS,
+        KEY=key,
+        OTHER_KEY=other_key,
+        ACTOR=actor,
+        OPS="".join(f"({version}, {status!r}, {note!r}),\n    " for version, status, note in ops),
+    )
+
+    workspace = {
+        "README.md": _fill(_J5_README, ACTOR=actor),
+        "journal.conf.json": json.dumps(
+            {"format_version": 2, "data_dir": "data", "default_actor": actor}, ensure_ascii=False, indent=2
+        )
+        + "\n",
+        "journal/__init__.py": _J5_INIT,
+        "journal/config.py": _J5_CONFIG,
+        "journal/format.py": _J5_FORMAT,
+        "journal/store.py": buggy,
+        "journal/cli.py": _J5_CLI,
+        public_test: public,
+    }
+    task = core.TaskInstance(
+        id="J-5",
+        category="J",
+        title="Code review",
+        prompt=_J5_PROMPT.format(files=_render_files(workspace)),
+        max_points=_POINTS["J-5"],
+        workspace=workspace,
+        oracle={
+            "reference": json.dumps({"files": {"journal/store.py": reference}}, ensure_ascii=False),
+            "reference_source": reference,
+            "target_file": "journal/store.py",
+            "line": line,
+            "hidden_tests": hidden,
+            "public_test_file": public_test,
+            "key": key,
+            "other_key": other_key,
+            "actor": actor,
+            "versions": versions,
+            "ops": ops,
+            "defect": "действующая версия берётся по последнему прибытию вместо наибольшей: "
+            "запоздавшая правка нижней версии подменяет голову, а retired-прибытие её скрывает",
+            "checks": list(_J5_CHECKS),
+        },
+        meta={"scenario": "J-5"},
+        fresh_after=FRESH_AFTER,
+    )
+    _verify_run(task, None, {public_test: public}, expect_hidden_pass=False)
+    _verify_run(task, None, {"journal/store.py": reference}, expect_hidden_pass=True)
+    return task
+
+
 def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
     profile = core.profile_of(cfg)
     if profile == "pilot":
         tasks = [_scenario_j3(rng)]
     else:
         tasks = [_scenario_j1(rng), _scenario_j2(rng)]
-        if profile == "stretch-v1":
-            tasks += [_scenario_j3(rng), _scenario_j4(rng)]
+        if profile == "research-v1":
+            tasks = [_scenario_j5(rng)]
+        elif profile == "stretch-v1":
+            tasks += [_scenario_j3(rng), _scenario_j4(rng), _scenario_j5(rng)]
     for task in tasks:
         task.private = task.id in PRIVATE_IDS
     return tasks
@@ -1406,6 +2383,65 @@ def extract_fix(payload: Any) -> str | None:
     return candidate or None
 
 
+def _repo_path(value: str) -> str | None:
+    """A repo-relative path, or ``None`` when it escapes the working copy."""
+    rel = value.strip().replace("\\", "/")
+    while rel.startswith("./"):
+        rel = rel[2:]
+    if not rel or rel.startswith("/") or any(part in ("", ".", "..") for part in rel.split("/")):
+        return None
+    return rel
+
+
+def extract_files(payload: Any, workspace: dict[str, str]) -> tuple[dict[str, str] | None, str]:
+    """The patched files from the reply: ``{relative path: complete content}``.
+
+    Only the files the candidate chose are returned; the workspace decides
+    which paths already exist, so a new module is accepted and an unrelated
+    path is not.
+    """
+    if not isinstance(payload, dict):
+        return None, "в ответе нет JSON-объекта"
+    raw = payload.get("files")
+    if not isinstance(raw, dict) or not raw:
+        return None, "в ответе нет непустого объекта files"
+    if len(raw) > _J5_MAX_FILES:
+        return None, f"файлов больше {_J5_MAX_FILES}"
+    files: dict[str, str] = {}
+    for name, body in raw.items():
+        if not isinstance(name, str) or not isinstance(body, str) or not body.strip():
+            return None, "files должен отображать путь в непустой текст файла"
+        rel = _repo_path(name)
+        if rel is None:
+            return None, f"путь {name!r} вне рабочей копии"
+        if rel in files:
+            return None, f"путь {rel!r} прислан дважды"
+        if rel not in workspace and not rel.endswith(".py"):
+            return None, f"новый файл {rel!r} должен быть .py"
+        block = text.first_fenced_block(body)
+        files[rel] = block if block else body
+    return files, ""
+
+
+def _patch_report(workspace: dict[str, str], files: dict[str, str]) -> tuple[bool, str]:
+    """Is this a usable patch at all? Different files, valid syntax, nothing outside."""
+    changed = [rel for rel, body in files.items() if workspace.get(rel) != body]
+    if not changed:
+        return False, "ни один файл не отличается от рабочей копии"
+    for rel, body in files.items():
+        if rel.endswith(".py"):
+            try:
+                compile(body, rel, "exec")
+            except SyntaxError as exc:
+                return False, f"{rel}: синтаксическая ошибка в строке {exc.lineno}"
+        elif rel.endswith(".json"):
+            try:
+                json.loads(body)
+            except json.JSONDecodeError as exc:
+                return False, f"{rel}: не JSON: {exc.msg}"
+    return True, f"патч применяется: файлов {len(files)}, изменено {len(changed)}"
+
+
 def _fix_shape(buggy: str, fix: str) -> tuple[bool, str]:
     """Is ``fix`` a one-line edit of ``buggy``?
 
@@ -1431,7 +2467,72 @@ def _fix_shape(buggy: str, fix: str) -> tuple[bool, str]:
     return True, "изменена ровно одна содержательная строка"
 
 
+def _evaluate_j5(task: core.TaskInstance, payload: Any, strict: bool) -> core.Score:
+    """Score the repository repair by behaviour, never by the diff.
+
+    The three checks are separable: a patch that applies and keeps the old
+    scenarios still loses the versioning check, and a patch with correct
+    versioning but a broken import loses the legacy one. The applied check is
+    paid first so a partial answer stays diagnosable.
+    """
+    score = core.Score(task_id=task.id, category="J")
+    applied_points = round(task.max_points * _J5_SHARES["patch_applied"], 4)
+    legacy_points = round(task.max_points * _J5_SHARES["legacy_behaviour"], 4)
+    version_points = round(task.max_points - applied_points - legacy_points, 4)
+    workspace = task.workspace or {}
+
+    files, why = extract_files(payload, workspace)
+    if files is not None:
+        applied, why = _patch_report(workspace, files)
+    else:
+        applied = False
+    score.add("patch_applied", applied, applied_points, why)
+    if not applied:
+        score.add("legacy_behaviour", False, legacy_points, "патч не применён")
+        score.add("new_journal_versioning", False, version_points, "патч не применён")
+        return score
+
+    rows, note = _run_test_modules(task, None, ("hidden", "public"), files)
+    if note:
+        score.add("legacy_behaviour", False, legacy_points, note)
+        score.add("new_journal_versioning", False, version_points, note)
+        return score
+
+    public = rows.get("public", {})
+    public_failed = sorted(name for name, (ok, _) in public.items() if not ok)
+    legacy = {
+        name: result
+        for name, result in rows.get("hidden", {}).items()
+        if name.rsplit(".", 1)[-1].startswith("test_legacy_")
+    }
+    legacy_ok, legacy_detail = _hidden_summary(legacy)
+    if public_failed:
+        legacy_ok = False
+        legacy_detail = f"публичные тесты упали: {public_failed[0]}"
+    elif not public:
+        legacy_ok = False
+        legacy_detail = "публичные тесты не выполнились"
+    score.add("legacy_behaviour", legacy_ok, legacy_points, legacy_detail)
+
+    fresh = {
+        name: result
+        for name, result in rows.get("hidden", {}).items()
+        if not name.rsplit(".", 1)[-1].startswith("test_legacy_")
+    }
+    version_ok, version_detail = _hidden_summary(fresh)
+    score.add("new_journal_versioning", version_ok, version_points, version_detail)
+    if not strict:
+        score.notes.append("ответ не является строгим JSON целиком")
+    return score
+
+
 def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
+    payload, strict = text.strict_json(tr.final_text)
+    if not strict:
+        payload = text.loose_json(tr.final_text)
+    if task.id == "J-5":
+        return _evaluate_j5(task, payload, strict)
+
     score = core.Score(task_id=task.id, category="J")
     target = str(task.oracle["target_file"])
     defect_line = int(task.oracle["line"])
@@ -1440,9 +2541,6 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     location_points = round(task.max_points * location_share, 4)
     fix_points = round(task.max_points - shape_points - location_points, 4)
 
-    payload, strict = text.strict_json(tr.final_text)
-    if not strict:
-        payload = text.loose_json(tr.final_text)
     reported_file = payload.get("file") if isinstance(payload, dict) else None
     reported_line = _as_line(payload["line"]) if isinstance(payload, dict) and "line" in payload else None
 
@@ -1495,5 +2593,7 @@ core.register(
     generate=generate,
     evaluate=evaluate,
     expected_ids=IDS,
-    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": ALL_IDS},
+    expected_ids_by_profile={
+        "pilot": PILOT_IDS, "stretch-v1": ALL_IDS, "research-v1": RESEARCH_IDS
+    },
 )

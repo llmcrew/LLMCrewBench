@@ -5,11 +5,16 @@ are already on disk. This rebuilds the same suite from the run's own recorded
 configuration, replays each saved transcript through the category evaluator and
 writes fresh scores. The model is never called, so the artefacts are marked as a
 re-score — a reader must be able to tell a re-scored result from a fresh run.
+The marker keeps both grading contracts (the recorded one and the applied one)
+and the source generation; the checkpoint identity is recomputed from the new
+contract instead of being carried over, so a stale identity cannot pose as the
+current one.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -17,7 +22,7 @@ from typing import Any
 from . import core, generation
 from .config import RunConfig
 from .report import write_reports
-from .runner import transcript_from_dict
+from .runner import run_identity, transcript_from_dict
 from .suite import build_suite, suite_digest
 
 
@@ -50,11 +55,18 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
     saved = generation.read_json(directory, "tasks.json")
     suite_path = directory / "suite.json"
     saved_fingerprints: dict[str, dict[str, Any]] = {}
+    saved_suite: dict[str, Any] = {}
     whole_drift = False
+    # The contract the answers were produced under and the one applied now are
+    # both recorded: a re-score is a new grading build, not the old run with a
+    # marker attached.
+    current_digest = suite_digest(list(suite.values()), cfg.profile)
     if suite_path.is_file():
         try:
             saved_suite = generation.read_json(directory, "suite.json")
         except (json.JSONDecodeError, UnicodeDecodeError):
+            saved_suite = {}
+        if not isinstance(saved_suite, dict):
             saved_suite = {}
         rows = saved_suite.get("per_task")
         if isinstance(rows, list) and rows:
@@ -64,7 +76,7 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
             # the only drift evidence, and a mismatch means the answers no
             # longer belong to these fixtures.
             saved_sha = str(saved_suite.get("sha256") or "")
-            whole_drift = bool(saved_sha) and saved_sha != suite_digest(list(suite.values()), cfg.profile)["sha256"]
+            whole_drift = bool(saved_sha) and saved_sha != current_digest["sha256"]
 
     scores: list[core.Score] = []
     replays: list[Any] = []
@@ -134,6 +146,7 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
             replays.append(transcript)
             if transcript.error:
                 fresh.error = transcript.error
+                fresh.failure = transcript.extra.get("failure")
         before_score = entry.get("score") or {}
         before = {
             "earned": before_score.get("earned", 0.0),
@@ -142,6 +155,7 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
             or ("skipped" if before_score.get("skipped") else "error" if before_score.get("error") else "ok"),
             "admission": before_score.get("admission"),
             "skipped": before_score.get("skipped"),
+            "failure": before_score.get("failure"),
         }
         after = {
             "earned": fresh.earned,
@@ -149,6 +163,7 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
             "status": fresh.status,
             "admission": fresh.admission,
             "skipped": fresh.skipped,
+            "failure": fresh.failure,
         }
         if any(_differs(before[key], after[key]) for key in after):
             changed.append({"task_id": task_id, "before": before, "after": after})
@@ -165,23 +180,66 @@ def rescore_run(directory: Path | str) -> dict[str, Any]:
                 for key, value in replay.extra.items():
                     transcript.setdefault("extra", {})[key] = value
         entry["score"] = fresh.as_dict()
+    config = generation.read_json(directory, "config.json") or {}
+    source_identity = str(config.get("identity") or "")
+    source_generation = str((generation._manifest(directory) or {}).get("generation") or "root")
+    # A checkpoint identity always describes the whole profile, independent of
+    # the --only slice (see ``RunResult.save``); the re-score must not invent a
+    # slice identity a resume could never match again.
+    contract_digest = current_digest
+    if cfg.only:
+        contract_digest = suite_digest(build_suite(replace(cfg, only=())), cfg.profile)
+    identity = run_identity(cfg, contract_digest["sha256"])
+    rows_by_id = {str(row.get("id")): row for row in saved_fingerprints.values()}
     marker = {
         "rescored_at": datetime.now().isoformat(timespec="seconds"),
         "note": "Баллы пересчитаны по сохранённым ответам текущими evaluator'ами; модель не вызывалась.",
         "profile": core.profile_of(cfg),
         "tasks": len(scores),
         "changed": changed,
+        # A reader must be able to tell the observation from the re-score: the
+        # old identity/generation stays as provenance, the new build is ours.
+        "source_identity": source_identity,
+        "source_generation": source_generation,
+        "identity": identity,
+        "grading_contract": {
+            "source": {
+                "contract": saved_suite.get("contract"),
+                "sha256": saved_suite.get("sha256"),
+                "identity": saved_suite.get("identity"),
+                "evaluator": {
+                    task_id: row.get("evaluator_sha256")
+                    for task_id, row in rows_by_id.items()
+                    if row.get("evaluator_sha256")
+                },
+            },
+            "current": {
+                "contract": current_digest["contract"],
+                "sha256": current_digest["sha256"],
+                "identity": identity,
+                "evaluator": current_digest["evaluator_bundle"],
+            },
+        },
     }
 
     def dump(payload: Any) -> str:
         return json.dumps(payload, ensure_ascii=False, indent=2, default=core.json_default)
 
-    identity = str((generation.read_json(directory, "config.json") or {}).get("identity") or "")
-    marker["identity"] = identity
+    config["identity"] = identity
+    config["run_id"] = identity
+    config["rescored_from"] = source_identity
+    validating_suite = dict(contract_digest)
+    validating_suite["identity"] = identity
+    validating_suite["source_identity"] = source_identity
+    validating_suite["source_generation"] = source_generation
+    for entry in saved:
+        entry["identity"] = identity
     files = {
         "tasks.json": dump(saved),
         "scores.json": dump([score.as_dict() for score in scores]),
         "rescored.json": dump(marker),
+        "config.json": dump(config),
+        "suite.json": dump(validating_suite),
     }
     # Mirrors are part of the checkpoint: leaving the old ones would let a
     # reader see pre-rescore scores for the same task.

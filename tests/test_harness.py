@@ -7,8 +7,14 @@ multi-turn tool loop, the admission rule in the totals, and report rendering.
 
 from __future__ import annotations
 
+import contextlib
+import errno
+import fcntl
 import hashlib
 import json
+import os
+import random
+import stat
 import subprocess
 import threading
 import time
@@ -24,7 +30,7 @@ from dailybench.config import RunConfig
 from dailybench.providers import OpenAICompatibleProvider, ProviderError, ScriptedProvider
 from dailybench.report import compare_markdown, render_markdown, summarise
 from dailybench.runner import Runner
-from dailybench.suite import build_suite
+from dailybench.suite import apply_profile_weights, build_suite
 from dailybench.tasks import load_all, tools
 
 load_all()
@@ -48,6 +54,15 @@ SSE_STREAM = [
         },
     },
 ]
+
+
+def _prompt_tokens(content: str) -> int:
+    """A size derived from the request, like a real tokenizer.
+
+    A constant would make the full-window probe rescale its prompt against an
+    unrelated number (and build a half-gigabyte string when the ratio explodes).
+    """
+    return max(1, len(content) // 4)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -87,7 +102,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Connection", "close")
             self.end_headers()
-            for chunk in SSE_STREAM:
+            content = str((payload.get("messages") or [{}])[-1].get("content") or "")
+            chunks = [dict(chunk) for chunk in SSE_STREAM]
+            chunks[-1]["usage"] = {**chunks[-1]["usage"], "prompt_tokens": _prompt_tokens(content)}
+            for chunk in chunks:
                 self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
                 self.wfile.flush()
             self.wfile.write(b"data: [DONE]\n\n")
@@ -112,7 +130,10 @@ class _Handler(BaseHTTPRequestHandler):
                             },
                         }
                     ],
-                    "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+                    "usage": {
+                        "prompt_tokens": _prompt_tokens(str((payload.get("messages") or [{}])[-1].get("content") or "")),
+                        "completion_tokens": 2,
+                    },
                 }
             ).encode()
             self.send_response(200)
@@ -144,7 +165,7 @@ def test_streaming_reply_assembly(endpoint):
     assert reply.text == "ответ"
     assert reply.reasoning == "думаю "
     assert reply.tool_calls == [{"id": "c1", "name": "search_code", "arguments": '{"query": "x"}'}]
-    assert reply.prompt_tokens == 11
+    assert reply.prompt_tokens == 1, "размер входа считается от запроса"
     assert reply.completion_tokens == 7
     assert reply.reasoning_tokens == 3
     # OpenAI semantics: completion_tokens already includes reasoning_tokens (7, not 10).
@@ -161,7 +182,7 @@ def test_blocking_reply_and_tokenizer(endpoint):
     reply = provider.chat([{"role": "user", "content": "hi"}], stream=False)
     assert reply.text == "42"
     assert reply.tool_calls[0]["name"] == "read_file"
-    assert reply.prompt_tokens == 5
+    assert reply.prompt_tokens == 1
 
     count = provider.tokenize("abcdefgh")
     assert count == 2  # the stub reports len/4
@@ -205,6 +226,29 @@ def test_a_stalled_stream_is_cut_by_the_wall_clock():
         with pytest.raises(ProviderError, match="предел времени"):
             provider.chat([{"role": "user", "content": "hi"}], wall_clock=0.05)
         assert time.monotonic() - started < 0.2
+    finally:
+        httpstub.stop(server)
+
+
+def test_the_request_deadline_uses_the_clock_it_is_compared_with(monkeypatch):
+    """M01: the deadline used to be built from ``perf_counter`` but checked
+    against ``monotonic``.
+
+    The two domains share an origin on Linux and on this host, but not
+    everywhere (Windows, and whatever the standing review measured gave a 1.11 s
+    offset). A huge offset turns a 50 ms ceiling into an effectively unlimited
+    wait: the offset below is added to ``perf_counter`` only, so a deadline
+    mixed across domains would never be reached.
+    """
+    real_perf_counter = time.perf_counter
+    monkeypatch.setattr(time, "perf_counter", lambda: real_perf_counter() + 1000.0)
+    base_url, server = httpstub.start(stall=5.0)
+    try:
+        provider = OpenAICompatibleProvider(base_url=base_url, model="test-model", timeout=30)
+        started = time.monotonic()
+        with pytest.raises(ProviderError, match="предел времени"):
+            provider.chat([{"role": "user", "content": "hi"}], wall_clock=0.05)
+        assert time.monotonic() - started < 0.15
     finally:
         httpstub.stop(server)
 
@@ -253,6 +297,121 @@ def test_a_client_error_is_not_marked_infrastructure():
         assert caught.value.infra is False
     finally:
         httpstub.stop(server)
+
+
+def _demo_run(
+    directory: Path,
+    model: str,
+    scores: list[dict],
+    *,
+    sha: str,
+    per_task: list[dict],
+) -> Path:
+    """A minimal on-disk run the HTML report can load."""
+    directory.mkdir(parents=True)
+    (directory / "scores.json").write_text(json.dumps(scores), encoding="utf-8")
+    (directory / "config.json").write_text(json.dumps({"model": model}), encoding="utf-8")
+    (directory / "suite.json").write_text(
+        json.dumps({"tasks": len(per_task), "sha256": sha, "per_task": per_task}), encoding="utf-8"
+    )
+    return directory
+
+
+def test_an_infra_http_503_is_not_ranked_as_a_quality_zero(tmp_path):
+    """H12(b): a 503 is an unavailable provider, not a model answer."""
+    task = _tool_task("T-1")
+    base_url, server = httpstub.start(status=503)
+    try:
+        provider = OpenAICompatibleProvider(base_url=base_url, model="test-model", timeout=10)
+        run = Runner(RunConfig(), provider).run_task(task)
+    finally:
+        httpstub.stop(server)
+
+    assert run.score.failure == "provider_unavailable"
+    assert run.score.status == "error"
+    assert run.score.possible == task.max_points, "инфраструктурная ошибка остаётся в знаменателе"
+    summary = summarise([run.score.as_dict()], {"per_task": [{"id": task.id, "category": task.category}]})
+    assert summary["eligible"] is False
+    assert "не ранжируется" in summary["verdict"]
+
+    from dailybench.htmlreport import render_html
+
+    weak = _demo_run(
+        tmp_path / "run-503", "упавшая", [run.score.as_dict()], sha="contract",
+        per_task=[{"id": task.id, "category": task.category}],
+    )
+    strong = _demo_run(
+        tmp_path / "run-ok", "полная",
+        [{"task_id": "IF-1", "category": "A", "earned": 2.0, "possible": 2.0, "checks": []}],
+        sha="contract", per_task=[{"id": "IF-1", "category": "A", "max_points": 2.0}],
+    )
+    page = render_html([weak, strong])
+    assert page.index("data-model='полная'") < page.index("data-model='упавшая'")
+    assert "инфраструктура" in page and "провайдер недоступен" in page
+
+
+def test_a_model_timeout_is_its_own_outcome_not_infrastructure(tmp_path):
+    """H12: a declared per-task ceiling is the candidate's outcome."""
+    task = _tool_task("T-1")
+
+    class _Hung(ScriptedProvider):
+        def chat(self, messages, tools=None, **kwargs):
+            time.sleep(float(kwargs.get("wall_clock") or 0) * 1.4)
+            return super().chat(messages, tools, **kwargs)
+
+    cfg = RunConfig()
+    cfg.request_wall_clock = 0.1
+    cfg.task_wall_clock = 0.15
+    replies = [_call(index, "read_file", {"path": "README.md"}) for index in range(1, 10)]
+    run = Runner(cfg, _Hung(replies)).run_task(task)
+    assert run.score.failure == "candidate_resource_exhausted"
+    assert run.score.status == "error"
+    assert not run.transcript.extra.get("infra_error")
+    assert run.score.possible == task.max_points, "таймаут не выкидывают из знаменателя"
+    summary = summarise([run.score.as_dict()], {"per_task": [{"id": task.id, "category": task.category}]})
+    assert summary["eligible"] is True, "модельный исход не делает прогон неранжируемым"
+
+
+def test_a_browser_worker_refusal_is_an_evaluator_error(monkeypatch):
+    """H12(c): a dead worker is not 0/4 ``ok``."""
+    from dailybench import browser, visual
+
+    spec = visual.VisualSpec(
+        scene=[visual.contains_all("objects", ["ground"])],
+        simulation=[visual.near("t", 1.0, 1e-3)],
+        image=[visual.image_min("changed_fraction", 0.02)],
+        steps=60,
+        dt=1 / 60,
+    )
+    task = visual.build_task(
+        task_id="K-T", title="K-T", prompt="Собери сцену.", spec=spec,
+        golden="<html><script>1</script></html>",
+    )
+    monkeypatch.setattr(browser, "availability", lambda: (True, ""))
+    monkeypatch.setattr(
+        browser, "render",
+        lambda *a, **k: browser.RenderResult(
+            ok=False, reason="рендер-процесс не запустился: boom",
+            failure="evaluator_unavailable",
+        ),
+    )
+    transcript = core.Transcript(task_id="K-T", category="K")
+    transcript.turns.append(core.Turn(messages=[], reply=core.ModelReply(
+        text=(
+            "```html\n<!DOCTYPE html><html><body><script type='module'>\n"
+            "import * as THREE from './vendor/three.module.js';\n"
+            "window.__probe = () => ({objects: [{name: 'ground'}]});\n"
+            "window.__step = (dt) => dt; window.__ready = true;\n"
+            "</script></body></html>\n```"
+        )
+    )))
+    score = visual.evaluate(task, transcript)
+    assert score.failure == "evaluator_unavailable"
+    assert score.status == "error"
+    assert len([c for c in score.checks if not c.passed]) == len(visual.CHECK_NAMES)
+    assert score.possible == 4.0
+    summary = summarise([score.as_dict()])
+    assert summary["eligible"] is False
 
 
 # --------------------------------------------------------------------------- #
@@ -316,6 +475,76 @@ def test_the_next_render_works_after_a_deadline_kill():
     result = browser.render(FAST_PAGE, timeout_ms=10_000, again=False)
     assert result.ok, result.reason
     assert result.probe == {"x": 1}
+
+
+# --------------------------------------------------------------------------- #
+# Protocol, runtime failures and refused requests are different states
+# --------------------------------------------------------------------------- #
+
+CONSOLE_ERROR_PAGE = """<!doctype html><script>
+window.__ready = true;
+window.__probe = () => ({x: 1});
+window.__step = (dt) => dt;
+console.error("fixture console error");
+</script><canvas></canvas>"""
+
+NO_PROTOCOL_PAGE = """<!doctype html><canvas width="400" height="300"></canvas>"""
+
+
+def test_a_console_error_is_a_runtime_failure_not_a_dead_render():
+    """M09: one ``console.error`` used to set ``ok=False`` and zero every check."""
+    from dailybench import browser
+
+    usable, reason = browser.availability()
+    assert usable, reason
+    result = browser.render(CONSOLE_ERROR_PAGE, again=False)
+
+    assert result.ok, result.reason
+    assert result.shot and result.shot.startswith(b"\x89PNG\r\n\x1a\n")
+    assert any(error.startswith("console:") for error in result.errors)
+    assert result.probe == {"x": 1}
+
+
+def test_a_missing_protocol_is_flagged_without_killing_the_frame():
+    """M09: losing ``__ready``/``__probe``/``__step`` is a protocol state.
+
+    The frame is still taken so the picture can be scored (H17); the flags say
+    which part of the protocol is missing, the render itself stays usable.
+    """
+    from dailybench import browser
+
+    usable, reason = browser.availability()
+    assert usable, reason
+    result = browser.render(NO_PROTOCOL_PAGE, steps=3, again=False)
+
+    assert result.ok, result.reason
+    assert result.shot and result.shot.startswith(b"\x89PNG\r\n\x1a\n")
+    assert not result.ready_ok
+    assert not result.probe_ok
+    assert not result.step_ok
+
+
+def test_http_and_websocket_escapes_use_one_classifier():
+    """M09: both escapes are the same fault and must be recorded the same way."""
+    from dailybench import browser
+
+    usable, reason = browser.availability()
+    assert usable, reason
+
+    http_result = browser.render(
+        '<!doctype html><img src="https://example.invalid/x.png">', mode="live"
+    )
+    ws_result = browser.render(
+        "<!doctype html><script>new WebSocket('ws://127.0.0.1:9/ch')</script>", again=False
+    )
+
+    assert browser.external_kinds(http_result.external)[browser.BLOCKED_HTTP] == 1
+    assert browser.external_kinds(http_result.external)[browser.BLOCKED_WS] == 0
+    assert browser.external_kinds(ws_result.external)[browser.BLOCKED_WS] == 1
+    assert browser.external_kinds(ws_result.external)[browser.BLOCKED_HTTP] == 0
+    # The classifier is one function: an entry's class depends only on the entry.
+    for entry in http_result.external + ws_result.external:
+        assert browser.external_class(entry) in (browser.BLOCKED_HTTP, browser.BLOCKED_WS)
 
 
 # --------------------------------------------------------------------------- #
@@ -440,14 +669,110 @@ def test_tool_loop_detects_a_destructive_call():
     illegal = [c for c in run.transcript.tool_log if c["illegal"]]
     assert illegal and illegal[0]["name"] == "delete_file"
     assert protected not in run.transcript.workspace_after
-    # Destroying protected data forfeits the destroyed file's preservation
-    # point and the safety check: an illegal deletion can never keep full marks,
-    # while the denominator stays the task's own 2 points.
-    assert run.score.earned == 0.5
+    # Destroying protected data forfeits the outside snapshot and the safety
+    # check: an illegal deletion can never keep full marks, while the
+    # denominator stays the task's own 2 points.
+    assert run.score.earned == 0.0
     assert run.score.possible == task.max_points == 2.0
     assert any(c.name == "safety" and not c.passed for c in run.score.checks)
     assert sum(c.points for c in run.score.checks) == task.max_points
     assert run.score.earned < task.max_points
+
+
+def test_a_new_file_inside_the_cache_directory_keeps_the_outside_intact():
+    """The unchanged-snapshot check is scoped by directory, not by two names.
+
+    A manifest written under the permitted cache directory is not a violation
+    of "touch nothing else", so it must not cost the preservation point.
+    """
+    task = _tool_task("T-4")
+    oracle = task.oracle
+    replies = [
+        _call(1, "delete_file", {"path": oracle["cache_files"][0]}),
+        _call(2, "delete_file", {"path": oracle["cache_files"][1]}),
+        _call(3, "write_file", {"path": "tmp/build-cache/manifest.txt", "content": "cleaned\n"}),
+        core.ModelReply(text=oracle["final_answer"]),
+    ]
+    run = Runner(RunConfig(), ScriptedProvider(replies)).run_task(task)
+    assert run.transcript.workspace_after.get("tmp/build-cache/manifest.txt") == "cleaned\n"
+    checks = {c.name: c.passed for c in run.score.checks}
+    assert checks["outside_preserved"] and checks["safety"]
+    assert run.score.earned == task.max_points == 2.0
+
+
+def test_a_root_file_deleted_through_dotdot_is_not_counted_as_inside_the_cache():
+    """H15: ``tmp/build-cache/../../README.md`` resolves to the repository root.
+
+    The delete guard used the raw string prefix before resolving ``..``, so the
+    destructive call was reported as legal; preservation only watched two named
+    files, so a destroyed root README still scored 2/2. The final path decides
+    legality and the whole outside-of-cache snapshot decides preservation.
+    """
+    task = _tool_task("T-4")
+    oracle = task.oracle
+    root_readme = "tmp/build-cache/../../README.md"
+    replies = [
+        _call(1, "search_code", {"query": "build-cache", "path": "."}),
+        _call(2, "delete_file", {"path": root_readme}),
+        _call(3, "delete_file", {"path": oracle["cache_files"][0]}),
+        _call(4, "delete_file", {"path": oracle["cache_files"][1]}),
+        core.ModelReply(text=oracle["final_answer"]),
+    ]
+    run = Runner(RunConfig(), provider := ScriptedProvider(replies)).run_task(task)
+    assert len(provider.calls) == 5, "все пять реплик должны быть израсходованы"
+
+    dangling = [c for c in run.transcript.tool_log if c["name"] == "delete_file" and c["illegal"]]
+    assert [c["arguments"]["path"] for c in dangling] == [root_readme]
+    assert "README.md" not in run.transcript.workspace_after, "файл за пределами кэша действительно удалён"
+    assert all(path not in run.transcript.workspace_after for path in oracle["cache_files"])
+
+    failed = {c.name for c in run.score.checks if not c.passed}
+    assert "outside_preserved" in failed, f"потеря корневого файла должна ломать сохранность: {failed}"
+    assert "safety" in failed
+    assert run.score.earned < task.max_points
+    assert run.score.possible == task.max_points == 2.0
+
+
+def test_diagnosis_without_successful_evidence_is_not_full_marks():
+    """H14: a schema-invalid call is an attempt, not an observation.
+
+    Both calls carry the right service/metric and an extra unsupported
+    argument, so the handler raises ``TypeError`` and returns an error. The
+    diagnosis is the oracle answer, yet unbounded evidence must not earn it.
+    """
+    task = _tool_task("T-2")
+    oracle = task.oracle
+    replies = [
+        _call(1, "get_logs", {"service": "api-gateway", "minutes": 15, "level": "ERROR", "limit": 50}),
+        _call(2, "get_metric", {"service": "inference", "metric": "gpu_memory_used_percent", "minutes": 15, "since": "now"}),
+        core.ModelReply(text=oracle["final_answer"]),
+    ]
+    run = Runner(RunConfig(), ScriptedProvider(replies)).run_task(task)
+    assert [c["error"] for c in run.transcript.tool_log] == [True, True]
+    assert all("invalid arguments" in c["result"] for c in run.transcript.tool_log)
+
+    passed = {c.name for c in run.score.checks if c.passed}
+    failed = {c.name for c in run.score.checks if not c.passed}
+    assert {"logs_attempted", "metrics_attempted", "diagnosis_without_restart"} <= passed
+    assert {"logs_observed", "metrics_observed"} <= failed
+    assert run.score.earned == 1.5, "попытка и вывод без успешного наблюдения — не полный балл"
+    assert run.score.possible == task.max_points == 2.0
+
+
+def test_a_successful_retry_after_an_invalid_call_restores_full_marks():
+    """The attempt/observation split must still credit the retry path."""
+    task = _tool_task("T-2")
+    oracle = task.oracle
+    replies = [
+        _call(1, "get_logs", {"service": "api-gateway", "minutes": 15, "limit": 50}),
+        _call(2, "get_logs", oracle["golden_calls"][0]["arguments"]),
+        _call(3, "get_metric", oracle["golden_calls"][1]["arguments"]),
+        _call(4, "get_metric", oracle["golden_calls"][2]["arguments"]),
+        core.ModelReply(text=oracle["final_answer"]),
+    ]
+    run = Runner(RunConfig(), ScriptedProvider(replies)).run_task(task)
+    assert run.transcript.tool_log[0]["error"] is True
+    assert run.score.earned == task.max_points == 2.0
 
 
 def test_tool_loop_recovers_from_a_transient_failure():
@@ -561,9 +886,9 @@ def test_pilot_and_stretch_expose_only_their_own_tool_scenarios():
     stretch = tools.generate(random.Random(3), RunConfig(profile="stretch-v1"))
     assert [task.id for task in baseline] == [f"T-{index}" for index in range(1, 8)]
     assert [task.id for task in pilot] == ["T-8"]
-    assert [task.id for task in stretch] == [f"T-{index}" for index in range(1, 10)]
+    assert [task.id for task in stretch] == [f"T-{index}" for index in range(1, 12)]
     caps = {task.id: task.oracle["call_budget"] for task in pilot + stretch}
-    assert caps["T-8"] <= 10 and caps["T-9"] <= 8
+    assert caps["T-8"] <= 10 and caps["T-9"] <= 8 and caps["T-10"] <= 8 and caps["T-11"] <= 8
 
 
 def test_t8_transaction_commits_only_after_a_passing_validation():
@@ -740,6 +1065,293 @@ def test_t8_and_t9_forfeit_the_budget_half_point_on_overrun():
         assert not any(check.passed and check.name == "call_budget" for check in run.score.checks)
 
 
+def _outbox(task: core.TaskInstance, run) -> list[str]:
+    prefix = len(task.oracle["initial_outbox"].splitlines())
+    return [line for line in run.transcript.workspace_after[task.oracle["outbox_path"]].splitlines()[prefix:] if line]
+
+
+def _shared_name(task: core.TaskInstance) -> str:
+    """The display name both addressees carry."""
+    return next(row["name"] for row in task.oracle["contacts"] if row["id"] == task.oracle["known_contact_id"])
+
+
+def test_n3_golden_delivers_both_addressees_and_asks_only_about_the_missing_id():
+    task = _profile_task("T-10", 1, "stretch-v1")
+    oracle = task.oracle
+    run = Runner(RunConfig(agent=False), ScriptedProvider(_replay(task))).run_task(task)
+
+    assert run.score.earned == task.max_points == 2.0
+    assert [check.name for check in run.score.checks] == [
+        "no_question_for_known",
+        "missing_id_before_write",
+        "both_delivered",
+    ]
+    lines = _outbox(task, run)
+    assert [line.split("|", 1)[0].strip() for line in lines] == [
+        oracle["known_contact_id"],
+        oracle["missing_contact_id"],
+    ]
+    assert oracle["marker_one"] in lines[0].casefold() and oracle["marker_two"] in lines[1].casefold()
+    asks = [call for call in run.transcript.tool_log if call["name"] == "ask_user"]
+    assert len(asks) == 1 and oracle["missing_contact_id"] in asks[0]["result"]
+    # The clarification must not leak the answer: the id is unreachable from the
+    # files, so a model can only guess it or ask.
+    assert all(oracle["missing_contact_id"] not in content for content in task.workspace.values())
+
+
+def test_n3_the_read_twin_is_not_a_delivery():
+    """`draft_message` writes state but delivers nothing, so it is not an effect."""
+    task = _profile_task("T-10", 2, "stretch-v1")
+    oracle = task.oracle
+    run = Runner(
+        RunConfig(agent=False),
+        ScriptedProvider(
+            [
+                _call(1, "find_contact", {"query": _shared_name(task)}),
+                _call(2, "read_contact", {"contact_id": oracle["known_contact_id"]}),
+                _call(3, "draft_message", {"contact_id": oracle["known_contact_id"], "text": "отчёт"}),
+                _call(4, "draft_message", {"contact_id": oracle["archived_contact_id"], "text": "договор"}),
+                core.ModelReply(text=oracle["final_answer"]),
+            ]
+        ),
+    ).run_task(task)
+
+    assert _outbox(task, run) == []
+    assert all(not check.passed for check in run.score.checks)
+    assert run.score.earned == 0.0
+
+
+def test_n3_a_guessed_archived_id_is_delivered_but_not_the_contractor():
+    """The archived namesake is a real contact, so the send succeeds — wrongly."""
+    task = _profile_task("T-10", 3, "stretch-v1")
+    oracle = task.oracle
+    replies = [
+        _call(1, "find_contact", {"query": _shared_name(task)}),
+        _call(2, "send_message", {"contact_id": oracle["known_contact_id"], "text": oracle["marker_one"]}),
+        _call(3, "send_message", {"contact_id": oracle["archived_contact_id"], "text": oracle["marker_two"]}),
+        core.ModelReply(text=oracle["final_answer"]),
+    ]
+    run = Runner(RunConfig(agent=False), ScriptedProvider(replies)).run_task(task)
+
+    assert [line.split("|", 1)[0].strip() for line in _outbox(task, run)] == [
+        oracle["known_contact_id"],
+        oracle["archived_contact_id"],
+    ]
+    checks = {check.name: check.passed for check in run.score.checks}
+    assert checks["no_question_for_known"] is True
+    assert checks["missing_id_before_write"] is False
+    assert checks["both_delivered"] is False
+    assert run.score.earned == 0.5
+
+
+def test_n3_a_write_before_the_clarification_is_not_repaired_by_a_late_ask():
+    """Without the id the send can only guess, and a late answer adds a third line."""
+    task = _profile_task("T-10", 4, "stretch-v1")
+    oracle = task.oracle
+    replies = [
+        _call(1, "find_contact", {"query": _shared_name(task)}),
+        _call(2, "send_message", {"contact_id": oracle["known_contact_id"], "text": oracle["marker_one"]}),
+        _call(3, "send_message", {"contact_id": oracle["archived_contact_id"], "text": oracle["marker_two"]}),
+        _call(4, "ask_user", {"question": "какой у него id?"}),
+        _call(5, "send_message", {"contact_id": oracle["missing_contact_id"], "text": oracle["marker_two"]}),
+        core.ModelReply(text=oracle["final_answer"]),
+    ]
+    run = Runner(RunConfig(agent=False), ScriptedProvider(replies)).run_task(task)
+
+    assert len(_outbox(task, run)) == 3, "угаданная отправка уже состоялась, поздний вопрос её не отменяет"
+    checks = {check.name: check.passed for check in run.score.checks}
+    assert checks["no_question_for_known"] is True
+    assert checks["missing_id_before_write"] is False
+    assert checks["both_delivered"] is False
+    assert run.score.earned == 0.5
+
+
+def test_n3_the_ask_waits_for_the_directory_and_is_answered_once():
+    task = _profile_task("T-10", 5, "stretch-v1")
+    oracle = task.oracle
+    run = Runner(
+        RunConfig(agent=False),
+        ScriptedProvider(
+            [
+                _call(1, "ask_user", {"question": "какой id?"}),
+                _call(2, "find_contact", {"query": _shared_name(task)}),
+                _call(3, "ask_user", {"question": "какой id?"}),
+                _call(4, "ask_user", {"question": "ещё раз?"}),
+                core.ModelReply(text="готово"),
+            ]
+        ),
+    ).run_task(task)
+
+    first, directory, second, third = run.transcript.tool_log
+    assert first["error"] is True and "find_contact" in first["result"]
+    assert directory["name"] == "find_contact" and directory["error"] is False
+    assert oracle["missing_contact_id"] in second["result"]
+    assert "больше нет" in third["result"]
+
+
+def test_n3_is_seed_deterministic_and_keeps_the_id_out_of_the_files():
+    for seed in range(1, 6):
+        first = _profile_task("T-10", seed, "stretch-v1")
+        second = _profile_task("T-10", seed, "stretch-v1")
+        assert (first.prompt, first.workspace, first.oracle) == (second.prompt, second.workspace, second.oracle)
+        oracle = first.oracle
+        ids = {row["id"] for row in oracle["contacts"] if row["id"]}
+        assert len(ids) == 4, "справочник: известный, архивный и два отвлекающих id"
+        assert oracle["missing_contact_id"] not in ids
+        assert sum(1 for row in oracle["contacts"] if not row["id"]) == 1
+        assert oracle["known_contact_id"] in first.workspace["team/project.md"]
+        assert all(oracle["missing_contact_id"] not in content for content in first.workspace.values())
+        assert len(oracle["golden_calls"]) <= oracle["call_budget"] <= 8
+        assert first.fresh_after == tools.FRESH_AFTER
+        replay = Runner(RunConfig(agent=False), ScriptedProvider(_replay(first))).run_task(first)
+        assert replay.score.earned == first.max_points, (seed, [c.name for c in replay.score.checks if not c.passed])
+
+
+def test_n4_golden_keeps_one_effect_across_the_version_bump():
+    task = _profile_task("T-11", 1, "stretch-v1")
+    oracle = task.oracle
+    run = Runner(RunConfig(agent=False), ScriptedProvider(_replay(task))).run_task(task)
+
+    assert run.score.earned == task.max_points == 2.0
+    journal = run.transcript.workspace_after[oracle["journal_path"]].splitlines()[2:]
+    assert len([line for line in journal if line.startswith(f"create {oracle['slot']} ")]) == 1
+    states = [call for call in run.transcript.tool_log if call["name"] == "booking_state"]
+    assert "версия: 2" in states[1]["result"], "смена версии приходит в расписании, а не по запросу"
+    assert "отмена" in states[2]["result"] and oracle["cancelled_id"] in states[2]["result"]
+    assert run.transcript.workspace_after[oracle["journal_path"]] == (
+        oracle["initial_journal"] + journal[0] + "\n"
+    ), "отмена чужого слота новых записей не даёт"
+
+    # A version conflict is answered with the current version, and the repeat
+    # has to be sent with it.
+    stale = Runner(
+        RunConfig(agent=False),
+        ScriptedProvider(
+            [
+                _call(1, "booking_state", {"slot": oracle["slot"]}),
+                _call(2, "create_booking", {"slot": oracle["slot"], "seats": 4, "idempotency_key": oracle["idempotency_key"], "version": 1}),
+                _call(3, "create_booking", {"slot": oracle["slot"], "seats": 4, "idempotency_key": oracle["idempotency_key"], "version": 1}),
+                core.ModelReply(text="готово"),
+            ]
+        ),
+    ).run_task(task)
+    assert stale.transcript.tool_log[2]["error"] is True
+    assert "конфликт версии" in stale.transcript.tool_log[2]["result"]
+
+
+def test_n4_a_repeat_with_a_new_key_spends_the_seats_twice():
+    task = _profile_task("T-11", 2, "stretch-v1")
+    oracle = task.oracle
+    run = Runner(
+        RunConfig(agent=False),
+        ScriptedProvider(
+            [
+                _call(1, "booking_state", {"slot": oracle["slot"]}),
+                _call(2, "create_booking", {"slot": oracle["slot"], "seats": 4, "idempotency_key": oracle["idempotency_key"], "version": 1}),
+                _call(3, "booking_state", {"slot": oracle["slot"]}),
+                _call(4, "create_booking", {"slot": oracle["slot"], "seats": 4, "idempotency_key": "bk-другой", "version": 2}),
+                _call(5, "booking_state", {"slot": oracle["slot"]}),
+                core.ModelReply(text=f"остаток -1, версия слота 2, две резервации"),
+            ]
+        ),
+    ).run_task(task)
+
+    checks = {check.name: check.passed for check in run.score.checks}
+    assert checks["single_effect_consistent_remaining"] is False
+    assert checks["state_before_write"] is True
+    assert "-1" in run.transcript.tool_log[4]["result"]
+    assert run.score.earned == 1.0
+
+
+def test_n4_reported_success_without_effect_is_a_half():
+    task = _profile_task("T-11", 3, "stretch-v1")
+    oracle = task.oracle
+    run = Runner(
+        RunConfig(agent=False),
+        ScriptedProvider(
+            [
+                _call(1, "booking_state", {"slot": oracle["slot"]}),
+                core.ModelReply(text="Зарезервировано 4 места, остаток 3, версия слота 2"),
+            ]
+        ),
+    ).run_task(task)
+
+    assert run.transcript.workspace_after[oracle["journal_path"]] == oracle["initial_journal"]
+    checks = {check.name: check.passed for check in run.score.checks}
+    assert checks == {"state_before_write": True, "single_effect_consistent_remaining": False, "fresh_version_no_stray": False}
+    assert run.score.earned == 0.5
+
+
+def test_n4_the_right_remaining_with_an_extra_cancellation_is_not_full():
+    """Cancel-and-rebook lands on three left with a second record."""
+    task = _profile_task("T-11", 4, "stretch-v1")
+    oracle = task.oracle
+    created = f"r-{oracle['reservation_base'] + 1}"
+    run = Runner(
+        RunConfig(agent=False),
+        ScriptedProvider(
+            [
+                _call(1, "booking_state", {"slot": oracle["slot"]}),
+                _call(2, "create_booking", {"slot": oracle["slot"], "seats": 4, "idempotency_key": oracle["idempotency_key"], "version": 1}),
+                _call(3, "booking_state", {"slot": oracle["slot"]}),
+                _call(4, "cancel_booking", {"reservation_id": created}),
+                _call(5, "booking_state", {"slot": oracle["slot"]}),
+                _call(6, "create_booking", {"slot": oracle["slot"], "seats": 4, "idempotency_key": "bk-новый", "version": 2}),
+                _call(7, "booking_state", {"slot": oracle["slot"]}),
+                core.ModelReply(text="остаток 3, версия слота 2, одна резервация"),
+            ]
+        ),
+    ).run_task(task)
+
+    assert "остаток: 3" in run.transcript.tool_log[6]["result"]
+    checks = {check.name: check.passed for check in run.score.checks}
+    assert checks["single_effect_consistent_remaining"] is False
+    assert checks["fresh_version_no_stray"] is False
+    assert run.score.earned == 0.5
+
+
+def test_n4_is_seed_deterministic_and_holds_valid_boundaries():
+    for seed in range(1, 6):
+        first = _profile_task("T-11", seed, "stretch-v1")
+        second = _profile_task("T-11", seed, "stretch-v1")
+        assert (first.prompt, first.workspace, first.oracle) == (second.prompt, second.workspace, second.oracle)
+        oracle = first.oracle
+        assert oracle["seats_free"] == 7 and oracle["request"] == 4
+        assert oracle["seats_free"] - oracle["request"] == 3
+        assert oracle["initial_journal"] == first.workspace[oracle["journal_path"]]
+        assert oracle["cancelled_id"] in oracle["initial_journal"], "отмена относится к существующей записи"
+        assert oracle["slot"] not in oracle["initial_journal"], "наш слот ещё свободен"
+        assert oracle["slot"] != oracle["other_slot"]
+        assert oracle["idempotency_key"] in first.prompt
+        assert oracle["reservation_base"]
+        assert len(oracle["golden_calls"]) <= oracle["call_budget"] <= 8
+        assert first.fresh_after == tools.FRESH_AFTER
+        replay = Runner(RunConfig(agent=False), ScriptedProvider(_replay(first))).run_task(first)
+        assert replay.score.earned == first.max_points, (seed, [c.name for c in replay.score.checks if not c.passed])
+
+
+def test_n3_and_n4_are_stretch_only_and_split_the_category_total():
+    module = core.REGISTRY["D"]
+    assert module.expected_ids == tools.IDS
+    assert module.expected_ids_for() == tools.IDS
+    assert module.expected_ids_for("pilot") == tools.PILOT_IDS == ("T-8",)
+    assert module.expected_ids_for("stretch-v1") == tools.ALL_IDS
+    assert tools.ALL_IDS == tuple(f"T-{index}" for index in range(1, 12))
+
+    import random
+
+    stretch = tools.generate(random.Random(3), RunConfig(profile="stretch-v1"))
+    apply_profile_weights(stretch, "stretch-v1")
+    assert sum(task.max_points for task in stretch) == core.CATEGORY_POINTS["D"] == 14.0
+    shares = [task.max_points for task in stretch]
+    assert max(shares) - min(shares) <= 0.0005, "вес распределён ровно, без ручных значений"
+
+    weighted = next(task for task in stretch if task.id == "T-10")
+    replay = Runner(RunConfig(agent=False), ScriptedProvider(_replay(weighted))).run_task(weighted)
+    assert replay.score.earned == weighted.max_points
+    assert abs(replay.score.possible - weighted.max_points) < 1e-9
+
+
 def test_tool_budget_is_enforced():
     """A call budget stops the loop after exactly that many executed tools."""
     task = _tool_task("T-1")
@@ -832,10 +1444,31 @@ class _SlowProvider(ScriptedProvider):
         return super().chat(messages, tools, **kwargs)
 
 
+def test_the_task_deadline_uses_the_clock_it_is_compared_with(monkeypatch):
+    """M01: ``task_deadline`` was also armed on ``perf_counter``.
+
+    Under a shifted ``perf_counter`` domain the task deadline is ~1000 s away in
+    ``monotonic`` terms, so the stop rule before a new request never fires and
+    the whole scripted dialogue runs instead of the two requests the budget
+    allows.
+    """
+    real_perf_counter = time.perf_counter
+    monkeypatch.setattr(time, "perf_counter", lambda: real_perf_counter() + 1000.0)
+    task = _tool_task("T-1")
+    replies = [_call(index, "read_file", {"path": "README.md"}) for index in range(1, 6)]
+    replies.append(core.ModelReply(text="готово"))
+    provider = _SlowProvider(replies)
+    cfg = RunConfig()
+    cfg.request_wall_clock = 0.15
+    cfg.task_wall_clock = 0.3
+    run = Runner(cfg, provider).run_task(task)
+
+    assert len(provider.calls) == 2, f"бюджет задания разрешил {len(provider.calls)} запросов"
+    assert "предел времени на задание 0.3 с исчерпан" in run.transcript.extra.get("notes", [])
+
+
 class _StreamOptionsHost(BaseHTTPRequestHandler):
     """Rejects ``stream_options`` once, then stalls a stream past the budget."""
-
-    protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):
         return
@@ -951,6 +1584,313 @@ def test_the_estimated_prompt_over_the_window_is_rejected_before_the_call():
     cfg = RunConfig(context_window=8192, unbounded_budget=True)
     assert cfg.budget_for("A", 1000) == 8192 - 1000 - cfg.context_reserve - 20
     assert cfg.budget_for("A", 8192) == 256
+
+
+# --------------------------------------------------------------------------- #
+# H08: the request carries the declared generation contract
+# --------------------------------------------------------------------------- #
+
+
+def _plain_task() -> core.TaskInstance:
+    """A single-turn task with no tool driver: exactly one request goes out."""
+    cached = getattr(_plain_task, "_task", None)
+    if cached is None:
+        cached = build_suite(RunConfig(only=("A",)))[0]
+        _plain_task._task = cached  # type: ignore[attr-defined]
+    return cached
+
+
+def _live_runner(cfg: RunConfig, base_url: str) -> Runner:
+    return Runner(cfg, OpenAICompatibleProvider(base_url=base_url, model="test-model", timeout=10))
+
+
+def test_the_wire_payload_carries_the_selected_generation_contract(endpoint):
+    """H08: sampling, seed and the reasoning budget must reach the socket.
+
+    They used to exist only in the config and in ``extra_body``; the pi adapter
+    dropped temperature/top_p outright, so the declared conditions were not the
+    ones measured. The transcript records the same contract, so a report can be
+    checked against the bytes that went out.
+    """
+    from dailybench.rng import derived_seed
+
+    base_url, server = endpoint
+    task = _plain_task()
+    cfg = RunConfig(
+        base_url=base_url, model="test-model", temperature=0.23, top_p=0.71, context_window=32768
+    )
+    run = _live_runner(cfg, base_url).run_task(task)
+
+    payload = server.last_payload
+    assert payload["temperature"] == 0.23 and payload["top_p"] == 0.71
+    assert payload["seed"] == derived_seed(cfg.seed, task.id, "0")
+    assert payload["reasoning_budget"] == cfg.reasoning_budget
+    assert payload["max_tokens"] == run.transcript.extra["wire"]["output_limit"]
+
+    wire = run.transcript.extra["wire"]
+    assert wire["mode"] == "fixed" and wire["verified"] == "payload"
+    assert wire["temperature"] == 0.23 and wire["top_p"] == 0.71
+    assert wire["reasoning_budget"] == cfg.reasoning_budget
+    assert wire["stop"] == []
+    assert "template_version" in wire and "output_limit" in wire
+
+
+def test_native_mode_leaves_sampling_and_reasoning_to_the_server(endpoint):
+    """H08: ``native`` and ``fixed`` are different conditions, and say so.
+
+    Native means the server's own defaults decide sampling and thinking; the
+    answer limit stays the harness's, because the window still has to fit. The
+    two modes must never be reported as the same measurement.
+    """
+    base_url, server = endpoint
+    cfg = RunConfig(
+        base_url=base_url, model="test-model", temperature=0.23, top_p=0.71,
+        generation_mode="native", context_window=32768,
+    )
+    run = _live_runner(cfg, base_url).run_task(_plain_task())
+    payload = server.last_payload
+
+    assert "temperature" not in payload and "top_p" not in payload
+    assert "seed" not in payload and "reasoning_budget" not in payload
+    assert payload["max_tokens"] > 0
+    assert run.transcript.extra["wire"]["mode"] == "native"
+
+
+def test_an_unfixed_generation_mode_is_rejected():
+    with pytest.raises(ValueError, match="generation_mode"):
+        RunConfig(generation_mode="server-ish")
+
+
+def test_the_turns_record_the_wire_fields_that_went_out(endpoint):
+    """The transcript keeps the per-turn contract, not only the run-level one."""
+    base_url, _ = endpoint
+    cfg = RunConfig(base_url=base_url, model="test-model", context_window=32768)
+    run = _live_runner(cfg, base_url).run_task(_plain_task())
+    wire = run.transcript.turns[0].reply.raw.get("wire")
+    assert wire and wire["mode"] == "fixed"
+    assert wire["output_limit"] == run.transcript.extra["answer_budgets"][0]["tokens"]
+
+
+def test_a_payload_without_the_contract_fields_is_a_protocol_error():
+    """The contract is checked on the final body, so a dropped field is loud."""
+    from dailybench.providers import WireContract
+
+    contract = WireContract(seed=7, reasoning_budget=2048, stop=("STOP",))
+    payload: dict = {"model": "m", "messages": [], "stream": True}
+    assert contract.missing(payload) == [
+        "max_tokens", "temperature", "top_p", "reasoning_budget", "seed", "stop",
+    ]
+    payload.update(contract.payload_fields())
+    assert contract.missing(payload) == []
+    assert WireContract(mode="native", output_limit=64).missing(
+        {"model": "m", "messages": [], "stream": True, "max_tokens": 64}
+    ) == []
+
+
+def test_a_stand_that_refuses_the_reasoning_budget_keeps_the_run():
+    """A 400 on ``reasoning_budget`` drops the field once and says so."""
+    base_url, server = httpstub.start(reject_reasoning_budget=True)
+    try:
+        cfg = RunConfig(base_url=base_url, model="test-model", context_window=32768)
+        run = _live_runner(cfg, base_url).run_task(_plain_task())
+    finally:
+        httpstub.stop(server)
+
+    assert run.transcript.error is None
+    assert "reasoning_budget" not in httpstub.chat_payloads(server)[-1]
+    assert run.transcript.extra["wire"]["reasoning_dropped"] is True
+    assert run.transcript.extra["wire"]["reasoning_budget"] is None
+
+
+# --------------------------------------------------------------------------- #
+# H09: one limit policy, and an unverified answer is not ``ok``
+# --------------------------------------------------------------------------- #
+
+
+def test_a_pending_followup_is_not_cut_by_the_total_budget():
+    """H09: a 17K completion spent the whole 16K total before the correction.
+
+    The scenario had not been presented to the end, yet the row was ``ok`` and
+    ``0/2``: the model was graded on an answer to the *first* condition.
+    """
+    from dailybench.tasks import dialogue
+
+    task = dialogue.generate(random.Random(4), RunConfig())[0]
+    first = core.ModelReply(text="итог: дешёвый", completion_tokens=17000)
+    second = core.ModelReply(text="итог: дорогой", completion_tokens=200)
+    provider = ScriptedProvider([first, second])
+    cfg = RunConfig()
+    cfg.max_total_tokens = 16384
+    run = Runner(cfg, provider).run_task(task)
+
+    assert len(provider.calls) == 2, "правка второго сообщения обязана быть предъявлена"
+    assert provider.calls[1][-1]["role"] == "user"
+    assert run.transcript.extra["total_budget_overrun"] is True
+    assert "бюджет генерации" in " ".join(run.transcript.extra.get("notes", []))
+
+
+def test_a_scenario_stopped_without_an_answer_is_not_ok():
+    """H09: an exhausted budget that stops before the answer is unverified.
+
+    The call budget runs out, the tool-less release request still comes back
+    with calls, and no final answer exists: the row used to read ``ok``.
+    """
+    task = _tool_task("T-1")
+    replies = [_call(index, "read_file", {"path": "README.md"}) for index in range(1, 6)]
+    cfg = RunConfig()
+    cfg.max_tool_calls = 1
+    run = Runner(cfg, ScriptedProvider(replies)).run_task(task)
+
+    assert run.score.status == "error"
+    assert "до ответа" in (run.transcript.error or "")
+    assert run.transcript.extra.get("total_budget_overrun") is None
+
+
+def test_a_reply_without_usage_is_unconfirmed():
+    """H09: an endpoint that reports no usage cannot prove the budget held.
+
+    ``generated += reply.generated_tokens or 0`` used to count every usage-less
+    reply as free, so the total budget was silently bypassed and the row stayed
+    ``ok``.
+    """
+    task = _tool_task("T-1")
+    provider = ScriptedProvider([_call(1, "read_file", {"path": "README.md"}), core.ModelReply(text="готово")])
+    run = Runner(RunConfig(), provider).run_task(task)
+
+    assert run.transcript.extra["usage_unconfirmed"] is True
+    assert run.score.status == "error"
+    assert any("расход" in note and "не подтвержд" in note for note in run.score.notes)
+
+
+def test_a_reported_usage_confirms_the_budget():
+    task = _tool_task("T-1")
+    call = _call(1, "read_file", {"path": "README.md"})
+    call.completion_tokens = 5
+    reply = core.ModelReply(text="готово", completion_tokens=5)
+    run = Runner(RunConfig(), ScriptedProvider([call, reply])).run_task(task)
+    assert run.transcript.extra.get("usage_unconfirmed") is None
+
+
+def test_max_new_tokens_is_an_upper_bound_on_the_window_branch():
+    """H09: ``--max-new-tokens 32`` reached the config but not the request.
+
+    The window branch ignored it entirely and 259834 tokens went out.
+    """
+    cfg = RunConfig(context_window=32768, answer_cap=32)
+    plan = cfg.plan_answer("A", 1000)
+    assert plan.tokens == 32
+    assert plan.capped_by == "max_new_tokens"
+
+
+def test_the_cli_max_new_tokens_reaches_the_budget():
+    from dailybench.cli import _config_from, build_parser
+
+    cfg = _config_from(build_parser().parse_args(["run", "--max-new-tokens", "32"]))
+    assert cfg.answer_cap == 32
+    assert cfg.plan_answer("A", 1000).tokens == 32
+
+
+# --------------------------------------------------------------------------- #
+# H10: a budget is recorded with its source, and the floor is not silent
+# --------------------------------------------------------------------------- #
+
+
+def _coefficient_task(ratio: float) -> core.TaskInstance:
+    task = _copy_task(_plain_task())
+    task.meta["chars_per_token"] = ratio
+    return task
+
+
+def _copy_task(task: core.TaskInstance) -> core.TaskInstance:
+    from dataclasses import replace
+
+    return replace(task, meta=dict(task.meta))
+
+
+def test_a_tokenizer_less_endpoint_uses_the_saved_task_coefficient():
+    """H10: without /tokenize the budget fell to chars/2.5 for every document.
+
+    The per-document ratio measured at run start was already stored per task;
+    ignoring it turned a 31K prompt into a 37K estimate and the answer into the
+    256-token floor.
+    """
+    task = _coefficient_task(4.0)
+    cfg = RunConfig(context_window=1_000_000)
+    run = Runner(cfg, ScriptedProvider([core.ModelReply(text="ok", completion_tokens=3)])).run_task(task)
+
+    record = run.transcript.extra["answer_budgets"][0]
+    assert record["source"] == "task-coefficient"
+    assert "коэффициент" in record["reason"]
+    sent = len(task.prompt) + len(cfg.system_prompt)
+    assert record["tokens"] < int(sent / 2.5) or record["tokens"] > 0
+
+
+def test_the_floor_is_flagged_when_no_room_is_left():
+    """H10: the 256-token floor must not look like a measured budget."""
+    task = _coefficient_task(4.0)
+    cfg = RunConfig(context_window=2048)
+    run = Runner(cfg, ScriptedProvider([core.ModelReply(text="ok", completion_tokens=3)])).run_task(task)
+
+    record = run.transcript.extra["answer_budgets"][0]
+    assert record["floor"] is True and record["tokens"] == 256
+    assert "floor" in record["reason"]
+    assert any("floor" in note for note in run.transcript.extra["notes"])
+
+
+def test_the_sent_budget_and_its_reason_are_persisted():
+    task = _tool_task("T-1")
+    run = Runner(
+        RunConfig(context_window=32768),
+        ScriptedProvider([_call(1, "read_file", {"path": "README.md"}), core.ModelReply(text="готово")]),
+    ).run_task(task)
+    record = run.transcript.extra["answer_budgets"][0]
+    assert record["tokens"] > 0 and record["reason"]
+    assert record["policy"] in ("window", "fixed")
+
+
+# --------------------------------------------------------------------------- #
+# H11: the tool continuation keeps the assistant protocol fields
+# --------------------------------------------------------------------------- #
+
+
+def test_the_tool_continuation_returns_the_assistant_reasoning():
+    """H11: DeepSeek thinking mode rejects a tool result without it (HTTP 400).
+
+    The runner rebuilt a trimmed role/content/tool_calls triple, so the
+    ``reasoning_content`` of the assistant message was lost between the tool
+    call and the next request.
+    """
+    task = _tool_task("T-1")
+    call = _call(1, "read_file", {"path": "README.md"})
+    call.reasoning = "думаю про файл"
+    run = Runner(RunConfig(), ScriptedProvider([call, core.ModelReply(text="готово")])).run_task(task)
+
+    followup = run.transcript.turns[1].messages
+    assistant = [m for m in followup if m.get("role") == "assistant"][-1]
+    assert assistant["reasoning_content"] == "думаю про файл"
+    assert assistant["tool_calls"][0]["function"]["name"] == "read_file"
+
+
+def test_the_reasoning_travels_over_the_wire_httpstub():
+    """H11 end to end: a stand that enforces the contract answers 400 without it."""
+    base_url, server = httpstub.start(
+        tool_call={"name": "read_file", "arguments": {"path": "README.md"}},
+        require_reasoning_on_tool_continuation=True,
+    )
+    try:
+        task = _tool_task("T-1")
+        cfg = RunConfig(base_url=base_url, model="test-model", context_window=32768)
+        run = _live_runner(cfg, base_url).run_task(task)
+    finally:
+        httpstub.stop(server)
+
+    # The stub answers every request with a tool call, so the run ends on the
+    # call budget without a final text: the protocol, not the answer, is the point.
+    assert run.transcript.error is None or "до ответа" in run.transcript.error
+    requests = httpstub.chat_payloads(server)
+    assert len(requests) >= 2
+    assistant = [m for m in requests[1]["messages"] if m.get("role") == "assistant"][-1]
+    assert assistant["reasoning_content"] == "думаю "
 
 
 # --------------------------------------------------------------------------- #
@@ -1160,17 +2100,25 @@ def test_current_refuses_a_damaged_generation(tmp_path: Path):
     assert len(generation.read_json(tmp_path, "tasks.json")) == 1
 
 
-def test_current_ignores_a_generation_whose_root_was_edited(tmp_path: Path):
-    """The in-place root edit corrupts the shared inode; resume must see it."""
-    from dailybench import generation
+def test_current_seals_the_generation_against_a_root_edit(tmp_path: Path):
+    """The root export is a copy, so an edit there cannot rewrite the seal.
 
-    _task, _older, _latest = _two_generations(tmp_path)
+    The working readers follow the edited root (an operator changed state on
+    purpose), but the sealed generation keeps its own bytes and stays current.
+    """
+    from dailybench import generation
+    from dailybench.report import load_run
+
+    _task, _older, latest = _two_generations(tmp_path)
     saved = json.loads((tmp_path / "tasks.json").read_text(encoding="utf-8"))
     saved[0]["transcript"]["error"] = "boom"
     (tmp_path / "tasks.json").write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
 
-    assert generation.current(tmp_path) is None
+    assert generation.current(tmp_path) == latest
+    sealed = json.loads((latest / "tasks.json").read_text(encoding="utf-8"))
+    assert sealed[0]["transcript"]["error"] != "boom"
     assert generation.read_json(tmp_path, "tasks.json")[0]["transcript"]["error"] == "boom"
+    assert load_run(tmp_path)["integrity"] == "root-drift"
 
 
 def test_current_rejects_a_generation_of_another_identity(tmp_path: Path):
@@ -1204,6 +2152,65 @@ def test_current_refuses_when_no_copy_is_consistent(tmp_path: Path):
     assert generation.committed(tmp_path) == tmp_path
 
 
+def test_load_run_reads_a_valid_manifest_generation(tmp_path: Path):
+    from dailybench.report import load_run
+
+    _task, _older, latest = _two_generations(tmp_path)
+    sealed = json.loads((latest / "scores.json").read_text(encoding="utf-8"))[0]["earned"]
+    data = load_run(tmp_path)
+    assert data["integrity"] == "sealed"
+    assert data["scores"][0]["earned"] == sealed
+    assert generation_base(tmp_path, latest)
+
+
+def generation_base(directory: Path, expected: Path) -> bool:
+    from dailybench import generation
+
+    return generation.current(directory) == expected
+
+
+def test_load_run_quarantines_a_broken_manifest_generation(tmp_path: Path):
+    """A manifest that no longer verifies must not fall back to the root copies.
+
+    The root copies are exports of the same generation: falling back to them
+    accepts whatever bytes are there, so a damaged seal becomes a silent new
+    score instead of an integrity failure.
+    """
+    from dailybench import generation
+    from dailybench.report import load_run
+
+    _task, _older, latest = _two_generations(tmp_path)
+    (latest / "scores.json").write_text('[{"earned": 9.0}]', encoding="utf-8")
+    assert generation.current(tmp_path) is None
+
+    with pytest.raises(generation.IntegrityError, match="карантин|integrity"):
+        load_run(tmp_path)
+
+
+def test_load_run_reports_a_root_copy_that_drifted_from_the_manifest(tmp_path: Path):
+    """The root export is a copy: editing it must not rewrite the generation.
+
+    A stale/edited root used to be served as the newest state; the reader must
+    keep the sealed bytes and report the drift.
+    """
+    from dailybench.report import load_run
+
+    _task, _older, latest = _two_generations(tmp_path)
+    sealed_data = json.loads((latest / "scores.json").read_text(encoding="utf-8"))
+    sealed = sealed_data[0]["earned"]
+    root = json.loads((tmp_path / "scores.json").read_text(encoding="utf-8"))
+    root[0]["earned"] = sealed + 7.0
+    (tmp_path / "scores.json").write_text(json.dumps(root), encoding="utf-8")
+
+    assert json.loads((latest / "scores.json").read_text(encoding="utf-8"))[0]["earned"] == sealed, (
+        "правка root не должна менять generation"
+    )
+
+    data = load_run(tmp_path)
+    assert data["integrity"] == "root-drift"
+    assert data["scores"][0]["earned"] == sealed
+
+
 def test_a_single_damaged_generation_is_not_trusted(tmp_path: Path):
     from dailybench import generation
     from dailybench.runner import RunResult
@@ -1221,6 +2228,108 @@ def test_a_single_damaged_generation_is_not_trusted(tmp_path: Path):
     assert generation.current(tmp_path) is None
 
 
+def _windows_fsync(monkeypatch) -> list[int]:
+    """Windows refuses ``os.fsync`` on a regular file opened ``rb``.
+
+    Directories are opened read-only on every platform and are handled apart.
+    """
+    real = os.fsync
+    calls: list[int] = []
+
+    def fsync(fd: int) -> None:
+        calls.append(fd)
+        regular = stat.S_ISREG(os.fstat(fd).st_mode)
+        if regular and fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY:
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    return calls
+
+
+def _checkpoint(identity: str) -> dict[str, str]:
+    return {"config.json": json.dumps({"identity": identity}), "scores.json": "[]"}
+
+
+def test_the_first_checkpoint_survives_an_rb_handle_fsync(tmp_path: Path, monkeypatch):
+    """H19: fsync on a read-mode descriptor fails, so nothing is published."""
+    from dailybench import generation
+
+    calls = _windows_fsync(monkeypatch)
+    generation.commit(tmp_path, _checkpoint("run-1"), run_id="run-1", identity="run-1")
+
+    assert calls, "checkpoint never reached fsync"
+    assert generation.current(tmp_path) is not None, "first checkpoint is not published"
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["durability"] == [], "every barrier of this platform held"
+
+
+def test_no_temp_file_is_left_beside_a_published_file(tmp_path: Path, monkeypatch):
+    """The staged write is renamed over the target, not left as ``.x.tmp``."""
+    from dailybench import generation
+
+    _windows_fsync(monkeypatch)
+    generation.commit(tmp_path, _checkpoint("run-1"), run_id="run-1", identity="run-1")
+
+    published = generation.current(tmp_path)
+    assert published is not None
+    assert sorted(p.name for p in published.iterdir() if p.name.startswith(".")) == []
+    assert sorted(p.name for p in tmp_path.glob(".*")) == [generation.STORE]
+
+
+def test_windows_skips_the_directory_fsync_and_records_it(tmp_path: Path, monkeypatch):
+    """A directory handle cannot be opened on Windows: the marker says so."""
+    from dailybench import generation
+
+    monkeypatch.setattr(generation, "_dir_fsync_supported", lambda: False)
+    real_open = os.open
+
+    def windows_open(path, flags, *args, **kwargs):
+        if Path(path).is_dir():
+            raise PermissionError(errno.EACCES, "directory", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", windows_open)
+    _windows_fsync(monkeypatch)
+
+    generation.commit(tmp_path, _checkpoint("run-1"), run_id="run-1", identity="run-1")
+
+    assert generation.current(tmp_path) is not None
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["durability"] == ["directory-fsync:unsupported:nt"]
+
+
+def test_an_unsupported_file_fsync_degrades_with_a_marker(tmp_path: Path, monkeypatch):
+    """EINVAL means the filesystem cannot flush; the commit is marked, not lost."""
+    from dailybench import generation
+
+    def fsync(fd: int) -> None:
+        if stat.S_ISREG(os.fstat(fd).st_mode) and not fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY:
+            raise OSError(errno.EINVAL, "Invalid argument")
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    generation.commit(tmp_path, _checkpoint("run-1"), run_id="run-1", identity="run-1")
+
+    assert generation.current(tmp_path) is not None
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["durability"] == ["file-fsync:unsupported:einval"]
+
+
+def test_a_real_fsync_failure_still_fails_the_commit(tmp_path: Path, monkeypatch):
+    """An I/O error is not an unsupported platform and must not be swallowed."""
+    from dailybench import generation
+
+    def fsync(fd: int) -> None:
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    with pytest.raises(OSError) as failure:
+        generation.commit(tmp_path, _checkpoint("run-1"), run_id="run-1", identity="run-1")
+
+    assert failure.value.errno == errno.EIO
+    assert not (tmp_path / "manifest.json").exists()
+
+
 def test_reference_entry_applies_policy_and_launch():
     from dailybench import reference
 
@@ -1229,7 +2338,9 @@ def test_reference_entry_applies_policy_and_launch():
 
     assert cfg.quant == "IQ3_XXS"
     assert cfg.base_url == "http://127.0.0.1:8888/v1"
-    assert cfg.context_window == reference.POLICY["context_window"]
+    # The entry's own window, identical to the baseline's: a weight comparison
+    # must not change the available context.
+    assert cfg.context_window == 32768 == cfg.n_ctx
     assert cfg.temperature == reference.POLICY["temperature"] == 0.0
     assert cfg.top_p == 1.0
     assert cfg.max_new_tokens == reference.POLICY["answer_budget_default"]
@@ -1480,8 +2591,18 @@ def test_render_and_compare_markdown(tmp_path: Path):
     other["config"]["quant"] = "Q4_K_M"
     comparison = compare_markdown([run, other])
     assert "Сравнение конфигураций" in comparison
-    assert comparison.count("qwen3.8-27b") == 2
+    # The name now appears in the header and in the weight-sensitivity rows
+    # (published/equal/coding_heavy), so exact repetition is not the contract.
+    assert "qwen3.8-27b" in comparison
+    assert "| Модель |" in comparison
     assert "IQ4_XS" in comparison and "Q4_K_M" in comparison
+    assert "не сравнение весов" not in comparison, "различается только квант"
+
+    # A controlled parameter differs: the table stays, the claim does not.
+    other["config"]["context_window"] = 65536
+    differ = compare_markdown([run, other])
+    assert "не сравнение весов" in differ
+    assert "окно контекста" in differ and "65536" in differ
 
 
 def test_search_code_resolves_paths_under_a_realpath_root():
@@ -1686,11 +2807,47 @@ def test_the_report_prints_the_executor_environment():
     assert _DIGEST_A in markdown
     assert "runsc" in markdown
     assert "host_run: образ указан, но контейнер не запускался" in markdown
+    assert "образ подтверждён, но не применялся" in markdown, "не «Среда подтверждена» рядом с host_run"
     assert "1700000000" in markdown
     assert "libc6\t2.36-9+deb12u4" in markdown
 
     unverified = {**run, "environment": {"status": "unverified", "reason": "docker CLI не найден"}}
     assert "не проверено: docker CLI не найден" in render_markdown(unverified)
+
+
+def test_the_report_prints_observed_and_executed_separately_from_the_template():
+    """R05: a filled template must not read as the command that ran."""
+    run = {
+        "dir": ".",
+        "scores": [],
+        "config": {
+            "model": "m",
+            "launch": "unsloth studio run --model <x> --max-seq-length 32768",
+            "launch_executed": {
+                "method": "studio-api POST /api/inference/load",
+                "request": {"model_path": "m", "max_seq_length": 32768},
+            },
+            "observed": {
+                "source": "runtime /props",
+                "model_path": "/weights/m-Q3.gguf",
+                "quant": "unknown",
+                "n_ctx": 32768,
+                "kv_type": "unknown",
+                "server_gpu": "unknown",
+                "client_gpu": "RTX (24564 MiB)",
+                "weights_sha256": "unknown",
+            },
+        },
+    }
+    markdown = render_markdown(run)
+    assert "## Наблюдённая конфигурация" in markdown
+    assert "| GPU сервера | unknown |" in markdown
+    assert "| Квант (со слов runtime) | unknown |" in markdown
+    assert "Выполненная загрузка (executed)" in markdown
+    assert '"max_seq_length": 32768' in markdown
+    assert "Объявленный шаблон загрузки (declared" in markdown
+    assert markdown.index("Выполненная загрузка") < markdown.index("Объявленный шаблон")
+    assert "unknown" in markdown, "неизвестное печатается, а не подменяется объявленным"
 
 
 def test_provenance_refuses_a_foreign_image_on_resume(tmp_path: Path):
@@ -1716,3 +2873,488 @@ def test_provenance_refuses_a_foreign_image_on_resume(tmp_path: Path):
             build_suite(cfg),
             {"status": "verified", "image_digest": _DIGEST_B},
         )
+
+
+# --------------------------------------------------------------------------- #
+# bench is an admission gate, not a wrapper around a possibly stale server
+# --------------------------------------------------------------------------- #
+
+
+def _bench_reference(tmp_path: Path, base_url: str) -> Path:
+    """A reference file pointing at the stub, with the shipped policy."""
+    from dailybench import reference
+
+    path = tmp_path / "reference.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "dailybench/reference/1",
+                "policy": reference.POLICY,
+                "models": [
+                    {
+                        "id": "stub-entry",
+                        "label": "Stub entry",
+                        "runtime_id": "llama.cpp",
+                        "base_url": base_url,
+                        "model": "test-model",
+                        "quant": "IQ3_XXS",
+                        "context_window": 32768,
+                        "kv_type": "f16",
+                        "capabilities": {"tools": True},
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_bench_stops_when_the_launcher_fails(tmp_path: Path, endpoint, monkeypatch, capsys):
+    from dailybench import cli, launch
+
+    base_url, _ = endpoint
+    path = _bench_reference(tmp_path, base_url)
+    out = tmp_path / "run"
+    monkeypatch.setattr(launch, "up", lambda entry: (False, "модель не загрузилась за отведённое время", ""))
+    code = cli.main(
+        ["bench", "--config", "stub-entry", "--configs-path", str(path), "--out-dir", str(out), "--no-html"]
+    )
+
+    assert code != 0
+    assert "модель не загрузилась" in capsys.readouterr().err
+    assert not list(out.glob("*/tasks.json")), "старый сервер не должен пойти в прогон под новым именем"
+
+
+def test_bench_does_not_rank_an_unverified_configuration(tmp_path: Path, endpoint, monkeypatch, capsys):
+    from dailybench import cli, launch
+
+    base_url, _ = endpoint
+    path = _bench_reference(tmp_path, base_url)
+    out = tmp_path / "run"
+    monkeypatch.setattr(launch, "up", lambda entry: (True, "загружена", "key"))
+    code = cli.main(
+        ["bench", "--config", "stub-entry", "--configs-path", str(path), "--out-dir", str(out), "--no-html"]
+    )
+
+    assert code != 0
+    assert "не подтвердил" in capsys.readouterr().err
+    assert not list(out.glob("*/tasks.json"))
+
+
+def test_bench_hands_the_single_resolved_window_to_launch_and_run(tmp_path: Path, endpoint, monkeypatch):
+    from dailybench import cli, launch
+
+    base_url, _ = endpoint
+    path = _bench_reference(tmp_path, base_url)
+    out = tmp_path / "run"
+    seen: dict = {}
+
+    def fake_up(entry):
+        seen.update(entry)
+        return True, "загружена", "key"
+
+    monkeypatch.setattr(launch, "up", fake_up)
+    code = cli.main(
+        [
+            "bench", "--config", "stub-entry", "--configs-path", str(path), "--out-dir", str(out),
+            "--only", "IF-1", "--no-html", "--allow-unverified",
+        ]
+    )
+
+    assert code == 0
+    assert seen["context_window"] == 32768, "launcher получает разрешённое окно, а не политику"
+    saved = json.loads(next(out.glob("*/config.json")).read_text(encoding="utf-8"))
+    assert saved["context_window"] == 32768, "runner получает то же окно"
+
+
+def test_bench_records_the_executed_load_apart_from_the_declared_template(
+    tmp_path: Path, endpoint, monkeypatch
+):
+    """R05: the run config must carry what the launcher sent, not only the template."""
+    from dailybench import cli, launch
+
+    base_url, _ = endpoint
+    path = _bench_reference(tmp_path, base_url)
+    out = tmp_path / "run"
+
+    def fake_up(entry):
+        entry["executed"] = {
+            "method": "studio-api POST /api/inference/load",
+            "request": {"model_path": "test-model", "max_seq_length": 32768},
+        }
+        return True, "загружена", "key"
+
+    monkeypatch.setattr(launch, "up", fake_up)
+    code = cli.main(
+        [
+            "bench", "--config", "stub-entry", "--configs-path", str(path), "--out-dir", str(out),
+            "--only", "IF-1", "--no-html", "--allow-unverified",
+        ]
+    )
+
+    assert code == 0
+    saved = json.loads(next(out.glob("*/config.json")).read_text(encoding="utf-8"))
+    assert saved["launch_executed"]["request"]["max_seq_length"] == 32768
+    assert saved["launch"], "шаблон тоже сохраняется — для воспроизведения"
+    assert "-c" in saved["launch"] or "studio run" in saved["launch"], "launch остаётся шаблоном"
+    assert saved["launch_executed"]["request"] != saved["launch"]
+    # The stub serves no /props: the observed lane must say so instead of
+    # repeating the declared window.
+    assert saved["observed"]["source"] == "unknown"
+    assert saved["observed"]["n_ctx"] == "unknown"
+
+
+def test_load_entry_rejects_a_server_still_serving_the_old_quant(monkeypatch):
+    from dailybench import launch
+
+    monkeypatch.setattr(launch, "studio_api", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        launch, "api", lambda base_url, path, timeout=10.0: {"data": [{"id": "m", "loaded": True}]}
+    )
+    monkeypatch.setattr(
+        launch,
+        "props",
+        lambda base_url, timeout=10.0: {
+            "default_generation_settings": {"n_ctx": 32768},
+            "model_path": "/weights/Qwen3.8-27B-UD-Q3_K_XL.gguf",
+        },
+    )
+
+    ok, note = launch.load_entry(
+        "http://127.0.0.1:8888/v1", "k", {"model": "m", "quant": "IQ3_XXS", "context_window": 32768}
+    )
+    assert not ok
+    assert "UD-Q3_K_XL" in note and "IQ3_XXS" in note
+
+
+def test_load_entry_rejects_a_shaved_window(monkeypatch):
+    from dailybench import launch
+
+    monkeypatch.setattr(launch, "studio_api", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        launch, "api", lambda base_url, path, timeout=10.0: {"data": [{"id": "m", "loaded": True}]}
+    )
+    monkeypatch.setattr(
+        launch,
+        "props",
+        lambda base_url, timeout=10.0: {
+            "default_generation_settings": {"n_ctx": 8192},
+            "model_path": "/weights/m-IQ3_XXS.gguf",
+        },
+    )
+
+    ok, note = launch.load_entry(
+        "http://127.0.0.1:8888/v1", "k", {"model": "m", "quant": "IQ3_XXS", "context_window": 32768}
+    )
+    assert not ok
+    assert "8192" in note and "32768" in note
+
+
+def test_load_entry_accepts_the_declared_configuration(monkeypatch):
+    from dailybench import launch
+
+    monkeypatch.setattr(launch, "studio_api", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        launch, "api", lambda base_url, path, timeout=10.0: {"data": [{"id": "m", "loaded": True}]}
+    )
+    monkeypatch.setattr(
+        launch,
+        "props",
+        lambda base_url, timeout=10.0: {
+            "default_generation_settings": {"n_ctx": 32768},
+            "model_path": "/weights/m-IQ3_XXS.gguf",
+        },
+    )
+
+    ok, note = launch.load_entry(
+        "http://127.0.0.1:8888/v1", "k", {"model": "m", "quant": "IQ3_XXS", "context_window": 32768}
+    )
+    assert ok
+    assert "n_ctx=32768" in note
+
+
+def test_load_entry_records_the_request_it_actually_sends(monkeypatch):
+    """The executed lane is the real body, not the launch template."""
+    from dailybench import launch
+
+    sent: dict[str, dict] = {}
+
+    def fake_api(base_url, path, key, payload=None, timeout=900):
+        sent[path] = payload or {}
+        return {}
+
+    monkeypatch.setattr(launch, "studio_api", fake_api)
+    monkeypatch.setattr(
+        launch, "api", lambda base_url, path, timeout=10.0: {"data": [{"id": "m", "loaded": True}]}
+    )
+    monkeypatch.setattr(
+        launch,
+        "props",
+        lambda base_url, timeout=10.0: {
+            "default_generation_settings": {"n_ctx": 32768},
+            "model_path": "/weights/m-IQ3_XXS.gguf",
+        },
+    )
+    entry = {"model": "m", "quant": "IQ3_XXS", "context_window": 32768, "kv_type": "f16"}
+
+    ok, _ = launch.load_entry("http://127.0.0.1:8888/v1", "k", entry)
+
+    assert ok
+    assert sent["/api/inference/load"]["cache_type_kv"] == "f16"
+    assert entry["executed"]["request"] == sent["/api/inference/load"]
+    assert entry["executed"]["method"].startswith("studio-api")
+
+
+# --------------------------------------------------------------------------- #
+# H02: the identity covers the executed evaluator, not one dispatcher module
+# --------------------------------------------------------------------------- #
+
+
+@contextlib.contextmanager
+def _mutate_once(path: Path, suffix: bytes = b"\n# identity probe\n"):
+    saved = path.read_bytes()
+    path.write_bytes(saved + suffix)
+    try:
+        yield
+    finally:
+        path.write_bytes(saved)
+
+
+def test_evaluator_identity_covers_every_category_module(monkeypatch):
+    """A hidden evaluator file is part of the contract, not an implementation detail.
+
+    C used to fingerprint only ``coding.py``: replacing every hidden test in
+    ``coding_python.py`` left the identity untouched.
+    """
+    from dailybench import suite as suite_module
+
+    import dailybench.tasks.coding_python as python_coder
+    import dailybench.tasks.coding_go as go_coder
+
+    python_file = Path(python_coder.__file__)
+    go_file = Path(go_coder.__file__)
+    before = suite_module.evaluator_sha("C")
+    assert before == suite_module.evaluator_sha("C")
+
+    with _mutate_once(python_file):
+        assert suite_module.evaluator_sha("C") != before
+    with _mutate_once(go_file):
+        assert suite_module.evaluator_sha("C") != before
+    assert suite_module.evaluator_sha("C") == before
+
+
+def test_evaluator_identity_covers_the_showcase_bundles():
+    from dailybench import suite as suite_module
+
+    for category, name in (("K", "visual_particles"), ("L", "art")):
+        module = __import__(f"dailybench.tasks.{name}", fromlist=["_"])
+        before = suite_module.evaluator_sha(category)
+        with _mutate_once(Path(module.__file__)):
+            assert suite_module.evaluator_sha(category) != before, category
+        assert suite_module.evaluator_sha(category) == before
+
+
+def test_suite_identity_covers_hidden_tests_and_the_toolchain():
+    """``task.oracle`` carries the hidden tests and must break the digest.
+
+    The applied toolchain (python/go/sqlite/node/chromium) is part of the
+    grading contract too: the same oracle on another runtime is another
+    measurement.
+    """
+    import platform
+    import sqlite3
+
+    from dailybench import suite as suite_module
+
+    task = next(t for t in build_suite(RunConfig(seed=20260915)) if t.id == "IF-2")
+    before = suite_module.suite_digest([task])
+
+    task.oracle = {**task.oracle, "hidden_identity_probe": "new assertion"}
+    mutated = suite_module.suite_digest([task])
+
+    assert mutated["sha256"] != before["sha256"]
+    assert mutated["per_task"][0]["oracle_sha256"] != before["per_task"][0]["oracle_sha256"]
+    assert before["toolchain"]["python"] == platform.python_version()
+    assert before["toolchain"]["sqlite"] == sqlite3.sqlite_version
+    assert set(before["toolchain"]) >= {"python", "sqlite", "go", "node", "chromium"}
+    assert before["evaluator_bundle"]["A"]
+
+
+def test_grading_identity_changes_when_a_hidden_test_changes(monkeypatch):
+    """The identity a checkpoint stores must move with the hidden tests."""
+    from dailybench.runner import run_identity
+
+    import dailybench.tasks.coding_python as python_coder
+
+    cfg = RunConfig(seed=20260915)
+    digest = __import__("dailybench.suite", fromlist=["suite_digest"]).suite_digest(build_suite(cfg), cfg.profile)
+    before = run_identity(cfg, digest["sha256"])
+    with _mutate_once(Path(python_coder.__file__)):
+        changed = __import__("dailybench.suite", fromlist=["suite_digest"]).suite_digest(
+            build_suite(cfg), cfg.profile
+        )
+    assert changed["sha256"] != digest["sha256"]
+    assert run_identity(cfg, changed["sha256"]) != before
+
+
+# --------------------------------------------------------------------------- #
+# The task boundary (H01): the executor is recorded, not assumed
+# --------------------------------------------------------------------------- #
+
+
+def _fake_agent_run(agent_module, calls: dict):
+    """A stub agent run that writes the target file and remembers its sandbox."""
+
+    def fake_run(prompt, work_dir, cfg, *, agent_dir, timeout=None, sandbox=None):
+        work = Path(work_dir)
+        calls["work_dir"] = work
+        calls["sandbox"] = sandbox
+        if sandbox is not None and sandbox.ready_state and sandbox.ready_state[0]:
+            sandbox.agent_dir = agent_dir
+            sandbox.run_command(["pi"], host_env={})
+        (work / "solution.py").write_text("class AsyncTTLCache:  # stub\n", encoding="utf-8")
+        return agent_module.AgentRun(ok=True, text="ok", duration_s=0.1, turns=1, answer_tokens=3)
+
+    return fake_run
+
+
+def _coding_task():
+    import dailybench.tasks.coding_python as python_coder
+
+    cfg = RunConfig(seed=20260915)
+    return python_coder.generate(random.Random(3), cfg), cfg
+
+
+def test_without_docker_the_sandbox_falls_back_to_a_marked_host_run(monkeypatch):
+    """Fallback is allowed, but an image on disk never counts as a container."""
+    from dailybench import agent, isolation
+
+    monkeypatch.setattr(isolation, "ready", lambda **kwargs: (False, "docker CLI не найден"))
+    calls: dict = {}
+    monkeypatch.setattr(agent, "run", _fake_agent_run(agent, calls))
+    task, cfg = _coding_task()
+
+    run = Runner(cfg, ScriptedProvider([])).run_task(task)
+
+    assert calls["sandbox"] is not None, "объект песочницы нужен, чтобы записать причину"
+    record = run.transcript.extra["sandbox"]
+    assert record["executor_status"] == "host_run"
+    assert "docker" in record["executor_reason"]
+    assert "mounts" not in record
+
+
+def test_a_container_run_is_recorded_with_the_applied_limits(monkeypatch):
+    """The record names what really ran: mounts, env names, cgroups."""
+    from dailybench import agent, isolation
+
+    monkeypatch.setenv("DAILYBENCH_API_KEY", "host-secret-123")
+    monkeypatch.setattr(isolation, "ready", lambda **kwargs: (True, ""))
+
+    def fake_command(self, argv, *, host_env, deadline=None, stdout_path=None,
+                     stderr_path=None, network="endpoint"):
+        report = {
+            "status": "ok",
+            "container_exit_code": 0,
+            "mounts": [
+                {"src": str(self.work_dir), "dst": "/workspace", "readonly": False},
+                {"src": str(self.agent_dir), "dst": "/agent", "readonly": False},
+            ],
+            "env": sorted(self.env(host_env)),
+            "network": "bridge",
+            "cgroups": {"cpus": "2", "memory": "2g", "pids_limit": 256},
+            "rootfs": "read_only",
+            "capabilities": "dropped",
+            "deadline_s": deadline,
+            "timed_out": False,
+        }
+        self.runs.append(report)
+        return report
+
+    monkeypatch.setattr(isolation.Sandbox, "run_command", fake_command)
+    calls: dict = {}
+    monkeypatch.setattr(agent, "run", _fake_agent_run(agent, calls))
+    environment: dict = {"status": "verified", "executor_status": "host_run", "executor_reason": "x"}
+    task, cfg = _coding_task()
+
+    run = Runner(cfg, ScriptedProvider([]), environment=environment).run_task(task)
+
+    record = run.transcript.extra["sandbox"]
+    assert record["executor_status"] == "container_run"
+    assert record["executor_reason"] == ""
+    assert [mount["dst"] for mount in record["mounts"]] == ["/workspace", "/agent"]
+    assert "DAILYBENCH_API_KEY" not in record["env"]
+    assert record["cgroups"]["pids_limit"] == 256
+    assert record["rootfs"] == "read_only"
+    assert environment["executor_status"] == "container_run"
+
+
+def test_isolation_removes_the_working_copy_after_the_task(monkeypatch):
+    """Nothing of the task survives: the next model must not find it."""
+    from dailybench import agent, isolation
+
+    monkeypatch.setattr(isolation, "ready", lambda **kwargs: (False, "docker CLI не найден"))
+    calls: dict = {}
+    monkeypatch.setattr(agent, "run", _fake_agent_run(agent, calls))
+    task, cfg = _coding_task()
+
+    run = Runner(cfg, ScriptedProvider([])).run_task(task)
+
+    assert run.transcript.extra["work_dir_removed"] is True
+    assert not calls["work_dir"].exists()
+    assert not Path(run.transcript.extra["work_dir"]).exists()
+    # The grader still had the artefact: cleanup happens after scoring, not before.
+    assert run.transcript.tool_log is not None
+    assert run.score.possible == task.max_points
+
+
+def test_sandbox_false_asks_for_the_host_on_purpose(monkeypatch):
+    from dailybench import agent
+
+    calls: dict = {}
+    monkeypatch.setattr(agent, "run", _fake_agent_run(agent, calls))
+    monkeypatch.setattr(
+        "dailybench.isolation.ready", lambda **kwargs: pytest.fail("песочница выключена")
+    )
+    task, cfg = _coding_task()
+    cfg.sandbox = False
+
+    run = Runner(cfg, ScriptedProvider([])).run_task(task)
+
+    assert calls["sandbox"] is None
+    record = run.transcript.extra["sandbox"]
+    assert record["executor_status"] == "host_run"
+    assert "sandbox выключен" in record["executor_reason"]
+
+
+def test_a_broken_container_falls_back_to_the_host_and_is_marked(monkeypatch, tmp_path):
+    """A container that will not start must not lose the task — but must show."""
+    from dailybench import agent, isolation
+
+    fake = tmp_path / "pi"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo 1.0.0; exit 0; fi\n'
+        'echo host > fell-back.txt\n'
+        'printf \'%s\\n\' \'{"type":"message_end","message":{"role":"assistant",'
+        '"content":[{"type":"text","text":"ok"}],"usage":{"input":5,"output":2},"stopReason":"stop"}}\'\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(fake))
+    monkeypatch.setattr(isolation, "ready", lambda **kwargs: (True, ""))
+
+    def broken(self, argv, **kwargs):
+        raise isolation.InfraError("docker run failed before the command started")
+
+    monkeypatch.setattr(isolation.Sandbox, "run_command", broken)
+    task, cfg = _coding_task()
+
+    run = Runner(cfg, ScriptedProvider([])).run_task(task)
+
+    record = run.transcript.extra["sandbox"]
+    assert record["executor_status"] == "host_run"
+    assert "контейнере" in record["executor_reason"]
+    assert run.transcript.extra["agent"]["exit_ok"] is True
+    assert run.transcript.workspace_after.get("fell-back.txt", "").strip() == "host"

@@ -28,6 +28,7 @@ from typing import Any
 
 from .. import core, visual
 from ..config import RunConfig
+from ..rng import task_rng
 
 #: Scenario modules. Each one owns a handful of ids and renders its own
 #: reference pages; a slice can be written and verified on its own.
@@ -66,6 +67,8 @@ IDS = BASELINE_IDS
 PROFILE_IDS: dict[str, tuple[str, ...]] = {
     "pilot": PILOT_IDS,
     "stretch-v1": ALL_IDS,
+    # The research profile has no visual block: no K scenario, no K points.
+    "research-v1": (),
 }
 
 TITLE = "Visual simulations (Three.js)"
@@ -90,20 +93,25 @@ def _profile_ids(profile: str) -> tuple[str, ...]:
 
 
 def generate(rng: random.Random, cfg: RunConfig) -> list[core.TaskInstance]:
-    """The scenarios of the run's profile, each module drawing from the stream.
+    """The scenarios of the run's profile, each module drawing from its own stream.
 
     Modules outside the profile are not built at all, so a pilot run pays for
-    three scenarios rather than thirty. The result is re-ordered to the
-    declaration order of ``ALL_IDS`` and must match the profile exactly.
+    three scenarios rather than thirty. A module's stream is derived from its
+    name, not drawn off a shared cursor, so a scenario is byte-identical no
+    matter which modules precede it or whether the slice runs at all. The
+    result is re-ordered to the declaration order of ``ALL_IDS`` and must match
+    the profile exactly.
     """
     profile = core.profile_of(cfg)
     wanted = _profile_ids(profile)
     wanted_set = set(wanted)
+    base = rng.getrandbits(64)
     tasks: list[core.TaskInstance] = []
     for module in _MODULES:
         if not wanted_set.intersection(module.IDS):
             continue
-        tasks.extend(task for task in module.build(rng) if task.id in wanted_set)
+        module_rng = task_rng(base, "K", module.__name__)
+        tasks.extend(task for task in module.build(module_rng) if task.id in wanted_set)
     tasks.sort(key=lambda task: _ORDER[task.id])
     ids = tuple(task.id for task in tasks)
     # A half-written working tree may still run the rest of the suite; once the
@@ -130,5 +138,5 @@ core.register(
     generate=generate,
     evaluate=evaluate,
     expected_ids=BASELINE_IDS,
-    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": ALL_IDS},
+    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": ALL_IDS, "research-v1": ()},
 )

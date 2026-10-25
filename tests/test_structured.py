@@ -384,3 +384,23 @@ def test_check_schema_rejects_unsupported_keywords() -> None:
         check_schema({"type": "date"})
     with pytest.raises(ValueError):
         check_schema({"type": "array", "items": {"type": "string", "format": "uuid"}})
+
+
+def test_validator_accepts_integers_beyond_float_range() -> None:
+    """A Python int does not have to survive a float round-trip."""
+    assert validate(10**400, {"type": "integer"}) == []
+    assert validate({"ts": 10**400}, {"type": "object", "properties": {"ts": {"type": "integer"}}}) == []
+
+
+def test_validator_reports_giant_float_as_schema_error() -> None:
+    """A float that overflowed to infinity is a violation, not an exception."""
+    assert validate(float("inf"), {"type": "integer"}) != []
+    assert validate(float("nan"), {"type": "integer"}) != []
+    assert validate(1e400, {"type": "integer"}) != []
+
+
+def test_evaluate_survives_an_out_of_range_integer() -> None:
+    task = _tasks()[0]
+    answer = dict(task.oracle["answer"], latency_ms=10**400)
+    score = evaluate(task, _transcript(task, json.dumps(answer)))
+    assert _checks(score) == {"schema": False, "content": False}

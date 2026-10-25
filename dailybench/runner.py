@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field, fields, replace
@@ -20,6 +21,7 @@ from typing import Any
 from . import core
 from . import agent
 from . import generation
+from . import isolation
 from .config import RunConfig
 from .measure import VramSampler
 from .providers import Provider, ProviderError
@@ -28,8 +30,12 @@ from .rng import derived_seed
 SYSTEM_SENTINEL = "<<system>>"
 
 #: Bumped when the meaning of a checkpoint changes; a resume must not mix
-#: records written by a different harness contract.
-HARNESS_CONTRACT = 2
+#: records written by a different harness contract. Contract 4: the agentic
+#: categories execute in a container (host execution is a marked fallback), so a
+#: boundary change is a different measurement. Contract 3 covered the executed
+#: evaluator bundle, closed oracle, toolchain and agent binary, and the agent
+#: harness pins its release.
+HARNESS_CONTRACT = 4
 
 #: Config fields that belong to the identity of a run. ``only`` is a selection
 #: over the same suite, ``out_dir`` is the location, and the key is local.
@@ -64,12 +70,19 @@ def config_identity(cfg: RunConfig) -> str:
 
 
 def run_identity(cfg: RunConfig, suite_sha256: str) -> str:
-    """Full checkpoint identity: config contract, suite digest, harness version."""
+    """Full checkpoint identity: config contract, suite digest, harness version.
+
+    When the run drives the coding agent, the agent binary's version and digest
+    join the identity: two checkpoints produced by different ``pi`` releases are
+    not one observation. ``agent.identity()`` never installs and never raises, so
+    an absent binary is recorded as ``found: null`` instead of blocking resume.
+    """
     blob = json.dumps(
         {
             "schema": HARNESS_CONTRACT,
             "config": config_identity(cfg),
             "suite": suite_sha256,
+            "agent": agent.identity() if cfg.agent else None,
         },
         sort_keys=True,
     )
@@ -102,25 +115,41 @@ def _prompt_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]] |
     return total
 
 
-def _request_tokens(provider: Provider, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None) -> int:
-    """Request size in tokens for the window-aware answer budget.
+def _request_size(
+    provider: Provider,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    cfg: RunConfig,
+    task_id: str,
+    meta_ratio: float | None = None,
+) -> tuple[int, str]:
+    """``(tokens, source)`` — how much room the request leaves, and on what basis.
 
     Exact when the runtime can tokenize its own input: a character estimate on a
     700 KB document overshoots the window by tens of thousands of tokens and
     collapses the answer budget to its 256-token floor, which reads as an empty
-    answer rather than a measured one. The estimate stays as the fallback and
-    covers the chat template's framing (a few hundred tokens), while the 2048 +
-    2 % reserve in ``budget_for`` covers the estimate error on the way back.
+    answer rather than a measured one.
+
+    Without ``/tokenize`` the *saved per-document coefficient* is used before
+    the generic 2.5 divider. The calibration that produced it ran against the
+    real tokenizer, so it is the measured answer to the same question; the
+    divider is a last resort that once turned a 31K prompt into 37K estimated
+    tokens and left every LC request at the floor. The source travels with the
+    number: an approximated budget must not look measured.
     """
     text = "\n".join(str(message.get("content") or "") for message in messages)
     if tools:
         text += "\n" + json.dumps(tools, ensure_ascii=False)
-    estimate = _prompt_tokens(messages, tools)
     try:
         exact = provider.tokenize(text)
     except Exception:  # pragma: no cover - transport dependent
         exact = None
-    return exact if exact is not None else estimate
+    if exact is not None:
+        return int(exact), "tokenizer"
+    ratio = float(meta_ratio or cfg.task_ratios.get(task_id) or 0)
+    if ratio > 0:
+        return max(1, round(len(text) / ratio)), "task-coefficient"
+    return _prompt_tokens(messages, tools), "estimate"
 
 
 @dataclass
@@ -194,9 +223,9 @@ def transcript_from_dict(data: dict[str, Any], task: core.TaskInstance) -> core.
     return transcript
 
 
-def materialise(task: core.TaskInstance) -> Path:
+def materialise(task: core.TaskInstance, parent: Path | None = None) -> Path:
     """Write ``task.workspace`` into a fresh temp directory."""
-    work_dir = Path(tempfile.mkdtemp(prefix=f"dailybench-{task.id.lower()}-"))
+    work_dir = Path(tempfile.mkdtemp(prefix=f"dailybench-{task.id.lower()}-", dir=parent))
     for rel, content in (task.workspace or {}).items():
         target = work_dir / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -218,10 +247,107 @@ def snapshot(root: Path) -> dict[str, str]:
 class Runner:
     """Runs tasks against one provider and scores them with their category."""
 
-    def __init__(self, cfg: RunConfig, provider: Provider, sampler: VramSampler | None = None) -> None:
+    def __init__(
+        self,
+        cfg: RunConfig,
+        provider: Provider,
+        sampler: VramSampler | None = None,
+        environment: dict[str, Any] | None = None,
+    ) -> None:
         self.cfg = cfg
         self.provider = provider
         self.sampler = sampler or VramSampler()
+        self.environment = environment if environment is not None else {}
+        self._template: dict[str, Any] | None = None
+        self._template_probed = False
+        self._sandbox_state: tuple[bool, str] | None = None
+
+    def _sandbox_usable(self) -> tuple[bool, str]:
+        """Whether a container can run at all, checked once per run.
+
+        A failed probe is a property of the host, not of the task, so it is
+        cached: a Docker-less machine must not pay a daemon timeout per task.
+        """
+        if self._sandbox_state is None:
+            self._sandbox_state = isolation.ready()
+        return self._sandbox_state
+
+    def _sandbox(self, work_dir: Path) -> isolation.Sandbox:
+        """The boundary for one agent task, marked as host when it cannot run.
+
+        The object is returned either way: an unusable sandbox carries the
+        reason, and the transcript then says ``host_run`` with it instead of
+        silently inheriting the machine.
+        """
+        usable, reason = self._sandbox_usable()
+        box = isolation.Sandbox(
+            work_dir=work_dir,
+            image=isolation.default_image(),
+            runtime=isolation.default_runtime(),
+            base_url=self.cfg.base_url,
+            api_key=self.cfg.api_key,
+            deadline=float(self.cfg.task_wall_clock or self.cfg.request_wall_clock or 1800),
+            ready_state=(usable, reason),
+        )
+        if not usable:
+            box.fallback(reason or "песочница недоступна")
+        return box
+
+    def _note_container_run(self) -> None:
+        """The run really executed in a container: say so in the environment.
+
+        Written into the shared environment record of the ``RunResult``, which
+        the manifest and the report read. A single container is enough: the
+        claim is about the executor actually used.
+        """
+        if self.environment and self.environment.get("executor_status") != "container_run":
+            self.environment["executor_status"] = "container_run"
+            self.environment["executor_reason"] = ""
+
+    # -- the generation contract ------------------------------------------- #
+
+    def _template_identity(self) -> tuple[str, str | None]:
+        """Declared template version plus the digest the server reports.
+
+        The chat template is half of the prompt, so a run without it pinned is
+        not comparable to the next one. Only llama.cpp exposes it (``/props``);
+        an endpoint without it stays ``None`` and the gap is visible.
+        """
+        if not self._template_probed:
+            self._template_probed = True
+            probe = getattr(self.provider, "props", None)
+            self._template = probe() if callable(probe) else None
+        template = (self._template or {}).get("chat_template")
+        digest = (
+            hashlib.sha256(template.encode("utf-8")).hexdigest()
+            if isinstance(template, str) and template
+            else None
+        )
+        return self.cfg.template_version, digest
+
+    def _wire_contract(self, output_limit: int, seed: int) -> WireContract:
+        """The request contract for one answer, from the selected mode.
+
+        ``native`` deliberately carries no sampling and no reasoning budget: the
+        server decides. ``fixed`` carries all of it, and the request verifies it
+        on the final payload — the two are different measurements and the
+        transcript says which one ran.
+        """
+        from .providers import WireContract
+
+        version, digest = self._template_identity()
+        fixed = self.cfg.generation_mode == "fixed"
+        return WireContract(
+            mode=self.cfg.generation_mode,
+            temperature=self.cfg.temperature,
+            top_p=self.cfg.top_p,
+            seed=seed,
+            output_limit=output_limit,
+            reasoning_budget=int(self.cfg.reasoning_budget) if fixed else None,
+            stop=tuple(self.cfg.stop_sequences),
+            template_version=version,
+            template_sha256=digest,
+        )
 
     # -- one task ---------------------------------------------------------- #
 
@@ -244,7 +370,14 @@ class Runner:
             return TaskRun(task=task, transcript=transcript, score=score)
 
         agent_mode = self._uses_agent(task)
-        work_dir = agent.prepare_work_dir(task) if agent_mode else materialise(task)
+        # One root per task, removed in the ``finally`` below: the working copy,
+        # the agent's config and its logs live inside it. A shared parent let two
+        # tasks collide on ``pi-agent/models.json`` and left every copy behind for
+        # the next model to find.
+        task_root = Path(tempfile.mkdtemp(prefix=f"dailybench-{task.id.lower()}-"))
+        work_dir = (
+            agent.prepare_work_dir(task, task_root) if agent_mode else materialise(task, task_root)
+        )
         before = snapshot(work_dir)
         driver_factory = None if agent_mode else core.TOOL_DRIVERS.get(task.category)
         driver = driver_factory(task, work_dir) if driver_factory else None
@@ -253,13 +386,57 @@ class Runner:
             task_id=task.id,
             category=task.category,
             workspace_before=before,
-            extra={"work_dir": str(work_dir), "harness": "agent" if agent_mode else "chat"},
+            extra={
+                "work_dir": str(work_dir),
+                "harness": "agent" if agent_mode else "chat",
+            },
         )
+        sandbox = self._sandbox(work_dir) if agent_mode and self.cfg.sandbox else None
+        if agent_mode:
+            transcript.extra["sandbox"] = (
+                sandbox.record()
+                if sandbox is not None
+                else {
+                    "executor_status": "host_run",
+                    "executor_reason": "sandbox выключен в конфигурации (sandbox=false)",
+                }
+            )
+        try:
+            return self._run_task_inner(
+                task, transcript, work_dir, agent_mode, driver, sandbox
+            )
+        finally:
+            if sandbox is not None:
+                # Rewritten after execution: only a container that really ran may
+                # call itself ``container_run``.
+                transcript.extra["sandbox"] = sandbox.record()
+                if sandbox.runs:
+                    self._note_container_run()
+            if driver is not None:
+                closer = getattr(driver, "close", None)
+                if callable(closer):
+                    try:
+                        closer()
+                    except Exception:  # pragma: no cover - cleanup must not abort
+                        pass
+            shutil.rmtree(task_root, ignore_errors=True)
+            transcript.extra["work_dir_removed"] = not task_root.exists()
+
+    def _run_task_inner(
+        self,
+        task: core.TaskInstance,
+        transcript: core.Transcript,
+        work_dir: Path,
+        agent_mode: bool,
+        driver: Any,
+        sandbox: isolation.Sandbox | None,
+    ) -> TaskRun:
+        """The task itself, on a working copy the caller already made and cleans."""
         if driver is not None:
             transcript.extra["driver"] = task.category
 
         if agent_mode:
-            self._run_agent(task, transcript, work_dir)
+            self._run_agent(task, transcript, work_dir, sandbox)
             # The working copy is temporary: record what the agent produced while
             # it still exists, so a report rendered later shows the graded file.
             agent.record_artefact(task, transcript)
@@ -272,13 +449,15 @@ class Runner:
         if self.cfg.system_prompt:
             messages.append({"role": "system", "content": self.cfg.system_prompt})
         messages.append({"role": "user", "content": task.prompt})
-        started = time.perf_counter()
+        started = time.perf_counter()  # elapsed metric only
         # One absolute deadline for the whole task, not one per request: the
         # old per-request ceiling was multiplied by every tool turn and doubled
         # again by the ``stream_options`` retry. Each request below gets the
-        # smaller of its own ceiling and what is left on this deadline.
+        # smaller of its own ceiling and what is left on this deadline. The
+        # deadline lives in the ``monotonic`` domain — the same clock the stop
+        # rule below compares against; ``perf_counter`` only feeds durations.
         total_wall_clock = float(self.cfg.task_wall_clock or self.cfg.request_wall_clock or 1800)
-        task_deadline = started + total_wall_clock
+        task_deadline = time.monotonic() + total_wall_clock
         sampler_before = self.sampler.peak_mib
         tool_calls = 0
         generated = 0
@@ -288,16 +467,49 @@ class Runner:
         call_budget = self.cfg.max_tool_calls + int((task.oracle or {}).get("call_headroom") or 0)
         budget_spent = False
         followups = list(task.dialogue or [])
+        # One ceiling for the whole task, and the same ceiling the answer budget
+        # is clamped to: an unbounded window allowed a 17K completion under a
+        # 16K total, and the scenario was then graded on its first half.
+        total_limit = int(self.cfg.max_total_tokens)
+        usage_missing = False
+        tools_answered = False
+        awaiting = False
+        """A message the model still owes an answer to; a budget stop here is unverified."""
+        overrun = False
+        # Declared first: if the very first request dies, the report still names
+        # the mode that was intended instead of showing nothing at all.
+        transcript.extra["wire"] = {"mode": self.cfg.generation_mode, "verified": "declared"}
         try:
             while True:
                 # One stop rule, checked before every new request: a spent
                 # generation budget must never turn into another call just
                 # because the previous reply happened to carry a tool call.
-                if generated >= self.cfg.max_total_tokens:
-                    transcript.extra.setdefault("notes", []).append(
-                        f"бюджет генерации исчерпан ({self.cfg.max_total_tokens})"
-                    )
-                    break
+                # A scenario that was not presented to the end, or a tool result
+                # that never reached the model, is unverified — not ``ok``.
+                if generated >= total_limit:
+                    if "бюджет генерации" not in " ".join(transcript.extra.get("notes", [])):
+                        transcript.extra.setdefault("notes", []).append(
+                            f"бюджет генерации исчерпан ({total_limit})"
+                        )
+                    unfinished = awaiting
+                    if not unfinished:
+                        if not transcript.turns or transcript.turns[-1].reply.tool_calls:
+                            # The last reply only asked for tools the budget no
+                            # longer allows: no answer was produced.
+                            transcript.error = (
+                                f"бюджет генерации исчерпан ({total_limit}) до ответа"
+                            )
+                            transcript.extra["failure"] = "incomplete_scenario"
+                        break
+                    # The dialogue turn or the release turn is still owed:
+                    # stopping here would grade a half-presented scenario as ok.
+                    if not overrun:
+                        overrun = True
+                        transcript.extra["total_budget_overrun"] = True
+                        transcript.extra.setdefault("notes", []).append(
+                            "бюджет превышен ради предъявления сценария до конца"
+                        )
+                    tools_answered = False
                 # A request started after the deadline would only be killed by
                 # its own socket timeout, so the task stops here instead and is
                 # reported unverified rather than scored on a partial answer.
@@ -306,9 +518,40 @@ class Runner:
                     note = f"предел времени на задание {total_wall_clock:g} с исчерпан"
                     transcript.extra.setdefault("notes", []).append(note)
                     transcript.error = note
-                    transcript.extra["infra_error"] = True
+                    # A declared per-task ceiling is a property of the test, not
+                    # of the endpoint: the scenario is exhausted, not
+                    # unavailable, and stays in the denominator.
+                    transcript.extra["failure"] = "candidate_resource_exhausted"
                     break
                 request_budget = min(float(self.cfg.request_wall_clock or left), left)
+                size, size_source = _request_size(
+                    self.provider,
+                    messages,
+                    task.tools,
+                    self.cfg,
+                    task.id,
+                    task.meta.get("chars_per_token"),
+                )
+                plan = self.cfg.plan_answer(task.category, size, source=size_source)
+                if not overrun:
+                    # The per-answer limit is bounded by what is left of the
+                    # task total: two ceilings that disagreed were the bug.
+                    remaining = total_limit - generated
+                    if remaining < plan.tokens:
+                        plan = replace(
+                            plan,
+                            tokens=max(1, remaining),
+                            reason=f"{plan.reason}; остаток общего бюджета {remaining}",
+                            capped_by="total_budget",
+                        )
+                transcript.extra.setdefault("answer_budgets", []).append(
+                    {**plan.as_dict(), "turn": len(transcript.turns)}
+                )
+                if plan.floor:
+                    transcript.extra.setdefault("notes", []).append(
+                        f"ответ у floor {plan.tokens}: {plan.reason}"
+                    )
+                seed = derived_seed(self.cfg.seed, task.id, str(len(transcript.turns)))
                 reply = self.provider.chat(
                     messages,
                     # Once the call budget is spent, send no tools: a tool-less
@@ -316,14 +559,21 @@ class Runner:
                     # more callable batch. Without this every budget-capped task
                     # ended on an empty tool_calls reply (I-1, T-2, T-4, T-6).
                     None if budget_spent else task.tools,
-                    max_new_tokens=self.cfg.budget_for(task.category, _request_tokens(self.provider, messages, task.tools)),
+                    max_new_tokens=plan.tokens,
                     temperature=self.cfg.temperature,
                     top_p=self.cfg.top_p,
-                    seed=derived_seed(self.cfg.seed, task.id, str(len(transcript.turns))),
+                    seed=seed,
                     wall_clock=request_budget,
+                    contract=self._wire_contract(plan.tokens, seed),
                 )
                 transcript.turns.append(core.Turn(messages=_copy_messages(messages), reply=reply))
+                if isinstance(reply.raw.get("wire"), dict):
+                    transcript.extra.setdefault("wire", {}).update(reply.raw["wire"])
+                if reply.generated_tokens is None:
+                    usage_missing = True
                 generated += reply.generated_tokens or 0
+                tools_answered = bool(reply.tool_calls)
+                awaiting = tools_answered
 
                 if reply.tool_calls and driver is None:
                     # Nothing can execute the calls: stop on the reply as it is.
@@ -332,15 +582,20 @@ class Runner:
                     if followups:
                         # Scripted dialogue: hand the next user message to the
                         # model and keep every earlier constraint in the history.
-                        messages.append({"role": "assistant", "content": reply.text or ""})
+                        messages.append(_assistant_message(reply, tool_calls=bool(reply.tool_calls)))
                         messages.append({"role": "user", "content": followups.pop(0)})
+                        awaiting = True
                         continue
                     break
                 room = call_budget - tool_calls
                 if room <= 0:
                     if budget_spent:
                         # A tool-less request already went out and still came
-                        # back with calls: one more would loop forever.
+                        # back with calls: one more would loop forever. No final
+                        # answer was produced, so the row is unverified.
+                        transcript.error = transcript.error or (
+                            f"бюджет вызовов инструментов исчерпан ({call_budget}) до ответа"
+                        )
                         break
                     transcript.extra.setdefault("notes", []).append(
                         f"бюджет вызовов инструментов исчерпан ({call_budget})"
@@ -358,6 +613,7 @@ class Runner:
                             ),
                         }
                     )
+                    awaiting = True
                     continue
                 calls = list(reply.tool_calls)
                 if len(calls) > room:
@@ -421,18 +677,44 @@ class Runner:
                             ),
                         }
                     )
+                    awaiting = True
 
-                if generated >= self.cfg.max_total_tokens:
-                    transcript.extra.setdefault("notes", []).append(
-                        f"бюджет генерации исчерпан ({self.cfg.max_total_tokens})"
-                    )
+                if generated >= total_limit:
+                    if "бюджет генерации" not in " ".join(transcript.extra.get("notes", [])):
+                        transcript.extra.setdefault("notes", []).append(
+                            f"бюджет генерации исчерпан ({total_limit})"
+                        )
                     break
         except ProviderError as exc:
             transcript.error = str(exc)
             if getattr(exc, "infra", True):
                 transcript.extra["infra_error"] = True
+                text = str(exc)
+                transport = any(
+                    marker in text
+                    for marker in ("обрыв соединения", "unreachable", "сокет", "ConnectionReset", "RemoteDisconnected")
+                )
+                transcript.extra["failure"] = (
+                    "transport_unavailable" if transport else "provider_unavailable"
+                )
+            else:
+                transcript.extra["failure"] = "model_protocol_failure"
         except Exception as exc:  # pragma: no cover - defensive
             transcript.error = f"{type(exc).__name__}: {exc}"
+
+        if usage_missing:
+            # Without ``completion_tokens`` the stop rule counted every reply as
+            # free: the total budget was bypassed silently and the row still
+            # read ``ok``. Unknown spend is unverified spend.
+            transcript.extra["usage_unconfirmed"] = True
+            if transcript.error is None:
+                transcript.extra["usage_unconfirmed_only"] = True
+                transcript.error = (
+                    "endpoint не сообщает расход токенов: бюджет генерации не подтверждён"
+                )
+            transcript.extra.setdefault("notes", []).append(
+                "расход токенов не подтверждён endpoint'ом (usage отсутствует)"
+            )
 
         transcript.duration_s = time.perf_counter() - started
         transcript.workspace_after = snapshot(work_dir)
@@ -456,16 +738,22 @@ class Runner:
         The artefact budgets (8192) are enough for a *chat* answer, but an agent
         spends them on thinking *and* a tool call in one response: a real C-2 run
         produced an 8012-token response out of 8192 and was cut off before it
-        wrote anything. The agent therefore gets the room a window-aware chat run
-        already gets: the same ``budget_for`` the chat path uses, floored at the
-        category table so a tiny window cannot starve a whole-file answer.
+        wrote anything. The agent therefore gets the room the same
+        ``plan_answer`` policy gives the chat path, floored at the category
+        table so a tiny window cannot starve a whole-file answer.
         """
         table = int(self.cfg.max_new_tokens_by_category.get(task.category, self.cfg.max_new_tokens))
         if not self.cfg.unbounded_budget:
             return table
-        return max(table, int(self.cfg.budget_for(task.category, 0)))
+        return max(table, self.cfg.plan_answer(task.category, 0).tokens)
 
-    def _run_agent(self, task: core.TaskInstance, transcript: core.Transcript, work_dir: Path) -> None:
+    def _run_agent(
+        self,
+        task: core.TaskInstance,
+        transcript: core.Transcript,
+        work_dir: Path,
+        sandbox: isolation.Sandbox | None = None,
+    ) -> None:
         """Hand the task to ``pi`` in its working copy and record what happened.
 
         The agent owns its own loop, so the transcript carries the agent's own
@@ -473,22 +761,47 @@ class Runner:
         tool call, and the usage the agent measured. The answer itself is read
         from disk afterwards (see :func:`agent.answer_text`) — a chat reply is a
         fallback, not the deliverable.
+
+        With *sandbox* the loop runs in a container that mounts the working copy
+        and nothing else; the endpoint it dials is rewritten to the host gateway.
         """
         started = time.perf_counter()
+        budget = self._agent_budget(task)
+        # The agent loop runs inside ``pi``, so its per-answer ceiling, seed and
+        # reasoning budget travel as provider model fields. There is no wire log
+        # to inspect here; the contract is declared instead, and ``config_dir``
+        # refuses to write an incomplete one.
+        contract = self._wire_contract(budget, derived_seed(self.cfg.seed, task.id, "0"))
+        transcript.extra["wire"] = contract.as_dict()
+        endpoint, rewritten = isolation.endpoint_url(self.cfg.base_url)
         try:
             agent_dir = agent.config_dir(
                 work_dir.parent,
                 self.cfg,
-                budget=self._agent_budget(task),
+                budget=budget,
+                seed=contract.seed,
+                base_url=endpoint if sandbox is not None else None,
+                name=work_dir.name,
             )
+            if sandbox is not None:
+                sandbox.agent_dir = agent_dir
+            # Read the pinned settings back off disk before the agent runs: the
+            # transcript must name the document that was actually mounted, and
+            # the digest is checkable against the file afterwards.
+            settings = agent.settings_pin(agent_dir)
             prompt = agent.prompt_for(task)
-            run = agent.run(prompt, work_dir, self.cfg, agent_dir=agent_dir)
+            run = agent.run(prompt, work_dir, self.cfg, agent_dir=agent_dir, sandbox=sandbox)
         except Exception as exc:  # pragma: no cover - environment dependent
             transcript.error = f"{type(exc).__name__}: {exc}"
+            transcript.extra["failure"] = "evaluator_unavailable"
             transcript.duration_s = time.perf_counter() - started
             return
+        if sandbox is not None:
+            transcript.extra["sandbox"] = sandbox.record()
+            transcript.extra["sandbox"]["endpoint_rewritten_by_harness"] = rewritten
 
         transcript.extra.update(run.as_extra(self.cfg.api_key))
+        transcript.extra["agent"]["settings"] = settings
         transcript.extra["agent"]["exit_ok"] = run.ok
         # The suite digest hashes the *scenario* prompt; the agent gets that plus
         # the grading contract, so the bytes actually sent are recorded here.
@@ -509,12 +822,17 @@ class Runner:
         transcript.extra["agent"]["turns_reported"] = run.turns
         if run.error:
             transcript.error = run.error
+            transcript.extra["failure"] = run.failure or "model_protocol_failure"
 
     def _score(self, task: core.TaskInstance, transcript: core.Transcript) -> core.Score:
         module = core.REGISTRY.get(task.category)
         if module is None:
             return core.Score(
-                task_id=task.id, category=task.category, error="category not registered", max_points=task.max_points
+                task_id=task.id,
+                category=task.category,
+                error="category not registered",
+                failure="evaluator_unavailable",
+                max_points=task.max_points,
             )
         try:
             score = module.evaluate(task, transcript)
@@ -525,6 +843,7 @@ class Runner:
                 task_id=task.id,
                 category=task.category,
                 error=f"evaluator failed: {type(exc).__name__}: {exc}",
+                failure="evaluator_unavailable",
             )
             score.add("evaluator", False, task.max_points,
                       f"оценка не выполнена: {type(exc).__name__}: {exc}")
@@ -535,6 +854,7 @@ class Runner:
         score.fit_points()
         if transcript.error:
             score.error = transcript.error
+            score.failure = transcript.extra.get("failure")
             score.notes.append(f"прогон прерван: {transcript.error}")
         return score
 
@@ -560,11 +880,19 @@ def _copy_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return copied
 
 
-def _assistant_tool_message(reply: core.ModelReply) -> dict[str, Any]:
-    return {
-        "role": "assistant",
-        "content": reply.text or None,
-        "tool_calls": [
+def _assistant_message(reply: core.ModelReply, *, tool_calls: bool = True) -> dict[str, Any]:
+    """An assistant message that keeps the protocol fields of the reply.
+
+    The history used to be rebuilt as a trimmed ``role/content/tool_calls``
+    triple. That is enough for most stands, but DeepSeek's thinking mode
+    requires the ``reasoning_content`` back on the assistant turn that carries
+    the calls, and answers HTTP 400 without it. Whatever the provider recorded
+    in ``raw["protocol"]`` — the reasoning under the key it was delivered with —
+    is echoed verbatim; nothing is invented for a stand that sent none.
+    """
+    message: dict[str, Any] = {"role": "assistant", "content": reply.text or None}
+    if tool_calls:
+        message["tool_calls"] = [
             {
                 "id": call.get("id") or f"call_{index}",
                 "type": "function",
@@ -576,8 +904,20 @@ def _assistant_tool_message(reply: core.ModelReply) -> dict[str, Any]:
                 },
             }
             for index, call in enumerate(reply.tool_calls)
-        ],
-    }
+        ]
+    protocol = reply.raw.get("protocol")
+    if not isinstance(protocol, dict) or not protocol:
+        # Offline providers carry the reasoning without a wire key; the
+        # documented DeepSeek field is the safe default.
+        protocol = {"reasoning_content": reply.reasoning} if reply.reasoning else {}
+    for key, value in protocol.items():
+        if key not in ("role", "content", "tool_calls") and value:
+            message[key] = value
+    return message
+
+
+def _assistant_tool_message(reply: core.ModelReply) -> dict[str, Any]:
+    return _assistant_message(reply)
 
 
 def _parse_arguments(raw: Any) -> tuple[dict[str, Any], str]:

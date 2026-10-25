@@ -97,6 +97,7 @@ class TaskOverlap:
     task_id: str
     shingles: int
     matched: int
+    threshold: float = CONTAMINATED
 
     @property
     def share(self) -> float:
@@ -104,7 +105,7 @@ class TaskOverlap:
 
     @property
     def contaminated(self) -> bool:
-        return self.share >= CONTAMINATED
+        return self.share >= self.threshold
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -181,7 +182,12 @@ def check_corpus(
     for task in tasks:
         own = shingles(task.prompt, n)
         report.rows.append(
-            TaskOverlap(task_id=task.id, shingles=len(own), matched=len(own & reference))
+            TaskOverlap(
+                task_id=task.id,
+                shingles=len(own),
+                matched=len(own & reference),
+                threshold=threshold,
+            )
         )
     return report
 

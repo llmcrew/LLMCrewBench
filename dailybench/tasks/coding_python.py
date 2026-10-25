@@ -354,6 +354,16 @@ Writes one JSONL row per executed test to ``argv[3]`` and finishes with an
 ``eof`` row carrying a nonce that only ever travelled over stdin. The nonce is
 how the supervisor tells a finished run from a candidate that wrote a file of
 its own and called ``os._exit(0)`` from the import hook.
+
+The candidate shares this interpreter with the grader, so it can rebind
+``unittest`` — the very object that reports the verdict. The grader state is
+snapshotted *before* the import and restored before every test, tests are run
+one at a time (a patched ``TestSuite.run`` cannot swallow them), and every test
+must prove it really executed: the counter is bumped in
+``TestCase._callTestMethod``, the single place through which both the sync and
+the async case invoke their method. A canary test of the same shape runs first,
+so a silently skipped method becomes an integrity failure instead of a pass.
+The loaded test set must equal the executed one exactly.
 """
 
 import builtins
@@ -371,6 +381,11 @@ class Recorder(unittest.TestResult):
     def __init__(self) -> None:
         super().__init__()
         self.rows = []
+        # Bound per instance: the candidate may rebind the class at any moment,
+        # including from inside the function under test, i.e. after the restore
+        # that preceded the test. An instance attribute wins over the class.
+        for name in _RESULT_METHODS:
+            setattr(self, name, _ORIG_RESULT[name].__get__(self))
 
     def addSuccess(self, test) -> None:
         self.rows.append((test.id(), True, ""))
@@ -385,6 +400,134 @@ class Recorder(unittest.TestResult):
         self.rows.append((test.id(), False, f"skipped: {reason}"))
 
 
+_RESULT_METHODS = ("addSuccess", "addFailure", "addError", "addSkip")
+_ORIG_RESULT = {name: getattr(Recorder, name) for name in _RESULT_METHODS}
+
+_ORIG_LOAD = unittest.TestLoader.loadTestsFromModule
+_LOADER = unittest.TestLoader()
+
+_EXECUTED = {"n": 0}
+_ORIG_CALL = unittest.TestCase._callTestMethod
+_ORIG_ASYNC_CALL = unittest.IsolatedAsyncioTestCase._callTestMethod
+
+
+def _counting_call(self, method):
+    _EXECUTED["n"] += 1
+    return _ORIG_CALL(self, method)
+
+
+def _counting_async_call(self, method):
+    _EXECUTED["n"] += 1
+    return _ORIG_ASYNC_CALL(self, method)
+
+
+unittest.TestCase._callTestMethod = _counting_call
+unittest.IsolatedAsyncioTestCase._callTestMethod = _counting_async_call
+
+#: ``label, owner, attribute, what must be there``. Everything the candidate
+#: may plausibly rebind to fake a verdict is listed — including the Recorder
+#: methods, whose class is reachable from ``sys.modules``.
+_OWNED = (
+    ("TestCase.run", unittest.TestCase, "run", unittest.TestCase.run),
+    (
+        "IsolatedAsyncioTestCase.run",
+        unittest.IsolatedAsyncioTestCase,
+        "run",
+        unittest.IsolatedAsyncioTestCase.run,
+    ),
+    ("TestCase._callTestMethod", unittest.TestCase, "_callTestMethod", _counting_call),
+    (
+        "IsolatedAsyncioTestCase._callTestMethod",
+        unittest.IsolatedAsyncioTestCase,
+        "_callTestMethod",
+        _counting_async_call,
+    ),
+    ("TestLoader.loadTestsFromModule", unittest.TestLoader, "loadTestsFromModule", _ORIG_LOAD),
+) + tuple(
+    (f"Recorder.{name}", Recorder, name, _ORIG_RESULT[name]) for name in _RESULT_METHODS
+)
+
+
+def _restore() -> "list[str]":
+    """Put the grader state back; report what the candidate had rebound."""
+    tampered = []
+    for label, owner, attribute, expected in _OWNED:
+        if getattr(owner, attribute, None) is not expected:
+            tampered.append(label)
+        setattr(owner, attribute, expected)
+    return tampered
+
+
+def _flatten(suite):
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            yield from _flatten(item)
+        else:
+            yield item
+
+
+_CANARY = {"ran": 0, "async": 0}
+
+
+class _Canary(unittest.TestCase):
+    def test_canary(self) -> None:
+        _CANARY["ran"] += 1
+
+
+class _AsyncCanary(unittest.IsolatedAsyncioTestCase):
+    async def test_canary(self) -> None:
+        _CANARY["async"] += 1
+
+
+def _run_one(test) -> "tuple[Recorder, bool]":
+    """Run one test against a fresh recorder; say whether its method ran."""
+    before = _EXECUTED["n"]
+    recorder = Recorder()
+    test.run(recorder)
+    return recorder, _EXECUTED["n"] > before
+
+
+def _run_suite(module, tampered: "list[str]") -> "list[tuple[str, bool, str]]":
+    # Rebinding is only a journal note: the restored state is what the verdict
+    # rests on, and the canary plus the per-test counter prove the restore held.
+    rows: "list[tuple[str, bool, str]]" = []
+    if tampered:
+        rows.append(("*", True, "integrity: кандидат подменил " + ", ".join(tampered)))
+
+    notes: "list[str]" = []
+    canary_before = dict(_CANARY)
+    _restore()
+    _run_one(_Canary("test_canary"))
+    _run_one(_AsyncCanary("test_canary"))
+    for kind in ("ran", "async"):
+        if _CANARY[kind] == canary_before[kind]:
+            notes.append(f"канарейка {kind} не исполнилась")
+
+    suite = _ORIG_LOAD(_LOADER, module)
+    tests = list(_flatten(suite))
+    expected = [test.id() for test in tests]
+    if not expected:
+        notes.append("hidden-модуль не объявил ни одного теста")
+    if len(set(expected)) != len(expected):
+        notes.append("состав тестов повторяется")
+    if notes:
+        detail = "integrity: " + "; ".join(notes)
+        rows.extend((name, False, detail[:400]) for name in expected or ["*"])
+        return rows
+
+    for test in tests:
+        name = test.id()
+        _restore()
+        recorder, executed = _run_one(test)
+        if not executed:
+            rows.append((name, False, "integrity: метод теста не исполнился"))
+        elif len(recorder.rows) != 1 or recorder.rows[0][0] != name:
+            rows.append((name, False, f"integrity: тест оставил {len(recorder.rows)} строк вместо одной"))
+        else:
+            rows.append(recorder.rows[0])
+    return rows
+
+
 def main() -> None:
     repo, test_file, report_path = sys.argv[1], sys.argv[2], sys.argv[3]
     nonce = sys.stdin.read().strip()
@@ -393,11 +536,9 @@ def main() -> None:
         sys.path.insert(0, repo)
         spec = importlib.util.spec_from_file_location("hidden_ttl_tests", test_file)
         module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
         spec.loader.exec_module(module)  # the untrusted candidate runs here
-        suite = unittest.defaultTestLoader.loadTestsFromModule(module)
-        recorder = Recorder()
-        suite.run(recorder)
-        rows = recorder.rows
+        rows = _run_suite(module, _restore())
     except BaseException as exc:  # a broken candidate must still leave a report
         rows.append(("*", False, f"{type(exc).__name__}: {exc}"[:400]))
     payload = "".join(

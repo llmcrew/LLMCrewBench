@@ -16,10 +16,23 @@ This module holds that contract in one place, as data:
 it actually loaded, probes tool calling and reasoning, and (optionally) fills the
 whole context window while sampling VRAM. Anything it cannot verify is reported
 as unverified rather than assumed.
+
+Three layers stay apart, because conflating them turned a filled template into a
+claim about the server (R05):
+
+* **declared** — the entry and the launch line, i.e. what *should* be serving.
+  The line is a template, never a record of an executed command.
+* **observed** — what the runtime itself reports through ``/props``
+  (model_path, n_ctx, KV type, chat template, build). A field the runtime does
+  not report stays ``unknown``; it is never back-filled from the entry.
+* **executed** — the environment the harness actually applied. The GPU row is a
+  *client sampler* on the harness host, not evidence about the serving machine,
+  so the server GPU is ``unknown`` unless the runtime names it.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -84,7 +97,7 @@ RUNTIMES: dict[str, dict[str, str]] = {
             "  --metrics --props --alias <model-name>"
         ),
         "verify": [
-            "GET /props → n_ctx, model_path, chat_template: подтверждает, что загружено именно то, что объявлено",
+            "GET /props в КОРНЕ сервера (не под /v1) → n_ctx, model_path, chat_template: подтверждает, что загружено именно то, что объявлено",
             "-ngl all вместе с пиком VRAM подтверждает отсутствие CPU offload",
             "--no-context-shift: без него сервер молча вытесняет старые токены вместо отказа",
             "--reasoning-format deepseek: reasoning приходит в reasoning_content и не попадает в content",
@@ -112,7 +125,7 @@ RUNTIMES: dict[str, dict[str, str]] = {
             "  --reasoning-format deepseek --reasoning-budget <reasoning-budget> --temp 0 --top-p 1"
         ),
         "verify": [
-            "GET /props → n_ctx должен совпасть с объявленным окном: gpu_memory_mode=auto умеет сам урезать контекст под VRAM",
+            "GET /props в корне → n_ctx должен совпасть с объявленным окном: gpu_memory_mode=auto умеет сам урезать контекст под VRAM",
             "GET /props → chat_template_caps: supports_tools / supports_tool_calls подтверждают разбор вызовов инструментов",
             "POST /api/inference/estimate-memory — оценка памяти до загрузки",
             "--no-context-shift: без него сервер молча вытесняет старые токены вместо отказа",
@@ -157,7 +170,7 @@ MODELS: list[dict[str, Any]] = [
     {"id": "qwen3.8-27b-ud-iq2-s", "label": "Qwen3.8 27B · UD-IQ2_S (7.80 GiB)", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "unsloth/Qwen3.8-27B-GGUF", "quant": "UD-IQ2_S", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": True, "tools": "probe"}, "notes": ["Компромисс между IQ1 и IQ3: интересно, удержится ли reasoning и длинный контекст.", "Тот же репозиторий и тот же рантайм, что у базы: сравниваются только веса."]},
     {"id": "qwen3.8-27b-ud-iq3-s", "label": "Qwen3.8 27B · UD-IQ3_S (11.21 GiB)", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "unsloth/Qwen3.8-27B-GGUF", "quant": "UD-IQ3_S", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": True, "tools": "probe"}, "notes": ["Прямой конкурент базы UD-Q3_K_XL при меньшем файле.", "Тот же репозиторий и тот же рантайм, что у базы: сравниваются только веса."]},
     {"id": "qwen3.8-27b-ud-iq2-xxs", "label": "Qwen3.8 27B · UD-IQ2_XXS (8.39 GiB, копия из кэша LM Studio)", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "C:\\Users\\spgs\\.lmstudio\\models\\unsloth\\Qwen3.8-27B-GGUF", "quant": "UD-IQ2_XXS", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": True, "tools": "probe"}, "notes": ["Файл скачан в каталог LM Studio, но грузится тем же рантаймом unsloth-studio: сравниваются веса, не приложение.", "Если Studio не примет этот путь как идентификатор модели, preflight/загрузка это покажут, и строка останется честно непройденной."]},
-    {"id": "qwen3.8-27b-gsq-rco-iq3xxs", "label": "Qwen3.8 27B · GSQ-RCO IQ3_XXS (сравнение)", "runtime": "unsloth-studio v0.1.808-beta + GSQ", "base_url": "http://127.0.0.1:8888/v1", "model": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF", "quant": "IQ3_XXS", "weights": "", "kv_type": "q8_0", "capabilities": {"thinking": True, "tools": "probe"}, "notes": ["Главный вопрос выпуска: сколько баллов из 100 теряется против UD-Q3_K_XL и сколько при этом освобождается VRAM.", "Тот же рантайм и порт, что у базы: сравниваются веса, а не сервер.", "GSQ требует своей сборки рантайма — версия фиксируется в поле runtime."]},
+    {"id": "qwen3.8-27b-gsq-rco-iq3xxs", "label": "Qwen3.8 27B · GSQ-RCO IQ3_XXS (сравнение)", "runtime": "unsloth-studio v0.1.808-beta + GSQ", "base_url": "http://127.0.0.1:8888/v1", "model": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF", "quant": "IQ3_XXS", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": True, "tools": "probe"}, "notes": ["Главный вопрос выпуска: сколько баллов из 100 теряется против UD-Q3_K_XL и сколько при этом освобождается VRAM.", "Окно задано явно и равно базовому (32768): без него runner брал политику 262144, а full-preflight — 32768, и сравнение весов шло в разных условиях.", "Тот же рантайм и порт, что у базы: сравниваются веса, а не сервер.", "GSQ требует своей сборки рантайма — версия фиксируется в поле runtime."]},
     {"id": "unsloth-lfm2.5-8b-a1b", "label": "LFM2.5 8B A1B · UD-Q8_K_XL", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "unsloth/LFM2.5-8B-A1B-GGUF", "quant": "UD-Q8_K_XL", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": "probe", "tools": "probe"}, "notes": ["Малая MoE-модель: показывает, как сьют ведёт себя на быстрой конфигурации и где узкое место — модель или тест.", "Thinking и tools проверяются preflight'ом; непроверенная категория не превращается в нули."]},
     {"id": "gemma-4-12b-agentic", "label": "Gemma 4 12B agentic · Q8_0", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF", "quant": "Q8_0", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": "probe", "tools": "probe"}, "notes": ["Другое семейство и заявленная agentic-настройка: проверяет, что сьют не подогнан под Qwen.", "Sliding-window attention у Gemma снижает реальный размер KV: пик VRAM измеряется, а не считается."]},
     {"id": "qwen3-14b-uncensored-q5km", "label": "Qwen3 14B Uncensored · Q5_K_M", "runtime": "unsloth-studio v0.1.808-beta", "base_url": "http://127.0.0.1:8888/v1", "model": "mradermacher/Qwen3-14B-Uncensored-GGUF", "quant": "Q5_K_M", "weights": "", "context_window": 32768, "kv_type": "q8_0", "capabilities": {"thinking": "probe", "tools": "probe"}, "notes": ["Меньшая модель того же семейства: показывает цену размера, а не кванта.", "Квант крупнее (Q5_K_M) при меньшем числе параметров — сравнение с 27B IQ3-класса особенно показательно для вывода про VRAM."]},
@@ -210,7 +223,34 @@ class ReferenceConfig:
     def tools_capability(self) -> Any:
         return (self.entry.get("capabilities") or {}).get("tools", True)
 
+    @property
+    def context_window(self) -> int:
+        """The window this entry is actually run at.
+
+        The entry wins; the policy window is only the default for an entry that
+        states none. One property for every reader (launch line, preflight,
+        runner) is what keeps them from disagreeing about the same entry.
+        """
+        return int(self.entry.get("context_window") or self.policy.get("context_window") or DEFAULT_CONTEXT_WINDOW)
+
+    def effective(self) -> dict[str, Any]:
+        """The entry with every controlled field resolved once.
+
+        Launcher, preflight and runner must all consume this view: resolving
+        ``context_window`` separately in each of them was what gave the same
+        entry two different windows.
+        """
+        entry = dict(self.entry)
+        entry["context_window"] = self.context_window
+        entry["n_ctx"] = self.context_window
+        return entry
+
     def launch_line(self) -> str:
+        """The declared launch *template*, filled from the entry (not executed).
+
+        Nothing here records what the launcher really sent; that is the executed
+        lane (``LaunchRequest`` in ``launch``), and the report keeps them apart.
+        """
         template = RUNTIMES.get(self.runtime_id, {}).get("launch", "")
         return (
             template.replace("<model-key>", str(self.entry.get("model", "")))
@@ -218,7 +258,7 @@ class ReferenceConfig:
             .replace("<weights.gguf>", str(self.entry.get("weights") or "<weights.gguf>"))
             .replace("<quant>", str(self.entry.get("quant", "Q4_K_M")))
             .replace("<kv>", str(self.entry.get("kv_type", "q8_0")))
-            .replace("<window>", str(self.entry.get("context_window") or self.policy.get("context_window", DEFAULT_CONTEXT_WINDOW)))
+            .replace("<window>", str(self.context_window))
             .replace("<reasoning-budget>", str(self.policy.get("reasoning_budget", 2048)))
             .replace("<answer-budget>", str(self.policy.get("answer_budget_default", 4096)))
             .replace("<model>", str(self.entry.get("model", "")))
@@ -231,7 +271,9 @@ class ReferenceConfig:
         reported as not verified instead of a zero the model did not earn);
         ``"probe"`` means "let preflight decide", and the run keeps the default.
         """
-        return ("D",) if self.tools_capability is False else ()
+        # D and I are the two categories solved through the chat tool protocol;
+        # without it neither can be verified, and neither may become a zero.
+        return ("D", "I") if self.tools_capability is False else ()
 
 
 def load_reference(path: Path | str | None = None) -> dict[str, Any]:
@@ -284,8 +326,8 @@ def apply_to_run_config(cfg: RunConfig, reference: ReferenceConfig) -> RunConfig
         runtime=str(entry.get("runtime") or cfg.runtime),
         weights_path=str(entry.get("weights") or ""),
         kv_type=str(entry.get("kv_type") or ""),
-        context_window=int(entry.get("context_window") or policy["context_window"]),
-        n_ctx=int(entry.get("context_window") or policy["context_window"]),
+        context_window=reference.context_window,
+        n_ctx=reference.context_window,
         temperature=float(policy["temperature"]),
         top_p=float(policy["top_p"]),
         max_new_tokens=int(policy.get("answer_budget_default", 4096)),
@@ -300,6 +342,9 @@ def apply_to_run_config(cfg: RunConfig, reference: ReferenceConfig) -> RunConfig
         task_wall_clock=float(policy.get("task_wall_clock", 3600)),
         max_total_tokens=int(policy["max_total_tokens"]),
         max_tool_calls=int(policy["max_tool_calls"]),
+        # The thinking cap is part of the measured conditions (H08): the policy
+        # pins it per model instead of leaving it to the stand's default.
+        reasoning_budget=int(policy.get("reasoning_budget", cfg.reasoning_budget)),
         offload=str(entry.get("offload") or "none"),
         reference=reference.id,
         launch=reference.launch_line(),
@@ -309,6 +354,38 @@ def apply_to_run_config(cfg: RunConfig, reference: ReferenceConfig) -> RunConfig
         agent=bool(entry.get("agent", cfg.agent)),
     )
     return updated
+
+
+#: Fields that must match before two runs may be read as "same conditions,
+#: different weights". Everything here changes an input or an available budget.
+CONTROLLED_FIELDS: dict[str, str] = {
+    "context_window": "окно контекста",
+    "kv_type": "тип KV-cache",
+    "runtime_id": "рантайм",
+    "offload": "offload",
+    "base_url": "endpoint",
+    "temperature": "temperature",
+    "top_p": "top_p",
+    "max_tool_calls": "бюджет вызовов инструментов",
+    "profile": "профиль сьюта",
+    "seed": "master seed",
+}
+
+
+def controlled_mismatches(configs: list[dict[str, Any]]) -> list[str]:
+    """Differences in the controlled parameters across runs, one line each.
+
+    A difference means the runs do not isolate the weights, so their scores may
+    be shown side by side but must not be called a weight comparison.
+    """
+    found: list[str] = []
+    for key, title in CONTROLLED_FIELDS.items():
+        # An unset field is a divergence too: one run declares the parameter,
+        # the other does not, so the conditions are not known to match.
+        values = {str(config.get(key)) if config.get(key) not in (None, "") else "(не задано)" for config in configs}
+        if len(values) > 1:
+            found.append(f"{title}: " + ", ".join(sorted(values)))
+    return found
 
 
 def save_reference(path: Path | str) -> Path:
@@ -342,6 +419,99 @@ class Probe:
         return {"name": self.name, "status": self.status, "detail": self.detail}
 
 
+#: Probes that must be affirmatively ok before a run may be ranked.
+#: Everything else may stay unverified: an unverified optional item is reported
+#: but does not change inputs, while these decide whether the declared
+#: configuration is the one actually serving.
+REQUIRED_PROBES: tuple[str, ...] = (
+    "context_window",
+    "quant_identity",
+    "template_capabilities",
+    "tool_calling",
+    "full_window",
+)
+
+#: ``source`` value of a snapshot the runtime itself answered. Anything else is
+#: the harness guessing, and must not read as observation.
+RUNTIME_SOURCE = "runtime /props"
+UNKNOWN = "unknown"
+
+#: Observed fields and Russian headers for the report table. A field the runtime
+#: omits is shown as ``unknown`` rather than left out, so a reader can see the
+#: gap instead of assuming the declared value.
+OBSERVED_FIELDS: tuple[tuple[str, str], ...] = (
+    ("source", "Источник наблюдения"),
+    ("props_url", "URL /props"),
+    ("model_path", "Загруженный файл (model_path)"),
+    ("quant", "Квант (со слов runtime)"),
+    ("n_ctx", "Окно n_ctx"),
+    ("kv_type", "Тип KV-cache"),
+    ("chat_template_sha256", "Шаблон чата SHA-256"),
+    ("build_info", "Сборка runtime"),
+    ("server_gpu", "GPU сервера"),
+    ("client_gpu", "GPU сэмплера (хост харнесса)"),
+    ("weights_sha256", "Веса SHA-256"),
+)
+
+
+def _unknown(value: Any) -> str:
+    return str(value) if value not in (None, "") else UNKNOWN
+
+
+def _present(value: Any) -> Any:
+    """Keep the reported value as-is (``n_ctx`` stays a number); gap → unknown."""
+    return value if value not in (None, "") else UNKNOWN
+
+
+def _observed_snapshot(
+    props: dict[str, Any] | None, metrics: dict[str, Any], gpus: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The runtime's own report of the loaded server, with ``unknown`` gaps.
+
+    Only ``/props`` fills this. The declared entry is deliberately not a source:
+    the point of the lane is to show where the server differs from the entry.
+    """
+    observed: dict[str, Any] = {
+        "source": RUNTIME_SOURCE if props else UNKNOWN,
+        "props_url": _unknown(metrics.get("props_url")),
+        "model_path": UNKNOWN,
+        "quant": UNKNOWN,
+        "n_ctx": UNKNOWN,
+        "kv_type": UNKNOWN,
+        "chat_template_sha256": UNKNOWN,
+        "build_info": UNKNOWN,
+        "server_gpu": UNKNOWN,
+        "client_gpu": (
+            f"{gpus[0].get('name')} ({gpus[0].get('vram_total_mib')} MiB)" if gpus else UNKNOWN
+        ),
+        "weights_sha256": UNKNOWN,
+    }
+    if not props:
+        return observed
+    generation = props.get("default_generation_settings") or {}
+    observed["model_path"] = _present(props.get("model_path"))
+    observed["quant"] = _present(props.get("quant") or generation.get("quant"))
+    observed["n_ctx"] = _present(generation.get("n_ctx") or props.get("n_ctx"))
+    observed["kv_type"] = _present(
+        props.get("kv_type")
+        or generation.get("kv_type")
+        or generation.get("type_k")
+        or generation.get("type_v")
+    )
+    template = props.get("chat_template")
+    if template:
+        observed["chat_template_sha256"] = hashlib.sha256(
+            str(template).encode("utf-8")
+        ).hexdigest()
+    observed["build_info"] = _present(props.get("build_info"))
+    # ``/props`` reports the GPU only on runtimes that choose to; the sampler in
+    # this process sees the harness host and is not evidence about the server.
+    observed["server_gpu"] = _present(
+        props.get("gpu") or props.get("device") or props.get("system_info")
+    )
+    return observed
+
+
 @dataclass
 class PreflightReport:
     reference_id: str
@@ -349,6 +519,16 @@ class PreflightReport:
     probes: list[Probe] = field(default_factory=list)
     metrics: dict[str, Any] = field(default_factory=dict)
     launch: str = ""
+    """Declared launch template for reproduction — not the executed command."""
+    observed: dict[str, Any] = field(default_factory=dict)
+    """What the runtime reported about the loaded server; ``unknown`` when it
+    said nothing. Never back-filled from the entry, so a shared model name can
+    no longer pass as a confirmed quant."""
+
+    @property
+    def has_observation(self) -> bool:
+        """True only when the runtime actually reported its loaded state."""
+        return bool(self.observed) and self.observed.get("source") == RUNTIME_SOURCE
 
     @property
     def verdict(self) -> str:
@@ -362,9 +542,34 @@ class PreflightReport:
     def ok(self) -> bool:
         return self.verdict != "rejected"
 
+    @property
+    def unverified(self) -> list[str]:
+        """Required probes that are missing or merely assumed."""
+        by_name = {probe.name: probe for probe in self.probes}
+        missing = []
+        for name in REQUIRED_PROBES:
+            probe = by_name.get(name)
+            # ``n/a`` usually means "this configuration cannot do it" and is not
+            # a gap; the full-window probe is the exception — there ``n/a`` only
+            # says the measurement was skipped.
+            if probe is None or probe.status == "warn" or (name == "full_window" and probe.status == "n/a"):
+                missing.append(name)
+        return missing
+
+    @property
+    def eligible(self) -> bool:
+        """Admitted *and* measured: only then may the run be ranked."""
+        return self.ok and not self.unverified
+
     def render(self) -> str:
         icons = {"ok": "ok", "warn": "не подтверждено", "fail": "ПРОВАЛ", "n/a": "н/п"}
         lines = [f"# Преflight — {self.label} (`{self.reference_id}`)", "", f"**Вердикт: {self.verdict}**", ""]
+        lines.append(
+            "**К ранжированию: допущена**"
+            if self.eligible
+            else "**К ранжированию: не допущена** — не подтверждено: " + (", ".join(self.unverified) or "вердикт")
+        )
+        lines.append("")
         lines.append("| Проверка | Статус | Детали |")
         lines.append("| --- | --- | --- |")
         for probe in self.probes:
@@ -375,9 +580,20 @@ class PreflightReport:
             lines.append("| --- | --- |")
             for key, value in self.metrics.items():
                 lines.append(f"| {key} | {value} |")
+        lines.append("")
+        lines.append(
+            "**Наблюдённая конфигурация (observed — со слов runtime, `unknown` = не измерено):**"
+            if self.has_observation
+            else "**Наблюдённая конфигурация (observed): runtime её не сообщил — всё `unknown`.**"
+        )
+        lines.append("")
+        lines.append("| Поле | Значение |")
+        lines.append("| --- | --- |")
+        for key, title in OBSERVED_FIELDS:
+            lines.append(f"| {title} | {_unknown(self.observed.get(key))} |")
         if self.launch:
             lines.append("")
-            lines.append("Загрузка конфигурации:")
+            lines.append("Объявленный шаблон загрузки (declared — не запись исполненной команды):")
             lines.append("")
             lines.append("```")
             lines.append(self.launch)
@@ -385,13 +601,19 @@ class PreflightReport:
         return "\n".join(lines)
 
 
-def _props(provider: OpenAICompatibleProvider) -> dict[str, Any] | None:
-    """``/props`` exists on llama.cpp; other runtimes answer 404."""
-    try:
-        with provider._request("/props", None, method="GET") as response:  # noqa: SLF001 - deliberate probe
-            return json.loads(response.read().decode("utf-8"))
-    except Exception:
+def _props(provider: Provider, metrics: dict[str, Any]) -> dict[str, Any] | None:
+    """``/props`` exists on llama.cpp at the *root*; other runtimes answer 404.
+
+    The URL is recorded either way, because "/props missing" and "/props read
+    from the wrong path" look identical in a verdict.
+    """
+    url = getattr(provider, "props_url", None)
+    if callable(url):
+        metrics["props_url"] = url()
+    getter = getattr(provider, "props", None)
+    if not callable(getter):
         return None
+    return getter()
 
 
 TOOL_PROBE_PROMPT = (
@@ -407,8 +629,13 @@ def preflight(
     full: bool = False,
     hash_weights: bool = False,
 ) -> PreflightReport:
-    """Verify that the running endpoint matches the declared configuration."""
-    entry = reference.entry
+    """Verify that the running endpoint matches the declared configuration.
+
+    All controlled fields come from ``ReferenceConfig.effective()`` — the same
+    view the launcher and the runner use — so the window compared here is the
+    window the entry runs at, not a per-call fallback.
+    """
+    entry = reference.effective()
     base_url = str(entry.get("base_url") or "http://127.0.0.1:8080/v1")
     model = str(entry.get("model") or "")
     provider = provider or OpenAICompatibleProvider(base_url=base_url, model=model, timeout=1800.0)
@@ -417,12 +644,16 @@ def preflight(
     gpus = gpu_inventory()
     if gpus:
         report.metrics["gpu"] = f"{gpus[0]['name']} ({gpus[0]['vram_total_mib']} MiB)"
+    # The sampler runs in this process: it describes the harness host, not the
+    # server, so it is recorded as a sampler and never as "the GPU".
+    report.metrics["gpu_source"] = "client sampler (хост харнесса, не сервер)"
 
     # 1. endpoint and model
     try:
         models = provider.list_models()
     except ProviderError as exc:
         report.probes.append(Probe("endpoint", "fail", str(exc)))
+        report.observed = _observed_snapshot(None, report.metrics, gpus)
         return report
     if model and model not in models:
         report.probes.append(
@@ -431,23 +662,54 @@ def preflight(
     else:
         report.probes.append(Probe("model_listed", "ok", f"{model!r} доступна на {base_url}"))
 
-    # 2. runtime-reported load parameters (llama.cpp /props)
-    props = _props(provider) if isinstance(provider, OpenAICompatibleProvider) else None
+    # 2. runtime-reported load parameters (llama.cpp /props, at the root)
+    tools_declared = reference.tools_capability
+    props = _props(provider, report.metrics)
+    report.observed = _observed_snapshot(props, report.metrics, gpus)
     if props:
         generation = props.get("default_generation_settings") or {}
         n_ctx = generation.get("n_ctx") or props.get("n_ctx")
-        declared = int(entry.get("context_window") or 0)
+        declared = reference.context_window
         if n_ctx is None:
             report.probes.append(Probe("context_window", "warn", "runtime не сообщил n_ctx"))
-        elif declared and int(n_ctx) < declared:
+        elif int(n_ctx) != declared:
+            # Both directions matter: a smaller window truncates the long tasks,
+            # a larger one gives a different answer budget. Either way the entry
+            # no longer describes the server, so the weights are not isolated.
             report.probes.append(
-                Probe("context_window", "fail", f"загружено n_ctx={n_ctx}, объявлено {declared}")
+                Probe(
+                    "context_window",
+                    "fail",
+                    f"загружено n_ctx={n_ctx}, объявлено {declared}: сервер не соответствует записи, "
+                    "сравнение весов в таких условиях недействительно",
+                )
             )
         else:
             report.probes.append(Probe("context_window", "ok", f"n_ctx={n_ctx} (объявлено {declared})"))
-        model_path = props.get("model_path")
+        model_path = str(props.get("model_path") or "")
         if model_path:
             report.metrics["model_path"] = model_path
+            # A shared model ID does not identify the quant: the same family is
+            # served from one repository under several quants.
+            quant = str(entry.get("quant") or "")
+            if quant and quant.casefold() in model_path.casefold():
+                report.probes.append(Probe("quant_identity", "ok", f"загруженный файл: {model_path}"))
+            elif quant:
+                report.probes.append(
+                    Probe(
+                        "quant_identity",
+                        "fail",
+                        f"загружен {model_path}, объявлен квант {quant}: это может быть старый файл",
+                    )
+                )
+            else:
+                report.probes.append(
+                    Probe("quant_identity", "warn", f"загруженный файл {model_path}, квант в записи не указан")
+                )
+        else:
+            report.probes.append(
+                Probe("quant_identity", "warn", "runtime не сообщил model_path: квант не подтверждён")
+            )
         template = props.get("chat_template")
         report.probes.append(
             Probe(
@@ -457,7 +719,11 @@ def preflight(
             )
         )
         caps = props.get("chat_template_caps")
-        if caps:
+        if tools_declared is False:
+            report.probes.append(
+                Probe("template_capabilities", "n/a", "конфигурация объявляет отсутствие tool calling")
+            )
+        elif caps:
             supported = sorted(str(name) for name, value in caps.items() if value)
             report.metrics["chat_template_caps"] = ", ".join(supported) or "нет"
             tools_ok = bool(caps.get("supports_tools") or caps.get("supports_tool_calls"))
@@ -467,9 +733,13 @@ def preflight(
                     "ok" if tools_ok else "warn",
                     "шаблон модели поддерживает вызовы инструментов"
                     if tools_ok
-                    else "шаблон модели не описывает tool calls — категорию D считать не проверенной "
-                    "(run --unsupported D), а не проваленной",
+                    else "шаблон модели не описывает tool calls — категории D и I считать не проверенными "
+                    "(run --unsupported D,I), а не проваленными",
                 )
+            )
+        elif tools_declared is not False:
+            report.probes.append(
+                Probe("template_capabilities", "warn", "runtime не вернул chat_template_caps: поддержка инструментов не подтверждена")
             )
         if props.get("model_alias"):
             report.metrics["model_alias"] = props["model_alias"]
@@ -483,29 +753,43 @@ def preflight(
                 "runtime не предоставляет /props: окно и KV-cache подтверждаются только командой загрузки",
             )
         )
+        report.probes.append(
+            Probe(
+                "template_capabilities",
+                "n/a" if tools_declared is False else "warn",
+                "конфигурация объявляет отсутствие tool calling"
+                if tools_declared is False
+                else "без /props шаблон и его возможности не подтверждены",
+            )
+        )
 
-    # 3. tool calling probe — decides whether category D is verified or skipped
-    tools_declared = reference.tools_capability
+    # 3. tool calling probe — the chat protocol itself, not a voluntary call:
+    # ``tool_choice=required`` makes the server produce a call when it can, so a
+    # missing call means a protocol gap rather than a model that chose to chat.
     if tools_declared is False:
         report.probes.append(
-            Probe("tool_calling", "n/a", "конфигурация объявляет отсутствие tool calling — категория D не проверяется")
+            Probe(
+                "tool_calling",
+                "n/a",
+                "конфигурация объявляет отсутствие tool calling — категории D и I не проверяются",
+            )
         )
     else:
         try:
             reply = _tool_probe(provider)
         except ProviderError as exc:
-            report.probes.append(Probe("tool_calling", "warn", f"проба не выполнена: {exc}"))
+            report.probes.append(Probe("tool_calling", "warn", f"проба протоколом не выполнена: {exc}"))
         else:
             if reply.tool_calls:
                 names = ", ".join(str(call.get("name")) for call in reply.tool_calls)
-                report.probes.append(Probe("tool_calling", "ok", f"модель вызвала инструмент: {names}"))
+                report.probes.append(Probe("tool_calling", "ok", f"протокол вернул вызов инструмента: {names}"))
             else:
                 report.probes.append(
                     Probe(
                         "tool_calling",
                         "warn",
-                        "модель не вызвала ни одного инструмента на прямой просьбе — "
-                        "категорию D считать не проверенной, а не проваленной (run --unsupported D)",
+                        "на запрос с tool_choice=required протокол не вернул tool_calls — "
+                        "категории D и I считать не проверенными, а не проваленными (run --unsupported D,I)",
                     )
                 )
             report.metrics["tool_probe_finish_reason"] = reply.finish_reason or "n/a"
@@ -530,10 +814,14 @@ def preflight(
     except ProviderError as exc:
         report.probes.append(Probe("reasoning", "warn", f"проба не выполнена: {exc}"))
 
-    # 5. weights identity
+    # 5. weights identity — the hash is evidence only when it was measured; an
+    # unhashed file stays ``unknown`` in the observed lane instead of borrowing
+    # the declared path.
     weights = str(entry.get("weights") or "")
     if hash_weights and weights and Path(weights).is_file():
-        report.metrics["weights_sha256"] = weights_sha256(weights)
+        digest = weights_sha256(weights)
+        report.metrics["weights_sha256"] = digest
+        report.observed["weights_sha256"] = digest
         report.probes.append(Probe("weights", "ok", "SHA-256 посчитан от указанного файла"))
     elif weights and not Path(weights).is_file():
         report.probes.append(Probe("weights", "warn", f"файл {weights} не найден — SHA-256 не посчитан"))
@@ -547,7 +835,7 @@ def preflight(
         report.probes.extend(_window_probes(entry, provider, report.metrics))
     else:
         report.probes.append(
-            Probe("full_window", "n/a", "не выполнялась (--full): допуск по 32K не подтверждён измерением")
+            Probe("full_window", "n/a", "не выполнялась (--full): допуск по объявленному окну не подтверждён измерением")
         )
     return report
 
@@ -561,6 +849,7 @@ def _tool_probe(provider: Provider) -> core.ModelReply:
         top_p=1.0,
         seed=1,
         wall_clock=float(POLICY["request_wall_clock"]),
+        tool_choice="required",
     )
 
 

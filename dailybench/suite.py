@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import inspect
 import json
 import sys
+import types
 from pathlib import Path
 from typing import Any, Iterable
 
 from . import core
-from .config import RunConfig
+from .config import RunConfig, toolchain_identity
 from .rng import task_rng
 from .tasks import load_all
 
@@ -31,7 +33,9 @@ def build_suite(cfg: RunConfig) -> list[core.TaskInstance]:
         module_tasks = category.generate(task_rng(cfg.seed, category.key), cfg)
         ids = tuple(task.id for task in module_tasks)
         expected = category.expected_ids_for(profile)
-        if expected and ids != expected:
+        # An empty set is a declaration too: a profile that drops a category
+        # must generate nothing for it.
+        if (expected or profile in category.expected_ids_by_profile) and ids != expected:
             raise RuntimeError(
                 f"category {category.key} generated {ids}, expected {expected} in profile {profile}"
             )
@@ -56,10 +60,7 @@ def apply_profile_weights(tasks: list[core.TaskInstance], profile: str) -> None:
     a total and the A–J categories of the baseline keep the per-task weights
     their modules declare.
     """
-    totals = {
-        **core.PROFILE_POINTS.get(profile, {}),
-        **(core.SHOWCASE_POINTS.get(profile) or core.SHOWCASE_POINTS[core.DEFAULT_PROFILE]),
-    }
+    totals = {**core.PROFILE_POINTS.get(profile, {}), **core.showcase_points(profile)}
     if not totals:
         return
     grouped: dict[str, list[core.TaskInstance]] = {}
@@ -163,35 +164,133 @@ def fit_suite_sizing(cfg: RunConfig, provider: Any) -> dict[str, Any]:
     return result
 
 
-def evaluator_sha(category: str) -> str:
-    """Fingerprint of the module that scores a category.
+_PACKAGE_ROOT = Path(__file__).resolve().parent
+_PACKAGE_NAME = _PACKAGE_ROOT.name
 
-    The whole evaluator module is hashed (byte for byte), not just
-    ``evaluate``: helpers and declared checks live next to it, and an evaluator
-    fix that only touches them must still break the digest. A missing module
-    hashes to an empty string rather than failing the digest.
+#: category → (signature of the bundle files, digest). The signature is
+#: ``(path, mtime_ns, size)`` per file, so a rebuild of the same bytes still
+#: verifies while an edit invalidates the entry. Hashing the K bundle for every
+#: task of a suite digest was otherwise a per-task file walk.
+_EVALUATOR_CACHE: dict[str, tuple[tuple[Any, ...], str]] = {}
+
+
+def _dotted(path: Path) -> str:
+    parts = path.relative_to(_PACKAGE_ROOT).with_suffix("").parts
+    return ".".join((_PACKAGE_NAME, *parts))
+
+
+def _category_files(category: str) -> list[Path]:
+    """Every source file of the category's executable evaluator.
+
+    The registered ``evaluate`` names the dispatcher; its siblings with the
+    same prefix carry the real checks (``coding_python.py``, ``coding_go.py``,
+    ``visual_*.py``). Hashing only the dispatcher let a replaced hidden test
+    keep the identity intact.
     """
     module = core.REGISTRY.get(category)
     name = getattr(getattr(module, "evaluate", None), "__module__", "")
-    source = inspect.getsourcefile(sys.modules[name]) if name in sys.modules else None
+    registered = sys.modules.get(name)
+    source = inspect.getsourcefile(registered) if registered is not None else None
+    if not source:
+        return []
+    path = Path(source).resolve()
+    if not path.is_file():
+        return []
+    # A category can have its dispatcher at the package root (L: ``art.py``)
+    # while the scenario files live in ``tasks/``; both sides belong to the
+    # bundle. The glob also keeps a newly split evaluator file covered without
+    # registering it anywhere.
+    directories = {path.parent}
+    if (_PACKAGE_ROOT / "tasks").is_dir():
+        directories.add(_PACKAGE_ROOT / "tasks")
+    files = {path}
+    for directory in directories:
+        files.update(item for item in directory.glob(f"{path.stem}*.py") if item.is_file())
+    return sorted(files)
+
+
+def _bundle_files(category: str) -> list[Path]:
+    """Category files plus the shared helpers they import, transitively.
+
+    Only modules inside this package count: the point is a closed fingerprint
+    of the code that can decide a score, not of the standard library.
+    """
+    pending: list[types.ModuleType] = []
+    for path in _category_files(category):
+        try:
+            pending.append(importlib.import_module(_dotted(path)))
+        except Exception:  # pragma: no cover - a broken tree is still hashed by path
+            continue
+    seen: set[Path] = set()
+    while pending:
+        module = pending.pop()
+        source = inspect.getsourcefile(module)
+        if not source:
+            continue
+        path = Path(source).resolve()
+        if path in seen or not path.is_file() or _PACKAGE_ROOT not in path.parents:
+            continue
+        seen.add(path)
+        for value in vars(module).values():
+            if isinstance(value, types.ModuleType) and getattr(value, "__file__", None):
+                if Path(value.__file__).resolve().parent == _PACKAGE_ROOT or (
+                    _PACKAGE_ROOT in Path(value.__file__).resolve().parents
+                ):
+                    pending.append(value)
+    return sorted(seen)
+
+
+def evaluator_sha(category: str) -> str:
+    """Fingerprint of the whole executable evaluator bundle of a category.
+
+    Every module that can decide a score is hashed byte for byte: the
+    dispatcher, the per-language/per-scenario evaluator files, and the shared
+    helpers they import. The closed oracle (hidden tests) is hashed per task by
+    :func:`suite_digest`, and the toolchain by :func:`toolchain_identity`.
+    """
+    files = _bundle_files(category)
+    signature = tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in files)
+    cached = _EVALUATOR_CACHE.get(category)
+    if cached and cached[0] == signature:
+        return cached[1]
+    digest = hashlib.sha256(category.encode() + b"\0")
+    for path in files:
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        digest.update(path.relative_to(_PACKAGE_ROOT).as_posix().encode())
+        digest.update(b"\0" + hashlib.sha256(raw).digest())
+    value = digest.hexdigest()
+    _EVALUATOR_CACHE[category] = (signature, value)
+    return value
+
+
+def oracle_sha(task: core.TaskInstance) -> str:
+    """Fingerprint of the closed oracle, hidden tests included.
+
+    ``task.oracle`` is what the evaluator compares against; changing a hidden
+    test without touching the evaluator module is a different grading contract.
+    """
     try:
-        raw = Path(source).read_bytes() if source else b""
-    except OSError:
-        raw = b""
-    return hashlib.sha256(name.encode() + b"\0" + raw).hexdigest()
+        text = json.dumps(task.oracle, sort_keys=True, ensure_ascii=False, default=core.json_default)
+    except TypeError:  # a fixture kept a value even the JSON fallback rejects
+        text = repr(task.oracle)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def suite_digest(tasks: Iterable[core.TaskInstance], profile: str = core.DEFAULT_PROFILE) -> dict[str, Any]:
-    """Public fingerprint of the generated fixtures (no answers included).
+    """Public fingerprint of the fixtures and the grading contract.
 
     The fingerprint covers everything the model actually sees: the prompt, the
     follow-up dialogue, the workspace contents and the tool schemas. A change
     in any of them used to leave the digest intact (the plan observed a seed
     change re-rendering C-3 databases with the same prompt and digest).
 
-    It also covers the denominator and the evaluator contract: the same
-    fixtures scored out of a different ``max_points`` are a different
-    measurement, and a resume used to mix the two silently.
+    It also covers the denominator, the executable evaluator bundle, the closed
+    oracle (hidden tests included) and the applied toolchain: the same fixtures
+    scored out of a different ``max_points``, by other code, on another runtime
+    are a different measurement, and a resume used to mix the two silently.
     """
     tasks = list(tasks)
     payload = [
@@ -207,6 +306,7 @@ def suite_digest(tasks: Iterable[core.TaskInstance], profile: str = core.DEFAULT
             "holdout_seeds": task.holdout_seeds,
             "max_points": task.max_points,
             "evaluator_sha256": evaluator_sha(task.category),
+            "oracle_sha256": oracle_sha(task),
             "prompt_sha256": hashlib.sha256(task.prompt.encode()).hexdigest(),
             "dialogue_sha256": hashlib.sha256(
                 json.dumps(task.dialogue or [], ensure_ascii=False, sort_keys=True).encode()
@@ -220,12 +320,17 @@ def suite_digest(tasks: Iterable[core.TaskInstance], profile: str = core.DEFAULT
         }
         for task in tasks
     ]
+    toolchain = toolchain_identity()
     blob = json.dumps(
-        {"contract": core.EVALUATOR_CONTRACT, "tasks": payload}, sort_keys=True, ensure_ascii=False
+        {"contract": core.EVALUATOR_CONTRACT, "toolchain": toolchain, "tasks": payload},
+        sort_keys=True,
+        ensure_ascii=False,
     )
     return {
         "profile": profile,
         "contract": core.EVALUATOR_CONTRACT,
+        "toolchain": toolchain,
+        "evaluator_bundle": {task.category: evaluator_sha(task.category) for task in tasks},
         "tasks": len(payload),
         "possible_total": round(sum(task.max_points for task in tasks), 4),
         "profile_total": core.profile_total(profile),

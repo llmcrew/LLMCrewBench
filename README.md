@@ -52,26 +52,30 @@ of the earned points (100 possible in the baseline).
 
 The counts above are the baseline. `stretch-v1` adds a sixth instruction task
 (IF-6), the ru/kk ledger twins IF-7/IF-7-KK, the RTL/NFC edge case IF-8, the
-ru/kk schedule twins R-17/R-17-KK, C-5/C-6, T-8/T-9, LC-6/LC-7, F-2,
-G-5, H-4/H-5, I-3/I-4 and J-3/J-4 without changing the 100 A–J points: the
+composite selection pair IF-9/IF-10, the
+ru/kk schedule twins R-17/R-17-KK, C-5/C-6, T-8/T-9, LC-6/LC-7/LC-8, F-2,
+G-5, H-4/H-5, I-3/I-4 and J-3/J-4/J-5 without changing the 100 A–J points: the
 category total is divided evenly over the category's tasks
 (`suite.apply_profile_weights`, see *Profiles*).
 
 ## Profiles
 
-`core.PROFILES` accepts three profiles. The profile is written to `config.json`
+`core.PROFILES` accepts four profiles. The profile is written to `config.json`
 and `suite.json`, and `resume`/`rescore` refuse to mix them.
 
 | Profile | What it contains |
 |---|---|
 | `baseline-20261020` (default) | Frozen ranked suite: 47 A–J tasks, 100 points, K-1…K-20, L-1…L-29 |
 | `pilot` | Only the scenarios not admitted to the ranking: IF-6, R-16, C-4, T-8, LC-6, F-2, G-5, H-4, I-3, J-3, visual hosts K-21, K-23, K-25 and L-1…L-29 — 42 tasks |
-| `stretch-v1` | Baseline plus the pilot tasks and the rest of the new ones: IF-7, IF-7-KK, IF-8, R-17, R-17-KK, C-5, C-6, T-9, LC-7, H-5, I-4, J-4, K-21…K-30, L-30…L-39 — 69 A–J, 30 K and 39 L tasks; at least a fifth of every A–J category is private |
+| `stretch-v1` | Baseline plus the pilot tasks and the rest of the new ones: IF-7, IF-7-KK, IF-8, IF-9, IF-10, R-17, R-17-KK, C-5, C-6, T-9, LC-7, LC-8, H-5, I-4, J-4, J-5, K-21…K-30, L-30…L-39 — 79 A–J, 30 K and 39 L tasks; at least a fifth of every A–J category is private |
+| `research-v1` | Nine research scenarios only: IF-9, IF-10, N-2, T-10, T-11, LC-8, F-3, I-5, J-5. Seven categories (A, C, D, E, F, I, J), 71 points; B, G, H, K and L are absent, so the profile is never ranked against a baseline run |
 
 `pilot` is not collapsed into a new `/100`: A–J tasks keep the per-task weights
 their modules declare, and each task is read on its own. `stretch-v1` keeps the
 A–J total at 100 and only enlarges the visual showcase (K 120 points, L 39,
-informational). `apply_profile_weights` spreads the declared category total over
+informational). `research-v1` declares only the categories it carries, so its
+denominator is 71 and the report marks it as not rankable with the baseline.
+`apply_profile_weights` spreads the declared category total over
 that category's tasks, and the last task takes the rounding tail, so the sum is
 exactly the declared one. Weights are assigned before the `--only` filter, so a slice keeps
 the weight it has in the complete profile.
@@ -128,13 +132,19 @@ window in its entry and verify the loaded server with `preflight --full`.
 Saved results are unchanged; use the original `--context-window` when resuming
 an older endpoint run rather than mixing 32K and 256K measurements.
 
-A run does not cap generation with a separate budget: the limit is the model's
-window minus the prompt (`unbounded_budget`). A model that spent 100 KB on
-thinking and never wrote a line is a *result*, not our ceiling — and the spend is
-documented in mandatory fields (`spend` in every transcript: answer tokens,
-reasoning tokens, seconds, TTFT, throughput). `reasoning_effort` is not forced:
-the stand keeps its own default, and that is part of the provenance. The old
-table-driven mode stays available with `unbounded_budget = False`.
+The answer limit is the model's window minus the prompt (`unbounded_budget`);
+`--max-new-tokens` is an upper bound on top of it, the smaller of the two goes
+out, and the budget actually sent — with its reason — is written to the
+transcript. The 256-token floor is reported instead of passing for measured
+room. A model that spent 100 KB on thinking and never wrote a line is a
+*result*, not our ceiling — and the spend is documented in mandatory fields
+(`spend` in every transcript: answer tokens, reasoning tokens, seconds, TTFT,
+throughput). `reasoning_effort` is not forced: the stand keeps its own default,
+and that is part of the provenance; the thinking cap is pinned by
+`--reasoning-budget` (2048), and `--generation-mode native` hands sampling and
+thinking back to the server. Both the mode and the whole contract that went out
+are recorded. The old table-driven mode stays available with
+`unbounded_budget = False`.
 
 ## Artefacts are built by an agent, not dictated into a chat
 
@@ -152,7 +162,11 @@ compared on the same suite.
 
 Harness invariants (identical for every model, asserted by tests):
 
-- **pinned agent**: `pi 1.0.0`, tools `read,bash,edit,write`;
+- **pinned agent**: exactly `pi 1.0.0` (`npm install -g @earendil-works/pi-coding-agent@1.0.0`),
+  tools `read,bash,edit,write`; every start runs `pi --version` and a different release is
+  refused with that install line instead of being driven with an argv it may not parse
+  (0.80.10 has no `--` separator and died before the first request), and the arrived
+  version plus the binary's sha256 are written to the transcript and the run identity;
 - **isolated from the machine**: `--no-session` (no state between tasks),
   `--no-context-files` (this repo's `AGENTS.md` must not write itself into the
   prompt), `--no-extensions --no-skills --no-prompt-templates` (a `.pi/` a model
@@ -186,9 +200,11 @@ Harness invariants (identical for every model, asserted by tests):
   the stack, and without the hook the survivor outlives the whole run.
 
 A missing `pi` is a configuration error, not an unverified result: the run
-installs it on first use, `make agent` does it up front, and `dailybench doctor`
-reports where it is (or the command that would install it). `DAILYBENCH_AGENT_BIN`
-points the run at a specific binary.
+installs the pinned release on first use, `make agent` does it up front, and
+`dailybench doctor` reports where it is (or the command that would install it).
+A wrong version is the same kind of error — it names the expected release and the
+install command rather than scoring an empty working copy. `DAILYBENCH_AGENT_BIN`
+points the run at a specific binary; it is probed the same way.
 
 ## Visual blocks (measured, outside the score)
 
@@ -379,8 +395,9 @@ Rules the suite enforces (see `dailybench/core.py` for the full contract):
 - The reference answer scores full points, and the garbage answer scores zero —
   `dailybench selfcheck` fails the build otherwise.
 - A scenario reaches the baseline only through `expected_ids`; new ones are
-  declared in `IDS_BY_PROFILE` / `expected_ids_by_profile`, so `pilot` and
-  `stretch-v1` are checked against their exact lists.
+  declared in `IDS_BY_PROFILE` / `expected_ids_by_profile`, so `pilot`,
+  `stretch-v1` and `research-v1` are checked against their exact lists — an
+  empty list for a category the profile drops.
 - New modules are added to `dailybench/tasks/__init__.py`; the category total
   goes into `CATEGORY_POINTS`, or into `SHOWCASE_POINTS` for a showcase block
   (the registry refuses a mismatch).

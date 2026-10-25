@@ -2,10 +2,11 @@
 
 Baseline: ``C-1`` Python (10 hidden checks), ``C-2`` Go (10 hidden checks) and
 ``C-3`` SQL (5 generated databases). The pilot adds ``C-4`` (generational async
-cache) and ``stretch-v1`` adds ``C-5`` (bounded Go pool with acknowledged stop)
-and ``C-6`` (SQL order-journal snapshot). Scoring is behavioural: hidden tests
-and real result sets decide the points, never the shape of the patch or a judge
-model.
+cache) and ``stretch-v1`` adds ``C-5`` (bounded Go pool with acknowledged stop),
+``C-6`` (SQL order-journal snapshot) and ``N-2`` (terminal data workflow:
+CSV → SQLite → report with declared atomicity, exit codes and protected files).
+Scoring is behavioural: hidden tests, real result sets and the observed
+filesystem decide the points, never the shape of the patch or a judge model.
 """
 
 from __future__ import annotations
@@ -14,11 +15,13 @@ import random
 from typing import Any
 
 from .. import core
-from . import coding_go, coding_python, coding_sql
+from . import coding_go, coding_python, coding_sql, coding_workflow
 
 BASELINE_IDS = ("C-1", "C-2", "C-3")
 PILOT_IDS = ("C-4",)
-STRETCH_IDS = BASELINE_IDS + ("C-4", "C-5", "C-6")
+STRETCH_IDS = BASELINE_IDS + ("C-4", "C-5", "C-6", "N-2")
+RESEARCH_IDS = ("N-2",)
+"""The research profile keeps only the terminal data workflow."""
 
 IDS = BASELINE_IDS
 
@@ -32,6 +35,7 @@ _SCENARIOS = {
     "C-4": (coding_python.generate_c4, coding_python.evaluate_c4),
     "C-5": (coding_go.generate_c5, coding_go.evaluate_c5),
     "C-6": (coding_sql.generate_c6, coding_sql.evaluate_c6),
+    "N-2": (coding_workflow.generate, coding_workflow.evaluate),
 }
 
 
@@ -41,6 +45,8 @@ def generate(rng: random.Random, cfg: Any) -> list[core.TaskInstance]:
         scenarios = PILOT_IDS
     elif profile == "stretch-v1":
         scenarios = STRETCH_IDS
+    elif profile == "research-v1":
+        scenarios = RESEARCH_IDS
     else:
         scenarios = BASELINE_IDS
     tasks = [_SCENARIOS[scenario][0](rng, cfg) for scenario in scenarios]
@@ -60,5 +66,7 @@ core.register(
     generate=generate,
     evaluate=evaluate,
     expected_ids=BASELINE_IDS,
-    expected_ids_by_profile={"pilot": PILOT_IDS, "stretch-v1": STRETCH_IDS},
+    expected_ids_by_profile={
+        "pilot": PILOT_IDS, "stretch-v1": STRETCH_IDS, "research-v1": RESEARCH_IDS
+    },
 )

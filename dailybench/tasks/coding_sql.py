@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from .. import core, text
@@ -66,6 +67,17 @@ CREATE TABLE refunds (
     amount_cents INTEGER NOT NULL
 );
 """
+
+#: Table DDL per backend, parent first; the insert order and the drop order
+#: (reversed) both follow it, so a load can never race the foreign keys.
+_PG_SCHEMA_C3 = {
+    "users": "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
+    "orders": (
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,"
+        " created_at TIMESTAMP NOT NULL, amount_cents BIGINT NOT NULL, status TEXT NOT NULL);"
+    ),
+    "refunds": "CREATE TABLE refunds (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, amount_cents BIGINT NOT NULL);",
+}
 
 _REFERENCE_SQLITE = """SELECT strftime('%Y-%m-01', o.created_at) AS month,
        SUM(MAX(o.amount_cents - COALESCE(r.total, 0), 0)) AS net_revenue_cents
@@ -255,10 +267,22 @@ def _sqlite_rows(database: dict[str, list[tuple]], statement: str, timeout_s: fl
 
 
 class PostgresBackend:
-    """A throwaway PostgreSQL container, driven through ``docker exec``."""
+    """A throwaway PostgreSQL container, driven through ``docker exec``.
+
+    The container starts with a single ``bench`` database; every database a
+    scenario actually queries is created here, before the first load, so a check
+    can never fail merely because nobody issued ``CREATE DATABASE``. A psql
+    connection failure is reported as ``unreachable`` — an evaluator defect —
+    while a statement error stays a model answer.
+    """
 
     def __init__(self) -> None:
         self.container: str | None = None
+        self.databases: tuple[str, ...] = ()
+
+    @staticmethod
+    def database_name(index: int) -> str:
+        return f"bench{index + 1}"
 
     def available(self) -> bool:
         try:
@@ -274,7 +298,8 @@ class PostgresBackend:
             return False
         return proc.returncode == 0
 
-    def start(self) -> bool:
+    def start(self, databases: int) -> bool:
+        """Start the container and create ``databases`` scratch databases."""
         if not self.available():
             return False
         try:
@@ -298,9 +323,21 @@ class PostgresBackend:
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             if self._psql("bench", "SELECT 1;", timeout=20).get("ok"):
-                return True
+                break
             time.sleep(2)
-        return False
+        else:
+            return False
+
+        names = []
+        for index in range(databases):
+            name = self.database_name(index)
+            if not self._psql("bench", f'CREATE DATABASE "{name}";', timeout=60).get("ok"):
+                return False
+            if not self._psql(name, "SELECT 1;", timeout=20).get("ok"):
+                return False
+            names.append(name)
+        self.databases = tuple(names)
+        return True
 
     def _psql(self, database: str, sql: str, timeout: float = 60) -> dict[str, Any]:
         assert self.container
@@ -319,22 +356,28 @@ class PostgresBackend:
                 timeout=timeout,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            return {"ok": False, "error": str(exc)}
-        return {"ok": proc.returncode == 0, "stdout": proc.stdout, "stderr": proc.stderr}
+            return {"ok": False, "unreachable": True, "error": str(exc)}
+        stderr = proc.stderr or ""
+        lowered = stderr.casefold()
+        # psql exits 2 when the connection itself is bad; docker adds its own
+        # words when the container vanished under the run.
+        unreachable = proc.returncode == 2 or "no such container" in lowered or "is not running" in lowered
+        return {
+            "ok": proc.returncode == 0,
+            "unreachable": unreachable,
+            "stdout": proc.stdout,
+            "stderr": stderr,
+        }
 
-    def load(self, database_name: str, database: dict[str, list[tuple]]) -> bool:
-        statements = [
-            "DROP TABLE IF EXISTS refunds; DROP TABLE IF EXISTS orders; DROP TABLE IF EXISTS users;",
-            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
-            "CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,"
-            " created_at TIMESTAMP NOT NULL, amount_cents BIGINT NOT NULL, status TEXT NOT NULL);",
-            "CREATE TABLE refunds (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, amount_cents BIGINT NOT NULL);",
-        ]
-        for table in ("users", "orders", "refunds"):
-            for row in database[table]:
+    def load(self, database_name: str, tables: dict[str, tuple[str, list[tuple]]]) -> dict[str, Any]:
+        """Rebuild ``tables`` (parent first) in the named database."""
+        statements = ["DROP TABLE IF EXISTS " + ", ".join(reversed(list(tables))) + ";"]
+        statements.extend(ddl for ddl, _ in tables.values())
+        for table, (_, rows) in tables.items():
+            for row in rows:
                 values = ", ".join("NULL" if value is None else f"'{value}'" for value in row)
                 statements.append(f"INSERT INTO {table} VALUES ({values});")
-        return self._psql(database_name, "\n".join(statements), timeout=120).get("ok", False)
+        return self._psql(database_name, "\n".join(statements), timeout=120)
 
     def query(self, database_name: str, statement: str, timeout: float = 30) -> dict[str, Any]:
         result = self._psql(database_name, statement, timeout=timeout)
@@ -344,7 +387,7 @@ class PostgresBackend:
         for line in (result.get("stdout") or "").splitlines():
             if not line.strip():
                 continue
-            rows.append(tuple(part.strip() for part in line.split("\t")))
+            rows.append(tuple(_field(part) for part in line.split("\t")))
         result["rows"] = rows
         return result
 
@@ -359,6 +402,22 @@ class PostgresBackend:
                 timeout=120,
             )
             self.container = None
+
+
+_NUMBER = re.compile(r"^-?\d+(?:\.\d+)?$")
+
+
+def _field(raw: str) -> object:
+    """psql prints every column as text; numbers must come back as numbers.
+
+    A date (``2026-02-01``) keeps its spelling, so it is compared exactly; an
+    integer or a numeric sum becomes a real number, so the cross-backend
+    normalisation of whole values works for both SQLite and PostgreSQL.
+    """
+    value = raw.strip()
+    if not _NUMBER.match(value):
+        return value
+    return float(value) if "." in value else int(value)
 
 
 # --------------------------------------------------------------------------- #
@@ -485,6 +544,73 @@ def _seed_sql(database: dict[str, list[tuple]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _c3_tables(database: dict[str, list[tuple]]) -> dict[str, tuple[str, list[tuple]]]:
+    return {table: (ddl, database[table]) for table, ddl in _PG_SCHEMA_C3.items()}
+
+
+def _c6_tables(database: dict[str, list[tuple]]) -> dict[str, tuple[str, list[tuple]]]:
+    rows = {
+        "customers": database["customers"],
+        "orders": database["orders"],
+        "order_events": database["events"],
+    }
+    return {table: (ddl, rows[table]) for table, ddl in _PG_SCHEMA_C6.items()}
+
+
+def _postgres_unavailable(score: core.Score, names: list[str], reason: str) -> None:
+    """The evaluator, not the answer, is what failed: mark it as such."""
+    if score.error is None:
+        score.error = f"evaluator unavailable: {reason}"
+        score.notes.append(f"PostgreSQL недоступен — {reason}")
+    for name in names:
+        score.add(name, False, _POINTS_PER_CHECK, reason)
+
+
+def _score_postgres(
+    score: core.Score,
+    names: list[str],
+    databases: list[dict[str, list[tuple]]],
+    expected: list[tuple[tuple, ...]],
+    statement: str,
+    tables_for: Callable[[dict[str, list[tuple]]], dict[str, tuple[str, list[tuple]]]],
+) -> core.Score:
+    """Load every database, run the statement once per database, compare.
+
+    Every database named by the checks is created up front by ``start``; a lost
+    connection afterwards stops the run and is reported as an evaluator error
+    instead of silently becoming five zeroes.
+    """
+    postgres = PostgresBackend()
+    if not postgres.start(len(names)):
+        postgres.stop()
+        _postgres_unavailable(score, names, "postgres backend unavailable (docker)")
+        return score
+    try:
+        for index, (name, database, want) in enumerate(zip(names, databases, expected)):
+            database_name = postgres.database_name(index)
+            result = postgres.load(database_name, tables_for(database))
+            if not result.get("ok"):
+                if result.get("unreachable"):
+                    _postgres_unavailable(score, names[index:], "соединение с PostgreSQL потеряно")
+                    return score
+                detail = (result.get("stderr") or "").strip()[:300]
+                score.add(name, False, _POINTS_PER_CHECK, f"не удалось загрузить данные в PostgreSQL: {detail}")
+                continue
+            result = postgres.query(database_name, statement)
+            if not result.get("ok"):
+                if result.get("unreachable"):
+                    _postgres_unavailable(score, names[index:], "соединение с PostgreSQL потеряно")
+                    return score
+                score.add(name, False, _POINTS_PER_CHECK, (result.get("stderr") or "ошибка выполнения").strip()[:300])
+                continue
+            got = _normalise_rows(result.get("rows") or [])
+            want_rows = _normalise_rows([tuple(row) for row in want])
+            score.add(name, got == want_rows, _POINTS_PER_CHECK, f"получено {got}, ожидалось {want_rows}")
+    finally:
+        postgres.stop()
+    return score
+
+
 def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     score = core.Score(task_id=task.id, category="C")
     oracle = task.oracle
@@ -506,29 +632,7 @@ def evaluate(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     expected = [tuple(tuple(row) for row in rows) for rows in oracle["expected"]]
 
     if backend == "postgres":
-        postgres = PostgresBackend()
-        if not postgres.start():
-            score.error = "postgres backend unavailable"
-            score.notes.append("Docker/PostgreSQL недоступен — сценарий C-3 не мог быть выполнен")
-            for name in names:
-                score.add(name, False, _POINTS_PER_CHECK, "postgres backend unavailable")
-            return score
-        try:
-            for index, (name, database, want) in enumerate(zip(names, oracle["databases"], expected)):
-                database_name = f"bench{index + 1}"
-                if not postgres.load(database_name, database):
-                    score.add(name, False, _POINTS_PER_CHECK, "не удалось загрузить данные в PostgreSQL")
-                    continue
-                result = postgres.query(database_name, statement)
-                if not result.get("ok"):
-                    score.add(name, False, _POINTS_PER_CHECK, (result.get("stderr") or "ошибка выполнения").strip()[:300])
-                    continue
-                got = _normalise_rows(result.get("rows") or [])
-                want_rows = _normalise_rows([(month, value) for month, value in want])
-                score.add(name, got == want_rows, _POINTS_PER_CHECK, f"получено {got}, ожидалось {want_rows}")
-        finally:
-            postgres.stop()
-        return score
+        return _score_postgres(score, names, oracle["databases"], expected, statement, _c3_tables)
 
     for name, database, want in zip(names, oracle["databases"], expected):
         try:
@@ -571,6 +675,19 @@ CREATE TABLE order_events (
     recorded_at TIMESTAMP NOT NULL
 );
 """
+
+_PG_SCHEMA_C6 = {
+    "customers": "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL);",
+    "orders": (
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL,"
+        " amount_cents BIGINT NOT NULL, created_at TIMESTAMP NOT NULL);"
+    ),
+    "order_events": (
+        "CREATE TABLE order_events (event_id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL,"
+        " revision INTEGER NOT NULL, kind TEXT NOT NULL, amount_cents BIGINT NOT NULL,"
+        " recorded_at TIMESTAMP NOT NULL);"
+    ),
+}
 
 _REFERENCE_C6_SQLITE = """WITH admissible AS (
     SELECT order_id, revision, kind, MAX(amount_cents) AS amount_cents
@@ -909,46 +1026,7 @@ def evaluate_c6(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     expected = [tuple(tuple(row) for row in rows) for rows in oracle["expected"]]
 
     if backend == "postgres":
-        postgres = PostgresBackend()
-        if not postgres.start():
-            score.error = "postgres backend unavailable"
-            score.notes.append("Docker/PostgreSQL недоступен — сценарий C-6 не мог быть выполнен")
-            for name in names:
-                score.add(name, False, _POINTS_PER_CHECK, "postgres backend unavailable")
-            return score
-        try:
-            for index, (name, database, want) in enumerate(zip(names, oracle["databases"], expected)):
-                database_name = f"bench{index + 1}"
-                statements = ["DROP TABLE IF EXISTS order_events; DROP TABLE IF EXISTS orders; DROP TABLE IF EXISTS customers;"]
-                statements.append(
-                    "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL);"
-                )
-                statements.append(
-                    "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL,"
-                    " amount_cents BIGINT NOT NULL, created_at TIMESTAMP NOT NULL);"
-                )
-                statements.append(
-                    "CREATE TABLE order_events (event_id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL,"
-                    " revision INTEGER NOT NULL, kind TEXT NOT NULL, amount_cents BIGINT NOT NULL,"
-                    " recorded_at TIMESTAMP NOT NULL);"
-                )
-                for table in ("customers", "orders", "order_events"):
-                    for row in database[table]:
-                        values = ", ".join("NULL" if value is None else f"'{value}'" for value in row)
-                        statements.append(f"INSERT INTO {table} VALUES ({values});")
-                if not postgres._psql(database_name, "\n".join(statements), timeout=120).get("ok"):
-                    score.add(name, False, _POINTS_PER_CHECK, "не удалось загрузить данные в PostgreSQL")
-                    continue
-                result = postgres.query(database_name, statement)
-                if not result.get("ok"):
-                    score.add(name, False, _POINTS_PER_CHECK, (result.get("stderr") or "ошибка выполнения").strip()[:300])
-                    continue
-                got = _normalise_rows(result.get("rows") or [])
-                want_rows = _normalise_rows([tuple(row) for row in want])
-                score.add(name, got == want_rows, _POINTS_PER_CHECK, f"получено {got}, ожидалось {want_rows}")
-        finally:
-            postgres.stop()
-        return score
+        return _score_postgres(score, names, oracle["databases"], expected, statement, _c6_tables)
 
     for name, database, want in zip(names, oracle["databases"], expected):
         try:

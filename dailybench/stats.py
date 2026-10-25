@@ -5,12 +5,19 @@ honest:
 
 * an interval is computed by resampling the observed units (tasks), never by
   inventing a distribution around a point estimate;
-* a difference is called significant only when the two 95 % intervals do not
-  overlap — a shared interval is reported as "незначимо", not as a win.
+* a difference is estimated on the *same* task instances: the interval of the
+  difference comes from a paired, category-stratified bootstrap, so a shared
+  effect survives even when the two marginal intervals overlap. Overlap of the
+  marginals is recorded, but it no longer decides the verdict;
+* the proportion interval of a weighted sum is the bootstrap of that sum, never
+  a Wilson interval of an arbitrary ratio.
 
-Small samples are still measured, but flagged as provisional: below
-:data:`SMALL_SAMPLE` the interval is wide enough that the number guides rather
-than ranks.
+Small samples are still measured and flagged as provisional, but
+:data:`SMALL_SAMPLE` is a hint, not a licence to rank: a difference is called
+significant only when its own interval excludes zero.
+
+Nothing here measures repeat calls or independent seeds. The bootstrap
+resamples the tasks that were run once; :func:`sample_plan` states that gap.
 
 All randomness comes from an explicitly seeded ``random.Random``, so the same
 scores produce the same interval on every rebuild.
@@ -21,7 +28,7 @@ from __future__ import annotations
 import math
 import random
 from statistics import NormalDist
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 RESAMPLES = 10_000
 """Resamples per interval. Fixed so an interval costs the same on every run."""
@@ -36,6 +43,16 @@ SMALL_SAMPLE = 30
 """Below this many units a metric is published with the "ориентировочно" note."""
 
 PROVISIONAL_NOTE = "ориентировочно"
+
+SMALL_SAMPLE_CAVEAT = (
+    "порог n=%d — ориентир, а не допуск: ранжирует только интервал разности"
+) % SMALL_SAMPLE
+
+MIN_PAIRS = 2
+"""Below this many shared tasks the difference interval cannot discriminate."""
+
+PairedUnit = tuple[str, float, float, float, float]
+"""``(stratum, left_earned, left_possible, right_earned, right_possible)``."""
 
 
 def is_small(n: int) -> bool:
@@ -152,9 +169,98 @@ def bootstrap_proportion(
 def disjoint(left: tuple[float, float] | None, right: tuple[float, float] | None) -> bool:
     """Whether two 95 % intervals fail to overlap.
 
-    Only then is a model difference called significant; nested or touching
-    intervals stay "незначимо".
+    Kept as evidence, not as the verdict: overlapping marginals do not prove
+    that the paired difference is zero. :func:`paired_ratio_difference`
+    decides significance.
     """
     if not left or not right:
         return False
     return left[1] < right[0] or right[1] < left[0]
+
+
+def _ratio(pairs: Sequence[tuple[float, float]]) -> float:
+    earned = sum(earned for earned, _ in pairs)
+    possible = sum(possible for _, possible in pairs)
+    return earned / possible if possible else 0.0
+
+
+def paired_ratio_difference(
+    units: Iterable[PairedUnit],
+    *,
+    resamples: int = RESAMPLES,
+    seed: int | None = None,
+    level: float = LEVEL,
+) -> dict[str, Any]:
+    """Paired, stratified percentile bootstrap of a ratio difference.
+
+    ``units`` are the *same* task instances measured under both sides, as
+    ``(stratum, left_earned, left_possible, right_earned, right_possible)``.
+    Each resample redraws tasks inside its stratum and recomputes both ratios
+    from the drawn pairs, so the shared task effect cancels instead of being
+    swamped by between-task spread.
+
+    Returns the difference in ratio units (left − right), its interval, and
+    ``significant``: the whole interval stays on one side of zero. A single
+    shared task cannot discriminate and stays insignificant.
+    """
+    data: list[PairedUnit] = [
+        (str(stratum), float(left_earned), float(left_possible), float(right_earned), float(right_possible))
+        for stratum, left_earned, left_possible, right_earned, right_possible in units
+        if left_possible > 0 and right_possible > 0
+    ]
+    strata: dict[str, list[PairedUnit]] = {}
+    for unit in data:
+        strata.setdefault(unit[0], []).append(unit)
+    result: dict[str, Any] = {
+        "delta": None,
+        "ci95": None,
+        "significant": False,
+        "n_pairs": len(data),
+        "strata": len(strata),
+    }
+    if not data:
+        return result
+    delta = _ratio([(unit[1], unit[2]) for unit in data]) - _ratio(
+        [(unit[3], unit[4]) for unit in data]
+    )
+    rng = _rng(seed)
+    draws: list[float] = []
+    for _ in range(resamples):
+        left: list[tuple[float, float]] = []
+        right: list[tuple[float, float]] = []
+        for group in strata.values():
+            for _ in range(len(group)):
+                unit = group[rng.randrange(len(group))]
+                left.append((unit[1], unit[2]))
+                right.append((unit[3], unit[4]))
+        draws.append(_ratio(left) - _ratio(right))
+    low, high = _interval(draws, level)
+    result["delta"] = delta
+    result["ci95"] = (low, high)
+    result["significant"] = len(data) >= MIN_PAIRS and (low > 0.0 or high < 0.0)
+    return result
+
+
+def sample_plan(*, pairs: int, strata: int) -> dict[str, Any]:
+    """What the comparison actually resamples, and what it does not.
+
+    The published uncertainty is over task instances only. Repeat calls and
+    independent seeds are part of the population the estimate speaks about,
+    but they are not measured by a single run — the plan says so instead of
+    implying a tighter interval than the evidence supports.
+    """
+    return {
+        "population": "общие task_id двух прогонов",
+        "estimand": "разность долей на общих задачах, стратифицированная категориями",
+        "method": "paired stratified percentile bootstrap",
+        "pairs": pairs,
+        "strata": strata,
+        "measured": ["task_id", "category"],
+        "unmeasured": ["повторы вызова", "независимые сиды"],
+        "repeats": None,
+        "seeds": None,
+        "note": (
+            "Один прогон на модель: пересэмплируются задачи, а не повторы и не сиды. "
+            + SMALL_SAMPLE_CAVEAT
+        ),
+    }

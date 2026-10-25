@@ -1,0 +1,58 @@
+# syntax=docker/dockerfile:1
+#
+# Agent image: the Python runner image plus the pinned ``pi`` toolchain (H01).
+#
+# The agent is a candidate and runs in a container, so the image — not the host —
+# is what it can execute. Node comes from a pinned base and carries exactly the
+# one pinned release: the harness verifies ``pi --version`` inside the container
+# before a task starts and refuses an image that disagrees.
+#
+# The extra packages are toolchain parity, not convenience: a coding task must be
+# able to run its own tests (python, go, git) and a visual task must be able to
+# screenshot itself (chromium). Everything still runs as UID 1000 with no
+# capabilities and a read-only rootfs.
+ARG PYTHON_IMAGE=python:3.12-slim@sha256:2259debdc6af85626058a15a7bf44ad6a68b8c98c9ae82a02cf5cdb92f096d47
+
+FROM node:22-bookworm-slim AS agent
+ARG PI_VERSION=1.0.0
+RUN npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    && pi --version
+
+FROM ${PYTHON_IMAGE}
+
+ARG SOURCE_DATE_EPOCH=1700000000
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONHASHSEED=0 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        git \
+        golang-go \
+        chromium \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=agent /usr/local/bin/node /usr/local/bin/node
+COPY --from=agent /usr/local/lib/node_modules /usr/local/lib/node_modules
+# ``COPY`` dereferences the npm bin symlink, so the wrapper would lose the
+# relative ``./cli-runtime.js``; the link is rebuilt against the package.
+COPY --from=agent /usr/local/bin/pi /usr/local/bin/pi
+RUN ln -sf ../lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /usr/local/bin/pi \
+    && pi --version
+
+RUN groupadd --gid 1000 sandbox \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /usr/bin/bash sandbox \
+    && install -d -o 1000 -g 1000 -m 0755 /workspace /out /agent
+
+WORKDIR /workspace
+USER 1000:1000
+
+# Chromium's own sandbox needs user namespaces to be available to it; the tasks
+# call it with ``--no-sandbox`` (see ``agent._assets_readme``).
+ENV CHROME_BIN=/usr/bin/chromium
+CMD ["python3", "--version"]

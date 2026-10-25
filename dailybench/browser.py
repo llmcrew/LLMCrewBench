@@ -119,12 +119,46 @@ LAUNCH_ARGS = [
 ]
 
 
+#: Classes of a refused request. HTTP routing does not govern the WebSocket
+#: handshake, so both paths exist — but they are one fault and share one
+#: classifier, otherwise the same escape would cost a different score.
+BLOCKED_HTTP = "http"
+BLOCKED_WS = "websocket"
+
+
+def external_class(entry: str) -> str:
+    """Class of one refused request; the only classifier both paths use."""
+    return BLOCKED_WS if entry.startswith(f"{BLOCKED_WS}: ") else BLOCKED_HTTP
+
+
+def external_kinds(entries: Any) -> dict[str, int]:
+    """Refused requests per class: ``{"http": n, "websocket": m}``."""
+    kinds = {BLOCKED_HTTP: 0, BLOCKED_WS: 0}
+    for entry in entries or ():
+        kinds[external_class(str(entry))] += 1
+    return kinds
+
+
+def describe_externals(entries: Any) -> str:
+    """One line naming both classes, so a report cannot blame one silently."""
+    kinds = external_kinds(entries)
+    listed = ", ".join(
+        f"{kind} x{count}" for kind, count in kinds.items() if count
+    )
+    urls = "; ".join(str(entry)[:120] for entry in list(entries or ())[:3])
+    return f"внешние запросы запрещены: {listed} ({urls})"
+
+
 @dataclass
 class RenderResult:
     """Everything the evaluator may look at. ``ok`` is about rendering."""
 
     ok: bool
     reason: str = ""
+    failure: str | None = None
+    """Taxonomy of a failed render: the worker itself is unavailable, or the
+    candidate page exhausted the declared deadline. ``None`` on success and on
+    an ordinary page defect (markup that is not a document)."""
     note: str = ""
     errors: list[str] = field(default_factory=list)
     external: list[str] = field(default_factory=list)
@@ -144,6 +178,10 @@ class RenderResult:
     The frame is still usable (and shown), but no state can be compared, so a
     category that scores coordinates must treat it as a protocol failure.
     """
+    ready_ok: bool = True
+    """``False`` when ``window.__ready`` never became ``true``."""
+    step_ok: bool = True
+    """``False`` when ``__step`` was missing or threw while stepping."""
     shot_later_sha: str = ""
     duration_s: float = 0.0
 
@@ -151,6 +189,11 @@ class RenderResult:
     def same_frame(self) -> bool:
         """Two loads produced byte-identical frames."""
         return bool(self.shot_sha) and self.shot_sha == self.shot_sha_again
+
+    @property
+    def protocol_ok(self) -> bool:
+        """The whole page protocol (``__ready``, ``__probe``, ``__step``) held."""
+        return self.ready_ok and self.probe_ok and self.step_ok
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -162,6 +205,8 @@ class RenderResult:
             "stepped": self.stepped,
             "pixels": self.pixels,
             "probe_ok": self.probe_ok,
+            "ready_ok": self.ready_ok,
+            "step_ok": self.step_ok,
             "same_frame": self.same_frame,
             "animated": self.animated,
             "shot_sha_later": self.shot_later_sha,
@@ -550,6 +595,236 @@ PIXEL_PROBE = """
 """
 
 
+FRAME_STATS_VERSION = 1
+"""Schema of :func:`frame_stats`. Bumped when the measurement changes."""
+
+
+def frame_stats(shot: bytes | None) -> dict[str, Any]:
+    """Frame statistics measured from the PNG, outside the page (H17).
+
+    ``PIXEL_PROBE`` reads the canvas from inside the page's own realm: a black
+    overlay above the canvas, a CSS transform or a faked ``getContext`` can make
+    that payload disagree with what the screenshot shows. The screenshot is the
+    evidence, so the statistics are computed from its bytes in Python — the
+    page's realm contributes nothing but the numbers of its ``__probe()``.
+
+    The output keeps the key shape the image predicates read (``warm``,
+    ``regions``, ``profile``, ``edges`` …), so a predicate cannot tell which
+    side of the page computed it. An unreadable frame yields ``{}``.
+    """
+    if not shot:
+        return {}
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(shot)) as image:
+            rgb = np.asarray(image.convert("RGB"), dtype=np.int64)
+    except Exception:
+        return {}
+    h, w = rgb.shape[:2]
+    if not w or not h:
+        return {}
+    # Тот же шаг выборки, что у in-page пробы: около 2 px на любом разрешении,
+    # с чередованием строк, чтобы регулярная сетка не алиасила с рисунком.
+    st = max(2, round(w / 800) * 2)
+    ys: list[np.ndarray] = []
+    xs: list[np.ndarray] = []
+    for index, y in enumerate(range(0, h, st)):
+        offset = (st >> 1) * (index % 2)
+        x = np.arange(offset, w, st)
+        ys.append(np.full(x.size, y))
+        xs.append(x)
+    yy = np.concatenate(ys)
+    xx = np.concatenate(xs)
+    sample = rgb[yy, xx]
+    r, g, b = sample[:, 0], sample[:, 1], sample[:, 2]
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    span = mx - mn
+    mean = (r + g + b) / 3.0
+    sat = np.where(mx == 0, 0.0, span / np.maximum(mx, 1))
+    n = int(sample.shape[0])
+    if not n:
+        return {}
+    bg = [int(rgb[0, 0, 0]), int(rgb[0, 0, 1]), int(rgb[0, 0, 2])]
+    luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    round4 = lambda value: round(float(value), 4)  # noqa: E731
+
+    def pack(hit: np.ndarray) -> dict[str, Any]:
+        count = int(hit.sum())
+        return {
+            "fraction": round4(count / n) if n else 0.0,
+            "count": count,
+            "centroid": (
+                [round4(float(xx[hit].mean()) / w), round4(float(yy[hit].mean()) / h)]
+                if count
+                else None
+            ),
+        }
+
+    warm = (r > b + 25) & (r > 60)
+    cool = b > r + 15
+    bright = mean > 110
+    dark = mean < 60
+
+    # Границы: перепад с соседом по шагу; порог растёт вместе с шагом, иначе
+    # метрика зависит от разрешения.
+    edge_step = 16 * st / 2
+    jx = np.minimum(xx + st, w - 1)
+    jy = np.minimum(yy + st, h - 1)
+    dx = np.abs(luma - (0.2126 * rgb[yy, jx, 0] + 0.7152 * rgb[yy, jx, 1] + 0.0722 * rgb[yy, jx, 2]))
+    dy = np.abs(luma - (0.2126 * rgb[jy, xx, 0] + 0.7152 * rgb[jy, xx, 1] + 0.0722 * rgb[jy, xx, 2]))
+    edges = int((dx > edge_step).sum() + (dy > edge_step).sum())
+    edge_pairs = 2 * n
+    flat = int((dx == 0).sum() + (dy == 0).sum())
+    smooth = int(((dx > 0) & (dx <= edge_step)).sum() + ((dy > 0) & (dy <= edge_step)).sum())
+
+    mirrored = np.abs(
+        luma
+        - (
+            0.2126 * rgb[yy, np.maximum(0, w - st - xx), 0]
+            + 0.7152 * rgb[yy, np.maximum(0, w - st - xx), 1]
+            + 0.0722 * rgb[yy, np.maximum(0, w - st - xx), 2]
+        )
+    )
+    symmetry = float(mirrored.sum()) / max(1, edge_pairs)
+
+    # Гистограммы: грубая для цвета, HSV для палитры, 5-битная для «тонких»
+    # совпадений. Ключи считаются так же, как в in-page пробе.
+    keys = ((r >> 5) << 6) | ((g >> 5) << 3) | (b >> 5)
+    coarse, coarse_counts = np.unique(keys, return_counts=True)
+    fine = (r >> 3) * 1024 + (g >> 3) * 32 + (b >> 3)
+    fine_keys, fine_counts = np.unique(fine, return_counts=True)
+    distinct = int(np.unique(((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)).size)
+
+    hue = np.zeros(n)
+    safe = span > 0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        hue = np.where(
+            mx == r,
+            60 * (((g - b) / np.maximum(span, 1)) % 6),
+            np.where(
+                mx == g,
+                60 * ((b - r) / np.maximum(span, 1) + 2),
+                60 * ((r - g) / np.maximum(span, 1) + 4),
+            ),
+        )
+    hue = np.where(safe, (hue + 360) % 360, 0.0)
+    val = mx / 255.0
+    hb = np.minimum(11, (hue / 30).astype(int))
+    sb = np.minimum(2, (sat * 3).astype(int))
+    vb = np.minimum(3, (val * 4).astype(int))
+    hsv_key = hb * 12 + sb * 4 + vb
+    hsv_keys, hsv_counts = np.unique(hsv_key, return_counts=True)
+    hue_histogram = sorted(
+        [
+            [
+                float((key // 12) * 30 + 15),
+                float(((key % 12) // 4 + 0.5) / 3),
+                float((key % 4 + 0.5) / 4),
+                round4(count / n),
+            ]
+            for key, count in zip(hsv_keys.tolist(), hsv_counts.tolist())
+        ],
+        key=lambda row: -row[3],
+    )
+
+    # Объём: доля плавных перепадов (затенение) против плоской заливки.
+    tones: dict[int, dict[str, float]] = {}
+    for hue_value, _sat, val_value, fraction in hue_histogram:
+        if fraction < 0.001:
+            continue
+        slot = tones.setdefault(round(hue_value / 30), {"min": 1.0, "max": 0.0, "share": 0.0})
+        slot["min"] = min(slot["min"], val_value)
+        slot["max"] = max(slot["max"], val_value)
+        slot["share"] += fraction
+    shaded = sum(slot["share"] for slot in tones.values() if slot["max"] > slot["min"])
+    spread = sum(
+        slot["share"] * (slot["max"] - slot["min"])
+        for slot in tones.values()
+        if slot["max"] > slot["min"]
+    )
+    if len(tones) < 4:
+        significant = [row[2] for row in hue_histogram if row[3] >= 0.001]
+        shaded = max(shaded, (max(significant) - min(significant)) if significant else 0.0)
+
+    # Профили по полосам и колонкам: горизонт, градиент и место объекта.
+    profile = []
+    columns = []
+    for band in range(8):
+        rows_in = (yy >= band * h // 8) & (yy < (band + 1) * h // 8)
+        cols_in = (xx >= band * w // 8) & (xx < (band + 1) * w // 8)
+        profile.append(
+            {
+                "lum": round(float(mean[rows_in].mean()) * 10) / 10 if rows_in.any() else 0,
+                "sat": round(float(sat[rows_in].mean()) * 1000) / 1000 if rows_in.any() else 0,
+            }
+        )
+        columns.append(round(float(mean[cols_in].mean()) * 10) / 10 if cols_in.any() else 0)
+
+    region_sum = np.zeros((3, 3, 4), dtype=np.float64)
+    rx = np.minimum(2, xx * 3 // w)
+    ry = np.minimum(2, yy * 3 // h)
+    flat_region = ry * 3 + rx
+    for channel, values in enumerate((r, g, b)):
+        np.add.at(region_sum.reshape(9, 4)[:, channel], flat_region, values)
+    np.add.at(region_sum.reshape(9, 4)[:, 3], flat_region, 1)
+
+    return {
+        "width": int(w),
+        "height": int(h),
+        "background": bg,
+        "mean": round(float(mean.mean()) * 10) / 10,
+        "saturation": round(float(sat.mean()) * 1000) / 1000,
+        "changed_fraction": round4(int((np.abs(r - bg[0]) + np.abs(g - bg[1]) + np.abs(b - bg[2]) > 24).sum()) / n),
+        "distinct_colors": distinct,
+        "warm": pack(warm),
+        "cool": pack(cool),
+        "bright": pack(bright),
+        "dark": pack(dark),
+        "histogram": [
+            [
+                int(((key >> 6) & 7) * 32 + 16),
+                int(((key >> 3) & 7) * 32 + 16),
+                int((key & 7) * 32 + 16),
+                round4(count / n),
+            ]
+            for key, count in sorted(
+                zip(coarse.tolist(), coarse_counts.tolist()), key=lambda pair: -pair[1]
+            )[:16]
+        ],
+        "histogram_fine": [
+            [
+                int(((key >> 10) & 31) * 8 + 4),
+                int(((key >> 5) & 31) * 8 + 4),
+                int((key & 31) * 8 + 4),
+                round4(count / n),
+            ]
+            for key, count in sorted(
+                zip(fine_keys.tolist(), fine_counts.tolist()), key=lambda pair: -pair[1]
+            )[:96]
+        ],
+        "hue_histogram": hue_histogram,
+        "shade": round4(smooth / edge_pairs),
+        "flat": round4(flat / edge_pairs),
+        "volume": {"tones": len(tones), "shaded_share": round4(shaded), "spread": round4(spread)},
+        "profile": profile,
+        "columns": columns,
+        "edges": round4(edges / edge_pairs),
+        "symmetry": round4(symmetry),
+        "mirror_difference": round4(symmetry),
+        "regions": [
+            [round(float(acc[0] / max(1, acc[3]))), round(float(acc[1] / max(1, acc[3]))), round(float(acc[2] / max(1, acc[3])))]
+            for row in region_sum
+            for acc in row
+        ],
+    }
+
+
 def _budget_ms(deadline: float, timeout_ms: int) -> int:
     """Timeout for one awaited call under the absolute deadline.
 
@@ -609,19 +884,24 @@ def _page_pass(
     errors: list[str] = []
     external: list[str] = []
     allowed = f"http://127.0.0.1:{port}/"
+
+    def _refuse(kind: str, url: str) -> None:
+        """Record one refused request; both transports go through here."""
+        external.append(f"{kind}: {url}")
+
     try:
         context.route(
             "**/*",
             lambda route: (
                 route.continue_()
                 if route.request.url.startswith(allowed) or route.request.url.startswith("data:")
-                else (external.append(route.request.url), route.abort())
+                else (_refuse(BLOCKED_HTTP, route.request.url), route.abort())
             ),
         )
         # HTTP routing does not govern the WebSocket handshake: a ws:// channel
         # used to bypass ``route`` entirely. A routed socket is never connected,
         # so no traffic leaves and the attempt is recorded in ``external``.
-        context.route_web_socket("**/*", lambda ws: external.append(f"websocket: {ws.url}"))
+        context.route_web_socket("**/*", lambda ws: _refuse(BLOCKED_WS, ws.url))
         page = context.new_page()
         page.on("console", lambda msg: errors.append(f"console: {msg.text}") if msg.type == "error" else None)
         page.on("pageerror", lambda exc: errors.append(f"pageerror: {exc}"))
@@ -695,17 +975,26 @@ def _page_pass(
             " catch (e) { return null; } }"
         )
         stepped = None
+        step_failed = False
         if steps:
-            # Шаг оборачиваем в try: страница без __probe (частый дефект модели)
-            # роняла весь проход, и у витрины не оставалось даже кадра.
+            # Шаг оборачиваем в try: страница без `__step` (частый дефект модели)
+            # роняла весь проход. Отдельный исход отличает «шага нет» от «шаг
+            # есть и отчитался»: протокол — свой статус, а не приговор кадру.
             _mark(STAGE_HOOK)
-            stepped = page.evaluate(
-                "([dt, n]) => { try { for (let i = 0; i < n; i++) window.__step(dt); }"
-                " catch (e) { return null; }"
-                " try { return typeof window.__probe === 'function' ? window.__probe() : null; }"
-                " catch (e) { return null; } }",
+            outcome = page.evaluate(
+                "([dt, n]) => {"
+                " if (typeof window.__step !== 'function') return {ok: false};"
+                " try { for (let i = 0; i < n; i++) window.__step(dt); }"
+                " catch (e) { return {ok: false}; }"
+                " try { return {ok: true, payload: typeof window.__probe === 'function' ? window.__probe() : null}; }"
+                " catch (e) { return {ok: true, payload: null}; } }",
                 [dt, steps],
             )
+            if isinstance(outcome, dict):
+                step_failed = not outcome.get("ok")
+                stepped = outcome.get("payload")
+            else:
+                step_failed = True
         _mark(STAGE_HOOK)
         pixels = page.evaluate(PIXEL_PROBE)
         _mark(STAGE_SHOT)
@@ -718,6 +1007,7 @@ def _page_pass(
             "pixels": pixels,
             "shot": shot,
             "ready_failed": ready_failed,
+            "step_failed": step_failed,
         }
         if mode == "time":
             # A declared animation must move; the second sample tells them apart
@@ -950,7 +1240,7 @@ def _render_inline(
     shot = first["shot"] or b""
     later = first.get("shot_later")
     result = RenderResult(
-        ok=not first["errors"],
+        ok=bool(shot),
         errors=list(first["errors"]),
         external=list(first["external"]),
         probe=first["probe"],
@@ -963,16 +1253,22 @@ def _render_inline(
             hashlib.sha256(second["shot"]).hexdigest() if second and second["shot"] else ""
         ),
         animated=first.get("animated"),
+        ready_ok=not first.get("ready_failed"),
+        step_ok=not first.get("step_failed"),
         shot_later_sha=hashlib.sha256(later).hexdigest() if later else "",
         duration_s=time.time() - started,
     )
-    if first.get("ready_failed"):
-        # Страница нарисовала кадр, но протокол не дошёл: по контракту это
-        # провал (раньше таймаут рушил проход целиком). Кадр и pixels при этом
-        # сохранены — витрине есть что показать.
+    # Протокол, ошибки консоли и кадр — разные вещи (M09). Раньше любой
+    # `console.error` и потерянный `__probe` выставляли `ok=False` и обнуляли
+    # ВСЕ проверки; теперь `ok` значит «кадр снят», а остальное живёт своими
+    # флагами. Без кадра оценивать нечего — только тогда рендер провален.
+    if not shot:
         result.ok = False
-        if not result.reason:
-            result.reason = "страница не выставила window.__ready"
+        result.reason = result.reason or "кадр не снят"
+    if first.get("ready_failed"):
+        result.reason = result.reason or "страница не выставила window.__ready"
+    elif result.errors and not result.reason:
+        result.reason = result.errors[0][:200]
     # ``ok`` — про то, годится ли страница как ответ вообще. Кадр снимается и
     # без протокола, поэтому потерянный __probe помечаем отдельным флагом
     # (``probe_ok``), а не обнуляем весь рендер: витрина должна показать сцену.
@@ -986,6 +1282,7 @@ def _render_inline(
         # complete result, and random/realtime animation is not judged for
         # frame-to-frame reproducibility.
         result.probe_ok = False
+        result.ok = not result.errors
         if result.errors:
             result.reason = result.errors[0][:200]
         return result
@@ -998,9 +1295,6 @@ def _render_inline(
     elif not isinstance(result.probe, dict):
         result.probe_ok = False
         result.reason = "window.__probe() вернул не объект"
-    elif result.errors:
-        result.ok = False
-        result.reason = "ошибки в консоли страницы"
     return result
 
 
@@ -1032,7 +1326,11 @@ def render(
     try:
         _ensure_worker()
     except Exception as exc:
-        return RenderResult(ok=False, reason=f"рендер-процесс не запустился: {exc}")
+        return RenderResult(
+            ok=False,
+            reason=f"рендер-процесс не запустился: {exc}",
+            failure="evaluator_unavailable",
+        )
 
     deadline = time.monotonic() + timeout_ms / 1000
     job = {
@@ -1048,7 +1346,11 @@ def render(
         result = _call_worker(job, deadline)
     except Exception as exc:
         _kill_worker()
-        return RenderResult(ok=False, reason=f"{type(exc).__name__}: {str(exc)[:200]}")
+        return RenderResult(
+            ok=False,
+            reason=f"{type(exc).__name__}: {str(exc)[:200]}",
+            failure="evaluator_unavailable",
+        )
     if result is None:
         _kill_worker()
         # The navigation timeout is only a part of the budget, so the reason
@@ -1058,6 +1360,7 @@ def render(
             ok=False,
             errors=[f"{stage}: TimeoutError: дедлайн рендера {timeout_ms} мс исчерпан"],
             reason=f"дедлайн рендера {timeout_ms} мс исчерпан: страница не вернула управление",
+            failure="candidate_resource_exhausted",
             duration_s=time.time() - started,
         )
     result.duration_s = time.time() - started

@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from . import core, gallery, schema, stats, viz
-from .report import load_run, summarise
+from .report import WEIGHT_SCHEMES, compare_summaries, load_run, summarise
 
 SCORED = core.SCORED_CATEGORIES
 SHOWCASE = core.VISUAL_CATEGORIES
@@ -328,10 +328,171 @@ def _column_name(run: dict[str, Any]) -> str:
     return label if not _run_id(run) or _run_id(run) == label else f"{label} · {_run_id(run)}"
 
 
-def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_run: bool = False) -> str:
+def _contract_key(run: dict[str, Any]) -> str:
+    """Immutable contract identity of a run: the suite digest sha256.
+
+    Runs built from different suite bytes, profiles or evaluator contracts have
+    different denominators; their percentages are not ranks of one another.
+    """
+    return str((run.get("suite") or {}).get("sha256") or "")
+
+
+def _contract_label(contract: str) -> str:
+    return f"<code>{_cell(contract[:16])}</code>" if contract else "без контракта"
+
+
+def _rankable(summary: dict[str, Any]) -> bool:
+    """Only a complete, infrastructure-clean measurement may be ranked.
+
+    A skipped *scored* category shrinks the denominator and would silently
+    reward the run, so ``unsupported`` is not hidden inside a rank either.
+    A skipped showcase task (K/L) does not touch the verdict.
+    """
+    return (
+        bool(summary.get("eligible"))
+        and bool(summary.get("full_suite"))
+        and not summary.get("skipped_scored")
+    )
+
+
+def _group_contracts(
+    summaries: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> list[tuple[str, list[tuple[dict[str, Any], dict[str, Any]]], list[tuple[dict[str, Any], dict[str, Any]]]]]:
+    """Split runs by contract, and inside a contract into rankable and rest.
+
+    A partial ``1/1`` used to sit above a full ``95/100`` because both were
+    sorted by their own ratio. Ranking happens *after* this split: only the
+    first list of each contract gets places, everything else is shown as an
+    incomplete or ineligible measurement.
+    """
+    groups: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for pair in summaries:
+        groups.setdefault(_contract_key(pair[0]), []).append(pair)
+    ordered: list[tuple[str, list[tuple[dict[str, Any], dict[str, Any]]], list[tuple[dict[str, Any], dict[str, Any]]]]] = []
+    for contract, pairs in groups.items():
+        ranked = [pair for pair in pairs if _rankable(pair[1])]
+        rest = [pair for pair in pairs if not _rankable(pair[1])]
+        ranked.sort(key=lambda pair: -pair[1]["headline_earned"] / (pair[1]["headline_possible"] or 1))
+        rest.sort(
+            key=lambda pair: (
+                not pair[1].get("eligible"),
+                -len([s for s in pair[0].get("scores") or [] if not s.get("skipped")]),
+            )
+        )
+        ordered.append((contract, ranked, rest))
+    # A contract with no rankable run never leads the page: a lone ``1/1``
+    # partial used to outrank a complete suite merely by arriving first.
+    ordered.sort(
+        key=lambda item: (
+            not item[1],
+            -max(
+                (pair[1]["headline_earned"] / (pair[1]["headline_possible"] or 1) for pair in item[1]),
+                default=0.0,
+            ),
+        )
+    )
+    return ordered
+
+
+def _coverage(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Intersection of the task ids and per-run coverage against it.
+
+    Reading two ratios side by side is only meaningful over the tasks *both*
+    runs actually presented; the report states that core instead of implying
+    every number was measured on the same suite.
+    """
+    ids = {
+        _run_id(run): {str(score.get("task_id")) for score in run.get("scores") or []}
+        for run in runs
+    }
+    common = set.intersection(*ids.values()) if ids else set()
+    per_run = {
+        run_id: {
+            "total": len(own),
+            "common": len(own & common),
+            "coverage": round(100 * len(own & common) / len(own), 1) if own else 0.0,
+        }
+        for run_id, own in ids.items()
+    }
+    return {"common": sorted(common), "per_run": per_run}
+
+
+def _coverage_block(runs: list[dict[str, Any]]) -> str:
+    if len(runs) < 2:
+        return ""
+    contract = {_contract_key(run) for run in runs}
+    data = _coverage(runs)
+    rows = "".join(
+        f"<tr><td class='model'>{_cell(_model_name(run))}</td>"
+        f"<td class='num'>{data['per_run'][_run_id(run)]['total']}</td>"
+        f"<td class='num'>{data['per_run'][_run_id(run)]['common']}</td>"
+        f"<td class='num'>{data['per_run'][_run_id(run)]['coverage']:.0f}%</td></tr>"
+        for run in runs
+    )
+    note = (
+        f"<p class='hint warn'>{len(contract)} разных контракта сьюта: таблицы ниже раздельные, "
+        "общий ранг между ними не выставляется.</p>"
+        if len(contract) > 1
+        else ""
+    )
+    return (
+        "<h2>Покрытие и общее ядро заданий</h2>"
+        + note
+        + f"<p class='hint'>Общих заданий у всех прогонов: <b>{len(data['common'])}</b>. "
+        "Доля считается от собственного набора каждого прогона; неполный прогон не поднимается "
+        "в общем ранге только за счёт меньшего знаменателя.</p>"
+        f"<table class='grid coverage-table'><thead><tr><th>Модель</th><th>Заданий</th>"
+        f"<th>В общем ядре</th><th>Покрытие</th></tr></thead><tbody>{rows}</tbody></table>"
+    )
+
+
+def _failure_badges(summary: dict[str, Any]) -> str:
+    """Visible taxonomy of a run: infra first, model outcomes after."""
+    kinds = summary.get("failures") or {}
+    if not kinds:
+        return ""
+    badges = " ".join(
+        f"<span class='badge {'infra' if core.is_infra_failure(kind) else 'model'}' "
+        f"title='{_cell(core.failure_label(kind))}'>{_cell(core.failure_label(kind))} ×{count}</span>"
+        for kind, count in sorted(kinds.items())
+    )
+    return f"<div class='sub failures'>{badges}</div>"
+
+
+def _incomplete_table(
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> str:
+    """Runs that are not ranked: ineligible by infrastructure or incomplete."""
+    rows = []
+    for run, summary in pairs:
+        contract = run.get("suite") or {}
+        expected = len(contract.get("per_task") or []) or len(run.get("scores") or [])
+        ran = summary.get("ran", 0) + summary.get("ran_showcase", 0)
+        state = "инфраструктура" if not summary.get("eligible") else "неполный прогон"
+        if summary.get("skipped_scored"):
+            state += f"; не проверялось заданий: {summary['skipped_scored']} (unsupported)"
+        rows.append(
+            f"<tr><td class='model'>{_cell(_model_name(run))}</td>"
+            f"<td class='num'>{ran}/{expected}</td>"
+            f"<td>{_cell(state)}</td>"
+            f"<td>{_failure_badges(summary) or '<span class=\'sub\'>—</span>'}</td>"
+            f"<td class='sub'>{_cell(_caveat(summary))}</td></tr>"
+        )
+    return (
+        "<h3>Неполные и неранжируемые</h3>"
+        "<p class='hint'>Эти числа показаны, но места в ранге не занимают: инфраструктурный "
+        "провал ничего не говорит о модели, а неполный прогон — про свой урезанный знаменатель.</p>"
+        "<table class='grid incomplete-table'><thead><tr><th>Модель</th><th>Заданий</th>"
+        "<th>Состояние</th><th>Исходы</th><th>Причина</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
+def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_run: bool = False, ranks: dict[str, int | None] | None = None) -> str:
     """One card per model: score, showcase, spend, and where the points went."""
     cards = []
-    for place, (run, summary) in enumerate(summaries, 1):
+    for fallback, (run, summary) in enumerate(summaries, 1):
+        place = (ranks or {}).get(_run_id(run), fallback if ranks is None else None)
         config = run.get("config") or {}
         spend = _spend_totals(run)
         rows = run["scores"]
@@ -357,14 +518,20 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_
             )
         cards.append(
             f"<div class='card' data-model='{_cell(_model_name(run))}'>"
-            f"<div class='rank'>{place}</div>"
+            f"<div class='rank'>{'—' if place is None else place}</div>"
             f"<h3>{_cell(_model_name(run))}</h3>"
-            f"<div class='big {_tone(summary['headline_earned'], summary['headline_possible'])}'>"
+            + (
+                ""
+                if summary.get("eligible") and not summary.get("incomplete")
+                else f"<div class='sub state'>{'инфраструктура' if not summary.get('eligible') else 'неполный прогон — вне ранга'}</div>"
+            )
+            + f"<div class='big {_tone(summary['headline_earned'], summary['headline_possible'])}'>"
             f"{summary['headline_earned']:.0f}<span class='of'>/{summary['headline_possible']:.0f}</span>"
             f"<span class='unit'>баллов качества</span></div>"
             f"<div class='meter'><i style='width:{100 * summary['headline_earned'] / (summary['headline_possible'] or 1):.0f}%'></i></div>"
             f"{ci_line}"
             f"{f'<div class=\'sub verdict\'>{_cell(_caveat(summary))}</div>' if _caveat(summary) else ''}"
+            f"{_failure_badges(summary)}"
             f"<div class='sub'>симуляции K: <b>{summary['showcase_earned']:.0f}/{summary['showcase_possible']:.0f}</b> · L — оценка человеком · "
             f"заданий с потерей: <b>{failed}</b> (нулевых {zero})</div>"
             f"<div class='sub'>категории с потерей: {_cell(', '.join(failed_cats) or 'нет')}</div>"
@@ -376,6 +543,78 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_
             "</div>"
         )
     return "".join(cards)
+
+
+def _comparison_block(runs: list[dict[str, Any]]) -> str:
+    """Paired difference, category vector and weight sensitivity.
+
+    The first run is the baseline. Significance is read from the interval of
+    the paired difference on shared task ids, stratified by category; whether
+    the separate bands overlap is shown beside it so the conservative reading
+    stays visible.
+    """
+    if len(runs) < 2:
+        return ""
+    summaries = [(run, summarise(run["scores"], run.get("suite"))) for run in runs]
+    base_run, base = summaries[0]
+    rows = []
+    sensitivities = []
+    for run, summary in summaries[1:]:
+        comparison = compare_summaries(base, summary)
+        overall = comparison["overall"]
+        band = overall["delta_ci95"]
+        shown = f"{band[0]:+.2f} … {band[1]:+.2f} п.п." if band else "n/a"
+        delta = overall["delta"]
+        delta_text = "" if delta is None else f"{delta:+.2f}"
+        verdict = "значимо" if overall["significant"] else "незначимо"
+        rows.append(
+            f"<tr><td class='model'>{_cell(_model_name(run))}</td>"
+            f"<td class='num'>{delta_text}</td>"
+            f"<td class='num'>{_cell(shown)}</td>"
+            f"<td class='num'>{overall['pairs']}</td>"
+            f"<td class='num'>{'да' if overall['overlap'] else 'нет'}</td>"
+            f"<td class='num {'good' if overall['significant'] else 'sub'}'>{verdict}</td></tr>"
+        )
+        sensitivities.append((run, comparison["weight_sensitivity"]))
+    sensitivity_rows = []
+    for scheme in WEIGHT_SCHEMES:
+        cells = []
+        for run, sensitivity in sensitivities:
+            entry = sensitivity["schemes"][scheme]
+            delta = entry["delta"]
+            cells.append(
+                f"<td class='num'>{'' if delta is None else f'{delta:+.2f}'} "
+                f"<span class='sub'>{_cell(entry['winner'] or 'n/a')}</span></td>"
+            )
+        sensitivity_rows.append(f"<tr><th>{_cell(scheme)}</th>{''.join(cells)}</tr>")
+    vector_head = "".join(f"<th>{_cell(key)}</th>" for key in sorted(core.CATEGORY_POINTS))
+    vector_rows = []
+    for run, summary in summaries:
+        cells = "".join(
+            f"<td class='num'>{_cell(_pct(summary['per_category'].get(key, {}).get('earned', 0), summary['per_category'].get(key, {}).get('possible', 0)))}</td>"
+            for key in sorted(core.CATEGORY_POINTS)
+        )
+        vector_rows.append(f"<tr><td class='model'>{_cell(_model_name(run))}</td>{cells}</tr>")
+    stable = all(sensitivity["stable"] for _, sensitivity in sensitivities)
+    return (
+        '<h2>Парное сравнение: разность и её интервал</h2>'
+        f"<p class='hint'>База — <b>{_cell(_model_name(base_run))}</b>. Одинаковые задания сравниваются "
+        "парами, стратифицированно по категориям; решает 95 % интервал разности, а не перекрытие "
+        "отдельных полос. Один прогон на модель: повторы и сиды не измеряются.</p>"
+        "<table class='grid'><thead><tr><th>Модель</th><th>Δ, п.п.</th><th>95 % ДИ разности</th>"
+        "<th>Общих задач</th><th>Полосы перекрываются</th><th>Вердикт</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+        "<h2>Вектор категорий</h2>"
+        "<p class='hint'>Один итог — смесь весов, поэтому публикуется и вектор по категориям, %.</p>"
+        f"<table class='grid'><thead><tr><th>Модель</th>{vector_head}</tr></thead>"
+        f"<tbody>{''.join(vector_rows)}</tbody></table>"
+        "<h2>Чувствительность к весам</h2>"
+        "<p class='hint'>Дельта под каждой политикой весов: вывод "
+        + ("устойчив к смеси.</p>" if stable else "зависит от смеси — это свойство весов, не модели.</p>")
+        + "<table class='grid'><thead><tr><th>Политика</th>"
+        + "".join(f"<th>{_cell(_model_name(run))}</th>" for run, _ in sensitivities)
+        + f"</tr></thead><tbody>{''.join(sensitivity_rows)}</tbody></table>"
+    )
 
 
 def _verdict_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
@@ -615,26 +854,57 @@ def _provenance(runs: list[dict[str, Any]]) -> str:
                 "агент pi, категории " + ", ".join(config.get("agent_categories") or ())
                 + ": читает и правит рабочую копию, оценка по файлу на диске",
             ))
-        rows.append(("Веса SHA-256", str(config.get("weights_sha256") or "не указан")))
+        rows.append(("Веса SHA-256", str(config.get("weights_sha256") or "unknown")))
+        observed = config.get("observed") or {}
+        if observed:
+            rows.append((
+                "Наблюдённая конфигурация",
+                "со слов runtime (/props); unknown — не измерено: "
+                + ", ".join(
+                    f"{key}={observed.get(key) or 'unknown'}" for key in
+                    ("model_path", "quant", "n_ctx", "kv_type", "chat_template_sha256",
+                     "build_info", "server_gpu")
+                ),
+            ))
         if config.get("reference"):
             rows.append(("Эталонная конфигурация", str(config["reference"])))
         if config.get("launch"):
-            rows.append(("Строка запуска", str(config["launch"])))
+            rows.append(("Шаблон запуска (declared)", str(config["launch"])))
+        executed = config.get("launch_executed") or {}
+        if executed:
+            rows.append((
+                "Выполненная загрузка (executed)",
+                f"{executed.get('method') or 'метод неизвестен'}: "
+                + json.dumps(executed.get("request") or {}, ensure_ascii=False),
+            ))
         if sizing.get("calibrated"):
             rows.append(("Калибровка long context",
                          f"{sizing['chars_per_token']:.2f} символов/токен ({sizing.get('how', 'измерено')})"))
         if hardware:
-            rows.append(("Железо", str(hardware.get("gpu") or hardware.get("name") or "—")))
+            rows.append((
+                "GPU сэмплера (хост харнесса)",
+                str(hardware.get("gpu") or hardware.get("name") or "unknown"),
+            ))
         if suite.get("sha256"):
             rows.append(("Сьюта SHA-256", str(suite["sha256"])))
         environment = run.get("environment") or {}
         if environment:
             rows.append(("Образ песочницы", str(environment.get("image") or "—")))
             rows.append(("Digest образа", str(environment.get("image_digest") or "—")))
-            status = "подтверждено" if environment.get("status") == "verified" else "не проверено"
+            verified = environment.get("status") == "verified"
+            container = environment.get("executor_status") == "container_run"
+            # A verified image is not a run inside it: without this, the row said
+            # "Среда: подтверждено" right above "host_run".
+            status = (
+                "подтверждено"
+                if verified and container
+                else "образ подтверждён, но не применялся"
+                if verified
+                else "не проверено"
+            )
             if environment.get("reason"):
                 status += f": {environment['reason']}"
-            rows.append(("Среда", status))
+            rows.append(("Образ песочницы: статус", status))
             runtime = str(environment.get("runtime") or "—")
             if environment.get("runtime_verified") is False:
                 # The image digest says nothing about the requested runtime: a
@@ -944,7 +1214,42 @@ def render_html(
         index.extend(entry["tasks"])
 
     summaries = [(run, summarise(run["scores"], run.get("suite"))) for run in runs]
-    summaries.sort(key=lambda pair: -pair[1]["headline_earned"] / (pair[1]["headline_possible"] or 1))
+    # Eligibility and completeness gate the ranking *before* any comparison:
+    # only a full, infrastructure-clean run inside one contract gets a place.
+    groups = _group_contracts(summaries)
+    ranks: dict[str, int | None] = {}
+    flat: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    place = 1
+    for _contract, ranked, rest in groups:
+        for pair in ranked:
+            ranks[_run_id(pair[0])] = place
+            place += 1
+            flat.append(pair)
+        flat.extend(rest)
+    ranked_groups = groups
+    all_runs = [run for run, _ in flat]
+    summaries = flat
+    cards = _model_cards(flat, per_run=per_run, ranks=ranks)
+    comparison = "" if per_run else _comparison_block([run for run, _ in summaries])
+    if per_run:
+        ranking = cards
+    else:
+        sections = []
+        for contract, ranked, rest in ranked_groups:
+            head = (
+                f"<h2>Сравнение по контракту {_contract_label(contract)}</h2>"
+                if len(ranked_groups) > 1
+                else ""
+            )
+            block = cards if len(ranked_groups) == 1 else _model_cards(
+                ranked, ranks=ranks
+            )
+            body = block + (_verdict_table(ranked) if ranked else "")
+            body += _incomplete_table(rest) if rest else ""
+            if not ranked and not rest:
+                body = "<p class='hint'>в этом контракте нет прогонов</p>"
+            sections.append(head + body)
+        ranking = _coverage_block(all_runs) + "".join(sections)
 
     facts = _suite_facts(runs)
     single = len(runs) == 1
@@ -1036,6 +1341,11 @@ def render_html(
  .card {{ position:relative; background:#161b22; border:1px solid #30363d; border-radius:12px; padding:14px; min-width:0 }}
  .card .sub {{ overflow-wrap:anywhere }}
  .rank {{ position:absolute; right:12px; top:10px; color:#484f58; font-weight:700 }}
+ .card .state {{ color:#e3b341; font-weight:600 }}
+ .failures .badge {{ display:inline-block; border:1px solid #30363d; border-radius:8px; padding:0 6px; margin:2px 4px 0 0; font-size:11px }}
+ .failures .badge.infra {{ color:#d2a8ff; border-color:#6e40c9 }}
+ .failures .badge.model {{ color:#e3b341; border-color:#9e6a03 }}
+ .incomplete-table td, .coverage-table td {{ vertical-align:top }}
  .big {{ font-size:30px; font-weight:700; line-height:1.1 }}
  .big .of {{ color:#8b949e; font-size:18px; font-weight:500 }}
  .big .unit {{ display:block; font-size:11px; color:#8b949e; font-weight:400; letter-spacing:.03em }}
@@ -1148,11 +1458,12 @@ def render_html(
 
 <div class="panel active" id="p-summary">
  <h2>Кто сколько набрал</h2>
- <div class="cards">{_model_cards(summaries, per_run=per_run)}</div>
+ {f'<div class="cards">{cards}</div>' if per_run else ranking}
+ {comparison}
  <h2>Качество по категориям сьюта</h2>
  <p class="hint">A–J — балльные категории (проценты от возможного), K и L — витрина: A инстр., B рассужд., C код,
  D инструм., E контекст, F галлюц., G JSON, H диалог, I файлы, J ревью.</p>
- {_verdict_table(summaries)}
+ {_verdict_table(summaries) if per_run else ''}
  <h2>Расход: токены и время (документируется, лимит — окно модели)</h2>
  <p class="hint">Ответ и reasoning считаются отдельно: 100K токенов reasoning без единой строки кода — это результат,
  который видно здесь, а не молчаливый потолок.</p>
@@ -1169,8 +1480,10 @@ def render_html(
  <ul class="hint">
    <li><b>Баллы качества</b> — только категории A–J, максимум 100. Витрина K и L в итог не входит.</li>
    <li><b>«Не проверялось»</b> — задание не удалось проверить на этой машине (например нет браузера); это не ноль.</li>
-   <li><b>Полоса неопределённости</b> — 95 % бутстрэп-ДИ: перекрытие полос у двух моделей означает
-       незначимую разницу. При выборке меньше 30 метрика помечена «ориентировочно».</li>
+   <li><b>Полоса неопределённости</b> — 95 % бутстрэп-ДИ по задачам. Значимость разницы решает
+       парный тест по одинаковым заданиям и его собственный интервал: перекрытие отдельных полос её
+       не отменяет. Порог n=30 — ориентир, а не допуск: при меньшей выборке метрика помечена
+       «ориентировочно», а повторы и сиды не измеряются.</li>
    <li><b>Стоп-причина</b> — почему генерация закончилась: <code>stop</code> — сама, <code>length</code> — упёрлась в окно,
        <code>tool_calls</code> — ждёт результат инструмента.</li>
  </ul>

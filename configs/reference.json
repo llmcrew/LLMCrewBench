@@ -35,7 +35,7 @@
     "llama.cpp": {
       "launch": "llama-server -m <weights.gguf> --host 127.0.0.1 --port 8080 \\\n  -c <window> -ngl all -fa on -ctk <kv> -ctv <kv> \\\n  -np 1 --no-context-shift --jinja \\\n  --reasoning auto --reasoning-format deepseek --reasoning-budget <reasoning-budget> \\\n  --temp 0 --top-p 1 --seed -1 -n <answer-budget> \\\n  --metrics --props --alias <model-name>",
       "verify": [
-        "GET /props → n_ctx, model_path, chat_template: подтверждает, что загружено именно то, что объявлено",
+        "GET /props в КОРНЕ сервера (не под /v1) → n_ctx, model_path, chat_template: подтверждает, что загружено именно то, что объявлено",
         "-ngl all вместе с пиком VRAM подтверждает отсутствие CPU offload",
         "--no-context-shift: без него сервер молча вытесняет старые токены вместо отказа",
         "--reasoning-format deepseek: reasoning приходит в reasoning_content и не попадает в content",
@@ -49,7 +49,7 @@
     "unsloth-studio": {
       "launch": "# предпочтительно: API приложения — тот же путь, что у самого Studio\nPOST /api/inference/load\n  {\"model_path\": \"<model>\", \"gguf_variant\": \"<quant>\",\n   \"max_seq_length\": <window>, \"n_parallel\": 1, \"gpu_memory_mode\": \"auto\",\n   \"cache_type_kv\": \"<kv>\", \"force_reload\": true,\n   \"llama_extra_args\": [\"-fa\", \"on\", \"--jinja\", \"--reasoning-format\", \"deepseek\",\n                       \"--no-context-shift\", \"--temp\", \"0\", \"--top-p\", \"1\"]}\n\n# либо одноразовый запуск сервера целиком\nunsloth studio run --model <model> --gguf-variant <quant> \\\n  --max-seq-length <window> --gpu-memory-mode auto --parallel 1 \\\n  -fa on -ctk <kv> -ctv <kv> --jinja --no-context-shift \\\n  --reasoning-format deepseek --reasoning-budget <reasoning-budget> --temp 0 --top-p 1",
       "verify": [
-        "GET /props → n_ctx должен совпасть с объявленным окном: gpu_memory_mode=auto умеет сам урезать контекст под VRAM",
+        "GET /props в корне → n_ctx должен совпасть с объявленным окном: gpu_memory_mode=auto умеет сам урезать контекст под VRAM",
         "GET /props → chat_template_caps: supports_tools / supports_tool_calls подтверждают разбор вызовов инструментов",
         "POST /api/inference/estimate-memory — оценка памяти до загрузки",
         "--no-context-shift: без него сервер молча вытесняет старые токены вместо отказа",
@@ -225,6 +225,7 @@
       "model": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
       "quant": "IQ3_XXS",
       "weights": "",
+      "context_window": 32768,
       "kv_type": "q8_0",
       "capabilities": {
         "thinking": true,
@@ -232,6 +233,7 @@
       },
       "notes": [
         "Главный вопрос выпуска: сколько баллов из 100 теряется против UD-Q3_K_XL и сколько при этом освобождается VRAM.",
+        "Окно задано явно и равно базовому (32768): без него runner брал политику 262144, а full-preflight — 32768, и сравнение весов шло в разных условиях.",
         "Тот же рантайм и порт, что у базы: сравниваются веса, а не сервер.",
         "GSQ требует своей сборки рантайма — версия фиксируется в поле runtime."
       ]

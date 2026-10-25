@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from dailybench import stats
+from dailybench import report
 from dailybench.report import compare_summaries, summarise
 
 
@@ -87,7 +88,72 @@ def test_skipped_and_unobserved_tasks_add_no_samples():
     assert summary["per_category"]["B"]["provisional"] is False
 
 
-def test_large_and_close_summaries_compare_by_interval_overlap():
+def test_the_paired_difference_keeps_a_constant_edge():
+    units = [("A", 10.0, 10.0, 9.5, 10.0)] * 40
+    result = stats.paired_ratio_difference(units, seed=2)
+    assert result["delta"] == pytest.approx(0.05)
+    assert result["ci95"][0] > 0
+    assert result["significant"] is True
+    assert result["strata"] == 1 and result["n_pairs"] == 40
+
+
+def test_the_paired_difference_ignores_unpaired_tasks():
+    units = [("A", 10.0, 10.0, 9.5, 10.0), ("A", 5.0, 0.0, 1.0, 1.0)]
+    result = stats.paired_ratio_difference(units)
+    assert result["n_pairs"] == 1
+    assert result["significant"] is False
+
+
+def test_the_sample_plan_states_what_is_not_measured():
+    plan = stats.sample_plan(pairs=3, strata=1)
+    assert plan["repeats"] is None and plan["seeds"] is None
+    assert stats.SMALL_SAMPLE_CAVEAT in plan["note"]
+    assert stats.SMALL_SAMPLE == 30
+
+
+def test_disjoint_intervals_no_longer_decide_the_verdict():
+    """A constant per-task edge is significant even when both bands overlap."""
+    left = summarise(_scores("A", [6.0 + (index % 5) for index in range(40)]))
+    right = summarise(_scores("A", [6.0 + (index % 5) - 0.05 for index in range(40)]))
+    result = compare_summaries(left, right)
+    assert result["overall"]["overlap"] is True          # отдельные ДИ перекрываются
+    assert result["overall"]["significant"] is True      # но парная разность держится
+    low, high = result["overall"]["delta_ci95"]
+    assert low > 0 and high == pytest.approx(0.5, abs=0.2)
+    assert result["categories"]["A"]["significant"] is True
+    assert result["overall"]["pairs"] == 40
+
+
+def test_pairing_survives_a_reordered_task_list():
+    left = _scores("A", [6.0 + (index % 5) for index in range(40)])
+    right = list(reversed(_scores("A", [6.0 + (index % 5) - 0.05 for index in range(40)])))
+    result = compare_summaries(summarise(left), summarise(right))
+    assert result["overall"]["pairs"] == 40
+    assert result["overall"]["significant"] is True
+
+
+def test_the_paired_test_reports_its_sample_plan_and_weight_sensitivity():
+    left = summarise(_scores("A", [10.0] * 20 + [8.0] * 20))
+    right = summarise(_scores("A", [8.0] * 20 + [10.0] * 20))
+    result = compare_summaries(left, right)
+    assert result["method"] == "paired stratified bootstrap"
+    plan = result["sample_plan"]
+    assert plan["pairs"] == 40
+    assert plan["repeats"] is None and plan["seeds"] is None
+    assert "повторы вызова" in plan["unmeasured"]
+    assert set(result["weight_sensitivity"]["schemes"]) == set(report.WEIGHT_SCHEMES)
+    assert result["category_vector"]["left"]["A"] == pytest.approx(90.0)
+
+
+def test_a_single_shared_task_cannot_be_significant():
+    left = summarise(_scores("A", [10.0]))
+    right = summarise(_scores("A", [0.0]))
+    result = compare_summaries(left, right)
+    assert result["overall"]["pairs"] == 1
+    assert result["overall"]["significant"] is False
+
+
+def test_large_and_close_summaries_compare_by_the_difference_interval():
     strong = summarise(_scores("A", [9.0, 10.0] * 20))
     weak = summarise(_scores("A", [1.0, 2.0] * 20))
     far = compare_summaries(strong, weak)
@@ -97,3 +163,13 @@ def test_large_and_close_summaries_compare_by_interval_overlap():
 
     close = compare_summaries(strong, summarise(_scores("A", [9.0] * 20 + [10.0] * 19 + [5.0])))
     assert close["overall"]["significant"] is False
+
+
+def test_the_difference_is_zero_when_nothing_is_shared():
+    left = summarise(_scores("A", [10.0, 9.0]))
+    right = summarise([{"task_id": "B-1", "category": "B", "earned": 15.0,
+                        "possible": 15.0, "checks": []}])
+    result = compare_summaries(left, right)
+    assert result["overall"]["pairs"] == 0
+    assert result["overall"]["delta_ci95"] is None
+    assert result["overall"]["significant"] is False

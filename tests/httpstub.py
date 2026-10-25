@@ -34,6 +34,22 @@ def _usage(content: str, completion_tokens: int, reasoning_tokens: int) -> dict[
     }
 
 
+def _tool_continuation_without_reasoning(messages: list[Any]) -> int | None:
+    """Index of the first assistant tool message that lost its reasoning.
+
+    Only messages that carry tool calls are checked: the API requires the
+    reasoning back on the *answer-bearing* assistant turn, not on plain text.
+    """
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        if not message.get("tool_calls"):
+            continue
+        if not (message.get("reasoning_content") or message.get("reasoning")):
+            return index
+    return None
+
+
 def start(
     *,
     models: list[str] | None = None,
@@ -49,14 +65,25 @@ def start(
     finish: bool = True,
     stream_error: dict[str, Any] | None = None,
     status: int = 200,
+    require_reasoning_on_tool_continuation: bool = False,
+    reject_reasoning_budget: bool = False,
 ) -> tuple[str, ThreadingHTTPServer]:
     """Start the stub and return ``(base_url, server)``.
 
     ``base_url`` already carries the ``/v1`` suffix, so it can be handed to
     ``OpenAICompatibleProvider`` unchanged. ``server.payloads`` is the list of
     every JSON body received (GET requests are not recorded); ``props`` makes
-    ``GET /props`` answer instead of 404, and ``tool_call`` makes every
+    ``GET /props`` — at the server root only, as llama.cpp serves it — answer
+    instead of 404, and ``tool_call`` makes every
     completion report one tool call.
+
+    ``require_reasoning_on_tool_continuation`` enforces the documented DeepSeek
+    thinking contract: a request whose history contains an assistant tool call
+    must echo that message's ``reasoning_content``, else it answers HTTP 400 —
+    exactly what the live API does.
+
+    ``reject_reasoning_budget`` answers HTTP 400 when the body carries
+    ``reasoning_budget``, the way a stand that does not know the field does.
 
     Deadline shapes: ``drip`` writes the blocking body one byte at a time with
     that delay, ``stall`` pauses mid-stream, ``finish=False`` drops the terminal
@@ -92,7 +119,9 @@ def start(
             if self.path.endswith("/models"):
                 self._send_json({"data": [{"id": name} for name in model_list]})
                 return
-            if self.path.endswith("/props") and props is not None:
+            # Root only: a real llama.cpp management endpoint lives above /v1,
+            # so answering any "*/props" suffix would hide a wrong path.
+            if self.path == "/props" and props is not None:
                 self._send_json(props)
                 return
             self.send_error(404)
@@ -113,6 +142,17 @@ def start(
                 if status != 200:
                     self._send_json({"error": {"message": f"stub failure {status}"}}, status)
                     return
+                if reject_reasoning_budget and "reasoning_budget" in payload:
+                    self._send_json({"error": {"message": "unknown field reasoning_budget"}}, 400)
+                    return
+                if require_reasoning_on_tool_continuation:
+                    broken = _tool_continuation_without_reasoning(messages)
+                    if broken is not None:
+                        self._send_json(
+                            {"error": {"message": f"assistant tool message #{broken} without reasoning_content"}},
+                            400,
+                        )
+                        return
                 if payload.get("stream"):
                     self._send_stream(content)
                 else:

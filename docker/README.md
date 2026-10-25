@@ -11,7 +11,7 @@ contract in [`docs/FRAMEWORK_SPEC.md`](../docs/FRAMEWORK_SPEC.md) §6:
 | syscalls | `seccomp.json`, `defaultAction: SCMP_ACT_ERRNO` + `defaultErrnoRet: 38` (ENOSYS) with an allow-list |
 | processes | `pids.max = 256`, `--init` reaper |
 | CPU / memory / IO | cgroups v2 `cpu.max`, `memory.max`, `memory.swap.max=0`, `io.max` |
-| network | `none` for the runner and capture; the judge keeps the default bridge — it reaches every host port and the daemon's DNS resolver, so "only its endpoint" is a convention, not an enforced boundary |
+| network | `none` for the runner and capture; an agent run keeps the default bridge and is handed `host.docker.internal` as the only host name — it still reaches every host port and the daemon's DNS resolver, so "only its endpoint" is a convention, not an enforced boundary |
 | time | absolute deadline, the whole process tree gets `SIGKILL` |
 
 `OOM`, `timeout` and `infra_error` (daemon/CLI failure, unreadable container
@@ -24,6 +24,7 @@ Both bases are pinned by digest (`latest` is rejected at run time):
 
 | Image | Base |
 |---|---|
+| `docker/Dockerfile.agent` (default) | `python:3.12-slim@sha256:2259debd…` + pinned `pi` from `node:22-bookworm-slim` |
 | `docker/Dockerfile.python` | `python:3.12-slim@sha256:2259debd…` |
 | `docker/Dockerfile.capture` | `debian:bookworm-slim@sha256:7ff6ba31…` |
 | `docker/Dockerfile.judge` | `python:3.12-slim@sha256:2259debd…` (stdlib only; `/app` and `/store` are mounts) |
@@ -87,7 +88,8 @@ the manifest, so the same inputs give the same bytes.
 ```
 
 The task directory (`--task-dir`, default: the repository root) is mounted
-read-only at `/workspace` and used as the working directory. A directory passed
+read-only at `/workspace` and used as the working directory; `--workspace-rw`
+makes that mount writable for a command that must leave an answer behind. A directory passed
 with `--write-dir` is the only writable bind mount (at `/out`, exposed to the
 child as `$SANDBOX_OUT`). Both are attached with `--mount type=bind`, so a `:`
 in the host path is legal; a `,` is refused with an infrastructure error because
@@ -103,6 +105,9 @@ Useful flags:
 | `--network none\|bridge\|<name>` | `none` | runner stays on `none` |
 | `--deadline SECONDS` | `600` | absolute wall-clock deadline |
 | `--cpus`, `--memory`, `--pids-limit` | `2`, `2g`, `256` | cgroup v2 limits |
+| `--workspace-rw` | off | let the command write the task directory |
+| `--env NAME=VALUE` | – | one allowlisted container variable; Docker inherits nothing, so this list *is* the container environment |
+| `--host-gateway` | off | add `host.docker.internal` → host gateway (an endpoint on the host's loopback) |
 | `--report PATH` | – | also write the JSON report to `PATH` |
 | `--allow-latest` | off | permit a tag without a digest |
 
@@ -119,6 +124,12 @@ The JSON report on stdout has the shape:
   "sbom": ["libc6\t2.36-9+deb12u4", "…"],
   "command": ["python", "solution.py"],
   "network": "none",
+  "mounts": [{"src": "/tmp/task", "dst": "/workspace", "readonly": true}],
+  "env": ["PATH"],
+  "cgroups": {"cpus": "2", "memory": "2g", "pids_limit": 256},
+  "rootfs": "read_only",
+  "capabilities": "dropped",
+  "container": "dailybench-sandbox-1a2b3c4d5e",
   "deadline_s": 600,
   "duration_s": 1.23,
   "exit_code": 0,
@@ -136,6 +147,23 @@ container must be observed in a terminal state before the exit code is
 classified — if the daemon cannot report one, the run is infrastructure. The
 `runtime` field is always recorded, so the manifest and the published report can
 state which kernel boundary was used.
+
+## The agent runs here
+
+`dailybench run` executes the agentic categories (C/K/L) inside this sandbox, not
+on the host: `dailybench/isolation.py` mounts the task fixture as `/workspace`
+(writable — the agent must leave the answer), the harness config as `/agent`, an
+allowlisted environment and nothing else. The repository, `task.oracle` and the
+neighbouring working copies are therefore invisible, which is the point: a model
+that can read the hidden tests next door is measured on better information than
+the next one.
+
+The agent image ships the pinned `pi` and checks it (`pi --version`) inside
+the container before a task starts; a foreign release is an infrastructure
+error, and the run falls back to the host with the reason recorded
+(`executor_status: host_run`). Build it with `make agent-image` (or
+`scripts/sandbox_run.py build`), point `DAILYBENCH_SANDBOX_IMAGE` at it, and use
+`--no-sandbox` only to reproduce a host run deliberately.
 
 ## gVisor
 

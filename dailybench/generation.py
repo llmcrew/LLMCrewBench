@@ -10,11 +10,21 @@ by atomically replacing ``manifest.json``. The manifest names the generation,
 the run identity and a SHA-256 per file. Readers resolve the manifest first and
 read from the committed generation instead of the root copies, so an
 interrupted commit always leaves the previous generation visible. The root
-files stay in place as hard links for tools that treat a run as plain files.
+files stay in place as copies (clone where the filesystem supports it) for
+tools that treat a run as plain files: an in-place root edit must not change
+the bytes of the sealed generation.
+
+Every file is written to a sibling temporary file, flushed through a writable
+descriptor (``os.fsync`` rejects a read-mode one on Windows), and renamed in.
+Directory barriers need a read-only handle: Windows cannot open a directory, so
+it is skipped. A barrier the filesystem reports as unsupported (EINVAL/ENOTSUP)
+degrades the checkpoint instead of aborting it, and the manifest records every
+such fallback under ``durability``; any other ``OSError`` fails the commit.
 """
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -32,12 +42,21 @@ ENVIRONMENT = "environment.json"
 #: Provenance of the executor. Stored in the manifest next to the run identity
 #: so a reader can tell a resumed run whether it is still on the same image.
 PROVENANCE_SCHEMA = "dailybench/environment/1"
-DEFAULT_IMAGE = "dailybench/runner-python:local"
+DEFAULT_IMAGE = "dailybench/runner-agent:local"
 SOURCE_DATE_EPOCH_DEFAULT = 1700000000
 
 
 class ProvenanceError(RuntimeError):
     """The run was continued on a different executor than it started on."""
+
+
+class IntegrityError(RuntimeError):
+    """A manifest exists but no longer describes an intact generation.
+
+    The root copies are an export, not a second source of truth: falling back
+    to them would serve whatever bytes are there as the newest state.
+    """
+
 
 #: ``path`` → (mtime_ns, size, inode, digest) of files that already hashed to
 #: their manifest entry. Re-hashing every transcript on every ``read_json`` grew
@@ -46,17 +65,66 @@ class ProvenanceError(RuntimeError):
 _CHECKED: dict[str, tuple[int, int, int, str]] = {}
 
 
-def _fsync_file(path: Path) -> None:
-    with open(path, "rb") as handle:
-        os.fsync(handle.fileno())
+#: errnos that mean "this filesystem cannot flush that kind of handle", not
+#: "the flush failed". Such a case degrades durability and is recorded in the
+#: manifest; any other ``OSError`` must abort the commit.
+UNSUPPORTED_FSYNC = frozenset({errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP})
 
 
-def _fsync_dir(path: Path) -> None:
+def _dir_fsync_supported() -> bool:
+    """A directory is opened read-only: Windows cannot fsync such a handle."""
+    return os.name != "nt"
+
+
+def _fsync(fd: int, kind: str, degraded: list[str]) -> None:
+    try:
+        os.fsync(fd)
+    except OSError as error:
+        if error.errno not in UNSUPPORTED_FSYNC:
+            raise
+        marker = f"{kind}-fsync:unsupported:{errno.errorcode.get(error.errno, error.errno)}".lower()
+        if marker not in degraded:
+            degraded.append(marker)
+
+
+def _fsync_file(path: Path, degraded: list[str]) -> None:
+    """Flush a file that is already in place (a carried-over checkpoint file).
+
+    ``os.fsync`` needs a writable descriptor: an ``rb`` handle is rejected on
+    Windows, which is how the first checkpoint used to die unpublished.
+    """
+    with open(path, "r+b") as handle:
+        _fsync(handle.fileno(), "file", degraded)
+
+
+def _fsync_dir(path: Path, degraded: list[str]) -> None:
+    if not _dir_fsync_supported():
+        if "directory-fsync:unsupported:nt" not in degraded:
+            degraded.append("directory-fsync:unsupported:nt")
+        return
     handle = os.open(path, os.O_RDONLY)
     try:
-        os.fsync(handle)
+        _fsync(handle, "directory", degraded)
     finally:
         os.close(handle)
+
+
+def _manifest_text(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _write_durable(target: Path, text: str, degraded: list[str]) -> None:
+    """Write ``text`` beside ``target``, flush it, and only then rename it in.
+
+    Writing the target directly leaves a truncated file when the process dies
+    mid-write; ``os.replace`` of a fully flushed sibling is atomic.
+    """
+    tmp = target.with_name(f".{target.name}.tmp")
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(text)
+        handle.flush()
+        _fsync(handle.fileno(), "file", degraded)
+    os.replace(tmp, target)
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +226,10 @@ def environment(
     an image does not mean a container was used, so without ``container_ran``
     the record says ``host_run`` with a reason, and a missing Docker says
     ``unverified`` instead of pretending the host run matched the image.
+
+    ``container_ran`` comes from the caller's pre-flight probe
+    (``isolation.ready()``), which is what the runner itself uses: the record and
+    the execution therefore agree on whether a container will be started.
     """
     image = image or os.environ.get("DAILYBENCH_SANDBOX_IMAGE") or DEFAULT_IMAGE
     runtime = runtime or os.environ.get("DAILYBENCH_SANDBOX_RUNTIME") or "runc"
@@ -298,6 +370,11 @@ def _verified(directory: Path, name: str, manifest: dict[str, Any] | None = None
     data = manifest if manifest is not None and manifest.get("generation") == name else _manifest(folder)
     if data is None:
         return None
+    own = _manifest(folder)
+    if own is None or _canonical(own) != _canonical(data):
+        # A root manifest edited together with the hashes it lists would
+        # otherwise verify itself; the generation keeps its own copy.
+        return None
     files = data.get("files")
     if not isinstance(files, dict) or not files:
         return None
@@ -342,14 +419,57 @@ def _verified(directory: Path, name: str, manifest: dict[str, Any] | None = None
     return folder
 
 
+def _root_problems(directory: Path, data: dict[str, Any]) -> list[str]:
+    """Root copies that no longer match the manifest they were exported from."""
+    problems: list[str] = []
+    for name, digest in (data.get("files") or {}).items():
+        path = directory / name
+        try:
+            stat = path.stat()
+            key = str(path)
+            cached = _CHECKED.get(key)
+            if cached and cached[:3] == (stat.st_mtime_ns, stat.st_size, stat.st_ino) and cached[3] == digest:
+                continue
+            if sha256(path.read_bytes()).hexdigest() != digest:
+                problems.append(name)
+            else:
+                _CHECKED[key] = (stat.st_mtime_ns, stat.st_size, stat.st_ino, digest)
+        except OSError:
+            problems.append(name)
+    return problems
+
+
+def resolve(directory: Path | str) -> tuple[Path, str, list[str]]:
+    """``(base, integrity, problems)`` for a reader.
+
+    ``integrity`` is ``sealed`` for a verified generation with matching root
+    copies, ``root-drift`` when only the export was edited (the sealed bytes are
+    what this base serves), and ``legacy`` for a directory that never had a
+    manifest. A present-but-broken manifest raises: quarantine, no legacy
+    fallback.
+    """
+    directory = Path(directory)
+    generation = current(directory)
+    if generation is not None:
+        problems = _root_problems(directory, _manifest(directory) or {})
+        return generation, ("root-drift" if problems else "sealed"), problems
+    if (directory / MANIFEST).is_file():
+        raise IntegrityError(
+            f"{directory}: манифест generation не прошёл проверку — данные в карантине, "
+            "root-копии не являются источником истины (пересоберите прогон или "
+            "восстановите generation из .generations)"
+        )
+    return directory, "legacy", []
+
+
 def current(directory: Path | str) -> Path | None:
     """The committed generation, or ``None`` for an uncommitted/legacy run.
 
     A generation only counts when every file still hashes to its manifest entry
     and its config carries the manifest identity. A damaged generation yields
-    ``None``: readers then use the root copies, which are hard links to the same
-    bytes and therefore carry any deliberate hand edit; a half-published commit
-    never reaches here because the manifest is replaced last.
+    ``None``: :func:`committed` then falls back to the root working copy (which
+    is flagged by :func:`resolve`), and a half-published commit never reaches
+    here because the manifest is replaced last.
     """
     directory = Path(directory)
     data = _manifest(directory)
@@ -359,8 +479,20 @@ def current(directory: Path | str) -> Path | None:
 
 
 def committed(directory: Path | str) -> Path:
-    """Base directory a reader must use: the generation, else the root."""
-    return current(directory) or Path(directory)
+    """Base directory a working reader must use.
+
+    The sealed generation wins while the root export still matches it. An
+    edited root is the live working copy (the operator changed state on
+    purpose), so readers follow it — :func:`resolve` is what tells a reader the
+    export no longer matches the seal.
+    """
+    directory = Path(directory)
+    generation = current(directory)
+    if generation is None:
+        return directory
+    if _root_problems(directory, _manifest(directory) or {}):
+        return directory
+    return generation
 
 
 def read_text(directory: Path | str, name: str) -> str:
@@ -379,14 +511,38 @@ def _link_or_copy(source: Path, target: Path) -> None:
         shutil.copyfile(source, target)
 
 
-def _publish_root(directory: Path, name: str, source: Path) -> None:
-    """Expose a committed file under the old plain name (hard link + replace)."""
+#: Linux ``FICLONE``: reflink a file so the root export is a copy-on-write
+#: clone, not a shared inode. Falls back to a plain copy elsewhere.
+_FICLONE = 0x40049409
+
+
+def _copy_on_write(source: Path, handle) -> None:
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - Windows
+        fcntl = None
+    if fcntl is not None:
+        try:
+            with open(source, "rb") as origin:
+                fcntl.ioctl(handle.fileno(), _FICLONE, origin.fileno())
+            return
+        except OSError:
+            pass
+    with open(source, "rb") as origin:
+        shutil.copyfileobj(origin, handle)
+
+
+def _publish_root(directory: Path, name: str, source: Path, degraded: list[str]) -> None:
+    """Expose a committed file under the old plain name as an independent copy."""
     target = directory / name
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(f"{target.name}.link")
     if tmp.exists():
         tmp.unlink()
-    _link_or_copy(source, tmp)
+    with open(tmp, "wb") as handle:
+        _copy_on_write(source, handle)
+        handle.flush()
+        _fsync(handle.fileno(), "file", degraded)
     os.replace(tmp, target)
 
 
@@ -402,8 +558,10 @@ def commit(
     """Write ``files`` as one new generation and publish it atomically.
 
     Unchanged files of the previous generation are carried over (hard linked,
-    so the checkpoint stays cheap), ``files`` are written and fsynced, and the
-    manifest — the commit point — is replaced only after every file is durable.
+    so the checkpoint stays cheap), ``files`` are written through a temporary
+    file and flushed, and the manifest — the commit point — is replaced only
+    after every file is durable. Unsupported barriers are listed in the
+    manifest ``durability`` field.
     """
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -434,19 +592,26 @@ def commit(
                 continue
             _link_or_copy(source, stage / name)
 
+    degraded: list[str] = []
+    if not _dir_fsync_supported():
+        degraded.append("directory-fsync:unsupported:nt")
+    for source in sorted(stage.rglob("*")):
+        if source.is_file() and str(source.relative_to(stage)) not in files:
+            _fsync_file(source, degraded)
+
     for name, text in files.items():
         target = stage / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
+        _write_durable(target, text, degraded)
 
     hashes = {
         str(path.relative_to(stage)): sha256(path.read_bytes()).hexdigest()
         for path in sorted(stage.rglob("*"))
         if path.is_file()
     }
+    # Flush the directory entries before the manifest names them, so a barrier
+    # that turns out unsupported is already on record.
+    _fsync_dir(stage, degraded)
     payload = {
         "schema": SCHEMA,
         "generation": generation,
@@ -456,26 +621,25 @@ def commit(
         "environment_sha256": environment_digest(environment),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "files": hashes,
+        "durability": sorted(degraded),
     }
-    manifest = stage / MANIFEST
-    with open(manifest, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, indent=2))
-        handle.flush()
-        os.fsync(handle.fileno())
-    for name in list(hashes) + [MANIFEST]:
-        _fsync_file(stage / name)
-    _fsync_dir(stage)
+    _write_durable(stage / MANIFEST, _manifest_text(payload), degraded)
+    _fsync_dir(stage, degraded)
     os.replace(stage, store / generation)
-    _fsync_dir(store)
+    _fsync_dir(store, degraded)
 
     for name in hashes:
-        _publish_root(directory, name, stage.parent / generation / name)
+        _publish_root(directory, name, stage.parent / generation / name, degraded)
 
-    tmp = directory / f"{MANIFEST}.tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, indent=2))
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp, directory / MANIFEST)
-    _fsync_dir(directory)
+    _write_durable(directory / MANIFEST, _manifest_text(payload), degraded)
+    _fsync_dir(directory, degraded)
+
+    if sorted(degraded) != payload["durability"]:
+        # A barrier after the manifest was written went unsupported too: a
+        # marker that only appears late still has to reach both copies.
+        payload["durability"] = sorted(degraded)
+        _write_durable(store / generation / MANIFEST, _manifest_text(payload), degraded)
+        _fsync_dir(store / generation, degraded)
+        _write_durable(directory / MANIFEST, _manifest_text(payload), degraded)
+        _fsync_dir(directory, degraded)
     return generation

@@ -34,6 +34,16 @@ class _Ref:
     def launch_line(self) -> str:
         return f"launch {self.id}"
 
+    def effective(self) -> dict:
+        merged = dict(self.policy)
+        merged.update(self.entry)
+        merged.setdefault("context_window", self.policy["context_window"])
+        return merged
+
+    @property
+    def context_window(self) -> int | None:
+        return self.entry.get("context_window", self.policy["context_window"])
+
     def unsupported_categories(self) -> tuple[str, ...]:
         return ()
 
@@ -50,10 +60,11 @@ def _entry(entry_id: str = "test-entry") -> dict:
 
 
 def _report(verdict_probes: list[reference.Probe] | None = None) -> reference.PreflightReport:
+    probes = verdict_probes or [reference.Probe(name, "ok", "") for name in reference.REQUIRED_PROBES]
     return reference.PreflightReport(
         reference_id="test-entry",
         label="Test entry",
-        probes=verdict_probes or [reference.Probe("weights", "ok", "совпали")],
+        probes=probes,
         metrics={"vram_mib": 1000},
     )
 
@@ -80,6 +91,7 @@ def _args(**over) -> object:
         limit = 0
         tasks = ""
         skip_calibration = False
+        allow_unverified = False
 
     args = Args()
     for key, value in over.items():
@@ -98,7 +110,7 @@ def test_run_one_reaches_run_and_records_scores(sandbox: Path, monkeypatch: pyte
     def fake_cli(argv: list[str]) -> int:
         calls.append(argv)
         run_dir = sandbox / "runs" / "test-entry"
-        run_dir.mkdir(parents=True)
+        run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "scores.json").write_text(
             json.dumps([{"category": "A", "earned": 5.0, "possible": 10.0, "max_points": 10.0}]),
             encoding="utf-8",
@@ -113,6 +125,7 @@ def test_run_one_reaches_run_and_records_scores(sandbox: Path, monkeypatch: pyte
     assert calls == [["run", "--config", "test-entry", "--name", "test-entry", "--speed",
                       "--speed-long", "4096", "--speed-repeats", "2",
                       "--profile", "baseline-20261020",
+                      "--provenance", str(sandbox / "runs" / "test-entry" / "provenance.json"),
                       "--limit", "3", "--only", "A1", "--no-calibrate"]]
     assert result["loaded"] is True
     assert result["preflight"] == "admitted"

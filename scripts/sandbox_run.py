@@ -36,20 +36,22 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCKER_DIR = ROOT / "docker"
 SECCOMP_PROFILE = DOCKER_DIR / "seccomp.json"
-DEFAULT_DOCKERFILE = DOCKER_DIR / "Dockerfile.python"
+DEFAULT_DOCKERFILE = DOCKER_DIR / "Dockerfile.agent"
 DEFAULT_BASE_REPO = "python:3.12-slim"
 DEFAULT_BASE_DIGEST = (
     "sha256:2259debdc6af85626058a15a7bf44ad6a68b8c98c9ae82a02cf5cdb92f096d47"
 )
-DEFAULT_TAG = "dailybench/runner-python:local"
+DEFAULT_TAG = "dailybench/runner-agent:local"
 DEFAULT_SOURCE_DATE_EPOCH = 1700000000
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -176,6 +178,10 @@ def _mount_spec(host: Path, target: str, *, readonly: bool) -> str:
     silently mounting a different directory.
     """
     text = str(host)
+    if os.name == "nt":
+        # Docker's ``--mount`` takes a container-side style path; a drive letter
+        # with backslashes is read as one opaque token otherwise.
+        text = text.replace("\\", "/")
     if "," in text:
         raise InfraError(
             f"path {text!r} contains ',' which --mount uses as a field "
@@ -283,6 +289,47 @@ def build_image(
 # run
 
 
+def _mount_pairs(
+    task_dir: Path,
+    *,
+    workspace_writable: bool,
+    extra_mounts: Sequence[tuple[Path, str, bool]],
+    write_dir: Path | None,
+) -> list[tuple[Path, str, bool]]:
+    """``(host, target, readonly)`` for every bind, with duplicate targets refused.
+
+    A duplicate target silently makes the *last* mount win, which turns a
+    read-only fixture into a writable one without the argv showing it.
+    """
+    pairs: list[tuple[Path, str, bool]] = [(task_dir, "/workspace", not workspace_writable)]
+    for host, target, readonly in extra_mounts:
+        if not target.startswith("/"):
+            raise InfraError(f"mount target must be absolute: {target!r}")
+        pairs.append((host, target, readonly))
+    if write_dir is not None:
+        pairs.append((write_dir, "/out", False))
+    seen: set[str] = set()
+    for _host, target, _readonly in pairs:
+        if target in seen:
+            raise InfraError(f"mount target {target!r} listed twice")
+        seen.add(target)
+    return pairs
+
+
+def _env_argv(env: Mapping[str, str] | None) -> list[str]:
+    """``--env`` pairs for an explicit allowlist.
+
+    Docker inherits nothing from the caller, so this list *is* the container
+    environment: a host variable that is not named here cannot leak in.
+    """
+    argv: list[str] = []
+    for name in sorted(env or {}):
+        if not ENV_NAME_RE.match(name):
+            raise InfraError(f"invalid environment name: {name!r}")
+        argv += ["--env", f"{name}={env[name]}"]
+    return argv
+
+
 def _run_argv(
     *,
     docker: str,
@@ -297,6 +344,10 @@ def _run_argv(
     memory: str,
     pids_limit: int,
     seccomp: Path,
+    workspace_writable: bool = False,
+    extra_mounts: Sequence[tuple[Path, str, bool]] = (),
+    env: Mapping[str, str] | None = None,
+    host_gateway: bool = False,
 ) -> list[str]:
     argv = [
         docker,
@@ -334,20 +385,22 @@ def _run_argv(
         "1000:1000",
         "--workdir",
         "/workspace",
-        "--mount",
-        _mount_spec(task_dir, "/workspace", readonly=True),
     ]
-    if network != "none":
-        argv += ["--network", network]
-    else:
-        argv += ["--network", "none"]
+    for host, target, readonly in _mount_pairs(
+        task_dir,
+        workspace_writable=workspace_writable,
+        extra_mounts=extra_mounts,
+        write_dir=write_dir,
+    ):
+        argv += ["--mount", _mount_spec(host, target, readonly=readonly)]
+    argv += ["--network", network or "none"]
+    if host_gateway:
+        # The endpoint usually listens on the host's loopback. The alias is
+        # the only name the container needs; no other host path is reachable.
+        argv += ["--add-host", "host.docker.internal:host-gateway"]
+    argv += _env_argv(env)
     if write_dir is not None:
-        argv += [
-            "--mount",
-            _mount_spec(write_dir, "/out", readonly=False),
-            "--env",
-            "SANDBOX_OUT=/out",
-        ]
+        argv += ["--env", "SANDBOX_OUT=/out"]
     argv += ["--entrypoint", "", image, *command]
     return argv
 
@@ -385,8 +438,24 @@ def run_sandbox(
     write_dir: Path | None = None,
     allow_latest: bool = False,
     seccomp: Path = SECCOMP_PROFILE,
+    workspace_writable: bool = False,
+    extra_mounts: Sequence[tuple[Path, str, bool]] = (),
+    env: Mapping[str, str] | None = None,
+    host_gateway: bool = False,
+    stdout_path: Path | None = None,
+    stderr_path: Path | None = None,
 ) -> dict[str, object]:
-    """Run one command inside the sandbox and return the status report."""
+    """Run one command inside the sandbox and return the status report.
+
+    The caller controls the whole exposure surface: ``task_dir`` is the fixture
+    and is read-only unless the command must write into it, ``extra_mounts``
+    adds the few other host paths allowed (as ``(host, container target,
+    read-only)``), and ``env`` is the complete container environment — Docker
+    inherits nothing, so a host secret that is not listed cannot leak in.
+
+    ``stdout_path``/``stderr_path`` receive the full streams; the report always
+    keeps a tail of both.
+    """
     if not command:
         raise InfraError("empty command")
     if deadline <= 0:
@@ -405,6 +474,18 @@ def run_sandbox(
     if write_dir is not None:
         write_dir = write_dir.resolve()
         write_dir.mkdir(parents=True, exist_ok=True)
+    extras: list[tuple[Path, str, bool]] = []
+    for host, target, readonly in extra_mounts:
+        host = Path(host).resolve()
+        if not host.is_dir():
+            raise InfraError(f"mounted directory missing: {host}")
+        extras.append((host, target, readonly))
+    mounts = _mount_pairs(
+        task_dir,
+        workspace_writable=workspace_writable,
+        extra_mounts=extras,
+        write_dir=write_dir,
+    )
 
     container = f"dailybench-sandbox-{secrets.token_hex(5)}"
     argv = _run_argv(
@@ -420,6 +501,10 @@ def run_sandbox(
         memory=memory,
         pids_limit=pids_limit,
         seccomp=seccomp.resolve(),
+        workspace_writable=workspace_writable,
+        extra_mounts=extras,
+        env=env,
+        host_gateway=host_gateway,
     )
     # Mount specs are validated above so a bad path fails before the image is
     # looked up.
@@ -430,19 +515,20 @@ def run_sandbox(
     oom_killed = False
     exit_code: int | None = None
     output = ""
+    errors = ""
     infra_reason = ""
     proc: subprocess.Popen[str] | None = None
     try:
         proc = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
             text=True,
             env=_docker_env(),
             start_new_session=True,
         )
         try:
-            output, _ = proc.communicate(timeout=deadline)
+            output, errors = proc.communicate(timeout=deadline)
         except subprocess.TimeoutExpired:
             timed_out = True
             # Kill the container tree first, then the CLI's process group.
@@ -455,8 +541,15 @@ def run_sandbox(
                 except OSError:
                     pass
                 proc.wait(timeout=30)
-            output = proc.stdout.read() if proc.stdout else ""
+            try:
+                output, errors = proc.communicate(timeout=30)
+            except subprocess.TimeoutExpired:  # pragma: no cover - stuck pipe
+                output, errors = "", ""
         exit_code = proc.returncode
+        if stdout_path is not None:
+            stdout_path.write_text(output or "", encoding="utf-8")
+        if stderr_path is not None:
+            stderr_path.write_text(errors or "", encoding="utf-8")
         state = _inspect_state(container)
         if state is not None and state.get("Running") is True:
             # No terminal state means the CLI code cannot be classified yet.
@@ -514,10 +607,21 @@ def run_sandbox(
         "oom_killed": oom_killed,
         "task_dir": str(task_dir),
         "write_dir": str(write_dir) if write_dir else None,
+        "container": container,
+        "mounts": [
+            {"src": str(host), "dst": target, "readonly": readonly}
+            for host, target, readonly in mounts
+        ],
+        "workspace_writable": workspace_writable,
+        "env": sorted(env or {}),
+        "host_gateway": host_gateway,
+        "cgroups": {"cpus": cpus, "memory": memory, "pids_limit": pids_limit},
+        "rootfs": "read_only",
+        "capabilities": "dropped",
         "cpus": cpus,
         "memory": memory,
         "pids_limit": pids_limit,
-        "output": (output or "")[-8000:],
+        "output": ((output or "") + ("\n" + errors if errors else ""))[-8000:],
     }
 
 
@@ -547,6 +651,11 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--memory", default="2g")
     run.add_argument("--pids-limit", type=int, default=256)
     run.add_argument("--task-dir", type=Path, default=ROOT)
+    run.add_argument("--workspace-rw", action="store_true", help="let the command write the task dir")
+    run.add_argument("--env", action="append", default=[], metavar="NAME=VALUE",
+                     help="one allowlisted container variable; repeats")
+    run.add_argument("--host-gateway", action="store_true",
+                     help="add host.docker.internal -> host gateway")
     run.add_argument("--write-dir", type=Path, default=None)
     run.add_argument("--seccomp", type=Path, default=SECCOMP_PROFILE)
     run.add_argument("--allow-latest", action="store_true")
@@ -575,6 +684,12 @@ def main(argv: list[str] | None = None) -> int:
             command = command[1:]
         if not command:
             raise InfraError("no command after '--'")
+        pairs: dict[str, str] = {}
+        for item in args.env:
+            name, sep, value = item.partition("=")
+            if not sep:
+                raise InfraError(f"--env expects NAME=VALUE, got {item!r}")
+            pairs[name] = value
         report = run_sandbox(
             command,
             image=args.image,
@@ -585,6 +700,9 @@ def main(argv: list[str] | None = None) -> int:
             memory=args.memory,
             pids_limit=args.pids_limit,
             task_dir=args.task_dir,
+            workspace_writable=args.workspace_rw,
+            env=pairs,
+            host_gateway=args.host_gateway,
             write_dir=args.write_dir,
             allow_latest=args.allow_latest,
             seccomp=args.seccomp,

@@ -138,9 +138,11 @@ def selfcheck(cfg: RunConfig, tasks: list[core.TaskInstance] | None = None) -> S
 
     total = sum(task.max_points for task in tasks)
     scored = sum(t.max_points for t in tasks if t.category in core.SCORED_CATEGORIES)
-    # A pilot run is read per task, not as a new /100 total.
-    if tasks and abs(scored - core.FULL_TOTAL) > 1e-9 and not cfg.only and profile != "pilot":
-        report.errors.append(f"сумма баллов сьюта {scored} != {core.FULL_TOTAL}")
+    # A profile is read against its own denominator: pilot is read per task,
+    # research carries only seven categories, so /100 is not the reference.
+    expected_scored = core.scored_total(profile)
+    if tasks and not cfg.only and abs(scored - expected_scored) > 1e-9:
+        report.errors.append(f"сумма баллов сьюта {scored} != {expected_scored}")
 
     digest_a = suite_digest(build_suite(cfg))
     digest_b = suite_digest(build_suite(cfg))
@@ -167,7 +169,12 @@ def selfcheck(cfg: RunConfig, tasks: list[core.TaskInstance] | None = None) -> S
         }
         report.rows.append(row)
 
-        if oracle_run.transcript.error:
+        if oracle_run.transcript.extra.get("usage_unconfirmed"):
+            # An in-process fake reports no usage, so the token budget cannot be
+            # confirmed here. That is a property of the fake, not a broken
+            # evaluator: warn and keep grading.
+            report.warnings.append(f"{task.id}: прогон без usage — бюджет не подтверждён")
+        if oracle_run.transcript.error and not oracle_run.transcript.extra.get("usage_unconfirmed_only"):
             report.errors.append(f"{task.id}: прогон эталона упал: {oracle_run.transcript.error}")
             continue
         if oracle_run.score.skipped:

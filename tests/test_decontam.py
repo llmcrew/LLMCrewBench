@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import unicodedata
 
+import pytest
+
 from dailybench import core
 from dailybench.decontam import (
     CONTAMINATED,
@@ -195,3 +197,30 @@ def test_cli_private_check_baseline_is_not_gated(capsys):
     code = cli.main(["private-check", "--only", "A"])
     assert code == 0
     assert "гейт не применяется" in capsys.readouterr().out
+
+
+def test_threshold_applies_per_row() -> None:
+    task = make_task("A-9", "a b c d")
+    corpus = ["a b x y"]
+    loose = check_corpus([task], corpus, n=2, threshold=0.25)
+    assert loose.rows[0].share == pytest.approx(1 / 3)
+    assert loose.rows[0].contaminated is True
+    assert loose.contaminated is True
+    assert loose.to_dict()["threshold"] == 0.25
+    strict = check_corpus([task], corpus, n=2, threshold=0.5)
+    assert strict.rows[0].contaminated is False
+    assert strict.contaminated is False
+
+
+def test_cli_decontam_honours_threshold(tmp_path, capsys):
+    from dailybench import cli
+
+    candidate = tmp_path / "candidate.txt"
+    candidate.write_text("a b c d", encoding="utf-8")
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text("a b x y", encoding="utf-8")
+    args = ["decontam", "--corpus", str(corpus), "--input", str(candidate), "--ngram", "2"]
+    assert cli.main([*args, "--threshold", "0.5", "--json"]) == 0
+    assert __import__("json").loads(capsys.readouterr().out)["verdict"] == "clean"
+    assert cli.main([*args, "--threshold", "0.25", "--json"]) == 1
+    assert __import__("json").loads(capsys.readouterr().out)["verdict"] == "contaminated"
