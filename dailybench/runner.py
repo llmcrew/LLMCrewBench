@@ -43,8 +43,9 @@ SYSTEM_SENTINEL = "<<system>>"
 HARNESS_CONTRACT = 5
 
 #: Config fields that belong to the identity of a run. ``only`` is a selection
-#: over the same suite, ``out_dir`` is the location, and the key is local.
-_IDENTITY_EXCLUDED = {"api_key", "out_dir", "only"}
+#: over the same suite, ``out_dir`` and ``generation_keep`` are output layout,
+#: and the key is local.
+_IDENTITY_EXCLUDED = {"api_key", "out_dir", "only", "generation_keep"}
 
 
 def _canonical(value: Any) -> Any:
@@ -1274,5 +1275,6 @@ class RunResult:
             run_id=identity,
             identity=identity,
             environment=self.environment,
+            keep=self.cfg.generation_keep,
         )
         return out

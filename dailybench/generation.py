@@ -20,6 +20,12 @@ Directory barriers need a read-only handle: Windows cannot open a directory, so
 it is skipped. A barrier the filesystem reports as unsupported (EINVAL/ENOTSUP)
 degrades the checkpoint instead of aborting it, and the manifest records every
 such fallback under ``durability``; any other ``OSError`` fails the commit.
+
+A checkpoint of a long sweep is gigabytes — ``tasks.json`` alone carries every
+answer — so the store does not grow without bound: unchanged files are hard
+links on the previous generation, and after a successful publish only the
+newest ``generation_keep`` generations survive. The current generation and the
+one the manifest names are never removed, and a failed removal only warns.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ import os
 import shutil
 import subprocess
 import time
+import warnings
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -38,6 +45,11 @@ SCHEMA = "dailybench/generation/1"
 STORE = ".generations"
 MANIFEST = "manifest.json"
 ENVIRONMENT = "environment.json"
+
+#: Generations kept per run directory when the checkpoint's config says nothing.
+DEFAULT_KEEP = 3
+#: Prefix of the folder a generation is renamed to before it is deleted.
+TRASH = ".trash-"
 
 #: Provenance of the executor. Stored in the manifest next to the run identity
 #: so a reader can tell a resumed run whether it is still on the same image.
@@ -555,6 +567,99 @@ def _publish_root(directory: Path, name: str, source: Path, degraded: list[str])
     os.replace(tmp, target)
 
 
+def _keep_of(checkpoint: Path, keep: int | None) -> int:
+    """Generations to keep: the argument, else what the checkpoint itself says.
+
+    The config is read from the staged generation, so a run keeps the number it
+    recorded even when the caller does not pass it (a re-score, a script). An
+    unreadable or bogus value falls back to :data:`DEFAULT_KEEP`; retention is
+    housekeeping and must never be the reason a checkpoint fails.
+    """
+    if keep is not None:
+        return max(1, int(keep))
+    try:
+        data = json.loads((checkpoint / "config.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return DEFAULT_KEEP
+    try:
+        return max(1, int(data.get("generation_keep", DEFAULT_KEEP)))
+    except (AttributeError, TypeError, ValueError):
+        return DEFAULT_KEEP
+
+
+def _drop(folder: Path, warnings_: list[str]) -> None:
+    """Rename ``folder`` into the trash, then delete it.
+
+    The rename is the atomic step: a reader iterating the store either still
+    sees the generation or no longer does, never a half-emptied one. A failure
+    to delete afterwards only leaves invisible bytes behind and is retried by
+    the next commit.
+    """
+    trash = folder.with_name(f"{TRASH}{folder.name}")
+    try:
+        if trash.exists():
+            shutil.rmtree(trash)
+        os.replace(folder, trash)
+    except OSError as error:
+        warnings_.append(f"{folder}: поколение не удалено: {error}")
+        return
+    try:
+        shutil.rmtree(trash)
+    except OSError as error:
+        warnings_.append(f"{trash}: удаление не завершено: {error}")
+
+
+def _sweep(store: Path, warnings_: list[str]) -> None:
+    """Finish removals and interrupted stagings a crash left in the store."""
+    for entry in sorted(store.iterdir()):
+        if not entry.name.startswith(".") or not entry.is_dir():
+            continue
+        if not (entry.name.startswith(TRASH) or entry.name.endswith(".tmp")):
+            continue
+        try:
+            shutil.rmtree(entry)
+        except OSError as error:
+            warnings_.append(f"{entry}: мусор не убран: {error}")
+
+
+def prune(directory: Path | str, *, keep: int = DEFAULT_KEEP, current: str = "") -> list[str]:
+    """Drop all but the newest ``keep`` generations; return the warnings.
+
+    ``current`` and the generation the manifest names are protected — a reader
+    resolving the manifest must always find its bytes, so retention can never
+    delete what is being served. Failures come back as strings and are warnings
+    to the caller: the checkpoint is already published, and a full store is
+    still readable.
+    """
+    directory = Path(directory)
+    store = directory / STORE
+    warnings_: list[str] = []
+    try:
+        entries = list(store.iterdir())
+    except OSError as error:
+        return [f"{store}: хранилище поколений не прочитано: {error}"]
+    names = sorted(
+        (entry.name for entry in entries if entry.is_dir() and not entry.name.startswith(".")),
+        reverse=True,
+    )
+    # Names start with a zero-padded ``time.time_ns()``, so sorting the name is
+    # sorting by age: the tail is the oldest.
+    targeted = str((_manifest(directory) or {}).get("generation") or "")
+    protected = {name for name in (current, targeted) if name}
+    doomed = [name for name in names[max(1, int(keep)) :] if name not in protected]
+    for name in doomed:
+        _drop(store / name, warnings_)
+    _sweep(store, warnings_)
+    if not doomed:
+        return warnings_
+    if _dir_fsync_supported():
+        try:
+            _fsync_dir(store, [])
+        except OSError as error:
+            warnings_.append(f"{store}: удаления не сброшены на диск: {error}")
+    return warnings_
+
+
 def commit(
     directory: Path | str,
     files: dict[str, str],
@@ -563,14 +668,20 @@ def commit(
     identity: str,
     environment: dict[str, Any] | None = None,
     carry: bool = True,
+    keep: int | None = None,
 ) -> str:
     """Write ``files`` as one new generation and publish it atomically.
 
-    Unchanged files of the previous generation are carried over (hard linked,
-    so the checkpoint stays cheap), ``files`` are written through a temporary
-    file and flushed, and the manifest — the commit point — is replaced only
-    after every file is durable. Unsupported barriers are listed in the
-    manifest ``durability`` field.
+    Files that are unchanged since the previous generation — whether carried
+    over or repeated in ``files`` with the same bytes — are hard linked instead
+    of written, so a checkpoint costs mostly its own ``tasks.json``. ``files``
+    are written through a temporary file and flushed, and the manifest — the
+    commit point — is replaced only after every file is durable. Unsupported
+    barriers are listed in the manifest ``durability`` field.
+
+    After the publish, all but the newest ``keep`` generations (``None`` = the
+    ``generation_keep`` of the checkpoint, :data:`DEFAULT_KEEP` when absent) are
+    removed; the current generation and the manifest target are always kept.
     """
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -587,8 +698,9 @@ def commit(
         # A rescore rewrites scores but runs in the same executor: inherit the
         # provenance of the checkpoint it rewrites instead of dropping it.
         environment = (_manifest(directory) or {}).get("environment") or {}
+    previous_files = (_manifest(directory) or {}).get("files") or {} if previous is not None else {}
     if previous is not None:
-        for name in (_manifest(directory) or {}).get("files") or {}:
+        for name in previous_files:
             if name in files:
                 continue
             _link_or_copy(previous / name, stage / name)
@@ -608,13 +720,28 @@ def commit(
         if source.is_file() and str(source.relative_to(stage)) not in files:
             _fsync_file(source, degraded)
 
+    # Assumed digest of a file that is the same bytes as in the previous
+    # generation: it is not read back, the manifest already says what it is.
+    reused: dict[str, str] = {}
     for name, text in files.items():
         target = stage / name
         target.parent.mkdir(parents=True, exist_ok=True)
+        digest = sha256(text.encode("utf-8")).hexdigest()
+        if previous is not None and previous_files.get(name) == digest:
+            # Identical bytes: one inode serves both generations. ``tasks.json``
+            # is expected to differ on every checkpoint and is written anew.
+            try:
+                _link_or_copy(previous / name, target)
+            except OSError:
+                _write_durable(target, text, degraded)
+            else:
+                reused[name] = digest
+            continue
         _write_durable(target, text, degraded)
 
     hashes = {
-        str(path.relative_to(stage)): sha256(path.read_bytes()).hexdigest()
+        str(path.relative_to(stage)): reused.get(str(path.relative_to(stage)))
+        or sha256(path.read_bytes()).hexdigest()
         for path in sorted(stage.rglob("*"))
         if path.is_file()
     }
@@ -651,4 +778,10 @@ def commit(
         _fsync_dir(store / generation, degraded)
         _write_durable(directory / MANIFEST, _manifest_text(payload), degraded)
         _fsync_dir(directory, degraded)
+
+    # The checkpoint is published and verified by the manifest; retention is
+    # housekeeping, so a failure here warns instead of failing the run.
+    if carry:
+        for message in prune(directory, keep=_keep_of(store / generation, keep), current=generation):
+            warnings.warn(message, RuntimeWarning, stacklevel=2)
     return generation

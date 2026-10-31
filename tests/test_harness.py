@@ -2775,6 +2775,133 @@ def test_an_unsupported_file_fsync_degrades_with_a_marker(tmp_path: Path, monkey
     assert manifest["durability"] == ["file-fsync:unsupported:einval"]
 
 
+def _visible_generations(directory: Path) -> list[str]:
+    store = directory / ".generations"
+    return sorted(p.name for p in store.iterdir() if p.is_dir() and not p.name.startswith("."))
+
+
+def test_commits_keep_only_the_newest_generations(tmp_path: Path):
+    """A full store copy per checkpoint filled the disk after three runs."""
+    from dailybench import generation
+    from dailybench.report import load_run
+
+    for index in range(5):
+        generation.commit(
+            tmp_path,
+            {**_checkpoint(f"run-{index}"), "tasks.json": json.dumps([{"index": index}])},
+            run_id=f"run-{index}",
+            identity=f"run-{index}",
+            keep=2,
+        )
+        assert generation.current(tmp_path) is not None, f"поколение {index} не опубликовано"
+
+    names = _visible_generations(tmp_path)
+    assert len(names) == 2, names
+    latest = generation.current(tmp_path)
+    assert latest is not None and latest.name == names[-1]
+    assert generation.resolve(tmp_path)[1] == "sealed"
+    assert generation.read_json(tmp_path, "tasks.json") == [{"index": 4}]
+    data = load_run(tmp_path)
+    assert data["integrity"] == "sealed"
+    assert data["tasks"] == [{"index": 4}]
+
+
+def test_the_checkpoint_config_sets_the_retention(tmp_path: Path):
+    """A run keeps the number it recorded, not the default of the caller."""
+    from dailybench import generation
+
+    checkpoint = {**_checkpoint("run-1"), "extra.json": "{}"}
+    checkpoint["config.json"] = json.dumps({"identity": "run-1", "generation_keep": 1})
+    for index in range(3):
+        checkpoint["tasks.json"] = json.dumps([{"index": index}])
+        generation.commit(tmp_path, dict(checkpoint), run_id="run-1", identity="run-1")
+
+    assert len(_visible_generations(tmp_path)) == 1
+    assert generation.current(tmp_path) is not None
+
+
+def test_an_unchanged_generation_file_is_hardlinked_not_rewritten(tmp_path: Path):
+    """config, suite and quiet transcripts are shared, only tasks.json is new."""
+    from dailybench import generation
+
+    generation.commit(
+        tmp_path, {**_checkpoint("run-1"), "tasks.json": "[]"}, run_id="run-1", identity="run-1"
+    )
+    first = generation.current(tmp_path)
+    generation.commit(
+        tmp_path,
+        {**_checkpoint("run-1"), "tasks.json": '[{"earned": 1}]'},
+        run_id="run-1",
+        identity="run-1",
+    )
+    second = generation.current(tmp_path)
+    assert first is not None and second is not None and first != second
+
+    shared = (first / "config.json").stat()
+    assert shared.st_ino == (second / "config.json").stat().st_ino
+    assert shared.st_nlink == 2
+    assert (first / "tasks.json").stat().st_ino != (second / "tasks.json").stat().st_ino
+    assert generation.read_json(tmp_path, "tasks.json") == [{"earned": 1}]
+
+
+def test_a_generation_on_a_filesystem_without_hardlinks_falls_back_to_copy(tmp_path: Path, monkeypatch):
+    from dailybench import generation
+
+    def no_links(*_args, **_kwargs):
+        raise OSError(errno.EPERM, "hardlinks unsupported")
+
+    monkeypatch.setattr(generation.os, "link", no_links)
+    generation.commit(
+        tmp_path, {**_checkpoint("run-1"), "tasks.json": "[]"}, run_id="run-1", identity="run-1"
+    )
+    first = generation.current(tmp_path)
+    generation.commit(
+        tmp_path,
+        {**_checkpoint("run-1"), "tasks.json": '[{"earned": 1}]'},
+        run_id="run-1",
+        identity="run-1",
+    )
+    second = generation.current(tmp_path)
+    assert first is not None and second is not None
+
+    assert (first / "config.json").stat().st_ino != (second / "config.json").stat().st_ino
+    assert generation.read_json(tmp_path, "config.json") == {"identity": "run-1"}
+    assert generation.read_json(tmp_path, "tasks.json") == [{"earned": 1}]
+
+
+def test_a_failed_generation_removal_warns_and_keeps_the_run_readable(tmp_path: Path, monkeypatch):
+    """Retention is housekeeping: a refused unlink must not fail the run."""
+    from dailybench import generation
+    from dailybench.report import load_run
+
+    real_rmtree = shutil.rmtree
+
+    def refuse_trash(path, *args, **kwargs):
+        if ".trash-" in str(path):
+            raise OSError(errno.EACCES, "отказано в доступе")
+        return real_rmtree(path, *args, **kwargs)
+
+    for index in range(2):
+        generation.commit(
+            tmp_path, _checkpoint(f"run-{index}"), run_id=f"run-{index}", identity=f"run-{index}", keep=2
+        )
+    monkeypatch.setattr(generation.shutil, "rmtree", refuse_trash)
+    for index in range(2, 5):
+        with pytest.warns(RuntimeWarning, match="удаление не завершено|не удалено"):
+            generation.commit(
+                tmp_path,
+                _checkpoint(f"run-{index}"),
+                run_id=f"run-{index}",
+                identity=f"run-{index}",
+                keep=2,
+            )
+
+    assert len(_visible_generations(tmp_path)) == 2
+    assert len(list((tmp_path / ".generations").glob(".trash-*"))) == 3
+    assert generation.read_json(tmp_path, "config.json") == {"identity": "run-4"}
+    assert load_run(tmp_path)["integrity"] == "sealed"
+
+
 def test_a_real_fsync_failure_still_fails_the_commit(tmp_path: Path, monkeypatch):
     """An I/O error is not an unsupported platform and must not be swallowed."""
     from dailybench import generation

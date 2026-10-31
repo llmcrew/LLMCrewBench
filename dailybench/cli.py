@@ -93,6 +93,9 @@ def _config_from(args: argparse.Namespace) -> RunConfig:
         offload=getattr(args, "offload", "none"),
         sql_backend=args.sql_backend,
         extra_body=_json_object(getattr(args, "extra_body", "")),
+        allow_suite_drift=bool(getattr(args, "allow_suite_drift", False)),
+        retry_errors=bool(getattr(args, "retry_errors", False)),
+        generation_keep=getattr(args, "generation_keep", None) or 3,
     )
     if args.only:
         cfg.only = tuple(part.strip() for part in args.only.split(",") if part.strip())
@@ -781,6 +784,7 @@ def _bench_run_argv(args: argparse.Namespace) -> list[str]:
         # from its own answer budget instead of inheriting a stale default.
         ("--max-new-tokens", args.max_new_tokens),
         ("--max-total-tokens", args.max_total_tokens),
+        ("--generation-keep", getattr(args, "generation_keep", None)),
         ("--quant", args.quant),
         ("--runtime", args.runtime),
         ("--kv-type", args.kv_type),
@@ -1121,11 +1125,17 @@ def _resume_tasks(
                 f"в текущем сьюте {current_total:g} — resume смешал бы разные знаменатели"
             )
     if saved_digest.get("sha256") != current.get("sha256"):
-        raise SystemExit(
+        drift = (
             f"{directory}: сьют разошёлся с сохранённым "
-            f"({str(current.get('sha256'))[:12]} ≠ {str(saved_digest.get('sha256'))[:12]}) — "
-            "догрузка смешала бы два сьюта"
+            f"({str(current.get('sha256'))[:12]} ≠ {str(saved_digest.get('sha256'))[:12]})"
         )
+        if getattr(cfg, "allow_suite_drift", False):
+            print(f"{drift}; продолжаю (--allow-suite-drift)", flush=True)
+        else:
+            raise SystemExit(f"{drift} — догрузка смешала бы два сьюта "
+                             "(или --allow-suite-drift с записью решения)")
+    else:
+        drift = ""
     saved_config = directory / "config.json"
     if not saved_config.is_file():
         raise SystemExit(f"{directory}: нет config.json — сохранённый прогон нечем опознать")
@@ -1149,14 +1159,18 @@ def _resume_tasks(
         changed = sorted(
             key
             for key in set(old) | set(cfg.__dataclass_fields__)
-            if key not in {"identity", "run_id", "api_key_set", "out_dir", "only"}
+            if key not in {"identity", "run_id", "api_key_set", "out_dir", "only", "generation_keep"}
             and str(old.get(key)) != str(getattr(cfg, key, None))
         )
         detail = f": {', '.join(changed)}" if changed else ""
-        raise SystemExit(
+        message = (
             f"{directory}: resume смешал бы два прогона — identity {str(identity)[:12]} ≠ "
-            f"{str(saved_identity)[:12]}{detail} (продолжать нельзя; запустите новый прогон с новым --name)"
+            f"{str(saved_identity)[:12]}{detail}"
         )
+        if not getattr(cfg, "allow_suite_drift", False):
+            raise SystemExit(f"{message} (продолжать нельзя; "
+                             "или --allow-suite-drift с записью решения)")
+        print(f"{message}; продолжаю (--allow-suite-drift)", flush=True)
 
     by_id = {task.id: task for task in full}
     saved = _saved_entries(directory, identity)
@@ -1169,7 +1183,7 @@ def _resume_tasks(
             continue
         transcript = transcript_from_dict(entry.get("transcript") or {}, task)
         score = core.Score.from_dict(entry["score"])
-        if _truncated(transcript):
+        if _truncated(transcript) or (getattr(cfg, "retry_errors", False) and score.status == "error"):
             damaged.add(task_id)
             continue
         kept.append(TaskRun(task=task, transcript=transcript, score=score))
@@ -1317,12 +1331,25 @@ def build_parser() -> argparse.ArgumentParser:
                      "не меньше 16384 и не меньше --max-new-tokens",
             )
             target.add_argument(
+                "--generation-keep", type=int, default=None,
+                help="сколько checkpoint-поколений хранить в .generations (по умолчанию 3; "
+                     "старые удаляются после успешного commit)",
+            )
+            target.add_argument(
                 "--generation-mode", choices=("fixed", "native"), default="fixed",
                 help="fixed — пришпилить sampling/seed/reasoning; native — отдать серверу",
             )
             target.add_argument(
                 "--reasoning-budget", type=int, default=2048,
                 help="серверный потолок thinking в токенах (только fixed)",
+            )
+            target.add_argument(
+                "--retry-errors", action="store_true",
+                help="resume: переписать задания, завершившиеся ошибкой/обрывом",
+            )
+            target.add_argument(
+                "--allow-suite-drift", action="store_true",
+                help="resume при разошедшемся digest сьюта (решение фиксируется)",
             )
             target.add_argument(
                 "--extra-body", default="",
