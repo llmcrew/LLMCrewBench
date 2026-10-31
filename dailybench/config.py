@@ -153,6 +153,12 @@ class RunConfig:
     free window is a *measurement*, the cap is a *choice*, and the smaller wins.
     """
 
+    retry_errors: bool = False
+    """Resume re-attempts tasks that ended in an error (transient outages)."""
+
+    allow_suite_drift: bool = False
+    """Resume across a changed suite digest (experimental, recorded)."""
+
     extra_body: dict = field(default_factory=dict)
     """Extra JSON merged into every request payload (server-specific flags)."""
 
@@ -281,6 +287,17 @@ class RunConfig:
 
     # --- output ------------------------------------------------------------ #
     out_dir: Path = field(default_factory=lambda: Path("runs") / "run")
+    generation_keep: int = 3
+    """How many committed generations of one run directory to keep.
+
+    ``.generations`` holds a checkpoint of the whole run, and ``tasks.json``
+    alone is hundreds of megabytes near the end of a sweep: an unbounded store
+    filled the disk after three runs. Only the newest ``generation_keep``
+    generations survive a commit; the current one and the one the manifest
+    names are never dropped. Unchanged files of a checkpoint are hard links on
+    the previous generation, so a kept checkpoint costs mostly its own
+    ``tasks.json``.
+    """
 
     def __post_init__(self) -> None:
         """Resolve local overrides: env wins, the tracked default is a fallback."""
@@ -300,6 +317,9 @@ class RunConfig:
                 f"неизвестный generation_mode {self.generation_mode!r}; "
                 f"допустимы: {', '.join(GENERATION_MODES)}"
             )
+        if int(self.generation_keep) < 1:
+            # Zero would delete the generation the manifest is about to name.
+            raise ValueError(f"generation_keep должен быть ≥ 1, получено {self.generation_keep!r}")
 
     #: Space kept between prompt + answer and the declared window, so a request
     #: is never rejected for exceeding the context by a handful of tokens.
