@@ -38,6 +38,7 @@ import os
 import platform
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
@@ -545,14 +546,24 @@ def _revision_of(executable: Path) -> str:
 @functools.lru_cache(maxsize=8)
 def _executable_version(path: str) -> str:
     """Version the binary reports itself, ``?`` when it cannot answer."""
-    try:
-        done = subprocess.run(
-            [path, "--version"], capture_output=True, text=True, timeout=10, check=False
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "?"
-    lines = (done.stdout or done.stderr or "").strip().splitlines()
-    return lines[0][:80] if lines and done.returncode == 0 else "?"
+    commands = [[path, "--version"]]
+    if sys.platform == "win32":
+        try:
+            if not Path(path).read_bytes().startswith(b"MZ"):
+                commands.append([sys.executable, path, "--version"])
+        except OSError:
+            pass
+    for command in commands:
+        try:
+            done = subprocess.run(
+                command, capture_output=True, text=True, timeout=10, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        lines = (done.stdout or done.stderr or "").strip().splitlines()
+        if lines and done.returncode == 0:
+            return lines[0][:80]
+    return "?"
 
 
 def _executable_identity(executable: Path) -> dict[str, str]:
@@ -697,7 +708,9 @@ def _entry_paths(html: str, steps: int, dt: float, probe_sha: str) -> tuple[Path
     return folder / f"{base}__{key}.json", folder / f"{base}__{key}.png"
 
 
-def _cached_render(html: str, steps: int, dt: float) -> tuple[browser.RenderResult, bool]:
+def _cached_render(
+    html: str, steps: int, dt: float, *, again: bool = True, probe: bool = True,
+) -> tuple[browser.RenderResult, bool]:
     """Render once per unique page; reuse the verdict and the frame afterwards.
 
     A failed render is retried instead of being trusted forever: the screenshot
@@ -729,11 +742,18 @@ def _cached_render(html: str, steps: int, dt: float) -> tuple[browser.RenderResu
         # Хеш сохранённого кадра считается от самих байт, а не берётся из
         # блоба: он обязан оставаться валидным доказательством, даже если
         # страницу больше нельзя перерисовать (нет браузера, стенд уехал).
+        stored_sha = result.shot_sha
+        stored_again = result.shot_sha_again
+        if stored_again and stored_sha and stored_again != stored_sha:
+            continue
         if result.shot:
             result.shot_sha = hashlib.sha256(result.shot).hexdigest()
         if result.ok:
             return result, True
-    result = browser.render(html, steps=steps, dt=dt)
+    result = browser.render(html, steps=steps, dt=dt, again=again, probe=probe)
+    unstable = bool(result.shot_sha_again) and result.shot_sha_again != result.shot_sha
+    if unstable:
+        return result, False
     folder.mkdir(parents=True, exist_ok=True)
     blob, shot = _entry_paths(html, steps, dt, _probe_sha(result))
     # Прочие запечатки этого кадра (другой probe, другая среда) уже не годятся.
@@ -881,6 +901,8 @@ def _motion_check(
         elif shift * wanted <= -MOTION_MIN_SHIFT:
             contradicting = True
     detail = f"{path} {delta:+.3f} → пиксели {', '.join(seen) or 'объект не виден'}"
+    if not seen:
+        return False, detail
     if agreeing or not contradicting:
         # Маленькие и многочисленные объекты (стая, частицы) сдвигают общий
         # центроид класса слабо: согласие — плюс, противоречие — минус.
@@ -921,7 +943,7 @@ def evaluate(task: core.TaskInstance, transcript: core.Transcript) -> core.Score
         score.notes.append("Ответ не содержит исполняемого документа")
         return all_failed(static_detail)
 
-    result, _ = _cached_render(html, spec.steps, spec.dt)
+    result, _ = _cached_render(html, spec.steps, spec.dt, probe=False)
     if not result.ok or not result.shot:
         reason = result.reason or "; ".join(result.errors[:3]) or "страница не отрисовалась"
         score.notes.append(reason)
@@ -1033,13 +1055,16 @@ def _image_check(
     # проверяется только связь: кадр сменился или сцена законно неподвижна.
     tried: list[str] = []
     static = 0
+    followed = True
     for extra in dict.fromkeys((spec.steps + variation, max(1, spec.steps // 8))):
-        varied, _ = _cached_render(html, extra, spec.dt)
+        varied, _ = _cached_render(html, extra, spec.dt, again=False, probe=False)
         if not varied.ok or not varied.shot:
+            followed = False
             tried.append(f"{extra}: не отрисовалось")
             continue
         varied_stats = browser.frame_stats(varied.shot)
         if not varied_stats:
+            followed = False
             tried.append(f"{extra}: кадр не прочитан")
             continue
         varied_probe = browser.probe_of(varied, stepped=True)
@@ -1048,17 +1073,20 @@ def _image_check(
                 static += 1
                 tried.append(f"{extra}: сцена статична и probe не двигает x/y")
             else:
+                followed = False
                 tried.append(f"{extra}: кадр тот же, хотя probe сдвинул x/y")
             continue
         motion, motion_detail = _motion_check(stepped, varied_probe, stats, varied_stats)
         if motion is False:
-            return False, f"кадр и probe расходятся: {motion_detail}"
-        return ok, f"{detail}; {extra} шагов: {motion_detail}"
+            followed = False
+            tried.append(f"{extra}: {motion_detail}")
+            continue
+        tried.append(f"{extra} шагов: {motion_detail}")
+    if not followed:
+        return False, f"кадр не следует за симуляцией: {'; '.join(tried)}"
     if static and static == len(tried):
-        # Сцена по своей природе неподвижна (терраин, установившийся режим) и
-        # probe не обещает сдвига: связывать нечего, предикатов достаточно.
         return ok, f"{detail}; {'; '.join(tried)}"
-    return False, f"кадр не следует за симуляцией: {'; '.join(tried)}"
+    return ok, f"{detail}; {'; '.join(tried)}"
 
 
 # --------------------------------------------------------------------------- #

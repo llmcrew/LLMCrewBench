@@ -56,6 +56,11 @@ def test_ids_titles_and_points():
 
 
 def test_every_task_carries_four_checks_summing_to_max_points():
+    pytest.importorskip("numpy")
+    pytest.importorskip("PIL")
+    usable, reason = browser.availability()
+    if not usable:
+        pytest.skip(f"браузер недоступен: {reason}")
     for task in _tasks():
         score = _score(task, "не знаю")
         assert [check.name for check in score.checks] == list(visual.CHECK_NAMES)
