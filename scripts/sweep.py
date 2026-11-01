@@ -31,8 +31,8 @@ def _suite_size(run_dir: Path) -> int:
     """How many tasks the recorded suite lists.
 
     The sweep used to rebuild the suite just to count it. The run already wrote
-    ``suite.json``; a missing or unreadable file is zero — never a reason to
-    call ``build_suite``.
+    ``suite.json``. A missing file is not a denominator: callers that summarise
+    must say the suite is unknown instead of passing this zero.
     """
     path = Path(run_dir) / "suite.json"
     try:
@@ -120,10 +120,10 @@ def run_one(entry: dict, args: argparse.Namespace) -> dict:
         if config_path.is_file():
             recorded_mode = json.loads(config_path.read_text(encoding="utf-8")).get("generation_mode")
         suite_path = run_dir / "suite.json"
-        suite = (
-            json.loads(suite_path.read_text(encoding="utf-8"))
-            if suite_path.is_file() else _suite_size(run_dir)
-        )
+        if not suite_path.is_file():
+            result["verdict"] = "suite unknown"
+            return result
+        suite = json.loads(suite_path.read_text(encoding="utf-8"))
         summary = summarise(scores, suite, recorded_mode)
         result["verdict"] = summary["verdict"]
         result["earned"] = summary["headline_earned"]

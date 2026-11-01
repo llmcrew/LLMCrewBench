@@ -114,6 +114,10 @@ def test_run_one_reaches_run_and_records_scores(sandbox: Path, monkeypatch: pyte
             encoding="utf-8",
         )
         (run_dir / "speed.json").write_text(json.dumps({"tokens_per_second": 12.5}), encoding="utf-8")
+        (run_dir / "suite.json").write_text(
+            json.dumps({"profile": "baseline-20261020", "per_task": [{"id": "A1", "category": "A"}]}),
+            encoding="utf-8",
+        )
         return 0
 
     monkeypatch.setattr(sweep, "cli_main", fake_cli)
@@ -133,6 +137,27 @@ def test_run_one_reaches_run_and_records_scores(sandbox: Path, monkeypatch: pyte
     assert result["earned"] == 5.0
     assert result["speed"] == {"tokens_per_second": 12.5}
     assert (sandbox / "runs" / "preflight-test-entry.md").is_file()
+
+
+
+def test_a_missing_suite_is_unknown_not_a_zero_denominator(
+    sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No suite.json must not be scored against a 0-task denominator."""
+
+    def fake_cli(argv: list[str]) -> int:
+        run_dir = sandbox / "runs" / "test-entry"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "scores.json").write_text(
+            json.dumps([{"category": "A", "earned": 5.0, "possible": 10.0, "max_points": 10.0}]),
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(sweep, "cli_main", fake_cli)
+    result = sweep.run_one(_entry(), _args(skip_calibration=True))
+    assert result["verdict"] == "suite unknown"
+    assert "possible" not in result
 
 
 def test_run_one_marks_run_without_scores(sandbox: Path, monkeypatch: pytest.MonkeyPatch) -> None:
