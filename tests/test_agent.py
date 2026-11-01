@@ -45,7 +45,7 @@ def _fake_agent(tmp_path: Path, body: str) -> Path:
     if os.name == "nt":
         launcher = tmp_path / "fake-agent.cmd"
         launcher.write_text(
-            f"@rem {version}\r\n@\"{sys.executable}\" \"{script}\" %*\r\n",
+            f"@chcp 65001>nul\r\n@rem {version}\r\n@\"{sys.executable}\" \"{script}\" %*\r\n",
             encoding="utf-8",
         )
     else:
@@ -57,6 +57,18 @@ def _fake_agent(tmp_path: Path, body: str) -> Path:
         )
         launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
     return launcher
+
+
+@pytest.mark.skipif(os.name != "nt", reason="проверяется чтение .cmd через cmd.exe")
+def test_fake_agent_launcher_supports_non_ascii_paths(tmp_path):
+    folder = tmp_path / "агент"
+    folder.mkdir()
+    launcher = _fake_agent(folder, "raise SystemExit(0)\n")
+    result = subprocess.run(
+        [str(launcher), "--version"], capture_output=True, text=True, encoding="utf-8"
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == agent.PI_VERSION
 
 
 _TASKKILL_BODY = """\
@@ -89,6 +101,25 @@ else:
 
 def _pid_alive(pid: int) -> bool:
     """Does the pid exist and is it not a zombie?"""
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_bool, ctypes.c_uint32]
+        kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel32.OpenProcess(0x1000 | 0x00100000, False, pid)
+        if not handle:
+            # ERROR_INVALID_PARAMETER means the pid is gone; access denial does not.
+            return ctypes.get_last_error() != 87
+        try:
+            exit_code = ctypes.c_uint32()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -97,14 +128,23 @@ def _pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
-    if os.name == "nt":
-        return True
     try:
         state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
                                capture_output=True, text=True).stdout.strip()
     except OSError:
         return True
     return bool(state) and not state.startswith("Z")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="проверяется Win32 OpenProcess/GetExitCodeProcess")
+def test_windows_pid_alive_distinguishes_live_and_dead_processes():
+    proc = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"])
+    try:
+        assert _pid_alive(proc.pid)
+    finally:
+        proc.kill()
+        proc.wait()
+    assert not _pid_alive(proc.pid)
 
 
 def _real_pi() -> str | None:
@@ -854,6 +894,9 @@ def test_job_attach_failure_still_kills_by_taskkill(monkeypatch, tmp_path):
             return 7
 
         def AssignProcessToJobObject(self, handle, process):
+            import ctypes
+
+            ctypes.set_last_error(6)
             calls.append(("assign", handle, process))
             return False
 
@@ -887,11 +930,97 @@ def test_job_attach_failure_still_kills_by_taskkill(monkeypatch, tmp_path):
         agent._kill_tree(proc)
         assert proc.poll() is not None
         assert f"/PID {proc.pid} /T /F" in log.read_text(encoding="utf-8")
+        assert agent._JOB_ATTACH_ERRORS[proc.pid] == "не прикреплён: WinError 6"
     finally:
+        getattr(agent, "_JOB_ATTACH_ERRORS", {}).pop(proc.pid, None)
         agent._OPEN_JOBS.pop(str(work), None)
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="проверяется аварийный Windows Job Object и taskkill")
+def test_keyboard_interrupt_with_failed_job_uses_taskkill_and_sweeps(monkeypatch, tmp_path):
+    body = """\
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+child = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(611.2)"])
+Path(os.environ["AGENT_TEST_PIDS"]).write_text(
+    f"{os.getpid()} {child.pid}", encoding="utf-8"
+)
+time.sleep(600)
+"""
+
+    class _Kernel32:
+        def CreateJobObjectW(self, *_args):
+            return 7
+
+        def AssignProcessToJobObject(self, _handle, _process):
+            import ctypes
+
+            ctypes.set_last_error(6)
+            return False
+
+        def CloseHandle(self, _handle):
+            return True
+
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    taskkill = _fake_agent(tools, _TASKKILL_BODY)
+    taskkill = taskkill.rename(tools / "taskkill.cmd")
+    log = tmp_path / "taskkill.log"
+    monkeypatch.setenv("TASKKILL_LOG", str(log))
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_agent(tmp_path, body)))
+    pids = tmp_path / "interrupt-pids"
+    monkeypatch.setenv("AGENT_TEST_PIDS", str(pids))
+    real_run = agent.subprocess.run
+
+    def run_taskkill(command, *args, **kwargs):
+        if command and command[0] == "taskkill":
+            command = [str(taskkill), *command[1:]]
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(agent.subprocess, "run", run_taskkill)
+    monkeypatch.setattr(agent, "_win32", lambda: _Kernel32())
+    launched = []
+    real_popen = agent.subprocess.Popen
+
+    def tracked_popen(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        if "--print" not in proc.args:
+            return proc
+        launched.append(proc)
+
+        def communicate(*_args, **_kwargs):
+            deadline = time.monotonic() + 5
+            while not pids.is_file() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert pids.is_file(), "фейковый агент не записал pid дерева"
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(proc, "communicate", communicate)
+        return proc
+
+    monkeypatch.setattr(agent.subprocess, "Popen", tracked_popen)
+    work = tmp_path / "w"
+    work.mkdir()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            agent.run("p", work, RunConfig(base_url="http://x/v1", model="m"), agent_dir=tmp_path)
+        assert f"/PID {launched[0].pid} /T /F" in log.read_text(encoding="utf-8")
+        recorded = [int(pid) for pid in pids.read_text(encoding="utf-8").split()]
+        assert len(recorded) == 2
+        alive = [pid for pid in recorded if _pid_alive(pid)]
+        assert not alive, f"Ctrl-C оставил процессы агента: {alive}"
+    finally:
+        if launched:
+            getattr(agent, "_JOB_ATTACH_ERRORS", {}).pop(launched[0].pid, None)
+            if launched[0].poll() is None:
+                agent._kill_tree(launched[0])
 
 
 def test_a_run_timeout_survives_a_windows_platform_stub(monkeypatch, tmp_path):
@@ -994,7 +1123,6 @@ def test_descendants_fall_back_when_ps_is_missing(monkeypatch):
     assert os.getpid() in agent._descendants(os.getpid())
 
 
-@pytest.mark.skipif(os.name == "nt", reason="игнорирование SIGTERM и killpg проверяют семантику POSIX")
 def test_a_term_ignoring_descendant_that_changed_cwd_is_killed(monkeypatch, tmp_path):
     """The field shape: the child survives its root, ignores TERM and leaves the cwd."""
     pids = tmp_path / "pids"

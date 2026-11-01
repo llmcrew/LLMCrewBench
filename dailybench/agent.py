@@ -939,12 +939,16 @@ class _WindowsJob:
         kernel32 = _win32()
         if kernel32 is None:
             return None
+        _JOB_ATTACH_ERRORS.pop(proc.pid, None)
         try:
             handle = kernel32.CreateJobObjectW(None, None)
             if not handle:
                 return None
             job = cls(kernel32, handle, proc.pid)
             if not kernel32.AssignProcessToJobObject(handle, int(proc._handle)):
+                import ctypes
+
+                _JOB_ATTACH_ERRORS[proc.pid] = f"не прикреплён: WinError {ctypes.get_last_error()}"
                 job.close()
                 return None
             return job
@@ -975,6 +979,8 @@ _OPEN_WORK_DIRS: dict[str, Path] = {}
 # The Windows job of an open run, by working directory and by agent pid.
 _OPEN_JOBS: dict[str, _WindowsJob] = {}
 _PROC_JOBS: dict[int, _WindowsJob] = {}
+# Last ``AssignProcessToJobObject`` failure by agent pid, for diagnostics.
+_JOB_ATTACH_ERRORS: dict[int, str] = {}
 
 
 def _guard_process(proc: subprocess.Popen, work_dir: Path) -> None:
