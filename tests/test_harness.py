@@ -3385,7 +3385,10 @@ def test_resume_flags_do_not_change_the_identity():
 def test_legacy_identity_is_unchanged_by_resume_flags():
     from dailybench.runner import run_identity
 
-    assert run_identity(RunConfig(), "x") == "78b6c059052e84ec30b283a355e7acd75c9f419f4fa6144332fa31bf681742a4"
+    # ``request_wall_clock`` is part of the measurement and now defaults to the
+    # policy ceiling (1800), so this pin moved with that default. Resume flags
+    # still do not change it; a run saved at the old 600 needs the flag.
+    assert run_identity(RunConfig(), "x") == "b792bd81f682c550ade9c8db13134d7ae1f36759fcecab5616ee9f1894751e41"
 
 
 def test_the_image_digest_is_part_of_the_run_identity():

@@ -29,15 +29,26 @@ Message = dict[str, Any]
 class ProviderError(RuntimeError):
     """Transport or protocol failure — distinct from a wrong model answer.
 
-    ``infra`` is true when the endpoint itself failed (unreachable, timeout,
-    5xx/408/429) rather than the model protocol (4xx, broken terminal state).
-    The CLI ends the run with a non-zero code only when every chat request
-    failed for infrastructure reasons; a protocol failure stays a task error.
+    ``infra`` is true when the endpoint itself failed (unreachable, connection
+    reset, 5xx/408/429) rather than the model protocol (4xx, broken terminal
+    state). ``kind`` is the scoring taxonomy. A socket timeout that lands on
+    the request's declared wall-clock is ``resource_exhausted``: the model
+    spent a ceiling it was given. A reset, a refusal, or a socket timeout
+    before that ceiling stays ``infra_failure``.
     """
 
-    def __init__(self, message: str, *, infra: bool = True, partial: ModelReply | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        infra: bool = True,
+        partial: ModelReply | None = None,
+        kind: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.infra = infra
+        #: ``resource_exhausted`` only for an elapsed declared ceiling.
+        self.kind = kind if kind is not None else ("infra_failure" if infra else "model_failure")
         #: What the stream produced before it broke (text, reasoning, usage).
         #: Already paid for, so the runner records it as a turn instead of
         #: dropping it; ``finish_reason`` is ``None``.
@@ -293,9 +304,32 @@ class OpenAICompatibleProvider:
         if left <= 0:
             raise ProviderError(
                 f"предел времени на запрос {wall_clock or 0:g} с исчерпан "
-                f"({received} символов получено)"
+                f"({received} символов получено)",
+                kind="resource_exhausted",
             )
         return left
+
+    def _ceiling_timeout(
+        self,
+        deadline: float | None,
+        wall_clock: float | None,
+        exc: BaseException,
+    ) -> ProviderError:
+        """A socket timeout is the declared ceiling only once that ceiling has elapsed.
+
+        The socket is armed to the remaining budget, so a timeout that lands on
+        the deadline spent the ceiling. One that fires while the deadline is
+        still ahead is the shorter transport timeout, and stays an outage.
+        """
+        if deadline is not None and time.monotonic() + 0.25 >= deadline:
+            return ProviderError(
+                f"предел времени на запрос {wall_clock or 0:g} с исчерпан (сокет)",
+                kind="resource_exhausted",
+            )
+        return ProviderError(
+            f"сокет: таймаут до объявленного предела ({exc.__class__.__name__})",
+            kind="infra_failure",
+        )
 
     def _arm(self, resp: Any, deadline: float | None, wall_clock: float | None, received: int = 0) -> None:
         """Re-arm the socket for the rest of the budget before every read.
@@ -404,7 +438,8 @@ class OpenAICompatibleProvider:
                     retry_budget = deadline - time.monotonic()
                     if retry_budget <= 0:
                         raise ProviderError(
-                            f"предел времени на запрос {wall_clock or 0:g} с исчерпан (повтор)"
+                            f"предел времени на запрос {wall_clock or 0:g} с исчерпан (повтор)",
+                            kind="resource_exhausted",
                         ) from exc
                 return self.chat(
                     messages,
@@ -420,18 +455,12 @@ class OpenAICompatibleProvider:
                 infra=exc.code >= 500 or exc.code in (408, 429),
             ) from exc
         except TimeoutError as exc:
-            # A socket timeout is the deadline, not a half-answer: it happens
-            # when the server trickles slower than the remaining budget.
-            raise ProviderError(
-                f"предел времени на запрос {wall_clock or 0:g} с исчерпан (сокет)"
-            ) from exc
+            raise self._ceiling_timeout(deadline, wall_clock, exc) from exc
         except (ConnectionError, http.client.HTTPException) as exc:
             raise ProviderError(f"обрыв соединения: {exc.__class__.__name__}: {exc}") from exc
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, TimeoutError):
-                raise ProviderError(
-                    f"предел времени на запрос {wall_clock or 0:g} с исчерпан (сокет)"
-                ) from exc
+                raise self._ceiling_timeout(deadline, wall_clock, exc) from exc
             raise ProviderError(f"{self.base_url} unreachable: {exc}") from exc
         return reply
 
