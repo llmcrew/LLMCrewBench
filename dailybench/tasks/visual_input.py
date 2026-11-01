@@ -28,9 +28,10 @@ from __future__ import annotations
 import io
 import random
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from PIL import Image, ImageDraw, ImageFont
+if TYPE_CHECKING:
+    from PIL import Image, ImageDraw, ImageFont
 
 from .. import core
 
@@ -70,7 +71,19 @@ _INK = (30, 34, 40)
 _GRID = (210, 214, 220)
 
 
+def _pillow() -> tuple[Any, Any]:
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError as exc:
+        raise RuntimeError(
+            "для профиля research-v1 нужен Pillow: uv pip install -e .[vision]"
+        ) from exc
+    return Image, ImageDraw
+
+
 def _font(size: int) -> ImageFont.ImageFont:
+    from PIL import ImageFont
+
     return ImageFont.load_default(size=size)
 
 
@@ -118,6 +131,7 @@ def _chart(rng: random.Random) -> core.TaskInstance:
     answer = MONTHS[tallest]
     mutant = MONTHS[second]
 
+    Image, ImageDraw = _pillow()
     image = Image.new("RGB", core.ASSET_SIZE, _BG)
     draw = ImageDraw.Draw(image)
     width, height = core.ASSET_SIZE
@@ -166,6 +180,7 @@ def _spatial(rng: random.Random) -> core.TaskInstance:
     answer = left_color[1]
     mutant = right_color[1]
 
+    Image, ImageDraw = _pillow()
     image = Image.new("RGB", core.ASSET_SIZE, _BG)
     draw = ImageDraw.Draw(image)
     width, height = core.ASSET_SIZE
@@ -223,6 +238,7 @@ def _trace(rng: random.Random) -> core.TaskInstance:
     answer = order[-1]
     mutant = rng.choice([node for node in NODES if node != answer])
 
+    Image, ImageDraw = _pillow()
     image = Image.new("RGB", core.ASSET_SIZE, _BG)
     draw = ImageDraw.Draw(image)
     width, height = core.ASSET_SIZE
@@ -305,6 +321,7 @@ def _cross_chart(rng: random.Random) -> core.TaskInstance:
     answer = f"пересечения={crossings}; выше={higher}"
     mutant = f"пересечения={mutant_count}; выше={higher}"
 
+    Image, ImageDraw = _pillow()
     image = Image.new("RGB", core.ASSET_SIZE, _BG)
     draw = ImageDraw.Draw(image)
     width, height = core.ASSET_SIZE
@@ -387,6 +404,7 @@ def _route(rng: random.Random) -> core.TaskInstance:
     answer = f"поворотов={turns}; направление={DIRECTIONS[heading]}"
     mutant = f"поворотов={turns + 1}; направление={rng.choice(directions)}"
 
+    Image, ImageDraw = _pillow()
     image = Image.new("RGB", core.ASSET_SIZE, _BG)
     draw = ImageDraw.Draw(image)
     width, height = core.ASSET_SIZE
@@ -459,6 +477,7 @@ def _header_table(rng: random.Random) -> core.TaskInstance:
         neighbour = (row_index - 1, column_index)
     mutant = str(table[neighbour[0]][neighbour[1]])
 
+    Image, ImageDraw = _pillow()
     image = Image.new("RGB", core.ASSET_SIZE, _BG)
     draw = ImageDraw.Draw(image)
     width, height = core.ASSET_SIZE
