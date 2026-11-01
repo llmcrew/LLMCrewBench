@@ -928,6 +928,10 @@ def run_sandbox(
     if write_dir is not None:
         write_dir = write_dir.resolve()
         write_dir.mkdir(parents=True, exist_ok=True)
+        # The container runs as uid 1000; on a Linux host the freshly made
+        # directory belongs to the invoking user (CI runner uid 1001), and a
+        # 755 mode would silently turn the writable bind read-only inside.
+        write_dir.chmod(0o777)
     extras: list[tuple[Path, str, bool]] = []
     for host, target, readonly in extra_mounts:
         host = Path(host).resolve()

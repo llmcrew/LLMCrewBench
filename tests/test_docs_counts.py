@@ -6,13 +6,24 @@ import re
 from pathlib import Path
 
 from dailybench.config import RunConfig
+
+def _ci_cfg(**kw):
+    """RunConfig with the CI long-context window cap (see conftest)."""
+    import os
+
+    cfg = RunConfig(**kw)
+    window = int(os.environ.get("DAILYBENCH_LONGCTX_WINDOW") or 0)
+    if window and window < cfg.context_window:
+        cfg.context_window = window
+    return cfg
+
 from dailybench.suite import build_suite
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _suite(profile: str):
-    return build_suite(RunConfig(profile=profile))
+    return build_suite(_ci_cfg(profile=profile))
 
 
 def _compact_new_ids(new_ids: list[str]) -> str:

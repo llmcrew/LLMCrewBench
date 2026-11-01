@@ -115,6 +115,9 @@ def image() -> str:
 @pytest.fixture
 def task_dir() -> Path:
     path = Path(tempfile.mkdtemp(prefix=".sandbox-test-", dir=ROOT))
+    # mkdtemp is 0700; the container uid (1000) is not the CI runner uid (1001),
+    # and a 0700 fixture directory denies the bind mount to the container user.
+    path.chmod(0o755)
     yield path
     shutil.rmtree(path, ignore_errors=True)
 

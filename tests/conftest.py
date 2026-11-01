@@ -22,10 +22,18 @@ def refusing_endpoint() -> str:
 @pytest.fixture(scope="session")
 def suite_for() -> Callable[[str], list[core.TaskInstance]]:
     suites: dict[str, list[core.TaskInstance]] = {}
+    # Same OOM cap as tests/test_longctx.py: the CI runners cannot hold the
+    # full-window stretch suite in memory while it is being built.
+    import os
+
+    window = int(os.environ.get("DAILYBENCH_LONGCTX_WINDOW") or 0)
 
     def cached(profile: str) -> list[core.TaskInstance]:
         if profile not in suites:
-            suites[profile] = build_suite(RunConfig(profile=profile))
+            cfg = RunConfig(profile=profile)
+            if window and window < cfg.context_window:
+                cfg.context_window = window
+            suites[profile] = build_suite(cfg)
         return copy.deepcopy(suites[profile])
 
     return cached

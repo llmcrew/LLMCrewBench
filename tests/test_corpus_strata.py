@@ -18,6 +18,17 @@ import pytest
 
 from dailybench import core
 from dailybench.config import RunConfig
+
+def _ci_cfg(**kw):
+    """RunConfig with the CI long-context window cap (see conftest)."""
+    import os
+
+    cfg = RunConfig(**kw)
+    window = int(os.environ.get("DAILYBENCH_LONGCTX_WINDOW") or 0)
+    if window and window < cfg.context_window:
+        cfg.context_window = window
+    return cfg
+
 from dailybench.decontam import private_gate
 from dailybench.rng import task_rng
 from dailybench.suite import build_suite, public_prompts
@@ -70,7 +81,7 @@ def _answer(payload: dict) -> str:
 
 
 def test_stretch_private_gate_passes_in_every_category():
-    tasks = build_suite(RunConfig(profile="stretch-v1"))
+    tasks = build_suite(_ci_cfg(profile="stretch-v1"))
     report = private_gate(tasks, "stretch-v1")
     assert report.ok is True
     assert report.failed == []
@@ -81,7 +92,7 @@ def test_stretch_private_gate_passes_in_every_category():
 
 
 def test_the_new_tasks_are_private_and_fresh():
-    tasks = build_suite(RunConfig(profile="stretch-v1"))
+    tasks = build_suite(_ci_cfg(profile="stretch-v1"))
     for task_id in NEW_A + NEW_B:
         task = next(task for task in tasks if task.id == task_id)
         assert task.private is True
