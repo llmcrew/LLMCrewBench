@@ -190,6 +190,58 @@ def test_connection_reset_stays_infrastructure():
     assert _summary(run)["eligible"] is False
 
 
+
+def test_connect_timeout_before_a_response_is_infrastructure():
+    """A handshake that never completes is an outage, even if it waits out the ceiling.
+
+    The break this catches: arming the socket to the remaining budget made a
+    blackholed connect look like a spent ceiling. The accept queue is filled
+    and never drained, so ``connect`` blocks until the socket timeout on both
+    Windows and POSIX.
+    """
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    held: list[socket.socket] = []
+    try:
+        for _ in range(16):
+            filler = socket.socket()
+            filler.settimeout(0.3)
+            try:
+                filler.connect(listener.getsockname())
+            except OSError:
+                filler.close()
+                break
+            held.append(filler)
+        assert held, "accept queue did not hold a connection"
+        port = listener.getsockname()[1]
+        base_url = f"http://127.0.0.1:{port}/v1"
+        cfg = RunConfig(
+            base_url=base_url,
+            model="test-model",
+            agent=False,
+            request_wall_clock=1,
+            task_wall_clock=30,
+        )
+        provider = OpenAICompatibleProvider(
+            base_url=base_url, model="test-model", timeout=30
+        )
+        provider._tokenize_supported = False
+        started = time.monotonic()
+        run = Runner(cfg, provider).run_task(_task())
+        elapsed = time.monotonic() - started
+    finally:
+        for filler in held:
+            filler.close()
+        listener.close()
+
+    assert elapsed < 8, f"ждал не объявленный предел: {elapsed:.1f} с"
+    assert run.score.failure == "infra_failure"
+    assert run.transcript.extra.get("failure") == "infra_failure"
+    assert _summary(run)["eligible"] is False
+
+
 def test_missing_usage_is_not_infrastructure():
     """An answer without ``usage`` is not an endpoint outage.
 
@@ -205,5 +257,7 @@ def test_missing_usage_is_not_infrastructure():
 
     assert run.score.failure != "infra_failure"
     assert run.score.failure in (None, "model_failure")
-    assert "infra_failure" not in _summary(run)["infra_failures"]
+    assert core.outcome_of(run.score) != "infra_failure"
+    assert run.score.task_id in _summary(run)["per_category"]["D"]["units"]
     assert _summary(run)["eligible"] is True
+

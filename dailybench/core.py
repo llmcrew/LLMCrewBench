@@ -278,9 +278,11 @@ def outcome_of(score: Any) -> str:
     """One protocol outcome of a score row or :class:`Score`.
 
     A skipped task is ``unsupported``; a stored failure is its canonical kind.
-    An error without a kind is an infrastructure outcome: the run broke before a
-    verdict. Otherwise the row is a capability verdict — wrong while any check
-    failed, ``success`` only when all of them passed.
+    An error without a kind and without a verdict is an infrastructure outcome:
+    the run broke before the evaluator could score it. A row that already has
+    checks — a missing-usage note on an otherwise scored answer — keeps that
+    verdict. It is not an outage. Otherwise the row is a capability verdict:
+    wrong while any check failed, ``success`` only when all of them passed.
     """
     data = score if isinstance(score, Mapping) else score.as_dict()
     if data.get("skipped"):
@@ -288,10 +290,11 @@ def outcome_of(score: Any) -> str:
     kind = canonical_failure(data.get("failure"))
     if kind:
         return kind
-    if data.get("error"):
+    if data.get("error") and not data.get("checks"):
         return "infra_failure"
     failed = any(not check.get("passed") for check in data.get("checks") or [])
     return "model_failure" if failed else "success"
+
 
 
 def showcase_points(profile: str = DEFAULT_PROFILE) -> dict[str, float]:

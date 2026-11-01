@@ -927,7 +927,8 @@ class Runner:
                 transcript.extra["failure_source"] = "transport" if transport else "provider"
                 transcript.extra["failure"] = "infra_failure"
             else:
-                transcript.extra["failure"] = kind or "model_failure"
+                transcript.extra["failure"] = kind
+
         except Exception as exc:  # pragma: no cover - defensive
             transcript.error = f"{type(exc).__name__}: {exc}"
 
