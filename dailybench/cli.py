@@ -1065,6 +1065,11 @@ def build_suite_digest(cfg: RunConfig) -> dict:
     return suite_digest(full, cfg.profile)
 
 
+#: ``--retry-errors`` repeats a finished row only when the measurement itself
+#: failed. An integrity refusal is a candidate action and must stay put.
+_RETRY_FAILURES = frozenset({"infra_failure", "evaluator_failure"})
+
+
 def _resume_tasks(
     cfg: RunConfig, tasks: list, environment: dict | None = None
 ) -> tuple[list, list]:
@@ -1155,17 +1160,23 @@ def _resume_tasks(
             "прогон сделан до checkpoint-контракта, продолжать его нельзя"
         )
     identity = run_identity(cfg, str(current.get("sha256") or ""))
-    if saved_identity != identity:
-        changed = sorted(
-            key
-            for key in set(old) | set(cfg.__dataclass_fields__)
-            if key not in {
-                "identity", "run_id", "api_key_set", "out_dir", "only", "generation_keep",
-                "retry_errors", "allow_suite_drift",
-            }
-            and str(old.get(key)) != str(getattr(cfg, key, None))
+    saved_suite_identity = run_identity(cfg, str(saved_digest.get("sha256") or ""))
+    changed = sorted(
+        key
+        for key in set(old) | set(cfg.__dataclass_fields__)
+        if key not in {
+            "identity", "run_id", "api_key_set", "out_dir", "only", "generation_keep",
+            "retry_errors", "allow_suite_drift",
+        }
+        and str(old.get(key)) != str(getattr(cfg, key, None))
+    )
+    detail = f": {', '.join(changed)}" if changed else ""
+    if drift and saved_suite_identity != saved_identity:
+        raise SystemExit(
+            f"{directory}: resume смешал бы два прогона{detail} "
+            "(--allow-suite-drift продолжает только тот же прогон с другим сьютом)"
         )
-        detail = f": {', '.join(changed)}" if changed else ""
+    if saved_identity != identity:
         message = (
             f"{directory}: resume смешал бы два прогона — identity {str(identity)[:12]} ≠ "
             f"{str(saved_identity)[:12]}{detail}"
@@ -1175,12 +1186,14 @@ def _resume_tasks(
                              "или --allow-suite-drift с записью решения)")
         print(f"{message}; продолжаю (--allow-suite-drift)", flush=True)
 
+
     by_id = {task.id: task for task in full}
     saved_digests = {row.get("id"): row for row in saved_digest.get("per_task") or []}
     current_digests = {row.get("id"): row for row in current.get("per_task") or []}
     saved = _saved_entries(directory, saved_identity if drift else identity)
     kept: list = []
-    damaged: set[str] = set()
+    truncated: set[str] = set()
+    retried: set[str] = set()
     for entry in saved:
         task_id = str((entry.get("task") or {}).get("id"))
         task = by_id.get(task_id)
@@ -1190,11 +1203,14 @@ def _resume_tasks(
             continue
         transcript = transcript_from_dict(entry.get("transcript") or {}, task)
         score = core.Score.from_dict(entry["score"])
-        if _truncated(transcript) or (
+        if _truncated(transcript):
+            truncated.add(task_id)
+            continue
+        if (
             getattr(cfg, "retry_errors", False)
-            and core.canonical_failure(score.failure) in core.INCOMPLETE_FAILURES
+            and core.canonical_failure(score.failure) in _RETRY_FAILURES
         ):
-            damaged.add(task_id)
+            retried.add(task_id)
             continue
         kept.append(TaskRun(task=task, transcript=transcript, score=score))
 
@@ -1227,11 +1243,21 @@ def _resume_tasks(
             {"resume_log.jsonl": previous_log + json.dumps(record, ensure_ascii=False) + "\n"},
             run_id=str(old.get("run_id") or saved_identity),
             identity=str(saved_identity),
-            environment=old.get("environment") or {},
+            environment=None,
             keep=cfg.generation_keep,
         )
-    if damaged:
-        print(f"повтор из-за обрыва: {', '.join(sorted(damaged, key=lambda i: order.get(i, 0)))}", flush=True)
+    if truncated:
+        print(
+            "повтор из-за обрыва: "
+            + ", ".join(sorted(truncated, key=lambda i: order.get(i, 0))),
+            flush=True,
+        )
+    if retried:
+        print(
+            "повтор инфраструктурных ошибок: "
+            + ", ".join(sorted(retried, key=lambda i: order.get(i, 0))),
+            flush=True,
+        )
     return missing, kept
 
 

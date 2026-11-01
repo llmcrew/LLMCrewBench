@@ -2496,6 +2496,32 @@ def test_manifest_keys_are_posix(tmp_path: Path):
         second / "transcripts/a.json"
     ).stat().st_ino
 
+def test_an_old_windows_manifest_key_stays_readable(tmp_path: Path):
+    if os.name != "nt":
+        pytest.skip("старый ключ с обратной косой существует только на Windows")
+    from dailybench import generation
+
+    payload = "{}"
+    config = json.dumps({"identity": "identity"})
+    files = {"config.json": config, "transcripts/a.json": payload}
+    generation.commit(tmp_path, files, run_id="run", identity="identity")
+    first = generation.current(tmp_path)
+    assert first is not None
+    before = (first / "transcripts/a.json").read_bytes()
+    for folder in (tmp_path, first):
+        manifest_path = folder / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"]["transcripts\\a.json"] = manifest["files"].pop("transcripts/a.json")
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    generation.commit(tmp_path, files, run_id="run", identity="identity")
+    assert (first / "transcripts/a.json").read_bytes() == before
+    assert generation.current(tmp_path) is not None
+    recorded = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))["files"]
+    assert "transcripts/a.json" in recorded
+    assert "transcripts\\a.json" not in recorded
+
+
 
 def test_an_interrupted_save_leaves_one_committed_generation(tmp_path: Path, monkeypatch):
     """R25: a crash before tasks.json is replaced must not mix two checkpoints.
