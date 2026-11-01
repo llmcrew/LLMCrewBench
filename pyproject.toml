@@ -46,4 +46,5 @@ packages = ["dailybench", "dailybench.adapters", "dailybench.tasks"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["docker: needs a Docker daemon"]
 filterwarnings = ["error::DeprecationWarning"]
