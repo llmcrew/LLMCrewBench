@@ -645,9 +645,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("Профиль скорости (1K и длинный prompt)...", flush=True)
         for row in speed_profile(provider, cfg, long_tokens=args.speed_long, repeats=args.speed_repeats):
             speed_rows.append(row.as_dict())
+            ttft = "n/a" if row.ttft_s is None else f"{row.ttft_s:.2f}"
+            prefill = "n/a" if row.prompt_tok_s is None else f"{row.prompt_tok_s:.0f}"
+            generation = "n/a" if row.generation_tok_s is None else f"{row.generation_tok_s:.1f}"
+            where = ", VRAM harness_host" if row.measured_on == "harness_host" else ""
             print(
-                f"  {row.label}: TTFT {row.ttft_s:.2f}s, prompt {row.prompt_tok_s:.0f} tok/s, "
-                f"generation {row.generation_tok_s:.1f} tok/s, peak VRAM {row.vram_peak_mib} MiB",
+                f"  {row.label}: TTFT {ttft}s, prompt {prefill} tok/s, "
+                f"generation {generation} tok/s, peak VRAM {row.vram_peak_mib} MiB{where}",
                 flush=True,
             )
 
