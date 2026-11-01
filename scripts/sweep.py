@@ -27,13 +27,20 @@ from dailybench.cli import main as cli_main  # noqa: E402
 from dailybench.measure import used_mib  # noqa: E402
 
 
-def _suite_size(cfg_id: str, profile: str) -> int:
-    """How many tasks the suite generates for a reference entry in a profile."""
-    from dailybench.config import RunConfig
-    from dailybench.suite import build_suite
+def _suite_size(run_dir: Path) -> int:
+    """How many tasks the recorded suite lists.
 
-    base = reference.apply_to_run_config(RunConfig(profile=profile), reference.resolve(cfg_id))
-    return len(build_suite(base))
+    The sweep used to rebuild the suite just to count it. The run already wrote
+    ``suite.json``; a missing or unreadable file is zero — never a reason to
+    call ``build_suite``.
+    """
+    path = Path(run_dir) / "suite.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return 0
+    rows = payload.get("per_task") if isinstance(payload, dict) else None
+    return len(rows) if isinstance(rows, list) else 0
 
 
 def run_one(entry: dict, args: argparse.Namespace) -> dict:
@@ -115,7 +122,7 @@ def run_one(entry: dict, args: argparse.Namespace) -> dict:
         suite_path = run_dir / "suite.json"
         suite = (
             json.loads(suite_path.read_text(encoding="utf-8"))
-            if suite_path.is_file() else _suite_size(cfg_id, args.profile)
+            if suite_path.is_file() else _suite_size(run_dir)
         )
         summary = summarise(scores, suite, recorded_mode)
         result["verdict"] = summary["verdict"]

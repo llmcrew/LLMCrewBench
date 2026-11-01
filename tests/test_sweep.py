@@ -19,8 +19,6 @@ from dailybench import reference
 
 import scripts.sweep as sweep
 
-_real_suite_size = sweep._suite_size
-
 
 class _Ref:
     """Minimal stand-in for ``reference.ReferenceConfig``."""
@@ -76,7 +74,7 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (root / "runs").mkdir()
     monkeypatch.setattr(sweep, "ROOT", root)
     monkeypatch.setattr(sweep, "used_mib", lambda: 12)
-    monkeypatch.setattr(sweep, "_suite_size", lambda cfg_id, profile: 1)
+    monkeypatch.setattr(sweep, "_suite_size", lambda run_dir: 1)
     monkeypatch.setattr(sweep.launch, "ensure_server", lambda base_url, entry: "key")
     monkeypatch.setattr(sweep.launch, "load_entry", lambda base_url, key, entry: (True, "загружена"))
     monkeypatch.setattr(sweep.reference, "resolve", lambda cfg_id: _Ref(_entry(cfg_id)))
@@ -205,15 +203,18 @@ def test_parser_rejects_unknown_profile(sandbox: Path, monkeypatch: pytest.Monke
         sweep.main()
 
 
-def test_suite_size_builds_with_the_profile(sandbox: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The denominator must count the profile's suite, not the baseline's."""
-    seen: list[str] = []
+def test_suite_size_reads_recorded_per_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The denominator is the recorded suite, not a rebuilt one."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "suite.json").write_text(
+        json.dumps({"per_task": [{"id": "A1"}, {"id": "K-1"}]}),
+        encoding="utf-8",
+    )
 
-    def fake_build(cfg) -> list[str]:
-        seen.append(cfg.profile)
-        return ["A1", "A2"]
+    def boom(*_args, **_kwargs):
+        raise AssertionError("build_suite не должен вызываться")
 
-    monkeypatch.setattr("dailybench.suite.build_suite", fake_build)
+    monkeypatch.setattr("dailybench.suite.build_suite", boom)
 
-    assert _real_suite_size("test-entry", "stretch-v1") == 2
-    assert seen == ["stretch-v1"]
+    assert sweep._suite_size(run_dir) == 2
