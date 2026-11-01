@@ -40,7 +40,9 @@ and a shape failure also costs the location check.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import random
 import shutil
 import subprocess
@@ -972,13 +974,21 @@ VERSIONS = (@VERSIONS@,)
 
 
 def run(*args: str, data: Path) -> subprocess.CompletedProcess:
-    env = dict(os.environ, JOURNAL_CONFIG=str(REPO / "journal.conf.json"), JOURNAL_DATA=str(data))
+    env = dict(
+        os.environ,
+        JOURNAL_CONFIG=str(REPO / "journal.conf.json"),
+        JOURNAL_DATA=str(data),
+        PYTHONUTF8="1",
+        PYTHONIOENCODING="utf-8",
+    )
     return subprocess.run(
         [sys.executable, "-m", "journal.cli", *args],
         cwd=str(REPO),
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
 
@@ -1074,7 +1084,13 @@ OPS = [@OPS@]
 
 
 def _env(data: _Path) -> dict:
-    return dict(_os.environ, JOURNAL_CONFIG=str(REPO / "journal.conf.json"), JOURNAL_DATA=str(data))
+    return dict(
+        _os.environ,
+        JOURNAL_CONFIG=str(REPO / "journal.conf.json"),
+        JOURNAL_DATA=str(data),
+        PYTHONUTF8="1",
+        PYTHONIOENCODING="utf-8",
+    )
 
 
 def cli(*args: str, data: _Path) -> _sp.CompletedProcess:
@@ -1085,6 +1101,7 @@ def cli(*args: str, data: _Path) -> _sp.CompletedProcess:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        errors="replace",
     )
 
 
@@ -1633,6 +1650,7 @@ def main() -> int:
             errors="replace",
             timeout=CHILD_TIMEOUT,
             cwd=os.getcwd(),
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
         )
     except subprocess.TimeoutExpired:
         return _verdict(final_report, expected, f"тесты не уложились в {CHILD_TIMEOUT} с")
@@ -1769,6 +1787,7 @@ def _run_modules(
             errors="replace",
             timeout=_HIDDEN_TIMEOUT_S,
             cwd=str(sandbox),
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
         )
     except subprocess.TimeoutExpired:
         shutil.rmtree(trusted, ignore_errors=True)
@@ -1854,7 +1873,7 @@ def _hidden_summary(results: dict[str, tuple[bool, str]]) -> tuple[bool, str]:
 
 def _verify_fixture(task: core.TaskInstance, source: str, *, expect_hidden_pass: bool) -> None:
     """Assert a claim the scenario makes about its own fixture."""
-    _verify_run(task, source, None, expect_hidden_pass=expect_hidden_pass)
+    _verify_run_once(task, source, None, expect_hidden_pass=expect_hidden_pass)
 
 
 def _verify_run(
@@ -1877,6 +1896,36 @@ def _verify_run(
         assert not failed, f"{task.id}: эталон провалил скрытые тесты {failed}"
     else:
         assert failed, f"{task.id}: дефектный файл не провалил ни одного скрытого теста"
+
+
+_FIXTURE_PROOF_CACHE: set[tuple[str, str]] = set()
+
+
+def _verify_run_once(
+    task: core.TaskInstance,
+    source: str | None,
+    files: dict[str, str] | None,
+    *,
+    expect_hidden_pass: bool,
+) -> None:
+    """Prove identical fixture bytes at most once in this process."""
+    fixture = {
+        "workspace": task.workspace,
+        "hidden_tests": task.oracle["hidden_tests"],
+        "public_test_file": task.oracle["public_test_file"],
+        "target_file": task.oracle["target_file"],
+        "source": source,
+        "files": files,
+        "expect_hidden_pass": expect_hidden_pass,
+    }
+    digest = hashlib.sha256(
+        json.dumps(fixture, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    key = (task.id, digest)
+    if key in _FIXTURE_PROOF_CACHE:
+        return
+    _verify_run(task, source, files, expect_hidden_pass=expect_hidden_pass)
+    _FIXTURE_PROOF_CACHE.add(key)
 
 
 # --------------------------------------------------------------------------- #
@@ -2327,8 +2376,8 @@ def _scenario_j5(rng: random.Random) -> core.TaskInstance:
         meta={"scenario": "J-5"},
         fresh_after=FRESH_AFTER,
     )
-    _verify_run(task, None, {public_test: public}, expect_hidden_pass=False)
-    _verify_run(task, None, {"journal/store.py": reference}, expect_hidden_pass=True)
+    _verify_run_once(task, None, {public_test: public}, expect_hidden_pass=False)
+    _verify_run_once(task, None, {"journal/store.py": reference}, expect_hidden_pass=True)
     return task
 
 
