@@ -565,9 +565,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         # bytes of the tasks: reuse the saved numbers, or a fresh (slightly
         # different) ratio would regenerate a different suite and the merge
         # guard below would reject it.
-        restored = RunConfig.from_dict(json.loads(saved_config.read_text(encoding="utf-8")))
+        saved = json.loads(saved_config.read_text(encoding="utf-8"))
+        restored = RunConfig.from_dict(saved)
         cfg.chars_per_token = restored.chars_per_token
         cfg.task_ratios = dict(restored.task_ratios)
+        # The ceiling is part of the measurement. Omitting the flag must not
+        # apply today's default over a run saved at another value; an explicit
+        # flag still overrides, and identity then refuses the mismatch.
+        if getattr(args, "request_wall_clock", None) is None and "request_wall_clock" in saved:
+            cfg.request_wall_clock = float(saved["request_wall_clock"])
         print(
             f"калибровка взята из сохранённого config.json: {cfg.chars_per_token:.4f} символов/токен",
             flush=True,
