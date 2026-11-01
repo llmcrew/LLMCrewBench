@@ -261,3 +261,18 @@ def test_missing_usage_is_not_infrastructure():
     assert run.score.task_id in _summary(run)["per_category"]["D"]["units"]
     assert _summary(run)["eligible"] is True
 
+
+def test_legacy_error_without_kind_is_infra_failure():
+    """A stored row with an error and no failure kind stays an outage.
+
+    Checks do not reclassify it: only a row the runner marked as missing
+    usage keeps the evaluator verdict.
+    """
+    legacy = {
+        "task_id": "T-1",
+        "category": "D",
+        "error": "сокет: таймаут",
+        "checks": [{"name": "answer", "passed": True, "points": 1.0}],
+    }
+    assert core.outcome_of(legacy) == "infra_failure"
+

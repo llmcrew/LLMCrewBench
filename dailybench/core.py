@@ -278,11 +278,11 @@ def outcome_of(score: Any) -> str:
     """One protocol outcome of a score row or :class:`Score`.
 
     A skipped task is ``unsupported``; a stored failure is its canonical kind.
-    An error without a kind and without a verdict is an infrastructure outcome:
-    the run broke before the evaluator could score it. A row that already has
-    checks — a missing-usage note on an otherwise scored answer — keeps that
-    verdict. It is not an outage. Otherwise the row is a capability verdict:
-    wrong while any check failed, ``success`` only when all of them passed.
+    An error without a kind is an infrastructure outcome, checks or not: a
+    legacy row stored that way was an outage. Only a row the runner marked
+    ``usage_unconfirmed_only`` keeps the evaluator verdict. Otherwise the row
+    is a capability verdict: wrong while any check failed, ``success`` only
+    when all of them passed.
     """
     data = score if isinstance(score, Mapping) else score.as_dict()
     if data.get("skipped"):
@@ -290,7 +290,7 @@ def outcome_of(score: Any) -> str:
     kind = canonical_failure(data.get("failure"))
     if kind:
         return kind
-    if data.get("error") and not data.get("checks"):
+    if data.get("error") and not data.get("usage_unconfirmed_only"):
         return "infra_failure"
     failed = any(not check.get("passed") for check in data.get("checks") or [])
     return "model_failure" if failed else "success"
@@ -776,6 +776,14 @@ class Score:
     enlarge ``possible`` beyond the declared maximum.
     """
 
+    usage_unconfirmed_only: bool = False
+    """True when the only fault is a missing ``usage`` report.
+
+    Stored so :func:`outcome_of` can tell that row from a legacy error that
+    also has checks and no failure kind. Absent on rows written before the
+    marker existed; those stay infrastructure.
+    """
+
     @property
     def status(self) -> str:
         """Machine-readable state of the row: ``ok``, ``skipped`` or ``error``."""
@@ -835,7 +843,7 @@ class Score:
             check.points = points
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "task_id": self.task_id,
             "category": self.category,
             "earned": self.earned,
@@ -849,6 +857,9 @@ class Score:
             "notes": self.notes,
             "checks": [c.as_dict() for c in self.checks],
         }
+        if self.usage_unconfirmed_only:
+            data["usage_unconfirmed_only"] = True
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Score":
@@ -863,6 +874,7 @@ class Score:
             error=data.get("error"),
             failure=data.get("failure"),
             max_points=data.get("max_points"),
+            usage_unconfirmed_only=bool(data.get("usage_unconfirmed_only")),
         )
 
 

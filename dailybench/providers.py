@@ -239,6 +239,7 @@ class OpenAICompatibleProvider:
     image_probe_note: str = field(default="", repr=False)
     """Why the image probe ended the way it did; travel with the transcript."""
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _request_state: threading.local = field(default_factory=threading.local, repr=False)
 
     def probe_images(self) -> bool | None:
         """Send one tiny image part once, and cache the answer.
@@ -332,7 +333,8 @@ class OpenAICompatibleProvider:
         timeout, armed_to_ceiling = self._socket_budget(deadline, wall_clock)
         # Read timeouts later in this call consult the same flag. A connect
         # timeout is retagged before it can be scored as a spent ceiling.
-        self._armed_to_ceiling = armed_to_ceiling
+        # Per-request: concurrent chats must not share one instance flag.
+        self._request_state.armed_to_ceiling = armed_to_ceiling
         return _OPENER.open(req, timeout=timeout)
 
     def _socket_budget(
@@ -378,7 +380,7 @@ class OpenAICompatibleProvider:
         ``request_timeout``, and the deadline has actually elapsed.
         """
         if (
-            getattr(self, "_armed_to_ceiling", False)
+            getattr(self._request_state, "armed_to_ceiling", False)
             and deadline is not None
             and time.monotonic() + _CEILING_SLOP_S >= deadline
         ):
@@ -404,7 +406,7 @@ class OpenAICompatibleProvider:
             return
         left = self._left(deadline, wall_clock, received)
         # Re-armed to the remaining budget, not to ``request_timeout``.
-        self._armed_to_ceiling = True
+        self._request_state.armed_to_ceiling = True
         sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
         if sock is not None:
             with contextlib.suppress(OSError):
