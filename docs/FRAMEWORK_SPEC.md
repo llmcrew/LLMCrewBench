@@ -284,18 +284,23 @@ base, `SOURCE_DATE_EPOCH`, lock-файлы, SBOM (syft) и подпись (cosig
 - seccomp: `defaultAction: SCMP_ACT_ERRNO`, белый список ~120 вызовов;
   `no-new-privileges`, все capabilities сброшены, `read_only` rootfs,
   `tmpfs` только на `/tmp` (64 MiB), `pids_limit=256`.
-- Сеть: runner — `--network none`; judge — egress только к резолвнутому
-  endpoint; capture — none (локальный http-сервер внутри контейнера).
+- Сеть: runner — `--network none`; judge и агент — internal-сеть, egress только
+  через форвардер к endpoint; capture — none (локальный http-сервер внутри
+  контейнера). Host gateway агенту не выдаётся.
 - Монтирования: задача `ro`, store — отдельный подкаталог generation (rw).
   Никаких bind-mount домашних каталогов.
 - Агентные категории (C/K/L) исполняются в контейнере
   (`dailybench/isolation.py`), а не на хосте: монтируется только предъявляемая
   фикстура (rw, чтобы агент оставил ответ) и конфиг harness (`/agent`), без
   репозитория, `task.oracle` и соседних рабочих копий. Окружение — allowlist
-  (`DAILYBENCH_API_KEY` в него не входит), путь наружу один:
-  `host.docker.internal` до endpoint. Записывается фактически применённое:
-  `container_run`/`host_run` + причина; падение на хост допустимо, но помечено.
-  Образ обязан нести pinned `pi`, версия проверяется внутри контейнера.
+  (`DAILYBENCH_API_KEY` в него не входит). Сеть агента — per-run
+  `docker network create --internal`; наружу один путь — форвардер
+  `egress_forward.py`, который соединяется только с настроенным endpoint. Агент входит
+  только в эту internal-сеть; host gateway ему не выдаётся. Образ запускается
+  по immutable id (тег резолвится один раз за прогон). Записывается фактически
+  применённое: `container_run`/`host_run` + причина; падение на хост допустимо,
+  но помечено. Образ обязан нести pinned `pi`, версия проверяется внутри
+  контейнера.
 - Кандидат не пишет доверенные файлы: вердикт пишет supervisor-процесс
   (child-runner + nonce/eof, см. `coding_python.py`).
 
