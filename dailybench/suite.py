@@ -294,6 +294,7 @@ def suite_digest(tasks: Iterable[core.TaskInstance], profile: str = core.DEFAULT
     are a different measurement, and a resume used to mix the two silently.
     """
     tasks = list(tasks)
+    evaluators = {task.category: evaluator_sha(task.category) for task in tasks}
     payload = [
         {
             "id": task.id,
@@ -306,7 +307,7 @@ def suite_digest(tasks: Iterable[core.TaskInstance], profile: str = core.DEFAULT
             "private": task.private,
             "holdout_seeds": task.holdout_seeds,
             "max_points": task.max_points,
-            "evaluator_sha256": evaluator_sha(task.category),
+            "evaluator_sha256": evaluators[task.category],
             "oracle_sha256": oracle_sha(task),
             "prompt_sha256": hashlib.sha256(task.prompt.encode()).hexdigest(),
             # The scenario's own system instruction and its meta (budget
@@ -345,7 +346,7 @@ def suite_digest(tasks: Iterable[core.TaskInstance], profile: str = core.DEFAULT
         "profile": profile,
         "contract": core.EVALUATOR_CONTRACT,
         "toolchain": toolchain,
-        "evaluator_bundle": {task.category: evaluator_sha(task.category) for task in tasks},
+        "evaluator_bundle": {task.category: evaluators[task.category] for task in tasks},
         "tasks": len(payload),
         "possible_total": round(sum(task.max_points for task in tasks), 4),
         "profile_total": core.profile_total(profile),
