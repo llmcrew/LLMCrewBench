@@ -1147,14 +1147,13 @@ def _if8_eval(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     )
     fmt_ok = strict and isinstance(value, dict) and set(value) == {"keys"} and shaped
 
-    normalized = (
-        [{"key": unicodedata.normalize("NFC", item["key"]), "value": item["value"]} for item in payload]
-        if shaped else []
-    )
-    pairs = sorted((item["key"], item["value"]) for item in normalized)
+    # Промпт требует ключ в NFC: сравниваем выписанную строку с оракулом,
+    # не нормализуя ответ. Иначе правило NFC не проверяется.
+    emitted = payload if shaped else []
+    pairs = sorted((item["key"], item["value"]) for item in emitted)
     expected_pairs = sorted((item["key"], item["value"]) for item in oracle["keys"])
     keys_ok = bool(shaped) and pairs == expected_pairs
-    order_ok = bool(shaped) and [item["key"] for item in normalized] == [item["key"] for item in oracle["keys"]]
+    order_ok = bool(shaped) and [item["key"] for item in emitted] == [item["key"] for item in oracle["keys"]]
 
     _format_point(score, "json_format",
         fmt_ok,
@@ -1162,10 +1161,10 @@ def _if8_eval(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
         if not fmt_ok else "ok",
     )
     _content_point(score, "keys", keys_ok,
-        f"получено {normalized or None}, ожидалось {oracle['keys']}",
+        f"получено {emitted or None}, ожидалось {oracle['keys']}",
     )
     _content_point(score, "order", order_ok,
-        f"получено {[item['key'] for item in normalized]}, ожидалось {[item['key'] for item in oracle['keys']]}",
+        f"получено {[item['key'] for item in emitted]}, ожидалось {[item['key'] for item in oracle['keys']]}",
     )
     return score
 

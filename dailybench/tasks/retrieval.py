@@ -1435,12 +1435,13 @@ def _i5_value_ok(payload: dict[str, Any], task: core.TaskInstance) -> bool:
 
 def _i5_sources_ok(payload: dict[str, Any], task: core.TaskInstance) -> bool:
     sources = payload.get("sources")
-    return isinstance(sources, list) and sorted(sources) == sorted(task.oracle["sources"])
+    return isinstance(sources, list) and sources == list(task.oracle["sources"])
 
 
 def _eval_i5(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     score = core.Score(task_id=task.id, category="I")
     payload, strict = _parse_answer(tr.final_text)
+    exact = isinstance(payload, dict) and set(payload) == {"value", "sources"}
     score.add(
         "json_shape",
         strict and _i5_shape(payload),
@@ -1449,7 +1450,7 @@ def _eval_i5(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     )
     score.add(
         "value",
-        isinstance(payload, dict) and _i5_value_ok(payload, task),
+        exact and _i5_value_ok(payload, task),
         _CHECK * 3 / 4,
         f"получено {payload.get('value') if isinstance(payload, dict) else payload!r}; "
         f"ожидалось действующее значение {task.oracle['value']} "
@@ -1457,7 +1458,7 @@ def _eval_i5(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     )
     score.add(
         "provenance",
-        isinstance(payload, dict) and _i5_sources_ok(payload, task),
+        exact and _i5_sources_ok(payload, task),
         _CHECK * 3 / 4,
         f"получено {payload.get('sources') if isinstance(payload, dict) else payload!r}; "
         f"ожидалось {task.oracle['sources']}",

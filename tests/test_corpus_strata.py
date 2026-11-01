@@ -150,10 +150,11 @@ def test_if8_prompt_mixes_scripts_and_writes_decomposed_keys():
         assert unicodedata.normalize("NFC", task.prompt) != task.prompt
 
 
-def test_if8_accepts_a_fully_decomposed_answer():
+def test_if8_decomposed_keys_lose_keys_and_order():
     for seed in DEV_SEEDS:
         task = _by_id(_if_tasks(seed), "IF-8")
         payload = json.loads(task.oracle["reference"])
+        assert any(unicodedata.normalize("NFD", item["key"]) != item["key"] for item in payload["keys"])
         decomposed = {
             "keys": [
                 {"key": unicodedata.normalize("NFD", item["key"]), "value": item["value"]}
@@ -161,8 +162,9 @@ def test_if8_accepts_a_fully_decomposed_answer():
             ]
         }
         score = instruction.evaluate(task, _transcript(task, _answer(decomposed)))
-        assert score.earned == 2.0
-        assert _checks(score) == {"json_format": True, "keys": True, "order": True}
+        assert _checks(score) == {"json_format": True, "keys": False, "order": False}
+        oracle = instruction.evaluate(task, _transcript(task, task.oracle["reference"]))
+        assert oracle.earned == 2.0
 
 
 def test_if8_oracle_is_nfc_and_sorted_by_code_point():
