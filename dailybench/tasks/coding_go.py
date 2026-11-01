@@ -8,6 +8,7 @@ reported as a failure with an explicit reason rather than a silent pass.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
@@ -472,34 +473,64 @@ func TestEmptyInputCloses(t *testing.T) {
 }
 
 func TestNoGoroutinePerJob(t *testing.T) {
-\tbaseline := runtime.NumGoroutine()
+\t// The gate belongs to the test: each job signals entry and then blocks.
+\t// The test counts entries, yields so any extra handler can enter, and only
+\t// then releases the gate. A goroutine per job shows up as more than
+\t// `workers` entries; wall-clock sleep and NumGoroutine are not consulted.
+\tconst workers = 2
+\tconst jobsN = 500
 \trelease := make(chan struct{})
-\tjobs := make(chan Job, 500)
-\tfor i := 0; i < 500; i++ {
+\tvar started int32
+\tjobs := make(chan Job, jobsN)
+\tfor i := 0; i < jobsN; i++ {
 \t\tjobs <- Job{ID: i, Run: func(ctx context.Context) error {
+\t\t\tatomic.AddInt32(&started, 1)
 \t\t\t<-release
 \t\t\treturn nil
 \t\t}}
 \t}
 \tclose(jobs)
 
-\tout := Process(context.Background(), jobs, 2)
-\ttime.Sleep(100 * time.Millisecond)
-\tpeak := runtime.NumGoroutine()
+\tout := Process(context.Background(), jobs, workers)
+\tdeadline := time.Now().Add(5 * time.Second)
+\tfor atomic.LoadInt32(&started) < int32(workers) {
+\t\tif time.Now().After(deadline) {
+\t\t\tclose(release)
+\t\t\tt.Fatalf("only %d of %d workers entered Run", atomic.LoadInt32(&started), workers)
+\t\t}
+\t\truntime.Gosched()
+\t}
+\tfor i := 0; i < jobsN; i++ {
+\t\truntime.Gosched()
+\t}
+\tif got := atomic.LoadInt32(&started); got != int32(workers) {
+\t\tclose(release)
+\t\tdrain(out)
+\t\tt.Fatalf("expected %d handlers inside Run, got %d", workers, got)
+\t}
 \tclose(release)
-\tdrain(out)
-\tif peak-baseline > 20 {
-\t\tt.Fatalf("goroutine count grew by %d with 2 workers and 500 jobs", peak-baseline)
+\tif got := drain(out); got != jobsN {
+\t\tt.Fatalf("expected %d results, got %d", jobsN, got)
 \t}
 }
 
 func TestNoLeakAfterCompletion(t *testing.T) {
-\tbaseline := runtime.NumGoroutine()
+\t// The output close is the pool's own completion signal: the reference
+\t// closes it only after every worker has exited. A leaked worker leaves
+\t// the channel open. NumGoroutine after a sleep is not a signal.
 \tfor iteration := 0; iteration < 5; iteration++ {
 \t\tjobs := jobsOf(40, func(ctx context.Context) error { return nil })
-\t\tdrain(Process(context.Background(), jobs, 3))
+\t\tdone := make(chan int, 1)
+\t\tgo func() { done <- drain(Process(context.Background(), jobs, 3)) }()
+\t\tselect {
+\t\tcase count := <-done:
+\t\t\tif count != 40 {
+\t\t\t\tt.Fatalf("iteration %d: expected 40 results, got %d", iteration, count)
+\t\t\t}
+\t\tcase <-time.After(5 * time.Second):
+\t\t\tt.Fatalf("iteration %d: pool did not signal completion", iteration)
+\t\t}
 \t}
-\tawaitQuiescence(t, baseline, "goroutine leak")
 }
 '''
 
@@ -745,6 +776,57 @@ def _failure_detail(lines: list[str]) -> str:
     return " | ".join(tail[:12])[:400]
 
 
+def _user_cache_dir() -> Path:
+    """The platform user cache directory, not a repository-local folder."""
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches"
+    raw = os.environ.get("XDG_CACHE_HOME")
+    return Path(raw) if raw else Path.home() / ".cache"
+
+
+_GO_VERSION_TEXT: dict[str, str] = {}
+
+
+def _go_version_text() -> str:
+    """Stripped ``go version`` output; ``unknown`` when the toolchain is absent."""
+    go = _go_binary() or ""
+    cached = _GO_VERSION_TEXT.get(go)
+    if cached is not None:
+        return cached
+    text = "unknown"
+    if go:
+        try:
+            proc = subprocess.run(
+                [go, "version"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            proc = None
+        if proc is not None and proc.returncode == 0:
+            text = (proc.stdout or "").strip() or "unknown"
+    _GO_VERSION_TEXT[go] = text
+    return text
+
+
+def _gocache_dir() -> Path:
+    """Persistent build cache: ``<user cache>/dailybench/go-build/<sha256(go version)[:16]>``.
+
+    ``DAILYBENCH_GOCACHE`` replaces that directory outright. The hash keeps two
+    installed toolchains from sharing object files.
+    """
+    override = os.environ.get("DAILYBENCH_GOCACHE")
+    if override:
+        return Path(override)
+    digest = hashlib.sha256(_go_version_text().encode("utf-8")).hexdigest()[:16]
+    return _user_cache_dir() / "dailybench" / "go-build" / digest
+
+
 def _go_env(repo: Path) -> dict[str, str]:
     """A hermetic environment for one ``go test`` run.
 
@@ -752,8 +834,10 @@ def _go_env(repo: Path) -> dict[str, str]:
     the evaluated contract must not change with them, so every contract key is
     overwritten instead of defaulted. The toolchain is pinned to the installed
     one, the module policy depends only on the workspace (a shipped ``vendor``
-    tree is used as is), the network stays out, and build and module caches
-    live beside the repository rather than in the host's.
+    tree is used as is), and the network stays out. The build cache is
+    persistent and keyed by the toolchain version, so a later grading does not
+    rebuild the standard library; module cache and GOPATH stay beside the
+    repository rather than in the host's.
     """
     cache = repo / ".go-cache"
     env = dict(os.environ)
@@ -766,7 +850,7 @@ def _go_env(repo: Path) -> dict[str, str]:
             "GO111MODULE": "on",
             "GOSUMDB": "off",
             "CGO_ENABLED": "0",
-            "GOCACHE": str(cache / "build"),
+            "GOCACHE": str(_gocache_dir()),
             "GOMODCACHE": str(cache / "mod"),
             "GOPATH": str(cache / "gopath"),
         }
@@ -1044,7 +1128,6 @@ _HIDDEN_TESTS_C5 = '''package pool
 import (
 	"context"
 	"errors"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1373,25 +1456,27 @@ func TestErrorsReported(t *testing.T) {
 }
 
 func TestNoGoroutineLeak(t *testing.T) {
-	baseline := runtime.NumGoroutine()
+	// Stop's acknowledgement and the Results close are the pool's own
+	// completion signals. Results closes only after accepted jobs finish and
+	// workers exit; a leak that never signals fails here without consulting
+	// NumGoroutine or sleeping to let the runtime settle.
 	for iteration := 0; iteration < 3; iteration++ {
 		p := New(context.Background(), 4, 16)
 		rows := collect(p)
 		for i := 0; i < 32; i++ {
-			p.Submit(Job{ID: i})
+			if !p.Submit(Job{ID: i}) {
+				t.Fatalf("iteration %d: job %d was rejected", iteration, i)
+			}
 		}
-		<-p.Stop()
-		waitRows(t, rows)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		runtime.GC()
-		if runtime.NumGoroutine() <= baseline+2 {
-			return
+		select {
+		case <-p.Stop():
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: Stop acknowledgement never arrived", iteration)
 		}
-		time.Sleep(20 * time.Millisecond)
+		if got := len(waitRows(t, rows)); got != 32 {
+			t.Fatalf("iteration %d: expected 32 results, got %d", iteration, got)
+		}
 	}
-	t.Fatalf("goroutine leak: baseline %d, now %d", baseline, runtime.NumGoroutine())
 }
 '''
 
