@@ -163,6 +163,9 @@ def resolve_runtime(requested: str) -> None:
 
 def image_digest(image: str) -> tuple[str, str]:
     """Return ``(repo_digest, image_id)``; either may be empty."""
+    # ``{{json ...}}`` is the only template form that survives every Docker CLI:
+    # a buildkit image with attestations hands ``.RepoDigests`` over as
+    # ``[]interface{}``, which ``{{join ...}}`` refuses to type-assert.
     proc = _call(
         [
             "docker",
@@ -170,14 +173,18 @@ def image_digest(image: str) -> tuple[str, str]:
             "inspect",
             image,
             "--format",
-            "{{join .RepoDigests \",\"}}|{{.Id}}",
+            "{{json .RepoDigests}}||{{.Id}}",
         ],
         timeout=30,
     )
     if proc.returncode != 0:
         raise InfraError(f"image {image!r} not available: {proc.stderr.strip()}")
-    digests, _, image_id = proc.stdout.strip().partition("|")
-    return (digests.split(",")[0] if digests else ""), image_id
+    raw, _, image_id = proc.stdout.strip().partition("||")
+    try:
+        digests = json.loads(raw) if raw else []
+    except ValueError:
+        digests = [part for part in raw.split(",") if part]
+    return (digests[0] if digests else ""), image_id
 
 
 def forget_image_pins() -> None:

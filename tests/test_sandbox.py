@@ -34,7 +34,10 @@ _FAKE_DOCKER = """#!/bin/sh
 # Minimal `docker` stand-in: only the verbs the supervisor calls.
 case "$1" in
   info) printf '{{"runc": {{"path": "runc"}}}}\\n' ;;
-  image) printf 'sha256:%064d|sha256:%064d\\n' 0 1 ;;
+  image)
+    # `image inspect <name> --format {{json .RepoDigests}}||{{.Id}}`
+    printf '["dailybench/runner-python@sha256:%064d"]||sha256:%064d\n' 0 1
+    ;;
   run) exit "${FAKE_RUN_EXIT:-0}" ;;
   inspect)
     if [ "${FAKE_INSPECT_EXIT:-0}" != "0" ]; then exit "$FAKE_INSPECT_EXIT"; fi
