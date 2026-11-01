@@ -95,8 +95,10 @@ def model_row(entry: dict) -> dict:
         for cat in core.CATEGORY_POINTS
     }
     spend = spend_of(run.get("tasks") or [])
-    summary = report.summarise(run["scores"], run.get("suite"))
     config = run.get("config") or {}
+    summary = report.summarise(
+        run["scores"], run.get("suite"), config.get("generation_mode")
+    )
     return {
         "dir": directory,
         "label": label,

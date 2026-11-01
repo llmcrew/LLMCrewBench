@@ -109,15 +109,15 @@ def _canonical_counts(counts: dict[str, int]) -> dict[str, int]:
 def summarise(
     scores: Iterable[dict[str, Any]],
     suite_tasks: int | dict[str, Any] | None = None,
-    generation_mode: str | None = "fixed",
+    generation_mode: str | None = None,
 ) -> dict[str, Any]:
     """Totals per category, with the visual block kept out of the verdict.
 
     ``suite_tasks`` may be the suite digest, so the "partial run" note counts
     only the tasks that can move the score — a skipped browser must not make a
-    complete run look partial. Run renderers pass the recorded
-    ``generation_mode`` explicitly; ``None`` marks a legacy run as unranked.
-    The fixed default keeps direct score-only comparisons self-contained.
+    complete run look partial. Omitting ``generation_mode`` means it was not
+    recorded: such a summary is never ranked. A caller that has a run passes
+    the value from its ``config.json``.
     """
     scored = set(core.SCORED_CATEGORIES)
     showcase = set(core.VISUAL_CATEGORIES)
@@ -571,9 +571,23 @@ def unranked_reason(summary: dict[str, Any]) -> str:
     return "неполный прогон"
 
 
-def _comparison_gate(left: dict[str, Any], right: dict[str, Any], *, same_contract: bool) -> str:
+def _comparison_gate(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    *,
+    same_contract: bool,
+    left_key: str = "",
+    right_key: str = "",
+) -> str:
     """Why this pair is not a rank comparison; empty when it is one."""
     if not same_contract:
+        left_sha, left_sep, left_mode = left_key.rpartition(":")
+        right_sha, right_sep, right_mode = right_key.rpartition(":")
+        if left_sep and right_sep and left_sha and left_sha == right_sha:
+            return (
+                "другой режим генерации: "
+                f"{left_mode or 'не записан'} / {right_mode or 'не записан'}"
+            )
         return "другой контракт сьюта"
     if not rankable(left):
         return f"база — {unranked_reason(left)}"
@@ -588,7 +602,8 @@ def _headline_keys(summary: dict[str, Any]) -> tuple[str, ...]:
 
 
 def compare_summaries(
-    left: dict[str, Any], right: dict[str, Any], *, same_contract: bool = True
+    left: dict[str, Any], right: dict[str, Any], *, same_contract: bool = True,
+    left_key: str = "", right_key: str = "",
 ) -> dict[str, Any]:
     """Compare two summaries on shared tasks; ``significant`` is a paired test.
 
@@ -609,7 +624,9 @@ def compare_summaries(
     test = stats.paired_ratio_difference(units)
     delta_ci = test["ci95"]
     delta = test["delta"]
-    gate = _comparison_gate(left, right, same_contract=same_contract)
+    gate = _comparison_gate(
+        left, right, same_contract=same_contract, left_key=left_key, right_key=right_key
+    )
     overall = {
         "left_ci95": left.get("headline_ci95"),
         "right_ci95": right.get("headline_ci95"),
@@ -1192,7 +1209,12 @@ def _paired_markdown(compared: list[tuple[dict[str, Any], dict[str, Any]]]) -> l
     """
     baseline_run, baseline = compared[0]
     results = [
-        compare_summaries(baseline, summary, same_contract=contract_key(run) == contract_key(baseline_run))
+        compare_summaries(
+            baseline, summary,
+            same_contract=contract_key(run) == contract_key(baseline_run),
+            left_key=contract_key(baseline_run),
+            right_key=contract_key(run),
+        )
         for run, summary in compared[1:]
     ]
     lines = [
