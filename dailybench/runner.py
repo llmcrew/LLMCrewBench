@@ -1130,8 +1130,9 @@ class Runner:
                 score.failure = stored
             elif transcript.extra.get("usage_unconfirmed_only"):
                 # Missing usage is not an outage: the model answered, and the
-                # evaluator's outcome stands.
-                pass
+                # evaluator's outcome stands. The marker is stored on the row
+                # so a later read of the score does not look like a legacy error.
+                score.usage_unconfirmed_only = True
             else:
                 score.failure = "infra_failure"
             if score.failure == "resource_exhausted" and transcript.extra.get("time_ceiling"):
