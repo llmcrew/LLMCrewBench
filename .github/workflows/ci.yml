@@ -72,10 +72,16 @@ jobs:
         run: uv run --no-sync python -m playwright install chromium
       - name: Run the suite
         if: runner.os != 'Windows'
+        env:
+          # The full 262144-token LC documents peak ~37 GiB RSS; CI runners
+          # have ~7 GiB free and die as an OOM cancel mid-suite.
+          DAILYBENCH_LONGCTX_WINDOW: "32768"
         run: uv run --no-sync python -m pytest tests
       - name: Run the suite on Windows
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          DAILYBENCH_LONGCTX_WINDOW: "32768"
         run: |
           Remove-Item Env:PYTHONUTF8 -ErrorAction SilentlyContinue
           Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue

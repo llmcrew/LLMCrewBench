@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import os
+from dataclasses import replace
+
 from dailybench import ModelReply, RunConfig, Score, TaskInstance, Transcript, Turn
 from dailybench.rng import task_rng
 from dailybench.tasks.longctx import evaluate, generate
 
+# A full-size suite (262144-token window) peaks at ~37 GiB of resident
+# memory while the records lists are joined; the CI runners have ~7 GiB
+# free and the suite step dies as an OOM cancel. The tests assert
+# determinism and structure, not the absolute scale, so CI caps the
+# window to the legacy 32K ladder (~2 MiB documents).
+_CI_WINDOW = int(os.environ.get("DAILYBENCH_LONGCTX_WINDOW") or 0)
+_CFG = RunConfig(context_window=_CI_WINDOW) if _CI_WINDOW else RunConfig()
 
 def _transcript(task: TaskInstance, answer: str, *, prompt_tokens: int | None = None, error: str | None = None) -> Transcript:
     return Transcript(
@@ -15,7 +25,7 @@ def _transcript(task: TaskInstance, answer: str, *, prompt_tokens: int | None = 
 
 
 def test_longctx_ids_points_and_self_checks() -> None:
-    cfg = RunConfig()
+    cfg = _CFG
     tasks = generate(task_rng(20260915, "E"), cfg)
     assert [task.id for task in tasks] == ["LC-1", "LC-2", "LC-3", "LC-4", "LC-5"]
     assert sum(task.max_points for task in tasks) == 10.0
@@ -32,7 +42,7 @@ def test_longctx_ids_points_and_self_checks() -> None:
 
 
 def test_longctx_is_deterministic_and_seeded() -> None:
-    cfg = RunConfig()
+    cfg = _CFG
     first = generate(task_rng(17, "E"), cfg)
     second = generate(task_rng(17, "E"), cfg)
     other = generate(task_rng(18, "E"), cfg)
@@ -44,7 +54,7 @@ def test_longctx_is_deterministic_and_seeded() -> None:
 
 
 def test_longctx_sizes_and_unique_chain_facts() -> None:
-    tasks = generate(task_rng(20260915, "E"), RunConfig())
+    tasks = generate(task_rng(20260915, "E"), _CFG)
     for task in tasks:
         estimated = task.meta["estimated_tokens"]
         target = task.meta["target_tokens"]
@@ -69,7 +79,7 @@ def test_longctx_non_admitted_variant() -> None:
 
 
 def test_longctx_reported_overflow_and_measured_admission() -> None:
-    task = generate(task_rng(4, "E"), RunConfig())[0]
+    task = generate(task_rng(4, "E"), _CFG)[0]
     overflow = evaluate(task, _transcript(task, task.oracle["reference"], error="context length exceeded"))
     assert overflow.admission is False
 
@@ -87,7 +97,7 @@ def test_longctx_reported_overflow_and_measured_admission() -> None:
 
 def test_longctx_accepts_the_documented_spellings_only() -> None:
     """The entity must be right; repeating the document's field label is allowed."""
-    tasks = generate(task_rng(11, "E"), RunConfig())
+    tasks = generate(task_rng(11, "E"), _CFG)
     lc1, lc5 = tasks[0], tasks[4]
 
     plain = evaluate(lc1, _transcript(lc1, lc1.oracle["answer"], prompt_tokens=lc1.meta["target_tokens"]))
@@ -119,7 +129,7 @@ def _score(task: TaskInstance, answer: str) -> Score:
 def test_longctx_profiles_select_their_scenarios() -> None:
     """Pilot holds only LC-6, stretch keeps the baseline and adds both new ones."""
     assert [task.id for task in generate(task_rng(5, "E"), RunConfig(profile="pilot"))] == ["LC-6"]
-    assert [task.id for task in generate(task_rng(5, "E"), RunConfig())] == ["LC-1", "LC-2", "LC-3", "LC-4", "LC-5"]
+    assert [task.id for task in generate(task_rng(5, "E"), _CFG)] == ["LC-1", "LC-2", "LC-3", "LC-4", "LC-5"]
     assert [task.id for task in generate(task_rng(5, "E"), RunConfig(profile="stretch-v1"))] == [
         "LC-1", "LC-2", "LC-3", "LC-4", "LC-5", "LC-6", "LC-7", "LC-8",
     ]
@@ -245,10 +255,10 @@ def test_long_context_answers_do_not_depend_on_the_sizing_ratio() -> None:
 def test_a_per_task_ratio_touches_only_its_own_document() -> None:
     """Calibration coefficients are per document and never a global reshuffle."""
     seed = 4242
-    plain = {task.id: task for task in generate(task_rng(seed, "E"), RunConfig())}
+    plain = {task.id: task for task in generate(task_rng(seed, "E"), _CFG)}
     tuned = {
         task.id: task
-        for task in generate(task_rng(seed, "E"), RunConfig(task_ratios={"LC-3": 5.5}))
+        for task in generate(task_rng(seed, "E"), replace(_CFG, task_ratios={"LC-3": 5.5}))
     }
     # Offsets move with any resize, so semantics is compared without them.
     for task_id, task in plain.items():
