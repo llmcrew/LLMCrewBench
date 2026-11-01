@@ -289,6 +289,7 @@ def test_preflight_reports_missing_props_as_an_unverified_window(endpoint):
     assert names["weights"].status == "warn"
     assert names["full_window"].status == "n/a"
     assert report.verdict == "admitted with unverified items"
+    assert report.ok
 
 
 def test_preflight_warns_when_window_exceeds_the_verified_quant_window():
