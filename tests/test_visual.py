@@ -15,6 +15,7 @@ import json
 import random
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -130,6 +131,7 @@ def test_image_predicates_use_frame_statistics():
 
 def test_frame_statistics_come_from_the_png_not_the_page():
     """H17: the picture is measured outside the untrusted page realm."""
+    _skip_without_frame_tools()
     import io
 
     from PIL import Image
@@ -327,6 +329,8 @@ def test_the_rubric_separates_protocol_runtime_html_and_frame(page_kind, monkeyp
 
 
 def test_every_check_is_one_fifth_of_the_task(monkeypatch, tmp_path):
+    _skip_without_frame_tools()
+    _skip_without_browser()
     score = _score(_page(), monkeypatch, tmp_path)
     assert [check.name for check in score.checks] == list(visual.CHECK_NAMES)
     assert all(check.points == visual.POINTS_PER_CHECK for check in score.checks)
@@ -355,6 +359,7 @@ def test_render_without_a_document_is_refused():
 
 
 def test_live_render_screenshots_a_static_svg_without_page_hooks():
+    _skip_without_browser()
     html = """<!doctype html>
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60">
       <rect width="100" height="60" fill="#123456"/>
@@ -371,6 +376,7 @@ def test_live_render_screenshots_a_static_svg_without_page_hooks():
 
 
 def test_live_render_accepts_css_animation_without_reproducibility_checks():
+    _skip_without_browser()
     html = """<!doctype html>
     <style>
       @keyframes pulse { from { opacity: .2; } to { opacity: 1; } }
@@ -388,6 +394,7 @@ def test_live_render_accepts_css_animation_without_reproducibility_checks():
 
 
 def test_live_render_keeps_a_screenshot_when_page_errors_and_external_load_fails():
+    _skip_without_browser()
     html = """<!doctype html>
     <style>body { background: #135; }</style>
     <script>throw new Error("live fixture pageerror");</script>
@@ -424,6 +431,7 @@ def test_live_render_of_a_hung_page_ends_at_the_navigation_timeout():
     a `while (true)` page — one task cost ~200 s and blocked the run. Now the
     render ends at the navigation deadline with an explicit error.
     """
+    _skip_without_browser()
     import time
 
     html = """<!doctype html><script>while (true) {}</script>"""
@@ -447,6 +455,7 @@ def test_live_render_blocks_a_websocket_escape_without_touching_the_network():
     connected, so the listener below must stay silent while the attempt is
     recorded.
     """
+    _skip_without_browser()
     import socket
     import threading
 
@@ -626,8 +635,18 @@ def _fake_browser(tmp_path, revision: int, body: bytes = b"") -> Path:
     folder = tmp_path / f"chromium_headless_shell-{revision}" / "chrome-headless-shell-mac-arm64"
     folder.mkdir(parents=True, exist_ok=True)
     executable = folder / "chrome-headless-shell"
-    executable.write_bytes(b"#!/bin/sh\necho 'Google Chrome for Testing 153.0.8010.12'\n" + body)
-    executable.chmod(0o755)
+    if sys.platform == "win32":
+        executable.write_text(
+            "import sys\n"
+            "if '--version' in sys.argv:\n"
+            "    print('Google Chrome for Testing 153.0.8010.12')\n",
+            encoding="utf-8",
+        )
+    else:
+        executable.write_bytes(
+            b"#!/bin/sh\necho 'Google Chrome for Testing 153.0.8010.12'\n" + body
+        )
+        executable.chmod(0o755)
     return executable
 
 
@@ -946,3 +965,313 @@ def test_every_generated_scenario_accepts_its_own_golden(profile: str) -> None:
         ))
         failed = [(check.name, check.detail) for check in score.checks if not check.passed]
         assert score.earned == task.max_points, f"{task.id}: {failed}"
+
+
+def _skip_without_frame_tools() -> None:
+    pytest.importorskip("numpy")
+    pytest.importorskip("PIL")
+
+
+def _skip_without_browser() -> None:
+    usable, reason = browser.availability()
+    if not usable:
+        pytest.skip(f"браузер недоступен: {reason}")
+
+
+def test_shot_stage_gets_its_own_budget(monkeypatch):
+    """STAGE_SHOT keeps its 90 s budget instead of dying at the 20 s absolute cap."""
+    class _Box:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+    class _Clock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def monotonic(self) -> float:
+            return self.now
+
+    class _Proc:
+        def is_alive(self) -> bool:
+            return True
+
+        def kill(self) -> None:
+            return None
+
+        def join(self, timeout: float = 0) -> None:
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+    clock = _Clock()
+
+    class _Conn:
+        def send(self, job: dict) -> None:
+            return None
+
+        def poll(self, timeout: float) -> bool:
+            clock.now += 10.0
+            return clock.now >= 60.0
+
+        def recv(self) -> tuple:
+            return ("done", browser.RenderResult(ok=True, shot=b"png"))
+
+    monkeypatch.setattr(browser.time, "monotonic", clock.monotonic)
+    browser._WORKER.clear()
+    browser._WORKER.update(
+        proc=_Proc(), conn=_Conn(), ready=True,
+        stage=_Box(browser.STAGE_SHOT), progress=_Box(1),
+    )
+    try:
+        result = browser._call_worker({"timeout_ms": 20_000, "html": "<html></html>"}, 10.0)
+    finally:
+        browser._WORKER.clear()
+    assert isinstance(result, browser.RenderResult)
+    assert clock.now >= 60.0
+    assert clock.now < browser.SCREENSHOT_TIMEOUT_MS / 1000
+
+
+def test_probe_crash_is_evaluator_failure(monkeypatch):
+    """A harness-side probe error keeps the PNG and is not a model failure."""
+    shot = b"\x89PNG\r\n\x1a\nprobe"
+
+    def fake_pass(*args, **kwargs):
+        return {
+            "errors": [],
+            "external": [],
+            "probe": {"x": 1},
+            "stepped": None,
+            "pixels": None,
+            "shot": shot,
+            "ready_failed": False,
+            "step_failed": False,
+            "harness_error": "Error: Target closed",
+        }
+
+    monkeypatch.setattr(browser, "_page_pass", fake_pass)
+    result = browser._render_inline(
+        "<html></html>", 0, 1 / 60, (800, 600), 1000, False, "fixed",
+    )
+    assert result.failure == "evaluator_failure"
+    assert result.ok is False
+    assert result.shot == shot
+    assert result.shot.startswith(b"\x89PNG")
+
+
+class _CrashProc:
+    def __init__(self) -> None:
+        self.alive = True
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def kill(self) -> None:
+        self.alive = False
+
+    def join(self, timeout: float = 0) -> None:
+        return None
+
+    def terminate(self) -> None:
+        self.alive = False
+
+
+def test_probe_crash_relaunches_the_worker(monkeypatch):
+    """The parent drops a dead renderer; the next render starts a fresh worker."""
+    class _Box:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+    old = _CrashProc()
+    browser._WORKER.clear()
+    browser._WORKER.update(
+        proc=old, conn=object(), ready=True, stage=_Box(0), progress=_Box(0),
+    )
+    monkeypatch.setattr(browser, "availability", lambda: (True, ""))
+    monkeypatch.setattr(
+        browser,
+        "_call_worker",
+        lambda job, deadline: browser.RenderResult(
+            ok=False, shot=b"\x89PNG\r\n\x1a\n", failure="evaluator_failure",
+            reason="PIXEL_PROBE",
+        ),
+    )
+    spawned: list[str] = []
+
+    def ensure() -> object:
+        proc = browser._WORKER.get("proc")
+        if proc is not None and proc.is_alive() and browser._WORKER.get("ready"):
+            return browser._WORKER["conn"]
+        spawned.append("fresh")
+        browser._WORKER.update(
+            proc=_CrashProc(), conn=object(), ready=True,
+            stage=_Box(0), progress=_Box(0),
+        )
+        return browser._WORKER["conn"]
+
+    monkeypatch.setattr(browser, "_ensure_worker", ensure)
+    try:
+        first = browser.render("<html></html>", again=False)
+        assert first.failure == "evaluator_failure"
+        assert old.alive is False
+        browser.render("<html></html>", again=False)
+        assert spawned, "следующий рендер не поднял новый процесс"
+    finally:
+        browser._WORKER.clear()
+    monkeypatch.undo()
+    usable, reason = browser.availability()
+    if not usable:
+        return
+    crashed = browser.render(_PROBE_CRASH_PAGE, probe=True, again=False)
+    assert crashed.failure == "evaluator_failure", crashed.reason
+    assert crashed.shot.startswith(b"\x89PNG")
+    nxt = browser.render(_page(), probe=False, again=False)
+    assert nxt.ok, nxt.reason
+    assert nxt.shot.startswith(b"\x89PNG")
+
+
+_PROBE_CRASH_PAGE = """<!doctype html><body>
+<canvas id="c" width="80" height="40"></canvas>
+<script>
+const ctx = document.getElementById("c").getContext("2d");
+ctx.fillStyle = "#36c";
+ctx.fillRect(0, 0, 80, 40);
+CanvasRenderingContext2D.prototype.drawImage = function () {
+  throw new Error("PIXEL_PROBE");
+};
+window.__probe = () => ({ok: true});
+window.__ready = true;
+</script></body>"""
+
+
+def test_scoring_renders_share_the_recording_clock():
+    """Scoring installs the same deterministic frame clock the recorder uses."""
+    template = getattr(browser, "FRAME_CLOCK_TEMPLATE", "")
+    assert "performance" in template and "__FPS__" in template
+    settle = getattr(browser, "SCREENSHOT_SETTLE_JS", "")
+    assert "document.fonts.ready" in settle
+    assert "requestAnimationFrame" in settle
+    source = Path("video/tools/record_clip.py").read_text(encoding="utf-8")
+    assert "FRAME_CLOCK_TEMPLATE" in source
+    assert "dailybench.browser" in source
+
+
+def test_every_varied_sample_must_move(monkeypatch):
+    """A static frame whose probe moved is not rescued by another sample (L10)."""
+    spec = visual.VisualSpec(
+        scene=[], simulation=[], image=[], steps=60, dt=1 / 60,
+    )
+    base = browser.RenderResult(
+        ok=True, shot=b"base", shot_sha="a" * 64, shot_sha_again="a" * 64,
+        probe={"x": 0.0}, stepped={"x": 1.0},
+        probe_ok=True, ready_ok=True, step_ok=True,
+    )
+
+    def cached(html: str, steps: int, dt: float, again: bool = True, probe: bool = True):
+        if steps == 90:
+            return browser.RenderResult(
+                ok=True, shot=b"moved", shot_sha="b" * 64,
+                probe={"x": 0.0}, stepped={"x": 2.0},
+                probe_ok=True, ready_ok=True, step_ok=True,
+            ), False
+        return browser.RenderResult(
+            ok=True, shot=b"same", shot_sha="a" * 64,
+            probe={"x": 0.0}, stepped={"x": 1.2},
+            probe_ok=True, ready_ok=True, step_ok=True,
+        ), False
+
+    monkeypatch.setattr(visual, "_cached_render", cached)
+    same = {"warm": {"fraction": 0.2, "centroid": [0.2, 0.5]}}
+    moved = {"warm": {"fraction": 0.2, "centroid": [0.8, 0.5]}}
+    monkeypatch.setattr(
+        browser, "frame_stats", lambda shot: moved if shot == b"moved" else same,
+    )
+    ok, _detail = visual._image_check("<html></html>", spec, base, same, {"x": 1.0})
+    assert ok is False
+
+
+def test_motion_needs_a_visible_object():
+    """A probe that moved with no visible object is not motion (L11)."""
+    ok, _detail = visual._motion_check(
+        {"ball": {"x": 0.0}},
+        {"ball": {"x": 1.0}},
+        {"warm": {"fraction": 0.0, "centroid": None}},
+        {"warm": {"fraction": 0.0, "centroid": None}},
+    )
+    assert ok is False
+
+
+def test_unstable_frame_is_not_cached(monkeypatch, tmp_path):
+    """A render whose two loads differ is not reused on the next call (S7)."""
+    calls = {"n": 0}
+
+    def render(html: str, **kwargs):
+        calls["n"] += 1
+        digest = f"{calls['n']:064x}"
+        return browser.RenderResult(
+            ok=True, shot=f"png-{calls['n']}".encode(), shot_sha=digest,
+            shot_sha_again=f"{calls['n'] + 9:064x}",
+            probe_ok=True, ready_ok=True, step_ok=True,
+        )
+
+    monkeypatch.setattr(browser, "render", render)
+    monkeypatch.setattr(visual, "_frame_key", lambda *args, **kwargs: "unstable-key")
+    monkeypatch.setattr(visual, "cache_dir", lambda: tmp_path)
+    first, loaded = visual._cached_render("<html></html>", 60, 1 / 60)
+    second, loaded_again = visual._cached_render("<html></html>", 60, 1 / 60)
+    assert loaded is False and loaded_again is False
+    assert calls["n"] == 2
+    assert first.shot != second.shot
+
+
+def test_vendor_tree_is_prepared_once_per_process(monkeypatch):
+    """A Windows render without symlinks does not recopy three.js (P3)."""
+    import shutil
+
+    copies: list[str] = []
+    real = shutil.copytree
+
+    def tracking(src, dst, **kwargs):
+        copies.append(str(dst))
+        return real(src, dst, **kwargs)
+
+    monkeypatch.setattr(shutil, "copytree", tracking)
+
+    def refuse_symlink(*args, **kwargs):
+        raise OSError("symlink запрещён")
+
+    monkeypatch.setattr(Path, "symlink_to", refuse_symlink)
+    with browser._served("<html></html>"):
+        pass
+    with browser._served("<html></html>"):
+        pass
+    assert len(copies) <= 1
+
+
+def test_hidden_points_render_once(monkeypatch, tmp_path):
+    """Hidden samples load once and do not run the pixel probe (P2)."""
+    calls: list[dict] = []
+
+    def render(html: str, **kwargs):
+        calls.append(dict(kwargs))
+        steps = int(kwargs.get("steps", 0))
+        digest = f"{steps:064x}"
+        return browser.RenderResult(
+            ok=True, shot=f"png-{steps}".encode(), shot_sha=digest, shot_sha_again=digest,
+            probe={"objects": ["ground", "box"], "x": 1.0},
+            stepped={"objects": ["ground", "box"], "x": 1.0 + steps / 1000},
+            probe_ok=True, ready_ok=True, step_ok=True,
+        )
+
+    monkeypatch.setattr(browser, "render", render)
+    monkeypatch.setattr(browser, "availability", lambda: (True, ""))
+    monkeypatch.setattr(browser, "frame_stats", lambda shot: {
+        "changed_fraction": 0.2, "width": 800, "height": 600,
+        "warm": {"fraction": 0.1, "centroid": [0.4, 0.4]},
+    })
+    _score(_page(), monkeypatch, tmp_path)
+    assert calls, "скоринг не рендерил"
+    hidden = [call for call in calls if call.get("steps") != 60]
+    assert hidden, "скрытые пробы не рендерились"
+    assert all(call.get("again") is False for call in hidden)
+    assert all(call.get("probe") is False for call in calls)
