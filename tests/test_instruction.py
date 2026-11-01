@@ -957,3 +957,31 @@ def test_lang_pair_native_date_in_the_answer_loses_the_rows() -> None:
         score = instruction.evaluate(task, _transcript(task, _answer(payload)))
         assert _checks(score)["rows"] is False
         assert score.earned < 2.0
+
+
+def _if8(seed: int = 1) -> TaskInstance:
+    return next(
+        task
+        for task in instruction.generate(task_rng(seed, "A"), RunConfig(profile="stretch-v1"))
+        if task.id == "IF-8"
+    )
+
+
+def test_if8_nfd_keys_lose_keys_and_order() -> None:
+    """The prompt asks for NFC keys; a decomposed spelling is not the oracle."""
+    task = _if8()
+    payload = json.loads(task.oracle["reference"])
+    assert any(unicodedata.normalize("NFD", item["key"]) != item["key"] for item in payload["keys"])
+    decomposed = {
+        "keys": [
+            {"key": unicodedata.normalize("NFD", item["key"]), "value": item["value"]}
+            for item in payload["keys"]
+        ]
+    }
+    score = instruction.evaluate(task, _transcript(task, _answer(decomposed)))
+    assert _checks(score) == {"json_format": True, "keys": False, "order": False}
+
+    oracle = instruction.evaluate(task, _transcript(task, task.oracle["reference"]))
+    assert oracle.earned == 2.0
+    assert _checks(oracle) == {"json_format": True, "keys": True, "order": True}
+

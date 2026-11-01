@@ -594,8 +594,9 @@ def test_n6_json_around_text_keeps_the_facts_but_loses_the_format() -> None:
     assert all(check.passed for check in score.checks[:6])
 
     fenced = hallucination.evaluate(task, _transcript(task, f"```json\n{task.oracle['reference']}\n```"))
-    assert _failed(fenced) == []
-    assert fenced.earned == 8.0
+    assert _failed(fenced) == ["json_shape", "no_extra_text"]
+    assert all(check.passed for check in fenced.checks[:6])
+    assert fenced.earned == 6.0
 
 
 def test_n6_a_missing_or_shuffled_answer_breaks_the_shape() -> None:
