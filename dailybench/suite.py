@@ -294,7 +294,7 @@ def suite_digest(tasks: Iterable[core.TaskInstance], profile: str = core.DEFAULT
     are a different measurement, and a resume used to mix the two silently.
     """
     tasks = list(tasks)
-    evaluators = {task.category: evaluator_sha(task.category) for task in tasks}
+    evaluators = {c: evaluator_sha(c) for c in dict.fromkeys(t.category for t in tasks)}
     payload = [
         {
             "id": task.id,

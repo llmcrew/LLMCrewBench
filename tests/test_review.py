@@ -86,6 +86,8 @@ def test_j5_fixture_builds_without_utf8_mode(tmp_path: Path) -> None:
         env.pop(name, None)
     if os.name != "nt":
         env["LC_ALL"] = "C"
+        env["PYTHONCOERCECLOCALE"] = "0"
+        env["PYTHONUTF8"] = "0"
     done = subprocess.run(
         [
             sys.executable,
