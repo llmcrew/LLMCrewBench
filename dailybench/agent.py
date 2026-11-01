@@ -656,7 +656,9 @@ def config_dir(
     ``native`` mode the record is left out on purpose: the stand decides.
 
     ``base_url`` overrides the config's endpoint for one caller: inside the
-    sandbox a loopback endpoint is reached through ``host.docker.internal``, and
+    sandbox the harness rewrites it through the egress forwarder
+    (``http://dailybench-egress:8080`` for HTTP; HTTPS keeps the hostname, and
+    a loopback HTTPS endpoint uses SNI ``host.docker.internal``), and
     ``models.json`` is what the agent dials.
     """
     prefix = f"{name}." if name else ""
