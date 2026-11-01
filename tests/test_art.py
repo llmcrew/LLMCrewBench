@@ -196,3 +196,20 @@ def test_each_new_topic_has_a_smoke_golden_and_is_delivered(monkeypatch, tmp_pat
         assert str(task.prompt).split("\n")[0]
         score = art.evaluate(task, _answer(page))
         assert score.earned == score.possible == 1.0
+
+
+@pytest.mark.parametrize("src", ["data:image/png;base64,AAAA", "blob:http://page/1"])
+def test_inline_image_is_not_art(monkeypatch, src):
+    """A ready-made image is not a drawing, even when the browser never fetches it."""
+    page = "<!doctype html><html><body><img src=\"" + src + "\"></body></html>"
+    monkeypatch.setattr(browser, "availability", lambda: (True, ""))
+    monkeypatch.setattr(
+        browser, "render",
+        lambda *args, **kwargs: browser.RenderResult(
+            ok=True, shot=b"\x89PNG\r\n\x1a\n",
+            probe_ok=True, ready_ok=True, step_ok=True,
+        ),
+    )
+    score = art.evaluate(_task(), _answer(page))
+    assert score.earned == 0.0
+    assert any("изображен" in check.detail for check in score.checks)
