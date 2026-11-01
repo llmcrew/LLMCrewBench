@@ -1018,7 +1018,8 @@ class Runner:
         fallback, not the deliverable.
 
         With *sandbox* the loop runs in a container that mounts the working copy
-        and nothing else; the endpoint it dials is rewritten to the host gateway.
+        and nothing else; the endpoint it dials is rewritten to the egress
+        forwarder (``dailybench-egress``), not the host gateway.
         """
         started = time.perf_counter()
         budget = self._agent_budget(task)

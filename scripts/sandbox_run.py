@@ -410,8 +410,16 @@ def endpoint_plan(
             "ALL",
             "--security-opt",
             "no-new-privileges:true",
+            "--security-opt",
+            f"seccomp={SECCOMP_PROFILE}",
             "--pids-limit",
             "64",
+            "--cpus",
+            "0.5",
+            "--memory",
+            "128m",
+            "--memory-swap",
+            "128m",
             "--user",
             "1000:1000",
             "--tmpfs",
@@ -836,8 +844,14 @@ def capture_streams(
     proc: subprocess.Popen,
     stdout_path: Path | None,
     stderr_path: Path | None,
+    *,
+    readers: list[threading.Thread] | None = None,
 ) -> tuple[_BoundedTail, _BoundedTail]:
-    """Drain both pipes to *paths* (full) and bounded tails. Does not wait on *proc*."""
+    """Drain both pipes to *paths* (full) and bounded tails.
+
+    Joins the pump threads unless *readers* is given: the caller then owns
+    the deadline and joins after ``wait``. Does not wait on *proc* itself.
+    """
     out = _BoundedTail()
     err = _BoundedTail()
     threads = [
@@ -846,8 +860,11 @@ def capture_streams(
     ]
     for thread in threads:
         thread.start()
-    for thread in threads:
-        thread.join()
+    if readers is None:
+        for thread in threads:
+            thread.join()
+    else:
+        readers.extend(threads)
     return out, err
 
 
@@ -938,26 +955,6 @@ def run_sandbox(
         report_network = "endpoint"
 
     container = f"dailybench-sandbox-{secrets.token_hex(5)}"
-    argv = _run_argv(
-        docker=docker,
-        container=container,
-        image=pinned,
-        command=command,
-        runtime=runtime,
-        network=docker_network,
-        task_dir=task_dir,
-        write_dir=write_dir,
-        cpus=cpus,
-        memory=memory,
-        pids_limit=pids_limit,
-        seccomp=seccomp.resolve(),
-        workspace_writable=workspace_writable,
-        extra_mounts=extras,
-        env=env,
-        host_gateway=agent_gateway,
-        extra_hosts=extra_hosts,
-    )
-
     started = time.monotonic()
     timed_out = False
     oom_killed = False
@@ -967,6 +964,25 @@ def run_sandbox(
     infra_reason = ""
     proc: subprocess.Popen | None = None
     try:
+        argv = _run_argv(
+            docker=docker,
+            container=container,
+            image=pinned,
+            command=command,
+            runtime=runtime,
+            network=docker_network,
+            task_dir=task_dir,
+            write_dir=write_dir,
+            cpus=cpus,
+            memory=memory,
+            pids_limit=pids_limit,
+            seccomp=seccomp.resolve(),
+            workspace_writable=workspace_writable,
+            extra_mounts=extras,
+            env=env,
+            host_gateway=agent_gateway,
+            extra_hosts=extra_hosts,
+        )
         proc = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
@@ -974,14 +990,10 @@ def run_sandbox(
             env=_docker_env(),
             start_new_session=True,
         )
-        out_tail = _BoundedTail()
-        err_tail = _BoundedTail()
-        readers = [
-            threading.Thread(target=_pump, args=(proc.stdout, stdout_path, out_tail), daemon=True),
-            threading.Thread(target=_pump, args=(proc.stderr, stderr_path, err_tail), daemon=True),
-        ]
-        for reader in readers:
-            reader.start()
+        readers: list[threading.Thread] = []
+        out_tail, err_tail = capture_streams(
+            proc, stdout_path, stderr_path, readers=readers
+        )
         try:
             proc.wait(timeout=deadline)
         except subprocess.TimeoutExpired:

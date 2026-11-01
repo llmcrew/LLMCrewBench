@@ -56,6 +56,8 @@ def test_endpoint_network_is_internal_with_a_forwarder() -> None:
     # reached as host.docker.internal.
     assert forwarder[forwarder.index("--target") + 1] == "host.docker.internal:1234"
     assert "egress_forward.py" in " ".join(forwarder)
+    assert "--cpus" in forwarder and "--memory" in forwarder
+    assert any(item.startswith("seccomp=") for item in forwarder)
     assert "dailybench-abc123" in forwarder
     assert forwarder[forwarder.index("--network-alias") + 1] == "dailybench-egress"
     assert plan.bridge_connect == [
@@ -378,3 +380,99 @@ def test_sbom_is_computed_once_per_image(monkeypatch: pytest.MonkeyPatch) -> Non
     second = sandbox_run.image_sbom(_IMAGE_ID)
     assert first == second == ["libc6\t2.36-9"]
     assert sum("dpkg-query" in argv for argv in runs) == 1
+
+
+def test_endpoint_setup_is_removed_when_argv_build_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failure after the forwarder starts still removes the network and container."""
+    calls: list[list[str]] = []
+
+    def fake_call(argv: list[str], timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def boom(**_kwargs: object) -> list[str]:
+        raise RuntimeError("argv failed")
+
+    monkeypatch.setattr(sandbox_run, "docker_available", lambda: True)
+    monkeypatch.setattr(sandbox_run, "_docker", lambda: "docker")
+    monkeypatch.setattr(sandbox_run, "resolve_image", lambda image, **_k: _IMAGE_ID)
+    monkeypatch.setattr(sandbox_run, "image_sbom", lambda *_a, **_k: [])
+    monkeypatch.setattr(sandbox_run, "_call", fake_call)
+    monkeypatch.setattr(sandbox_run, "_run_argv", boom)
+    with pytest.raises(RuntimeError, match="argv failed"):
+        sandbox_run.run_sandbox(
+            ["true"],
+            image=_IMAGE_ID,
+            task_dir=tmp_path,
+            network="endpoint",
+            endpoint_url="http://127.0.0.1:9/v1",
+        )
+    assert any(argv[1:3] == ["network", "rm"] for argv in calls)
+    assert any(
+        argv[1:2] == ["rm"] and any(part.startswith("dailybench-egress-") for part in argv)
+        for argv in calls
+    )
+
+
+def test_forwarder_survives_a_pause_past_the_connect_timeout() -> None:
+    """The handshake timeout must not stay on the connected socket."""
+    import importlib.util
+    import socket
+    import time
+
+    spec = importlib.util.spec_from_file_location(
+        "egress_forward", ROOT / "docker" / "egress_forward.py"
+    )
+    assert spec is not None and spec.loader is not None
+    forwarder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(forwarder)
+
+    stub = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    stub.bind(("127.0.0.1", 0))
+    stub.listen(1)
+    stub_port = stub.getsockname()[1]
+    pause = 0.4
+
+    def accept_late() -> None:
+        try:
+            conn, _addr = stub.accept()
+        except OSError:
+            return
+        try:
+            time.sleep(pause)
+            conn.sendall(b"LATE")
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    threading.Thread(target=accept_late, daemon=True).start()
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    listen_port = probe.getsockname()[1]
+    probe.close()
+    threading.Thread(
+        target=forwarder.serve,
+        args=(f"127.0.0.1:{listen_port}", ("127.0.0.1", stub_port)),
+        kwargs={"connect_timeout": pause / 2, "idle_timeout": 2.0, "max_connections": 4},
+        daemon=True,
+    ).start()
+    client = None
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            client = socket.create_connection(("127.0.0.1", listen_port), timeout=0.2)
+            break
+        except OSError:
+            time.sleep(0.05)
+    assert client is not None, "forwarder did not listen"
+    try:
+        client.settimeout(2)
+        body = client.recv(16)
+    finally:
+        client.close()
+        stub.close()
+    assert body == b"LATE"
+
