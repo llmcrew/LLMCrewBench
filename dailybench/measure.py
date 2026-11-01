@@ -8,6 +8,7 @@ workload (a filled context *and* generation), not just after load.
 
 from __future__ import annotations
 
+import ipaddress
 import shutil
 import statistics
 import subprocess
@@ -15,6 +16,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 from .config import RunConfig
 from .providers import Provider
@@ -226,12 +228,15 @@ class SpeedResult:
     runs: int
     ttft_s: float | None
     prompt_tokens: float
-    completion_tokens: float
+    completion_tokens: float | None
     prompt_tok_s: float | None
     generation_tok_s: float | None
     total_s: float
     vram_peak_mib: int | None = None
     spread: dict[str, float | None] = field(default_factory=dict)
+    sized: str = "estimate"
+    overhead_s: float | None = None
+    measured_on: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -245,10 +250,95 @@ class SpeedResult:
             "total_s": self.total_s,
             "vram_peak_mib": self.vram_peak_mib,
             "spread": self.spread,
+            "sized": self.sized,
+            "overhead_s": self.overhead_s,
+            "measured_on": self.measured_on,
         }
 
 
-def _measure_once(provider: Provider, prompt: str, cfg: RunConfig, sampler: VramSampler | None):
+# localhost and 0.0.0.0 match sandbox_run.LOOPBACK_HOSTS; ipaddress covers 127/8 and ::1.
+_LOOPBACK_NAMES = frozenset({"localhost", "0.0.0.0"})
+_SPEED_TOLERANCE = 0.01
+
+
+def _endpoint_url(provider: Provider, cfg: RunConfig) -> str:
+    return str(getattr(provider, "base_url", None) or cfg.base_url or "")
+
+
+def _is_loopback(url: str) -> bool:
+    host = (urlparse(url).hostname or "").strip().lower()
+    if host in _LOOPBACK_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _vram_measured_on(url: str) -> str:
+    """nvidia-smi runs here. A remote endpoint's VRAM is not this sample."""
+    return "endpoint" if _is_loopback(url) else "harness_host"
+
+
+def _overhead_ttft(provider: Provider, cfg: RunConfig) -> float | None:
+    """TTFT of an empty prompt: queue and RTT, not prefill."""
+    try:
+        reply = provider.chat(
+            [{"role": "user", "content": ""}],
+            None,
+            max_new_tokens=1,
+            temperature=cfg.temperature,
+            top_p=cfg.top_p,
+            seed=0,
+        )
+    except Exception:
+        return None
+    ttft = reply.ttft_s
+    return float(ttft) if ttft is not None else None
+
+
+def _fit_speed_prompt(
+    provider: Provider, tokens: int, nonce: str, *, tokenizer: bool
+) -> tuple[str, str, int | None]:
+    """Fit ``long_<N>`` (and the short twin) to the tokenizer, else estimate."""
+    if not tokenizer:
+        return synthetic_prompt(tokens, nonce=nonce), "estimate", None
+    prompt, actual, _ratio = fit_prompt_to_tokens(
+        provider, tokens, nonce=nonce, tolerance=_SPEED_TOLERANCE, attempts=8
+    )
+    limit = max(1.0, tokens * _SPEED_TOLERANCE)
+    # ``fit_prompt_to_tokens`` may stop 64 tokens off. A speed claim is ±1%.
+    for _ in range(6):
+        if actual is None:
+            return synthetic_prompt(tokens, nonce=nonce), "estimate", None
+        if abs(actual - tokens) <= limit:
+            return prompt, "tokenizer", actual
+        ratio = max(1.0, len(prompt) / actual)
+        prompt = synthetic_prompt(tokens, ratio, nonce)
+        actual = count_prompt_tokens(provider, prompt)
+    if actual is None:
+        return synthetic_prompt(tokens, nonce=nonce), "estimate", None
+    return prompt, "tokenizer", actual
+
+
+def _prefill_tok_s(tokens: float, ttft: float | None, overhead: float | None) -> float | None:
+    if ttft is None or overhead is None or ttft <= 0:
+        return None
+    window = ttft - overhead
+    if window <= 1e-6:
+        return None
+    return tokens / window
+
+
+def _measure_once(
+    provider: Provider,
+    prompt: str,
+    cfg: RunConfig,
+    sampler: VramSampler | None,
+    *,
+    overhead_s: float | None,
+    known_prompt_tokens: int | None,
+):
     sampler = sampler or VramSampler()
     sampler.start()
     reply = provider.chat(
@@ -260,26 +350,32 @@ def _measure_once(provider: Provider, prompt: str, cfg: RunConfig, sampler: Vram
         seed=0,
     )
     sampler.stop()
-    prompt_tokens = reply.prompt_tokens
-    completion_tokens = reply.completion_tokens
+    usage_prompt = reply.prompt_tokens
+    usage_completion = reply.completion_tokens
+    if usage_prompt is not None:
+        prompt_tokens = float(usage_prompt)
+    elif known_prompt_tokens is not None:
+        prompt_tokens = float(known_prompt_tokens)
+    else:
+        from .providers import estimate_tokens
+
+        prompt_tokens = float(estimate_tokens(prompt))
     ttft = reply.ttft_s
     total = reply.total_s
-    if prompt_tokens is None:
-        from .providers import estimate_tokens
-
-        prompt_tokens = estimate_tokens(prompt)
-    if completion_tokens is None:
-        from .providers import estimate_tokens
-
-        completion_tokens = estimate_tokens(reply.text or "")
-    generation_window = max(total - (ttft or 0.0), 1e-6) if total else None
+    if usage_completion is None:
+        generation = None
+        completion: float | None = None
+    else:
+        generation_window = max(total - (ttft or 0.0), 1e-6) if total else None
+        generation = (float(usage_completion) / generation_window) if generation_window else None
+        completion = float(usage_completion)
     return {
         "ttft_s": ttft,
         "total_s": total,
-        "prompt_tokens": float(prompt_tokens),
-        "completion_tokens": float(completion_tokens),
-        "prompt_tok_s": (prompt_tokens / ttft) if ttft else None,
-        "generation_tok_s": (completion_tokens / generation_window) if generation_window else None,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion,
+        "prompt_tok_s": _prefill_tok_s(prompt_tokens, ttft, overhead_s),
+        "generation_tok_s": generation,
         "vram_peak_mib": sampler.peak_mib,
     }
 
@@ -295,34 +391,58 @@ def speed_profile(
 ) -> list[SpeedResult]:
     """TTFT and throughput on a short and a long prompt.
 
-    Prefill throughput uses TTFT (prompt tokens over time-to-first-token);
-    generation throughput excludes prefill. Medians over ``repeats`` runs; the
-    min/max spread is reported so a throttled or cached run is visible.
+    The prompt is fitted with ``/tokenize`` when the runtime has one (±1%);
+    otherwise the character estimate is used and the row is labeled
+    ``sized="estimate"``. Prefill throughput subtracts a measured empty-prompt
+    TTFT (queue and RTT), recorded as ``overhead_s``. Generation throughput is
+    omitted when ``completion_tokens`` is missing — a length estimate is not a
+    speed. Medians over ``repeats`` runs; the min/max spread is reported so a
+    throttled or cached run is visible. VRAM is sampled on this host: a remote
+    endpoint is labeled ``measured_on="harness_host"``.
     """
     if long_tokens is None:
         long_tokens = max(1024, min(cfg.context_window - cfg.max_new_tokens - 512, 16384))
     profiles = [("short", short_tokens), (f"long_{long_tokens}", long_tokens)]
+    tokenizer = count_prompt_tokens(provider, "проверка") is not None
+    measured_on = _vram_measured_on(_endpoint_url(provider, cfg))
     results: list[SpeedResult] = []
     for label, tokens in profiles:
         # A fresh nonce per request: no repetition may be served from the
-        # prompt cache of the one before it.
+        # prompt cache of the one before it. Fit that nonce, or the counted
+        # length is not the length that was sent.
+        def one(nonce: str, probe_overhead: float | None) -> dict[str, Any]:
+            prompt, sized, counted = _fit_speed_prompt(
+                provider, tokens, nonce, tokenizer=tokenizer
+            )
+            row = _measure_once(
+                provider,
+                prompt,
+                cfg,
+                None,
+                overhead_s=probe_overhead,
+                known_prompt_tokens=counted,
+            )
+            row["sized"] = sized
+            return row
+
         for index in range(max(0, warmup)):
-            _measure_once(provider, synthetic_prompt(tokens, nonce=f"{label}-warmup-{index}"), cfg, None)
-        rows = [
-            _measure_once(provider, synthetic_prompt(tokens, nonce=f"{label}-run-{index}"), cfg, None)
-            for index in range(max(1, repeats))
-        ]
+            one(f"{label}-warmup-{index}", None)
+        # After warmup: a cold first token must not be subtracted from a warm run.
+        overhead_s = _overhead_ttft(provider, cfg)
+        rows = [one(f"{label}-run-{index}", overhead_s) for index in range(max(1, repeats))]
         ttfts = [r["ttft_s"] for r in rows if r["ttft_s"] is not None]
         gen = [r["generation_tok_s"] for r in rows if r["generation_tok_s"] is not None]
         pre = [r["prompt_tok_s"] for r in rows if r["prompt_tok_s"] is not None]
         peaks = [r["vram_peak_mib"] for r in rows if r["vram_peak_mib"] is not None]
+        completions = [r["completion_tokens"] for r in rows if r["completion_tokens"] is not None]
+        sized = "estimate" if any(r["sized"] == "estimate" for r in rows) else "tokenizer"
         results.append(
             SpeedResult(
                 label=label,
                 runs=len(rows),
                 ttft_s=statistics.median(ttfts) if ttfts else None,
                 prompt_tokens=statistics.median([r["prompt_tokens"] for r in rows]),
-                completion_tokens=statistics.median([r["completion_tokens"] for r in rows]),
+                completion_tokens=statistics.median(completions) if completions else None,
                 prompt_tok_s=statistics.median(pre) if pre else None,
                 generation_tok_s=statistics.median(gen) if gen else None,
                 total_s=statistics.median([r["total_s"] or 0.0 for r in rows]),
@@ -333,6 +453,9 @@ def speed_profile(
                     "generation_tok_s_min": min(gen) if gen else None,
                     "generation_tok_s_max": max(gen) if gen else None,
                 },
+                sized=sized,
+                overhead_s=overhead_s,
+                measured_on=measured_on,
             )
         )
     return results
