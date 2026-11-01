@@ -552,11 +552,12 @@ def _incomplete_table(
         )
         if summary.get("skipped_scored"):
             state += f"; не проверялось заданий: {summary['skipped_scored']} (unsupported)"
+        fallback = '<span class="sub">—</span>'
         rows.append(
             f"<tr><td class='model'>{_cell(_model_name(run))}</td>"
             f"<td class='num'>{ran}/{expected}</td>"
             f"<td>{_cell(state)}</td>"
-            f"<td>{_failure_badges(summary) or '<span class=\"sub\">—</span>'}</td>"
+            f"<td>{_failure_badges(summary) or fallback}</td>"
             f"<td class='sub'>{_cell(_caveat(summary))}</td></tr>"
         )
     return (
@@ -601,7 +602,9 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_
             f"{'VQA V' if key == 'V' else 'Симуляции K'}: "
             f"<b>{summary['showcase'][key]['earned']:.0f}/{summary['showcase'][key]['possible']:.0f}</b>"
             for key in core.SHOWCASE_CATEGORIES
-            if (summary.get("showcase") or {}).get(key, {}).get("tasks")
+        )
+        caveat_line = (
+            f"<div class='sub verdict'>{_cell(_caveat(summary))}</div>" if _caveat(summary) else ""
         )
         cards.append(
             f"<div class='card' data-model='{_cell(_model_name(run))}'>"
@@ -626,8 +629,7 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_
             f"<span class='unit'>баллов качества</span></div>"
             f"<div class='meter'><i style='width:{100 * summary['headline_earned'] / (summary['headline_possible'] or 1):.0f}%'></i></div>"
             f"{ci_line}"
-            f"{f'<div class="sub verdict">{_caveat_text}</div>' if (_caveat_text := _cell(_caveat(summary))) else ''}"
-            f"{_failure_badges(summary)}"
+            f"{caveat_line}"
             f"<div class='sub'>{showcase_text + ' · ' if showcase_text else ''}L — оценка человеком · "
             f"заданий с потерей: <b>{failed}</b> (нулевых {zero})</div>"
             f"<div class='sub'>категории с потерей: {_cell(', '.join(failed_cats) or 'нет')}</div>"
@@ -752,11 +754,14 @@ def _verdict_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> st
     body = []
     for run, summary in summaries:
         spend = _spend_totals(run)
+        caveat_span = (
+            f"<span class='th-sub'>{_cell(_caveat(summary))}</span>" if _caveat(summary) else ""
+        )
         cells = [
             f"<td class='model'>{_cell(_model_name(run))}</td>",
             f"<td class='verdict {_tone(summary['headline_earned'], summary['headline_possible'])}'>"
             f"{summary['headline_earned']:.0f}/{summary['headline_possible']:.0f}"
-            f"{f'<span class="th-sub">{_cv}</span>' if (_cv := _cell(_caveat(summary))) else ''}</td>",
+            f"{caveat_span}</td>",
         ]
         for key in SCORED:
             row = summary["per_category"].get(key, {})
@@ -774,9 +779,12 @@ def _verdict_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> st
                 continue
             pct = _pct(row.get("earned", 0), row.get("possible", 0))
             band = _ci_band(row.get("ci95"), row.get("n") or 0)
+            ci_band_div = (
+                f"<div class='ci-scale small'>{band}</div>" if band else ""
+            )
             cells.append(
                 f"<td class='num'>{'—' if pct is None else f'{pct:.0f}%'}"
-                f"{f'<div class=\"ci-scale small\">{band}</div>' if band else ''}</td>"
+                f"{ci_band_div}"
             )
         for key in SHOWCASE:
             row = (summary.get("showcase") or {}).get(key, {})
@@ -788,9 +796,12 @@ def _verdict_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> st
                 continue
             pct = _pct(row.get("earned", 0), row.get("possible", 0))
             band = _ci_band(row.get("ci95"), row.get("n") or 0)
+            ci_band_div = (
+                f"<div class='ci-scale small'>{band}</div>" if band else ""
+            )
             cells.append(
                 f"<td class='num show'>{'—' if pct is None else f'{pct:.0f}%'}"
-                f"{f'<div class=\"ci-scale small\">{band}</div>' if band else ''}</td>"
+                f"{ci_band_div}"
             )
         cells.append(f"<td class='num'>{_kv(spend['total'])}{_spend_note(spend)}</td>")
         cells.append(f"<td class='num'>{_minutes(spend['seconds'])}</td>")
@@ -848,10 +859,13 @@ def _suite_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
                 label = "отрисовано" if earned == possible and earned else "не отрисовалось"
                 cells.append(f"<td class='cell {klass}' title='{_cell(detail)[:400]}'>{label}</td>")
                 continue
+            failed_span = (
+                ' <span class="badge">' + _cell(', '.join(failed)) + '</span>' if failed else ""
+            )
             cells.append(
                 f"<td class='cell {klass}' title='{_cell(detail)[:400]}'>"
                 f"{earned:.1f}<span class='of'>/{possible:.0f}</span>"
-                f"{'<span class=\"badge\">' + _cell(', '.join(failed)) + '</span>' if failed else ''}</td>"
+                f"{failed_span}</td>"
             )
         block = "витрина" if category in SHOWCASE else ""
         badge = (" <span class='private' title='приватное задание: детали свёрнуты'>private</span>"
