@@ -808,6 +808,7 @@ def _created(journal: list[dict]) -> list[str]:
     return created
 
 
+@requires_docker
 @pytest.mark.parametrize(
     "builder, points",
     [(coding_sql.generate, 4.0), (coding_sql.generate_c6, 4.0)],
@@ -832,6 +833,7 @@ def _match_create(entry: dict, name: str) -> bool:
     return bool(re.match(rf'\s*CREATE DATABASE "?{name}"?;', entry["sql"], re.IGNORECASE))
 
 
+@requires_docker
 @pytest.mark.parametrize(
     "builder",
     [coding_sql.generate, coding_sql.generate_c6],
