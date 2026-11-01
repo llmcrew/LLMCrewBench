@@ -143,6 +143,87 @@ def test_default_request_wall_clock_matches_the_policy():
     assert RunConfig().request_wall_clock == 1800
 
 
+
+def test_resume_inherits_the_saved_request_wall_clock(endpoint, tmp_path: Path):
+    """A resume that omits the flag keeps the ceiling the run was saved with.
+
+    The default moved to 1800. A run saved at 600 must still resume as that
+    measurement: the row stays, and the ceiling does not become today's default
+    (which would be a different identity and a refusal).
+    """
+    base_url, server = endpoint
+    out = tmp_path / "runs"
+    assert (
+        _run(
+            base_url,
+            out,
+            "--only",
+            "IF-1",
+            "--name",
+            "ceil",
+            "--no-html",
+            "--request-wall-clock",
+            "600",
+        )
+        == 0
+    )
+    before = len(httpstub.chat_payloads(server))
+    assert _run(base_url, out, "--only", "IF-1", "--name", "ceil", "--no-html", "--resume") == 0
+    assert len(httpstub.chat_payloads(server)) == before, "сохранённая строка не переигрывается"
+    saved = _read(out / "ceil" / "config.json")
+    assert saved["request_wall_clock"] == 600
+    assert [row["task_id"] for row in _read(out / "ceil" / "scores.json")] == ["IF-1"]
+
+
+def test_resume_flag_overrides_the_saved_request_wall_clock(endpoint, tmp_path: Path):
+    """An explicit ceiling is a different measurement and must not be adopted.
+
+    The saved run was 600. Passing ``--request-wall-clock 1800`` names a new
+    ceiling, so resume refuses on identity instead of rewriting the old run.
+    """
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert (
+        _run(
+            base_url,
+            out,
+            "--only",
+            "IF-1",
+            "--name",
+            "over",
+            "--no-html",
+            "--request-wall-clock",
+            "600",
+        )
+        == 0
+    )
+    with pytest.raises(SystemExit, match="resume смешал бы"):
+        _run(
+            base_url,
+            out,
+            "--only",
+            "IF-1",
+            "--name",
+            "over",
+            "--no-html",
+            "--resume",
+            "--request-wall-clock",
+            "1800",
+        )
+    assert _read(out / "over" / "config.json")["request_wall_clock"] == 600
+
+
+def test_request_wall_clock_omitted_stays_detectable():
+    """The flag's default is None, so resume can tell 'not given' from 1800."""
+    parser = cli.build_parser()
+    omitted = parser.parse_args(["run"])
+    explicit = parser.parse_args(["run", "--request-wall-clock", "1800"])
+    assert omitted.request_wall_clock is None
+    assert explicit.request_wall_clock == 1800
+
+
+
+
 def test_an_enlarged_answer_budget_raises_the_derived_total(endpoint, tmp_path: Path):
     """J-5: ``--max-new-tokens 65536`` was still cut back to 16384 tokens.
 
