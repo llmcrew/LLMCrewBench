@@ -534,6 +534,7 @@ def _incomplete_table(
         ran = summary.get("ran", 0) + summary.get("ran_showcase", 0)
         state = (
             "отказ в удостоверении" if summary.get("integrity_failures")
+            else "режим генерации не записан" if not summary.get("generation_mode")
             else "инфраструктура" if not summary.get("eligible")
             else "неполный прогон"
         )
@@ -584,17 +585,24 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_
                 f"<div class='sub ci-caption'>ДИ 95%: {ci[0]:.0f}–{ci[1]:.0f}% · "
                 f"n={summary.get('headline_n') or 0}" + (f" · {note}" if note else "") + "</div>"
             )
+        showcase_text = " · ".join(
+            f"{'VQA V' if key == 'V' else 'Симуляции K'}: "
+            f"<b>{summary['showcase'][key]['earned']:.0f}/{summary['showcase'][key]['possible']:.0f}</b>"
+            for key in core.SHOWCASE_CATEGORIES
+            if (summary.get("showcase") or {}).get(key, {}).get("tasks")
+        )
         cards.append(
             f"<div class='card' data-model='{_cell(_model_name(run))}'>"
             f"<div class='rank'>{'—' if place is None else place}</div>"
             f"<h3>{_cell(_model_name(run))}</h3>"
             + (
                 ""
-                if summary.get("eligible") and not summary.get("incomplete")
+                if summary.get("generation_mode") and summary.get("eligible") and not summary.get("incomplete")
                 else (
                     "<div class='sub state'>"
                     + (
                         "удостоверение отозвано" if summary.get("integrity_failures")
+                        else "режим генерации не записан" if not summary.get("generation_mode")
                         else "инфраструктура" if not summary.get("eligible")
                         else "неполный прогон — вне ранга"
                     )
@@ -608,7 +616,7 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_
             f"{ci_line}"
             f"{f'<div class=\'sub verdict\'>{_cell(_caveat(summary))}</div>' if _caveat(summary) else ''}"
             f"{_failure_badges(summary)}"
-            f"<div class='sub'>симуляции K: <b>{summary['showcase_earned']:.0f}/{summary['showcase_possible']:.0f}</b> · L — оценка человеком · "
+            f"<div class='sub'>{showcase_text} · L — оценка человеком · "
             f"заданий с потерей: <b>{failed}</b> (нулевых {zero})</div>"
             f"<div class='sub'>категории с потерей: {_cell(', '.join(failed_cats) or 'нет')}</div>"
             f"<div class='sub spend'>токенов: <b>{_kv(spend['total'])}</b>{_spend_note(spend)}"
@@ -635,7 +643,7 @@ def _comparison_block(runs: list[dict[str, Any]]) -> str:
     """
     if len(runs) < 2:
         return ""
-    summaries = [(run, summarise(run["scores"], run.get("suite"))) for run in runs]
+    summaries = [(run, summarise(run["scores"], run.get("suite"), (run.get("config") or {}).get("generation_mode"))) for run in runs]
     base_run, base = summaries[0]
     base_contract = _contract_key(base_run)
     rows = []
@@ -1042,7 +1050,7 @@ def _charts_payload(runs: list[dict[str, Any]]) -> dict[str, Any]:
                                "showcaseKeys": list(core.SHOWCASE_CATEGORIES), "scored": [], "showcase": [],
                                "scoredCi": [], "spend": [], "cost": []}
     for run in runs:
-        summary = summarise(run["scores"], run.get("suite"))
+        summary = summarise(run["scores"], run.get("suite"), (run.get("config") or {}).get("generation_mode"))
         name = _model_name(run)
         payload["models"].append(name)
         payload["scored"].append([_pct(summary["per_category"].get(k, {}).get("earned", 0),
@@ -1318,11 +1326,11 @@ def render_html(
         entry = gallery.materialise(run_dir, target)
         for item in entry["tasks"]:
             item["model"] = entry["model"]
-            item["page"] = str(target.relative_to(page_dir) / item["page"]) if item.get("page") else ""
-            item["frame"] = str(target.relative_to(page_dir) / item["frame"]) if item.get("frame") else ""
+            item["page"] = (target.relative_to(page_dir) / item["page"]).as_posix() if item.get("page") else ""
+            item["frame"] = (target.relative_to(page_dir) / item["frame"]).as_posix() if item.get("frame") else ""
         index.extend(entry["tasks"])
 
-    summaries = [(run, summarise(run["scores"], run.get("suite"))) for run in runs]
+    summaries = [(run, summarise(run["scores"], run.get("suite"), (run.get("config") or {}).get("generation_mode"))) for run in runs]
     # Eligibility and completeness gate the ranking *before* any comparison:
     # only a full, infrastructure-clean run inside one contract gets a place.
     groups = _group_contracts(summaries)
