@@ -342,7 +342,8 @@ def install(log: Any = None) -> tuple[bool, str]:
         log(f"pi не найден; ставлю: {command}")
     try:
         proc = subprocess.run(
-            ["/bin/sh", "-c", command],
+            command,
+            shell=True,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1622,6 +1623,9 @@ def run(
                         secret=cfg.api_key,
                         pin=pin,
                     )
+                except BaseException:
+                    _kill_tree(proc)
+                    raise
                 stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")
                 returncode = proc.returncode
     except OSError as exc:
