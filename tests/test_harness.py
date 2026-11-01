@@ -2469,6 +2469,60 @@ def test_run_persists_oracles_with_exact_values(tmp_path: Path):
     assert (out / "transcripts" / "R-4.json").is_file()
 
 
+def test_manifest_keys_are_posix(tmp_path: Path):
+    from dailybench import generation
+
+    probe = tmp_path / "link-source"
+    probe.write_text("probe", encoding="utf-8")
+    try:
+        os.link(probe, tmp_path / "link-target")
+    except OSError as exc:
+        pytest.skip(f"файловая система не поддерживает hard links: {exc}")
+
+    files = {
+        "config.json": json.dumps({"identity": "identity"}),
+        "transcripts/a.json": "{}",
+    }
+    generation.commit(tmp_path, files, run_id="run", identity="identity")
+    first = generation.current(tmp_path)
+    assert first is not None
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert "transcripts/a.json" in manifest["files"]
+
+    generation.commit(tmp_path, files, run_id="run", identity="identity")
+    second = generation.current(tmp_path)
+    assert second is not None and second != first
+    assert (first / "transcripts/a.json").stat().st_ino == (
+        second / "transcripts/a.json"
+    ).stat().st_ino
+
+def test_an_old_windows_manifest_key_stays_readable(tmp_path: Path):
+    if os.name != "nt":
+        pytest.skip("старый ключ с обратной косой существует только на Windows")
+    from dailybench import generation
+
+    payload = "{}"
+    config = json.dumps({"identity": "identity"})
+    files = {"config.json": config, "transcripts/a.json": payload}
+    generation.commit(tmp_path, files, run_id="run", identity="identity")
+    first = generation.current(tmp_path)
+    assert first is not None
+    before = (first / "transcripts/a.json").read_bytes()
+    for folder in (tmp_path, first):
+        manifest_path = folder / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"]["transcripts\\a.json"] = manifest["files"].pop("transcripts/a.json")
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    generation.commit(tmp_path, files, run_id="run", identity="identity")
+    assert (first / "transcripts/a.json").read_bytes() == before
+    assert generation.current(tmp_path) is not None
+    recorded = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))["files"]
+    assert "transcripts/a.json" in recorded
+    assert "transcripts\\a.json" not in recorded
+
+
+
 def test_an_interrupted_save_leaves_one_committed_generation(tmp_path: Path, monkeypatch):
     """R25: a crash before tasks.json is replaced must not mix two checkpoints.
 
@@ -3313,6 +3367,25 @@ def test_search_code_resolves_paths_under_a_realpath_root():
 
 _DIGEST_A = "sha256:" + "a" * 64
 _DIGEST_B = "sha256:" + "b" * 64
+
+
+def test_resume_flags_do_not_change_the_identity():
+    from dataclasses import replace
+
+    from dailybench.runner import run_identity
+
+    cfg = RunConfig()
+    assert (
+        run_identity(cfg, "x")
+        == run_identity(replace(cfg, retry_errors=True), "x")
+        == run_identity(replace(cfg, allow_suite_drift=True), "x")
+    )
+
+
+def test_legacy_identity_is_unchanged_by_resume_flags():
+    from dailybench.runner import run_identity
+
+    assert run_identity(RunConfig(), "x") == "78b6c059052e84ec30b283a355e7acd75c9f419f4fa6144332fa31bf681742a4"
 
 
 def test_the_image_digest_is_part_of_the_run_identity():

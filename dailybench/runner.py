@@ -66,7 +66,11 @@ def config_identity(cfg: RunConfig) -> str:
     would present two regimes as one run.
     """
     payload = {
-        item.name: _canonical(getattr(cfg, item.name))
+        item.name: _canonical(
+            item.default
+            if item.name in {"retry_errors", "allow_suite_drift"}
+            else getattr(cfg, item.name)
+        )
         for item in fields(RunConfig)
         if item.name not in _IDENTITY_EXCLUDED
     }

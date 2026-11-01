@@ -717,7 +717,7 @@ def commit(
     if not _dir_fsync_supported():
         degraded.append("directory-fsync:unsupported:nt")
     for source in sorted(stage.rglob("*")):
-        if source.is_file() and str(source.relative_to(stage)) not in files:
+        if source.is_file() and source.relative_to(stage).as_posix() not in files:
             _fsync_file(source, degraded)
 
     # Assumed digest of a file that is the same bytes as in the previous
@@ -740,7 +740,7 @@ def commit(
         _write_durable(target, text, degraded)
 
     hashes = {
-        str(path.relative_to(stage)): reused.get(str(path.relative_to(stage)))
+        path.relative_to(stage).as_posix(): reused.get(path.relative_to(stage).as_posix())
         or sha256(path.read_bytes()).hexdigest()
         for path in sorted(stage.rglob("*"))
         if path.is_file()

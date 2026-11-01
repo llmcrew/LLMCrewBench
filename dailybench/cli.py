@@ -17,7 +17,7 @@ import json
 from dataclasses import replace
 import shutil
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import core, generation, holdout, reference, schema
@@ -1065,6 +1065,11 @@ def build_suite_digest(cfg: RunConfig) -> dict:
     return suite_digest(full, cfg.profile)
 
 
+#: ``--retry-errors`` repeats a finished row only when the measurement itself
+#: failed. An integrity refusal is a candidate action and must stay put.
+_RETRY_FAILURES = frozenset({"infra_failure", "evaluator_failure"})
+
+
 def _resume_tasks(
     cfg: RunConfig, tasks: list, environment: dict | None = None
 ) -> tuple[list, list]:
@@ -1155,14 +1160,23 @@ def _resume_tasks(
             "прогон сделан до checkpoint-контракта, продолжать его нельзя"
         )
     identity = run_identity(cfg, str(current.get("sha256") or ""))
-    if saved_identity != identity:
-        changed = sorted(
-            key
-            for key in set(old) | set(cfg.__dataclass_fields__)
-            if key not in {"identity", "run_id", "api_key_set", "out_dir", "only", "generation_keep"}
-            and str(old.get(key)) != str(getattr(cfg, key, None))
+    saved_suite_identity = run_identity(cfg, str(saved_digest.get("sha256") or ""))
+    changed = sorted(
+        key
+        for key in set(old) | set(cfg.__dataclass_fields__)
+        if key not in {
+            "identity", "run_id", "api_key_set", "out_dir", "only", "generation_keep",
+            "retry_errors", "allow_suite_drift",
+        }
+        and str(old.get(key)) != str(getattr(cfg, key, None))
+    )
+    detail = f": {', '.join(changed)}" if changed else ""
+    if drift and saved_suite_identity != saved_identity:
+        raise SystemExit(
+            f"{directory}: resume смешал бы два прогона{detail} "
+            "(--allow-suite-drift продолжает только тот же прогон с другим сьютом)"
         )
-        detail = f": {', '.join(changed)}" if changed else ""
+    if saved_identity != identity:
         message = (
             f"{directory}: resume смешал бы два прогона — identity {str(identity)[:12]} ≠ "
             f"{str(saved_identity)[:12]}{detail}"
@@ -1172,19 +1186,31 @@ def _resume_tasks(
                              "или --allow-suite-drift с записью решения)")
         print(f"{message}; продолжаю (--allow-suite-drift)", flush=True)
 
+
     by_id = {task.id: task for task in full}
-    saved = _saved_entries(directory, identity)
+    saved_digests = {row.get("id"): row for row in saved_digest.get("per_task") or []}
+    current_digests = {row.get("id"): row for row in current.get("per_task") or []}
+    saved = _saved_entries(directory, saved_identity if drift else identity)
     kept: list = []
-    damaged: set[str] = set()
+    truncated: set[str] = set()
+    retried: set[str] = set()
     for entry in saved:
         task_id = str((entry.get("task") or {}).get("id"))
         task = by_id.get(task_id)
         if task is None:
             continue
+        if drift and saved_digests.get(task_id) != current_digests.get(task_id):
+            continue
         transcript = transcript_from_dict(entry.get("transcript") or {}, task)
         score = core.Score.from_dict(entry["score"])
-        if _truncated(transcript) or (getattr(cfg, "retry_errors", False) and score.status == "error"):
-            damaged.add(task_id)
+        if _truncated(transcript):
+            truncated.add(task_id)
+            continue
+        if (
+            getattr(cfg, "retry_errors", False)
+            and core.canonical_failure(score.failure) in _RETRY_FAILURES
+        ):
+            retried.add(task_id)
             continue
         kept.append(TaskRun(task=task, transcript=transcript, score=score))
 
@@ -1193,8 +1219,45 @@ def _resume_tasks(
     order = {task.id: index for index, task in enumerate(full)}
     missing.sort(key=lambda task: order.get(task.id, 1 << 30))
     kept.sort(key=lambda run: order.get(run.task.id, 1 << 30))
-    if damaged:
-        print(f"повтор из-за обрыва: {', '.join(sorted(damaged, key=lambda i: order.get(i, 0)))}", flush=True)
+    if drift:
+        try:
+            previous_log = generation.read_text(directory, "resume_log.jsonl")
+        except FileNotFoundError:
+            previous_log = ""
+        if previous_log and not previous_log.endswith("\n"):
+            previous_log += "\n"
+        record = {
+            "accepted_at": datetime.now(timezone.utc).isoformat(),
+            "old_suite_sha256": str(saved_digest.get("sha256") or ""),
+            "new_suite_sha256": str(current.get("sha256") or ""),
+            "old_identity": str(saved_identity),
+            "new_identity": str(identity),
+            "rerun": [
+                task.id
+                for task in missing
+                if saved_digests.get(task.id) != current_digests.get(task.id)
+            ],
+        }
+        generation.commit(
+            directory,
+            {"resume_log.jsonl": previous_log + json.dumps(record, ensure_ascii=False) + "\n"},
+            run_id=str(old.get("run_id") or saved_identity),
+            identity=str(saved_identity),
+            environment=None,
+            keep=cfg.generation_keep,
+        )
+    if truncated:
+        print(
+            "повтор из-за обрыва: "
+            + ", ".join(sorted(truncated, key=lambda i: order.get(i, 0))),
+            flush=True,
+        )
+    if retried:
+        print(
+            "повтор инфраструктурных ошибок: "
+            + ", ".join(sorted(retried, key=lambda i: order.get(i, 0))),
+            flush=True,
+        )
     return missing, kept
 
 
@@ -1239,14 +1302,12 @@ def _truncated(transcript: core.Transcript) -> bool:
     """Was the agent killed rather than finished?
 
     The exit code is the marker: a clean ``pi`` run says ``exit_ok``, while a
-    timeout, a SIGTERM or an aborted turn leaves it false or records the error.
-    A dead-last-turn (``finish_reason`` is empty — generation never completed,
-    e.g. a transport drop or a kill between the exit marker and the record)
-    also counts: resume must replay it instead of shipping half an artefact
-    and near-zero latency.
+    timeout, a SIGTERM or an aborted turn leaves it false or records an error
+    finish reason. A dead-last-turn (``finish_reason`` is empty — generation
+    never completed, e.g. a transport drop or a kill between the exit marker
+    and the record) also counts: resume must replay it instead of shipping half
+    an artefact and near-zero latency.
     """
-    if transcript.error:
-        return True
     agent = (transcript.extra or {}).get("agent") or {}
     if agent and agent.get("exit_ok") is False:
         return True
