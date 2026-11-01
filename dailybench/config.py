@@ -202,12 +202,14 @@ class RunConfig:
     max_tool_calls: int = 12
     context_window: int = DEFAULT_CONTEXT_WINDOW
     request_timeout: float = 1800.0
-    request_wall_clock: float = 600.0
+    request_wall_clock: float = 1800.0
     """Hard ceiling per request, identical for every model.
 
     A reasoning model can generate for tens of minutes on one task; without a
     ceiling a single runaway answer holds the GPU for the whole sweep. A task
-    that hits the ceiling is reported as unverified, never as a wrong answer.
+    that hits the ceiling is ``resource_exhausted``: 0 points, the task stays
+    in the denominator, and the run remains rankable. It is not an
+    infrastructure failure and not an unverified row.
     """
 
     task_wall_clock: float = 3600.0
@@ -217,8 +219,9 @@ class RunConfig:
     turn got a fresh full budget) nor the ``stream_options`` retry (a second
     request with a fresh full budget): a task could run for hours while the
     wording read as a per-request ceiling. One absolute deadline is armed when
-    the task starts, an exhausted budget stops the loop, and the later turns
-    and the retry get only the remaining time.
+    the task starts, an exhausted budget stops the loop as
+    ``resource_exhausted`` (0 points, still in the denominator), and the later
+    turns and the retry get only the remaining time.
     """
 
     # --- suite ------------------------------------------------------------- #

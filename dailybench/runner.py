@@ -685,18 +685,17 @@ class Runner:
                     if not keep_going:
                         break
                     tools_answered = False
-                # A request started after the deadline would only be killed by
-                # its own socket timeout, so the task stops here instead and is
-                # reported unverified rather than scored on a partial answer.
+                # A request started after the deadline would only die on its
+                # own socket timeout, so the task stops here. An exhausted
+                # declared ceiling is resource_exhausted: 0 points, the task
+                # stays in the denominator — never unverified, never an outage.
                 left = task_deadline - time.monotonic()
                 if left <= 0:
                     note = f"предел времени на задание {total_wall_clock:g} с исчерпан"
                     transcript.extra.setdefault("notes", []).append(note)
                     transcript.error = note
-                    # A declared per-task ceiling is a property of the test, not
-                    # of the endpoint: the scenario is exhausted, not
-                    # unavailable, and stays in the denominator.
                     transcript.extra["failure"] = "resource_exhausted"
+                    transcript.extra["time_ceiling"] = True
                     break
                 request_budget = min(float(self.cfg.request_wall_clock or left), left)
                 size, size_source = _request_size(
@@ -912,7 +911,13 @@ class Runner:
                     transcript.extra.setdefault("wire", {}).update(partial.raw["wire"])
                 if partial.generated_tokens is None:
                     usage_missing = True
-            if getattr(exc, "infra", True):
+            kind = getattr(exc, "kind", None)
+            if kind == "resource_exhausted":
+                # The declared ceiling elapsed. Not an endpoint outage, so the
+                # run stays rankable and the points are zeroed below.
+                transcript.extra["failure"] = "resource_exhausted"
+                transcript.extra["time_ceiling"] = True
+            elif getattr(exc, "infra", True):
                 transcript.extra["infra_error"] = True
                 text = str(exc)
                 transport = any(
@@ -922,7 +927,8 @@ class Runner:
                 transcript.extra["failure_source"] = "transport" if transport else "provider"
                 transcript.extra["failure"] = "infra_failure"
             else:
-                transcript.extra["failure"] = "model_failure"
+                transcript.extra["failure"] = kind
+
         except Exception as exc:  # pragma: no cover - defensive
             transcript.error = f"{type(exc).__name__}: {exc}"
 
@@ -1119,7 +1125,19 @@ class Runner:
         score.fit_points()
         if transcript.error:
             score.error = transcript.error
-            score.failure = transcript.extra.get("failure") or "infra_failure"
+            stored = transcript.extra.get("failure")
+            if stored:
+                score.failure = stored
+            elif transcript.extra.get("usage_unconfirmed_only"):
+                # Missing usage is not an outage: the model answered, and the
+                # evaluator's outcome stands. The marker is stored on the row
+                # so a later read of the score does not look like a legacy error.
+                score.usage_unconfirmed_only = True
+            else:
+                score.failure = "infra_failure"
+            if score.failure == "resource_exhausted" and transcript.extra.get("time_ceiling"):
+                for check in score.checks:
+                    check.passed = False
             score.notes.append(f"прогон прерван: {transcript.error}")
         return score
 

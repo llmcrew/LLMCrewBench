@@ -26,18 +26,67 @@ from .core import ModelReply
 Message = dict[str, Any]
 
 
+
+# A socket armed to the ceiling can fire this far early (Windows timer slack).
+_CEILING_SLOP_S = 0.25
+
+
+class _ConnectTimeout(TimeoutError):
+    """TCP connect or TLS handshake timed out before a response existed."""
+
+
+class _HTTPConnection(http.client.HTTPConnection):
+    def connect(self) -> None:
+        try:
+            super().connect()
+        except TimeoutError as exc:
+            raise _ConnectTimeout(str(exc)) from exc
+
+
+class _HTTPSConnection(http.client.HTTPSConnection):
+    def connect(self) -> None:
+        try:
+            super().connect()
+        except TimeoutError as exc:
+            raise _ConnectTimeout(str(exc)) from exc
+
+
+class _HTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_HTTPConnection, req)
+
+
+class _HTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_HTTPSConnection, req, context=self._context)
+
+
+_OPENER = urllib.request.build_opener(_HTTPHandler(), _HTTPSHandler())
+
+
 class ProviderError(RuntimeError):
     """Transport or protocol failure — distinct from a wrong model answer.
 
-    ``infra`` is true when the endpoint itself failed (unreachable, timeout,
-    5xx/408/429) rather than the model protocol (4xx, broken terminal state).
-    The CLI ends the run with a non-zero code only when every chat request
-    failed for infrastructure reasons; a protocol failure stays a task error.
+    ``infra`` is true when the endpoint itself failed (unreachable, connection
+    reset, 5xx/408/429) rather than the model protocol (4xx, broken terminal
+    state). ``kind`` is the scoring taxonomy. A socket timeout that lands on
+    the request's declared wall-clock is ``resource_exhausted``: the model
+    spent a ceiling it was given. A reset, a refusal, or a socket timeout
+    before that ceiling stays ``infra_failure``.
     """
 
-    def __init__(self, message: str, *, infra: bool = True, partial: ModelReply | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        infra: bool = True,
+        partial: ModelReply | None = None,
+        kind: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.infra = infra
+        #: ``resource_exhausted`` only for an elapsed declared ceiling.
+        self.kind = kind if kind is not None else ("infra_failure" if infra else "model_failure")
         #: What the stream produced before it broke (text, reasoning, usage).
         #: Already paid for, so the runner records it as a turn instead of
         #: dropping it; ``finish_reason`` is ``None``.
@@ -190,6 +239,7 @@ class OpenAICompatibleProvider:
     image_probe_note: str = field(default="", repr=False)
     """Why the image probe ended the way it did; travel with the transcript."""
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _request_state: threading.local = field(default_factory=threading.local, repr=False)
 
     def probe_images(self) -> bool | None:
         """Send one tiny image part once, and cache the answer.
@@ -280,12 +330,29 @@ class OpenAICompatibleProvider:
         req.add_header("Content-Type", "application/json")
         if self.api_key and self.api_key != "not-needed":
             req.add_header("Authorization", f"Bearer {self.api_key}")
-        timeout = self.timeout
-        if deadline is not None:
-            # The socket timeout is the *remaining* budget, not the whole one:
-            # connect and the first read share the same absolute deadline.
-            timeout = min(timeout, self._left(deadline, wall_clock))
-        return urllib.request.urlopen(req, timeout=timeout)
+        timeout, armed_to_ceiling = self._socket_budget(deadline, wall_clock)
+        # Read timeouts later in this call consult the same flag. A connect
+        # timeout is retagged before it can be scored as a spent ceiling.
+        # Per-request: concurrent chats must not share one instance flag.
+        self._request_state.armed_to_ceiling = armed_to_ceiling
+        return _OPENER.open(req, timeout=timeout)
+
+    def _socket_budget(
+        self, deadline: float | None, wall_clock: float | None
+    ) -> tuple[float, bool]:
+        """Socket timeout, and whether it is the remaining ceiling.
+
+        ``left <= request_timeout`` means the socket was armed to the declared
+        ceiling. The transport's own ``request_timeout`` is a different limit
+        and must not be scored as a spent ceiling.
+        """
+        if deadline is None:
+            return self.timeout, False
+        left = self._left(deadline, wall_clock)
+        if left <= self.timeout:
+            return left, True
+        return self.timeout, False
+
 
     def _left(self, deadline: float, wall_clock: float | None, received: int = 0) -> float:
         """Remaining seconds before ``deadline``; raises once it has passed."""
@@ -293,9 +360,39 @@ class OpenAICompatibleProvider:
         if left <= 0:
             raise ProviderError(
                 f"предел времени на запрос {wall_clock or 0:g} с исчерпан "
-                f"({received} символов получено)"
+                f"({received} символов получено)",
+                kind="resource_exhausted",
             )
         return left
+
+    def _ceiling_timeout(
+        self,
+        deadline: float | None,
+        wall_clock: float | None,
+        exc: BaseException,
+    ) -> ProviderError:
+        """A post-connect timeout is the ceiling only when that ceiling was armed.
+
+        Connect and the TLS handshake never reach here: they time out before a
+        response exists and stay ``infra_failure``. A read that waits for the
+        first byte, or stalls after it, uses the ceiling rule only when the
+        socket was armed to the remaining budget rather than to
+        ``request_timeout``, and the deadline has actually elapsed.
+        """
+        if (
+            getattr(self._request_state, "armed_to_ceiling", False)
+            and deadline is not None
+            and time.monotonic() + _CEILING_SLOP_S >= deadline
+        ):
+            return ProviderError(
+                f"предел времени на запрос {wall_clock or 0:g} с исчерпан (сокет)",
+                kind="resource_exhausted",
+            )
+        return ProviderError(
+            f"сокет: таймаут до объявленного предела ({exc.__class__.__name__})",
+            kind="infra_failure",
+        )
+
 
     def _arm(self, resp: Any, deadline: float | None, wall_clock: float | None, received: int = 0) -> None:
         """Re-arm the socket for the rest of the budget before every read.
@@ -308,10 +405,13 @@ class OpenAICompatibleProvider:
         if deadline is None:
             return
         left = self._left(deadline, wall_clock, received)
+        # Re-armed to the remaining budget, not to ``request_timeout``.
+        self._request_state.armed_to_ceiling = True
         sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
         if sock is not None:
             with contextlib.suppress(OSError):
                 sock.settimeout(left)
+
 
     def list_models(self) -> list[str]:
         try:
@@ -404,7 +504,8 @@ class OpenAICompatibleProvider:
                     retry_budget = deadline - time.monotonic()
                     if retry_budget <= 0:
                         raise ProviderError(
-                            f"предел времени на запрос {wall_clock or 0:g} с исчерпан (повтор)"
+                            f"предел времени на запрос {wall_clock or 0:g} с исчерпан (повтор)",
+                            kind="resource_exhausted",
                         ) from exc
                 return self.chat(
                     messages,
@@ -420,19 +521,24 @@ class OpenAICompatibleProvider:
                 infra=exc.code >= 500 or exc.code in (408, 429),
             ) from exc
         except TimeoutError as exc:
-            # A socket timeout is the deadline, not a half-answer: it happens
-            # when the server trickles slower than the remaining budget.
-            raise ProviderError(
-                f"предел времени на запрос {wall_clock or 0:g} с исчерпан (сокет)"
-            ) from exc
+            if isinstance(exc, _ConnectTimeout):
+                raise ProviderError(
+                    f"сокет: таймаут до объявленного предела ({exc.__class__.__name__})",
+                    kind="infra_failure",
+                ) from exc
+            raise self._ceiling_timeout(deadline, wall_clock, exc) from exc
         except (ConnectionError, http.client.HTTPException) as exc:
             raise ProviderError(f"обрыв соединения: {exc.__class__.__name__}: {exc}") from exc
         except urllib.error.URLError as exc:
-            if isinstance(exc.reason, TimeoutError):
+            if isinstance(exc.reason, _ConnectTimeout):
                 raise ProviderError(
-                    f"предел времени на запрос {wall_clock or 0:g} с исчерпан (сокет)"
+                    f"сокет: таймаут до объявленного предела ({type(exc.reason).__name__})",
+                    kind="infra_failure",
                 ) from exc
+            if isinstance(exc.reason, TimeoutError):
+                raise self._ceiling_timeout(deadline, wall_clock, exc) from exc
             raise ProviderError(f"{self.base_url} unreachable: {exc}") from exc
+
         return reply
 
     def _chat_blocking(
