@@ -205,7 +205,15 @@ func TestConcurrencyLimit(t *testing.T) {
 \t\tatomic.AddInt32(&running, -1)
 \t\treturn nil
 \t})
-\tif got := drain(Process(context.Background(), jobs, workers)); got != 60 {
+\tdone := make(chan int, 1)
+\tgo func() { done <- drain(Process(context.Background(), jobs, workers)) }()
+\tvar got int
+\tselect {
+\tcase got = <-done:
+\tcase <-time.After(5 * time.Second):
+\t\tt.Fatal("output channel never closed")
+\t}
+\tif got != 60 {
 \t\tt.Fatalf("expected 60 results, got %d", got)
 \t}
 \tif peak > workers {
@@ -514,10 +522,26 @@ func TestNoGoroutinePerJob(t *testing.T) {
 \t}
 }
 
+func awaitBaseline(t *testing.T, baseline int) {
+\tt.Helper()
+\tdeadline := time.Now().Add(5 * time.Second)
+\tfor time.Now().Before(deadline) {
+\t\tif runtime.NumGoroutine() <= baseline {
+\t\t\treturn
+\t\t}
+\t\ttime.Sleep(10 * time.Millisecond)
+\t}
+\tif runtime.NumGoroutine() <= baseline {
+\t\treturn
+\t}
+\tt.Fatalf("goroutine leak: baseline %d, now %d", baseline, runtime.NumGoroutine())
+}
+
 func TestNoLeakAfterCompletion(t *testing.T) {
-\t// The output close is the pool's own completion signal: the reference
-\t// closes it only after every worker has exited. A leaked worker leaves
-\t// the channel open. NumGoroutine after a sleep is not a signal.
+\t// The output close is the pool's completion signal. A candidate that closes
+\t// it early and leaves a goroutine stuck still has to fall back to the
+\t// baseline: the poll fails only if the count is still above it at 5s.
+\tbaseline := runtime.NumGoroutine()
 \tfor iteration := 0; iteration < 5; iteration++ {
 \t\tjobs := jobsOf(40, func(ctx context.Context) error { return nil })
 \t\tdone := make(chan int, 1)
@@ -530,6 +554,7 @@ func TestNoLeakAfterCompletion(t *testing.T) {
 \t\tcase <-time.After(5 * time.Second):
 \t\t\tt.Fatalf("iteration %d: pool did not signal completion", iteration)
 \t\t}
+\t\tawaitBaseline(t, baseline)
 \t}
 }
 '''
@@ -819,6 +844,10 @@ def _gocache_dir() -> Path:
 
     ``DAILYBENCH_GOCACHE`` replaces that directory outright. The hash keeps two
     installed toolchains from sharing object files.
+
+    Trust assumption: coding candidates run as the host user. Go's build cache
+    is content-addressed, but a hostile candidate could plant entries. Isolating
+    that is the sandbox's job (Task 11), not this cache path.
     """
     override = os.environ.get("DAILYBENCH_GOCACHE")
     if override:
@@ -1128,6 +1157,7 @@ _HIDDEN_TESTS_C5 = '''package pool
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1455,11 +1485,26 @@ func TestErrorsReported(t *testing.T) {
 	}
 }
 
+func awaitBaseline(t *testing.T, baseline int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine() <= baseline {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runtime.NumGoroutine() <= baseline {
+		return
+	}
+	t.Fatalf("goroutine leak: baseline %d, now %d", baseline, runtime.NumGoroutine())
+}
+
 func TestNoGoroutineLeak(t *testing.T) {
-	// Stop's acknowledgement and the Results close are the pool's own
-	// completion signals. Results closes only after accepted jobs finish and
-	// workers exit; a leak that never signals fails here without consulting
-	// NumGoroutine or sleeping to let the runtime settle.
+	// Results closing is the pool's completion signal. After that close, a
+	// goroutine left stuck must still be gone: the poll fails only if the
+	// count is above the baseline when 5s runs out.
+	baseline := runtime.NumGoroutine()
 	for iteration := 0; iteration < 3; iteration++ {
 		p := New(context.Background(), 4, 16)
 		rows := collect(p)
@@ -1476,6 +1521,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 		if got := len(waitRows(t, rows)); got != 32 {
 			t.Fatalf("iteration %d: expected 32 results, got %d", iteration, got)
 		}
+		awaitBaseline(t, baseline)
 	}
 }
 '''

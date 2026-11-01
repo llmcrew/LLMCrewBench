@@ -715,6 +715,25 @@ def _c2_leak(reference: str) -> str:
     )
 
 
+def _c2_early_close(reference: str) -> str:
+    """Closes the output, but leaves a goroutine stuck after that close."""
+    return _replace(
+        reference,
+        "\tgo func() {\n\t\twg.Wait()\n\t\tclose(out)\n\t}()\n",
+        "\tgo func() { select {} }()\n"
+        "\tgo func() {\n\t\twg.Wait()\n\t\tclose(out)\n\t}()\n",
+    )
+
+
+def _c5_early_close(reference: str) -> str:
+    """Closes Results after the workers, but leaves a goroutine stuck."""
+    return _replace(
+        reference,
+        "\tgo p.supervise()\n",
+        "\tgo func() { select {} }()\n\tgo p.supervise()\n",
+    )
+
+
 def _c5_per_job(reference: str) -> str:
     return _replace(reference, "p.handle(job)", "go p.handle(job)")
 
@@ -767,9 +786,11 @@ def _run_hidden_go(repo: Path, *, count: int, go_timeout: str, failfast: bool) -
         ("c2", "oracle"),
         ("c2", "per_job"),
         ("c2", "leak"),
+        ("c2", "early_close"),
         ("c5", "oracle"),
         ("c5", "per_job"),
         ("c5", "leak"),
+        ("c5", "early_close"),
     ],
 )
 def test_hidden_go_checks_hold_under_gomaxprocs_1_and_count_20(tmp_path, monkeypatch, scenario, kind):
@@ -790,8 +811,10 @@ def test_hidden_go_checks_hold_under_gomaxprocs_1_and_count_20(tmp_path, monkeyp
             "oracle": task.oracle["reference"],
             "per_job": _c2_per_job(task.oracle["reference"]),
             "leak": _c2_leak(task.oracle["reference"]),
+            "early_close": _c2_early_close(task.oracle["reference"]),
         }[kind]
         bound = "no_goroutine_per_job"
+        leaked = "no_leak"
     else:
         task = coding_go.generate_c5(random.Random(1), RunConfig(profile="stretch-v1"))
         hidden = "pool_hidden_test.go"
@@ -800,8 +823,10 @@ def test_hidden_go_checks_hold_under_gomaxprocs_1_and_count_20(tmp_path, monkeyp
             "oracle": task.oracle["reference"],
             "per_job": _c5_per_job(task.oracle["reference"]),
             "leak": _c5_leak(task.oracle["reference"]),
+            "early_close": _c5_early_close(task.oracle["reference"]),
         }[kind]
         bound = "concurrency_limit"
+        leaked = "no_goroutine_leak"
     repo = _stage_hidden_go(tmp_path, task, source, hidden)
     # Mutants are expected to fail; -failfast keeps a hang from repeating.
     proc = _run_hidden_go(
@@ -819,9 +844,11 @@ def test_hidden_go_checks_hold_under_gomaxprocs_1_and_count_20(tmp_path, monkeyp
         assert not failed, failed
     elif kind == "per_job":
         assert results[bound][0] is False, results[bound]
+    elif kind == "early_close":
+        assert results[leaked][0] is False, results[leaked]
+        assert "goroutine leak" in results[leaked][1], results[leaked]
     else:
-        assert proc.returncode != 0, output[-500:]
-        assert any(not ok for ok, _ in results.values())
+        assert results[leaked][0] is False, results[leaked]
 
 
 def test_a_go_pass_event_needs_a_preceding_run_event():
