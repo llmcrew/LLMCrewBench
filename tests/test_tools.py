@@ -93,3 +93,28 @@ def test_t12_revision_build_and_effect_count_need_no_phrase_list() -> None:
     assert reference.score.earned == plain.max_points, [
         (check.name, check.detail) for check in reference.score.checks if not check.passed
     ]
+
+
+def test_two_effects_one_repeat_is_not_a_single_effect_and_the_oracle_stays_full() -> None:
+    """The count is tied to «эффект»; the oracle still reports one and scores full."""
+    task = _task("T-12", 1, "research-v1")
+    oracle = task.oracle
+    revision, build = int(oracle["release_revision"]), str(oracle["build"])
+    spoken = _finish(
+        task, f"ревизия {revision + 2}, сборка {build}, два эффекта, один повтор"
+    )
+    assert _checks(spoken)["single_effect_consistent_state"] is False
+
+    plain = _task("T-12", 1, "research-v1")
+    reference = _finish(plain, plain.oracle["final_answer"])
+    assert reference.score.earned == plain.max_points
+
+
+def test_two_places_does_not_satisfy_the_version_token() -> None:
+    """«2 места» is not a version; the token has to sit with «верс»."""
+    task = _task("T-11", 1, "stretch-v1")
+    golden = _finish(task, task.oracle["final_answer"])
+    reservation_id = _issued_reservation(golden)
+    places = _finish(task, f"2 места, {reservation_id}")
+    assert _checks(places)["fresh_version_no_stray"] is False
+
