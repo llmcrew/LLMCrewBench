@@ -33,7 +33,7 @@ help:
 	@echo "shots      показать кадры последнего прогона: make shots DIR=runs/<name>"
 
 setup:
-	$(UV) venv --python 3.12 .venv
+	@$(PY) -c "" || $(UV) venv --python 3.12 .venv
 	$(UV) pip install --python $(PY) -e ".[dev]"
 
 browser:
