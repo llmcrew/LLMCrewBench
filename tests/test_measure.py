@@ -258,6 +258,26 @@ def test_long_prompt_is_fitted_with_the_tokenizer(monkeypatch):
     assert abs(long["prompt_tokens"] - target) <= target * 0.01
 
 
+def test_unconverged_speed_prompt_is_labelled_estimate(monkeypatch):
+    """A tokenizer that never lands in tolerance is an estimate, not a measurement."""
+
+    class Stuck:
+        def chat(self, messages, tools, **kwargs):
+            return core.ModelReply(
+                text="ok", prompt_tokens=1, completion_tokens=1, ttft_s=0.1, total_s=0.2
+            )
+
+    monkeypatch.setattr(measure, "used_mib", lambda: 4)
+    monkeypatch.setattr(measure, "fit_prompt_to_tokens", lambda *a, **k: ("prompt", 100, 3.2))
+    monkeypatch.setattr(measure, "count_prompt_tokens", lambda provider, text: 100)
+    results = measure.speed_profile(
+        Stuck(), RunConfig(), short_tokens=32, long_tokens=2048, repeats=1, warmup=0,
+    )
+    assert results[1].sized == "estimate"
+
+
+
+
 def test_prefill_rate_subtracts_the_empty_prompt_ttft(monkeypatch):
     monkeypatch.setattr(measure, "used_mib", lambda: 4)
 

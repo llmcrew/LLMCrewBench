@@ -27,3 +27,27 @@ def test_run_without_generation_mode_is_unranked():
     assert unranked_reason(summary) == "режим генерации не записан"
     assert "режим генерации не записан" in summary["verdict"]
     assert "режим генерации не записан" in render_markdown(run)
+
+
+def test_speed_table_names_sizing_and_where_vram_was_measured():
+    run = {
+        "dir": ".",
+        "config": {"model": "m"},
+        "scores": [],
+        "speed": [{
+            "label": "long_32",
+            "ttft_s": 0.4,
+            "prompt_tok_s": 100.0,
+            "generation_tok_s": 40.0,
+            "vram_peak_mib": 512.0,
+            "runs": 1,
+            "sized": "estimate",
+            "measured_on": "harness_host",
+        }],
+    }
+    text = render_markdown(run)
+    assert "sized" in text
+    assert "measured_on" in text
+    assert "estimate" in text
+    assert "harness_host" in text
+
