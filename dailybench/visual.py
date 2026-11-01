@@ -753,7 +753,11 @@ def _cached_render(
         # страницу больше нельзя перерисовать (нет браузера, стенд уехал).
         stored_sha = result.shot_sha
         stored_again = result.shot_sha_again
-        if stored_again and stored_sha and stored_again != stored_sha:
+        # An entry without the second load cannot prove reproducibility:
+        # ``same_frame`` would read as False forever. Such entries were
+        # written by flows that render once (the recording pipeline); the
+        # evaluator needs the second load, so it re-renders instead.
+        if not stored_again or (stored_sha and stored_again != stored_sha):
             continue
         if result.shot:
             result.shot_sha = hashlib.sha256(result.shot).hexdigest()

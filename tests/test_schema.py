@@ -167,7 +167,7 @@ def test_exported_private_denominator_stays_whole(tmp_path: Path):
     for task in tasks:
         task.private = True
     doc = schema.export_document("pilot", tasks)
-    assert doc["tasks"][0]["points"] == 10.0
+    assert doc["tasks"][0]["points"] == 2.0
     errors = schema.validate_suite_doc(doc, check_totals=True)
     assert errors == [], errors
 

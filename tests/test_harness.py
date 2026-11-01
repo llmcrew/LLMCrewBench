@@ -3383,21 +3383,23 @@ def test_resume_flags_do_not_change_the_identity():
 
 
 def test_legacy_identity_is_unchanged_by_resume_flags():
-    from dailybench.runner import run_identity
+    from dailybench.runner import config_identity
 
+    # ``run_identity`` includes the local ``pi`` binary, so a pinned hash is
+    # only reproducible on the config half, which is where the ceiling lives.
     # A run saved before the ceiling default moved to 1800 hashed this field
     # at 600. The pin proves that measurement is unchanged; resume without
     # the flag adopts the saved value instead of rewriting it.
     legacy = RunConfig(request_wall_clock=600.0)
-    assert run_identity(legacy, "x") == "78b6c059052e84ec30b283a355e7acd75c9f419f4fa6144332fa31bf681742a4"
+    assert config_identity(legacy) == "6cb82e17c5d3d8f2908d84980f2d1e0cea73d8605a406555725ef53ff9f05a4f"
 
 
 def test_the_default_request_wall_clock_has_its_own_identity():
-    from dailybench.runner import run_identity
+    from dailybench.runner import config_identity
 
     assert RunConfig().request_wall_clock == 1800
-    assert run_identity(RunConfig(), "x") == "b792bd81f682c550ade9c8db13134d7ae1f36759fcecab5616ee9f1894751e41"
-    assert run_identity(RunConfig(), "x") != run_identity(RunConfig(request_wall_clock=600.0), "x")
+    assert config_identity(RunConfig()) == "7d06f1de6d7ba95c159af2bba74e78714d7c59841452923c1fce68d360391dd3"
+    assert config_identity(RunConfig()) != config_identity(RunConfig(request_wall_clock=600.0))
 
 
 def test_the_image_digest_is_part_of_the_run_identity():

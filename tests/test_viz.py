@@ -10,9 +10,17 @@ from __future__ import annotations
 import re
 
 import pytest
-from PIL import Image
 
 from dailybench import viz
+
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover - Pillow живёт в extras visual/vision
+    Image = None
+
+pytestmark = pytest.mark.skipif(
+    Image is None, reason="Pillow не установлен (extras visual/vision); визуальный дифф непроверяем"
+)
 
 
 def _points(svg: str) -> list[tuple[float, float]]:
@@ -228,8 +236,6 @@ def test_frames_are_decoded_under_an_explicit_pixel_cap(monkeypatch, tmp_path):
 
 
 def test_a_frame_that_does_not_fit_memory_says_no_data(monkeypatch, tmp_path):
-    from PIL import Image
-
     reference = _png(tmp_path / "ref.png")
     answer = _png(tmp_path / "ans.png", box=(5, 2, 9, 6))
     monkeypatch.setattr(Image, "open", lambda *a, **k: (_ for _ in ()).throw(MemoryError("огромный кадр")))

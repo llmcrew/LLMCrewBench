@@ -30,6 +30,8 @@ Message = dict[str, Any]
 # A socket armed to the ceiling can fire this far early (Windows timer slack).
 _CEILING_SLOP_S = 0.25
 
+# An auxiliary ``/props`` probe never deserves a long connect wait.
+_PROPS_TIMEOUT_S = 2.0
 
 class _ConnectTimeout(TimeoutError):
     """TCP connect or TLS handshake timed out before a response existed."""
@@ -309,11 +311,18 @@ class OpenAICompatibleProvider:
         ``None`` when the runtime does not expose it; the caller then reports
         the window as unverified rather than assuming the declared value.
         """
+        # A blackholed endpoint must not hold the run for a full socket
+        # timeout before the first chat: the probe is auxiliary, so it gets
+        # its own short budget and reports nothing on any failure.
+        saved = self.timeout
+        self.timeout = min(float(saved), _PROPS_TIMEOUT_S)
         try:
             with self._request(self.props_url(), None, method="GET") as response:
                 data = json.loads(response.read().decode("utf-8"))
         except Exception:
             return None
+        finally:
+            self.timeout = saved
         return data if isinstance(data, dict) else None
 
     def _request(

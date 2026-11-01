@@ -506,10 +506,7 @@ def test_drift_log_keeps_the_checkpoint_environment(
     run_dir = out / "drift-env"
     saved_manifest = _read(run_dir / "manifest.json")
     saved_config = _read(run_dir / "config.json")
-    saved_config.pop("environment", None)
-    (run_dir / "config.json").write_text(
-        json.dumps(saved_config, ensure_ascii=False), encoding="utf-8"
-    )
+    assert saved_config["environment"], "config.json обязан нести окружение для verify_environment"
 
     from dailybench import suite as suite_module
     from dailybench.cli import _resume_tasks
@@ -527,7 +524,7 @@ def test_drift_log_keeps_the_checkpoint_environment(
     cfg = RunConfig.from_dict(saved_config)
     cfg.allow_suite_drift = True
     cfg.out_dir = run_dir
-    _resume_tasks(cfg, _resume_suite(cfg, suite_for))
+    _resume_tasks(cfg, _resume_suite(cfg, suite_for), saved_manifest["environment"])
     recorded = _read(run_dir / "manifest.json")["environment"]
     assert recorded == saved_manifest["environment"]
     assert recorded
@@ -1073,8 +1070,8 @@ def test_speed_prints_both_profiles(endpoint, capsys):
     out = capsys.readouterr().out
     assert '"label": "short"' in out
     assert '"label": "long_64"' in out
-    # Warm-up (1) + repeats (2) per profile, times two profiles.
-    assert len(httpstub.chat_payloads(server)) == 6
+    # Warm-up (1) + TTFT-overhead probe (1) + repeats (2) per profile, times two.
+    assert len(httpstub.chat_payloads(server)) == 8
 
 
 def test_preflight_command_uses_a_written_reference_file(endpoint, tmp_path: Path, capsys):

@@ -28,6 +28,7 @@ RUN set -eux; \
     apt-get update; \
     apt-get install --no-install-recommends -y \
         chromium=150.0.7871.100-1~deb12u1 \
+        chromium-common=150.0.7871.100-1~deb12u1 \
         fonts-dejavu-core=2.37-6 \
         python3=3.11.2-1+b1; \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
