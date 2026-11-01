@@ -118,6 +118,31 @@ def _config(argv: list[str]) -> RunConfig:
     return _config_from(build_parser().parse_args(argv))
 
 
+def test_request_wall_clock_flag_reaches_the_config():
+    """L17: the declared ceiling is its own flag; ``--timeout`` stays the socket timeout."""
+    cfg = _config(["run", "--request-wall-clock", "17", "--timeout", "42"])
+    assert cfg.request_wall_clock == 17
+    assert cfg.request_timeout == 42
+    # ``--timeout`` must not silently become the declared ceiling.
+    untouched = _config(["run", "--timeout", "42"])
+    assert untouched.request_timeout == 42
+    assert untouched.request_wall_clock == 1800
+    import argparse
+
+    parser = cli.build_parser()
+    run = next(
+        action.choices["run"]
+        for action in parser._subparsers._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    assert "сокет" in (run._option_string_actions["--timeout"].help or "")
+
+
+def test_default_request_wall_clock_matches_the_policy():
+    """The dataclass default is the published ceiling, not the old 600 s."""
+    assert RunConfig().request_wall_clock == 1800
+
+
 def test_an_enlarged_answer_budget_raises_the_derived_total(endpoint, tmp_path: Path):
     """J-5: ``--max-new-tokens 65536`` was still cut back to 16384 tokens.
 
