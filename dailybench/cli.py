@@ -97,6 +97,9 @@ def _config_from(args: argparse.Namespace) -> RunConfig:
         retry_errors=bool(getattr(args, "retry_errors", False)),
         generation_keep=getattr(args, "generation_keep", None) or 3,
     )
+    wall_clock = getattr(args, "request_wall_clock", None)
+    if wall_clock is not None:
+        cfg.request_wall_clock = float(wall_clock)
     if args.only:
         cfg.only = tuple(part.strip() for part in args.only.split(",") if part.strip())
     if getattr(args, "max_new_tokens", None):
@@ -562,9 +565,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         # bytes of the tasks: reuse the saved numbers, or a fresh (slightly
         # different) ratio would regenerate a different suite and the merge
         # guard below would reject it.
-        restored = RunConfig.from_dict(json.loads(saved_config.read_text(encoding="utf-8")))
+        saved = json.loads(saved_config.read_text(encoding="utf-8"))
+        restored = RunConfig.from_dict(saved)
         cfg.chars_per_token = restored.chars_per_token
         cfg.task_ratios = dict(restored.task_ratios)
+        # The ceiling is part of the measurement. Omitting the flag must not
+        # apply today's default over a run saved at another value; an explicit
+        # flag still overrides, and identity then refuses the mismatch.
+        if getattr(args, "request_wall_clock", None) is None and "request_wall_clock" in saved:
+            cfg.request_wall_clock = float(saved["request_wall_clock"])
         print(
             f"калибровка взята из сохранённого config.json: {cfg.chars_per_token:.4f} символов/токен",
             flush=True,
@@ -799,6 +808,7 @@ def _bench_run_argv(args: argparse.Namespace) -> list[str]:
         ("--unsupported", args.unsupported),
         ("--config", args.config),
         ("--configs-path", args.configs_path),
+        ("--request-wall-clock", getattr(args, "request_wall_clock", None)),
     ):
         if value:
             argv += [flag, str(value)]
@@ -1380,7 +1390,18 @@ def build_parser() -> argparse.ArgumentParser:
             target.add_argument("--base-url", default="")
             target.add_argument("--model", default="")
             target.add_argument("--api-key", default="")
-            target.add_argument("--timeout", type=float, default=1800.0)
+            target.add_argument(
+                "--timeout",
+                type=float,
+                default=1800.0,
+                help="таймаут сокета в секундах (не объявленный предел запроса)",
+            )
+            target.add_argument(
+                "--request-wall-clock",
+                type=float,
+                default=None,
+                help="объявленный предел одного запроса в секундах; исчерпание — resource_exhausted",
+            )
             target.add_argument("--quant", default="", help="метка кванта для отчёта, напр. IQ4_XS")
             target.add_argument("--runtime", default="", help="runtime и версия, напр. llama.cpp b4321")
             target.add_argument("--kv-type", default="", help="формат KV-cache, напр. q8_0")
