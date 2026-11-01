@@ -13,9 +13,11 @@ throwaway container:
   an ``ls /`` cannot find a hidden test that was not handed over;
 * the container environment is an allowlist. Docker inherits nothing, so a host
   variable (``DAILYBENCH_API_KEY`` included) leaks only when it is named;
-* network is the endpoint alone: the container is put on the default bridge and
-  the only name handed to it is ``host.docker.internal``, mapped to the host
-  gateway. A loopback ``base_url`` is rewritten to that name;
+* network is the endpoint alone: a per-run ``docker network create --internal``
+  plus a forwarder that dials only that endpoint. The agent joins the internal
+  network and nothing else; HTTP is rewritten to ``http://dailybench-egress:8080``,
+  HTTPS keeps the hostname (SNI) mapped to the forwarder. The host gateway is
+  not handed to the agent;
 * an https endpoint behind the corporate interception proxy needs the host CA.
   When the host has one — named by ``SSL_CERT_FILE``/``CURL_CA_BUNDLE`` or at
   the workstation default path — it is mounted read-only at
@@ -44,6 +46,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import subprocess
+import sys
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -126,6 +129,8 @@ def supervisor() -> Any:
         if spec is None or spec.loader is None:  # pragma: no cover - broken checkout
             raise RuntimeError(f"cannot load sandbox supervisor from {_SANDBOX_SCRIPT}")
         module = importlib.util.module_from_spec(spec)
+        # dataclasses look the class up in sys.modules while the body runs.
+        sys.modules[spec.name] = module
         spec.loader.exec_module(module)
         _SUPERVISOR = module
     return _SUPERVISOR
@@ -267,18 +272,17 @@ def prepare(
 
 
 
-def endpoint_url(base_url: str, *, host: str = ENDPOINT_HOST) -> tuple[str, bool]:
-    """``(url, rewritten)`` — the URL the container can use.
+def endpoint_url(base_url: str, *, host: str = "") -> tuple[str, bool]:
+    """``(url, rewritten)`` — the URL the container dials through the forwarder.
 
-    Only a loopback endpoint is rewritten: that is the case where the host name
-    the model server listens on does not exist inside the container.
+    HTTP always becomes ``http://dailybench-egress:8080/...``: the agent sits on
+    an internal network and must not learn the real host. HTTPS keeps the
+    hostname so the certificate and SNI match; a loopback HTTPS endpoint uses
+    ``host.docker.internal`` because an IP cannot be pinned with ``--add-host``.
+    *host* overrides the HTTP alias (tests); the default is the egress name.
     """
-    parts = urlsplit(base_url)
-    if parts.hostname not in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
-        return base_url, False
-    netloc = host if parts.port is None else f"{host}:{parts.port}"
-    userinfo = parts.netloc.rsplit("@", 1)[0] + "@" if "@" in parts.netloc else ""
-    return urlunsplit((parts.scheme, userinfo + netloc, parts.path, parts.query, parts.fragment)), True
+    alias = host or supervisor().EGRESS_ALIAS
+    return supervisor().rewrite_endpoint(base_url, alias=alias)
 
 
 @dataclass
@@ -440,17 +444,22 @@ class Sandbox:
         ca = self.ca(host_env)
         self.ensure()
         sandbox_run = supervisor()
-        url, rewritten = endpoint_url(self.base_url)
-        docker_network = "bridge" if network == "endpoint" else network
+        if network == "endpoint" and self.base_url:
+            url, rewritten = endpoint_url(self.base_url)
+        else:
+            url, rewritten = self.base_url, False
         mounts = [(self.agent_dir, "/agent", False)] if self.agent_dir else []
         if ca is not None:
             mounts.append((ca, CONTAINER_CA, True))
+        # ``endpoint`` is an internal network plus a forwarder. An explicit
+        # bridge still gets the host gateway; the agent on endpoint does not.
+        gateway = bool(network) and network not in ("none", "endpoint")
         try:
             report = sandbox_run.run_sandbox(
                 self.command(argv),
                 image=self.image,
                 runtime=self.runtime,
-                network=docker_network,
+                network=network,
                 deadline=float(deadline or self.deadline),
                 cpus=self.cpus,
                 memory=self.memory,
@@ -459,9 +468,10 @@ class Sandbox:
                 workspace_writable=True,
                 extra_mounts=mounts,
                 env=self.env(host_env),
-                host_gateway=docker_network != "none",
+                host_gateway=gateway,
                 stdout_path=stdout_path,
                 stderr_path=stderr_path,
+                endpoint_url=self.base_url,
             )
         except sandbox_run.InfraError as exc:
             raise InfraError(str(exc)) from exc

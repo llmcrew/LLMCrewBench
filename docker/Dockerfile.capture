@@ -9,17 +9,28 @@ ARG DEBIAN_IMAGE=debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b
 FROM ${DEBIAN_IMAGE}
 
 ARG SOURCE_DATE_EPOCH=1700000000
+ARG DEBIAN_SNAPSHOT=20261101T082805Z
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y \
-        chromium \
-        fonts-dejavu-core \
-        python3 \
-    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+RUN set -eux; \
+    rm -f /etc/apt/sources.list; \
+    rm -rf /etc/apt/sources.list.d; \
+    mkdir -p /etc/apt/sources.list.d; \
+    printf '%s\n' \
+      "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm main" \
+      "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm-updates main" \
+      "deb http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} bookworm-security main" \
+      > /etc/apt/sources.list; \
+    printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99no-check-valid-until; \
+    apt-get update; \
+    apt-get install --no-install-recommends -y \
+        chromium=150.0.7871.100-1~deb12u1 \
+        fonts-dejavu-core=2.37-6 \
+        python3=3.11.2-1+b1; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 RUN groupadd --gid 1000 sandbox \
     && useradd --uid 1000 --gid 1000 --create-home --shell /usr/sbin/nologin sandbox \
