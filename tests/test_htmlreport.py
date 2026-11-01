@@ -884,12 +884,25 @@ def test_fixed_and_native_tables_have_distinct_headings(tmp_path: Path):
     assert "другой режим генерации: fixed / native" in page
 
 
+def test_empty_suite_headings_keep_the_generation_mode(tmp_path: Path):
+    fixed = _tier_run(tmp_path, "run-fixed", "фиксированная", 4, 4, sha="")
+    native = _tier_run(tmp_path, "run-native", "родная", 4, 4, sha="")
+    native_config = json.loads((native / "config.json").read_text(encoding="utf-8"))
+    native_config["generation_mode"] = "native"
+    (native / "config.json").write_text(json.dumps(native_config), encoding="utf-8")
+
+    page = render_html([fixed, native])
+    headings = re.findall(r"<h2>Сравнение по контракту.*?</h2>", page)
+    assert any("без контракта · fixed" in heading for heading in headings)
+    assert any("без контракта · native" in heading for heading in headings)
+
+
 def test_a_run_without_generation_mode_gets_no_place(tmp_path: Path):
     directory = _tier_run(tmp_path, "run-legacy", "старая", 1, 1, sha="sha-legacy")
     _without_generation_mode(directory)
     page = render_html([directory])
     assert "режим генерации не записан" in page
-    assert "class='rank'>—</div>" in page or "class='rank'>—</div>" in page.replace("'", '"')
+    assert "class='rank'>—</div>" in page
     assert "class='sub'> · L" not in page
 
 

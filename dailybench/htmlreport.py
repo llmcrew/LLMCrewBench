@@ -414,7 +414,7 @@ def _contract_label(contract: str) -> str:
     if not separator:
         sha, mode = contract, ""
     if not sha:
-        return "без контракта"
+        return f"без контракта · {_cell(mode) or 'режим не записан'}"
     if not mode:
         return f"<code>{_cell(sha[:16])}</code> · режим не записан"
     return f"<code>{_cell(sha[:16])}</code> · {_cell(mode)}"
