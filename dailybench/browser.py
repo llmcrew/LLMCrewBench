@@ -1084,6 +1084,37 @@ def _request_allowed(url: str, allowed: str) -> bool:
     return url.startswith("data:")
 
 
+def _await_ready(page: Any, deadline: float, timeout_ms: int) -> None:
+    """Wait for ``window.__ready``, stepping the recording clock one frame per poll.
+
+    The frame clock only moves inside ``warmup`` and page hooks, so a
+    ``setTimeout`` longer than the two-frame settle never fires while
+    ``wait_for_function`` polls a frozen clock. Each poll steps one frame,
+    then re-checks the flag, and stops at the same hook/ready budget.
+    """
+    budget_ms = _budget_ms(deadline, timeout_ms)
+    try:
+        has_clock = bool(page.evaluate("() => !!window.__recordClock"))
+    except Exception:
+        has_clock = False
+    if not has_clock:
+        page.wait_for_function("() => window.__ready === true", timeout=budget_ms)
+        return
+    end = time.monotonic() + budget_ms / 1000
+    script = (
+        "() => {"
+        " if (window.__ready === true) return true;"
+        " window.__recordClock.warmup(1);"
+        " return window.__ready === true;"
+        "}"
+    )
+    while True:
+        if page.evaluate(script):
+            return
+        if time.monotonic() >= end:
+            raise TimeoutError("window.__ready")
+
+
 def _page_pass(
     url: str,
     port: int,
@@ -1219,7 +1250,7 @@ def _page_pass(
         ready_failed = False
         try:
             _mark(STAGE_HOOK)
-            page.wait_for_function("() => window.__ready === true", timeout=_budget_ms(deadline, timeout_ms))
+            _await_ready(page, deadline, timeout_ms)
         except Exception:
             # Протокол мог не дойти: страница падает до `__ready` (L-20,
             # pageerror в конструкторе) или вовсе его не выставляет. Исключение

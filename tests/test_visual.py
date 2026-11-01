@@ -1156,6 +1156,52 @@ def test_scoring_renders_share_the_recording_clock():
     assert "dailybench.browser" in source
 
 
+_DELAYED_READY_PAGE = """<!doctype html><html><body><script>
+window.__probe = () => ({ok: true});
+window.__step = (dt) => {};
+setTimeout(() => { window.__ready = true; }, 200);
+</script></body></html>
+"""
+
+
+def test_a_page_ready_via_settimeout_keeps_its_protocol():
+    """A 200 ms setTimeout must fire under the recording clock."""
+    _skip_without_browser()
+    result = browser.render(_DELAYED_READY_PAGE, steps=1, again=False)
+    assert result.ready_ok, result.reason
+    assert result.protocol_ok
+    assert result.probe == {"ok": True}
+    assert result.step_ok
+
+
+def test_a_probeless_cache_entry_is_not_reused_as_an_inspected_frame(monkeypatch, tmp_path):
+    """Scoring stores pixels=None; visual inspect must not reuse that frame."""
+    monkeypatch.setenv(visual.CACHE_ENV, str(tmp_path))
+    calls: list[bool] = []
+
+    def fake_render(html, **kwargs):
+        probed = kwargs.get("probe", True)
+        calls.append(probed)
+        return browser.RenderResult(
+            ok=True,
+            shot=b"\\x89PNG\\r\\n\\x1a\\n",
+            pixels={"width": 8} if probed else None,
+            probe={"ok": True},
+            ready_ok=True,
+            probe_ok=True,
+            step_ok=True,
+        )
+
+    monkeypatch.setattr(browser, "render", fake_render)
+    scored, scored_hit = visual._cached_render("<html>delayed</html>", 30, 1 / 60, probe=False)
+    inspected, inspected_hit = visual._cached_render("<html>delayed</html>", 30, 1 / 60)
+    assert scored.pixels is None and not scored_hit
+    assert not inspected_hit
+    assert inspected.pixels == {"width": 8}
+    assert calls == [False, True]
+
+
+
 def test_every_varied_sample_must_move(monkeypatch):
     """A static frame whose probe moved is not rescued by another sample (L10)."""
     spec = visual.VisualSpec(
