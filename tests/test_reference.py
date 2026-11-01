@@ -227,8 +227,8 @@ def _probes(report: reference.PreflightReport) -> dict[str, reference.Probe]:
     return {probe.name: probe for probe in report.probes}
 
 
-def test_preflight_rejects_an_unreachable_endpoint():
-    entry = reference.ReferenceConfig(entry=_model(base_url="http://127.0.0.1:9/v1"))
+def test_preflight_rejects_an_unreachable_endpoint(refusing_endpoint):
+    entry = reference.ReferenceConfig(entry=_model(base_url=refusing_endpoint))
     report = reference.preflight(entry)
     assert report.verdict == "rejected" and not report.ok
     assert _probes(report)["endpoint"].status == "fail"

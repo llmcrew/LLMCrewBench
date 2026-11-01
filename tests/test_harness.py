@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import fcntl
 import hashlib
 import json
 import os
@@ -244,8 +243,8 @@ def test_the_tokenizer_cache_is_keyed_on_the_whole_text(tokenizer_endpoint):
     assert server.tokenize_calls == 2, "повтор текста берётся из кэша, а не по сети"
 
 
-def test_unreachable_endpoint_raises():
-    provider = OpenAICompatibleProvider(base_url="http://127.0.0.1:9/v1", model="x", timeout=2)
+def test_unreachable_endpoint_raises(refusing_endpoint):
+    provider = OpenAICompatibleProvider(base_url=refusing_endpoint, model="x", timeout=2)
     with pytest.raises(ProviderError):
         provider.list_models()
 
@@ -657,8 +656,7 @@ def test_a_hung_page_hook_is_killed_at_the_render_deadline():
     """
     from dailybench import browser
 
-    usable, reason = browser.availability()
-    assert usable, reason
+    _require_browser(browser)
     warm = browser.render(FAST_PAGE, timeout_ms=10_000, again=False)
     assert warm.ok, warm.reason
 
@@ -685,8 +683,7 @@ def test_a_hung_page_hook_is_killed_at_the_render_deadline():
 def test_the_next_render_works_after_a_deadline_kill():
     from dailybench import browser
 
-    usable, reason = browser.availability()
-    assert usable, reason
+    _require_browser(browser)
     browser.render(FAST_PAGE, timeout_ms=10_000, again=False)
     assert not browser.render(HUNG_HOOK_PAGE, timeout_ms=100, again=False).ok
 
@@ -709,12 +706,17 @@ console.error("fixture console error");
 NO_PROTOCOL_PAGE = """<!doctype html><canvas width="400" height="300"></canvas>"""
 
 
+def _require_browser(browser) -> None:
+    usable, reason = browser.availability()
+    if not usable:
+        pytest.skip(reason)
+
+
 def test_a_console_error_is_a_runtime_failure_not_a_dead_render():
     """M09: one ``console.error`` used to set ``ok=False`` and zero every check."""
     from dailybench import browser
 
-    usable, reason = browser.availability()
-    assert usable, reason
+    _require_browser(browser)
     result = browser.render(CONSOLE_ERROR_PAGE, again=False)
 
     assert result.ok, result.reason
@@ -731,8 +733,7 @@ def test_a_missing_protocol_is_flagged_without_killing_the_frame():
     """
     from dailybench import browser
 
-    usable, reason = browser.availability()
-    assert usable, reason
+    _require_browser(browser)
     result = browser.render(NO_PROTOCOL_PAGE, steps=3, again=False)
 
     assert result.ok, result.reason
@@ -742,18 +743,18 @@ def test_a_missing_protocol_is_flagged_without_killing_the_frame():
     assert not result.step_ok
 
 
-def test_http_and_websocket_escapes_use_one_classifier():
+def test_http_and_websocket_escapes_use_one_classifier(refusing_endpoint):
     """M09: both escapes are the same fault and must be recorded the same way."""
     from dailybench import browser
 
-    usable, reason = browser.availability()
-    assert usable, reason
+    _require_browser(browser)
 
     http_result = browser.render(
         '<!doctype html><img src="https://example.invalid/x.png">', mode="live"
     )
+    websocket = refusing_endpoint.replace("http", "ws", 1)
     ws_result = browser.render(
-        "<!doctype html><script>new WebSocket('ws://127.0.0.1:9/ch')</script>", again=False
+        f"<!doctype html><script>new WebSocket('{websocket}/ch')</script>", again=False
     )
 
     assert browser.external_kinds(http_result.external)[browser.BLOCKED_HTTP] == 1
@@ -2693,6 +2694,7 @@ def _windows_fsync(monkeypatch) -> list[int]:
 
     Directories are opened read-only on every platform and are handled apart.
     """
+    fcntl = pytest.importorskip("fcntl", reason="fcntl доступен только на POSIX")
     real = os.fsync
     calls: list[int] = []
 
@@ -2762,6 +2764,8 @@ def test_windows_skips_the_directory_fsync_and_records_it(tmp_path: Path, monkey
 def test_an_unsupported_file_fsync_degrades_with_a_marker(tmp_path: Path, monkeypatch):
     """EINVAL means the filesystem cannot flush; the commit is marked, not lost."""
     from dailybench import generation
+
+    fcntl = pytest.importorskip("fcntl", reason="fcntl доступен только на POSIX")
 
     def fsync(fd: int) -> None:
         if stat.S_ISREG(os.fstat(fd).st_mode) and not fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY:
@@ -3016,7 +3020,7 @@ def test_suite_sizing_is_measured_per_document():
         assert 0.80 * target <= measured <= 1.10 * target, (task.id, measured, target)
 
 
-def test_preflight_against_a_live_endpoint(endpoint):
+def test_preflight_against_a_live_endpoint(endpoint, refusing_endpoint):
     from dailybench import reference
 
     base_url, _ = endpoint
@@ -3053,7 +3057,7 @@ def test_preflight_against_a_live_endpoint(endpoint):
 
     # An unreachable endpoint is rejected too, with the transport error shown.
     dead = reference.ReferenceConfig(
-        entry={**entry.entry, "base_url": "http://127.0.0.1:9/v1"}
+        entry={**entry.entry, "base_url": refusing_endpoint}
     )
     assert reference.preflight(dead).verdict == "rejected"
 
@@ -4035,6 +4039,7 @@ def test_sandbox_false_asks_for_the_host_on_purpose(monkeypatch):
     assert "sandbox выключен" in record["executor_reason"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="fake pi требует POSIX-shell")
 def test_a_broken_container_falls_back_to_the_host_and_is_marked(monkeypatch, tmp_path):
     """A container that will not start must not lose the task — but must show."""
     from dailybench import agent, isolation
@@ -4100,6 +4105,8 @@ esac
 @pytest.fixture
 def sandbox_build(monkeypatch, tmp_path):
     """Fake docker whose image appears only after a build; returns (module, log)."""
+    if os.name == "nt":
+        pytest.skip("fake docker требует POSIX-shell")
     from dailybench import isolation
 
     bin_dir = tmp_path / "bin"

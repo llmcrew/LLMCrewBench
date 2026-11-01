@@ -261,7 +261,9 @@ def test_preflight_catches_clips_json_drift(tmp_path, monkeypatch):
 
 
 def test_preflight_real_tree_passes_without_decode():
-    venv = ROOT / ".venv" / "bin" / "python"
+    if not OUT.is_dir():
+        pytest.skip("клипы ещё не записаны в этом дереве")
+    venv = ROOT / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     python = str(venv) if venv.is_file() else sys.executable
     out = subprocess.run([python, str(TOOLS / "preflight.py"), "--no-decode"],
                          cwd=VIDEO, capture_output=True, text=True)

@@ -76,8 +76,8 @@ def _scored(tasks: list[core.TaskInstance]) -> list[core.TaskInstance]:
     return [task for task in tasks if task.category in core.SCORED_CATEGORIES]
 
 
-def test_baseline_is_the_frozen_published_suite():
-    tasks = build_suite(RunConfig())
+def test_baseline_is_the_frozen_published_suite(suite_for):
+    tasks = suite_for(core.DEFAULT_PROFILE)
     assert [task.id for task in tasks] == BASELINE_IDS
     assert len(_scored(tasks)) == 47
     assert sum(task.max_points for task in _scored(tasks)) == core.FULL_TOTAL == 100.0
@@ -87,7 +87,7 @@ def test_baseline_is_the_frozen_published_suite():
     assert sum(task.max_points for task in tasks if task.category == "L") == core.points_for("L") == 29.0
 
 
-def test_pilot_and_stretch_expect_the_declared_ids():
+def test_pilot_and_stretch_expect_the_declared_ids(suite_for):
     """A module override is profile-specific, and unregistered profiles fall back."""
     module = core.REGISTRY["A"]
     assert module.expected_ids_for() == module.expected_ids
@@ -101,12 +101,12 @@ def test_pilot_and_stretch_expect_the_declared_ids():
 
     # Every profile is a frozen id list: no extra scenario may slip in and no
     # declared scenario may be dropped.
-    assert [task.id for task in build_suite(RunConfig())] == BASELINE_IDS
-    assert [task.id for task in build_suite(RunConfig(profile="pilot"))] == PILOT_IDS
-    assert [task.id for task in build_suite(RunConfig(profile="stretch-v1"))] == STRETCH_IDS
+    assert [task.id for task in suite_for(core.DEFAULT_PROFILE)] == BASELINE_IDS
+    assert [task.id for task in suite_for("pilot")] == PILOT_IDS
+    assert [task.id for task in suite_for("stretch-v1")] == STRETCH_IDS
 
 
-def test_profile_category_totals_are_fixed():
+def test_profile_category_totals_are_fixed(suite_for):
     """Each profile declares its own exact category totals; none inherit by accident."""
     totals = {
         core.DEFAULT_PROFILE: {"A": 10.0, "B": 15.0, "C": 20.0, "D": 14.0, "E": 10.0,
@@ -116,7 +116,7 @@ def test_profile_category_totals_are_fixed():
         "stretch-v1": {**core.CATEGORY_POINTS, "K": 144.0, "L": 39.0},
     }
     for profile, expected in totals.items():
-        tasks = build_suite(RunConfig(profile=profile))
+        tasks = suite_for(profile)
         for key, total in expected.items():
             group = [task for task in tasks if task.category == key]
             assert _close(sum(task.max_points for task in group), total), (profile, key)
@@ -127,8 +127,8 @@ def test_profile_category_totals_are_fixed():
     assert core.SHOWCASE_POINTS["stretch-v1"] == {"K": 144.0, "L": 39.0}
 
 
-def test_stretch_redistributes_within_each_category_point_budget():
-    tasks = build_suite(RunConfig(profile="stretch-v1"))
+def test_stretch_redistributes_within_each_category_point_budget(suite_for):
+    tasks = suite_for("stretch-v1")
     assert _close(sum(task.max_points for task in _scored(tasks)), core.FULL_TOTAL)
     for key, total in core.CATEGORY_POINTS.items():
         group = [task for task in tasks if task.category == key]
@@ -142,11 +142,11 @@ def test_stretch_redistributes_within_each_category_point_budget():
     assert validate_suite(tasks, "stretch-v1") == []
 
 
-def test_a_filtered_slice_keeps_the_profile_weight():
+def test_a_filtered_slice_keeps_the_profile_weight(suite_for):
     complete = {
         (profile, task.id): task.max_points
         for profile in ("pilot", "stretch-v1")
-        for task in build_suite(RunConfig(profile=profile))
+        for task in suite_for(profile)
     }
     for profile, task_id in (("pilot", "IF-6"), ("stretch-v1", "IF-1")):
         tasks = build_suite(replace(RunConfig(profile=profile), only=(task_id,)))
@@ -206,8 +206,8 @@ def test_checks_are_fitted_into_a_redistributed_budget():
     assert all(check.points == 1.5 for check in score.checks)
 
 
-def test_a_skipped_task_keeps_zero_possible_but_reports_its_budget():
-    task = next(task for task in build_suite(RunConfig()) if task.id == "IF-1")
+def test_a_skipped_task_keeps_zero_possible_but_reports_its_budget(suite_for):
+    task = next(task for task in suite_for(core.DEFAULT_PROFILE) if task.id == "IF-1")
     run = Runner(RunConfig(unsupported=("A",)), GarbageProvider()).run_task(task)
     assert run.score.status == "skipped"
     assert run.score.possible == 0.0
@@ -388,8 +388,8 @@ RESEARCH_EXPECTED_IDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def test_research_profile_is_the_narrow_research_set():
-    tasks = build_suite(RunConfig(profile="research-v1"))
+def test_research_profile_is_the_narrow_research_set(suite_for):
+    tasks = suite_for("research-v1")
     assert [task.id for task in tasks] == RESEARCH_IDS
     assert {task.category for task in tasks} == {"A", "C", "D", "E", "F", "I", "J", "V"}
     # 71 scored points plus the 6-point VQA showcase outside the verdict.
@@ -414,28 +414,28 @@ def test_every_module_declares_the_research_id_set():
         assert core.REGISTRY[key].expected_ids_for() == core.REGISTRY[key].expected_ids, key
 
 
-def test_research_profile_leaves_the_other_profiles_alone():
-    assert [task.id for task in build_suite(RunConfig())] == BASELINE_IDS
-    assert [task.id for task in build_suite(RunConfig(profile="pilot"))] == PILOT_IDS
-    assert [task.id for task in build_suite(RunConfig(profile="stretch-v1"))] == STRETCH_IDS
-    assert _close(sum(task.max_points for task in _scored(build_suite(RunConfig()))), 100.0)
+def test_research_profile_leaves_the_other_profiles_alone(suite_for):
+    assert [task.id for task in suite_for(core.DEFAULT_PROFILE)] == BASELINE_IDS
+    assert [task.id for task in suite_for("pilot")] == PILOT_IDS
+    assert [task.id for task in suite_for("stretch-v1")] == STRETCH_IDS
+    assert _close(sum(task.max_points for task in _scored(suite_for(core.DEFAULT_PROFILE))), 100.0)
     assert _close(core.profile_total(), 100.0 + 80.0 + 29.0)
     assert _close(core.profile_total("pilot"), 100.0 + 12.0 + 29.0)
     assert _close(core.profile_total("stretch-v1"), 100.0 + 144.0 + 39.0)
     assert _close(
-        sum(task.max_points for task in build_suite(RunConfig(profile="pilot"))),
+        sum(task.max_points for task in suite_for("pilot")),
         core.profile_total("pilot"),
     )
     assert _close(
-        sum(task.max_points for task in build_suite(RunConfig(profile="stretch-v1"))),
+        sum(task.max_points for task in suite_for("stretch-v1")),
         core.profile_total("stretch-v1"),
     )
 
 
-def test_research_run_is_marked_unrankable_with_the_baseline():
+def test_research_run_is_marked_unrankable_with_the_baseline(suite_for):
     from dailybench.suite import suite_digest
 
-    tasks = build_suite(RunConfig(profile="research-v1"))
+    tasks = suite_for("research-v1")
     scores = [
         {
             "task_id": task.id,
@@ -451,7 +451,7 @@ def test_research_run_is_marked_unrankable_with_the_baseline():
     assert summary["rankable_with_baseline"] is False
     assert "не ранжируется с baseline" in summary["verdict"]
     assert summary["headline_possible"] == 71.0
-    base = summarise(scores, suite_digest(build_suite(RunConfig())))
+    base = summarise(scores, suite_digest(suite_for(core.DEFAULT_PROFILE)))
     assert base["profile"] == core.DEFAULT_PROFILE
     assert base["rankable_with_baseline"] is True
     assert "не ранжируется с baseline" not in base["verdict"]
@@ -463,7 +463,7 @@ def test_research_run_is_marked_unrankable_with_the_baseline():
                             "suite": suite_digest(tasks, "research-v1"), "scores": scores})
     assert "не ранжируется с baseline" in text
     baseline_text = render_markdown(
-        {"config": {"model": "m"}, "suite": suite_digest(build_suite(RunConfig())), "scores": scores}
+        {"config": {"model": "m"}, "suite": suite_digest(suite_for(core.DEFAULT_PROFILE)), "scores": scores}
     )
     assert "не ранжируется с baseline" not in baseline_text
 
