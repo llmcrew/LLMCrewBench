@@ -42,7 +42,7 @@ def _run(tmp_path: Path, name: str, model: str = "тест-модель") -> Pat
     (directory / "scores.json").write_text(json.dumps(scores), encoding="utf-8")
     (directory / "config.json").write_text(json.dumps({
         "model": model, "quant": "Q4", "base_url": "https://example.test/v1",
-        "context_window": 262144, "seed": 20260915,
+        "context_window": 262144, "seed": 20260915, "generation_mode": "fixed",
     }, ensure_ascii=False), encoding="utf-8")
     (directory / "suite.json").write_text(json.dumps({
         "tasks": 2, "sha256": "abc",
@@ -551,6 +551,29 @@ def test_the_header_follows_the_profile_weights(tmp_path: Path):
         assert f"потолок блока {ceiling}" in page, profile
 
 
+def test_research_showcase_is_labelled_v_not_k(tmp_path: Path):
+    from dailybench.report import load_run, render_markdown
+
+    directory = _run(tmp_path, "run-research")
+    scores = [{"task_id": "V-1", "category": "V", "earned": 1.0, "possible": 1.0, "checks": []}]
+    (directory / "scores.json").write_text(json.dumps(scores), encoding="utf-8")
+    (directory / "tasks.json").write_text("[]", encoding="utf-8")
+    config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+    config["profile"] = "research-v1"
+    (directory / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    (directory / "suite.json").write_text(json.dumps({
+        "tasks": 1, "sha256": "research", "profile": "research-v1",
+        "per_task": [{"id": "V-1", "category": "V", "max_points": 1.0}],
+    }), encoding="utf-8")
+
+    markdown = render_markdown(load_run(directory))
+    page = render_html([directory])
+    assert "VQA V" in markdown
+    assert "VQA V" in page
+    assert "Симуляции K —" not in markdown
+    assert "симуляции K:" not in page
+
+
 def test_the_visual_gallery_escapes_and_contains_imported_values(tmp_path: Path):
     """P3d: ``<b>`` must not become markup and ``../`` must not escape ``visual/``."""
     from dailybench.report import write_visual_gallery
@@ -793,7 +816,7 @@ def _tier_run(
         for index in range(1, total + 1)
     ]
     (directory / "scores.json").write_text(json.dumps(scores), encoding="utf-8")
-    (directory / "config.json").write_text(json.dumps({"model": model}), encoding="utf-8")
+    (directory / "config.json").write_text(json.dumps({"model": model, "generation_mode": "fixed"}), encoding="utf-8")
     (directory / "suite.json").write_text(json.dumps({
         "tasks": total, "sha256": sha,
         "per_task": [{"id": f"A-{i}", "category": "A", "max_points": 1.0} for i in range(1, total + 1)],
@@ -850,7 +873,7 @@ def _outcome_run(tmp_path: Path, name: str, model: str, failure: str, sha: str =
         "checks": [{"name": "answer", "passed": False, "detail": "", "points": 1.0}],
     }]
     (directory / "scores.json").write_text(json.dumps(scores), encoding="utf-8")
-    (directory / "config.json").write_text(json.dumps({"model": model}), encoding="utf-8")
+    (directory / "config.json").write_text(json.dumps({"model": model, "generation_mode": "fixed"}), encoding="utf-8")
     (directory / "suite.json").write_text(json.dumps({
         "tasks": 1, "sha256": sha,
         "per_task": [{"id": "A-1", "category": "A", "max_points": 1.0}],
@@ -924,7 +947,7 @@ def _run_with(
         for index, (category, earned, possible) in enumerate(rows)
     ]
     (directory / "scores.json").write_text(json.dumps(scores), encoding="utf-8")
-    (directory / "config.json").write_text(json.dumps({"model": model}), encoding="utf-8")
+    (directory / "config.json").write_text(json.dumps({"model": model, "generation_mode": "fixed"}), encoding="utf-8")
     (directory / "suite.json").write_text(json.dumps({
         "tasks": len(rows), "sha256": sha,
         "per_task": [{"id": score["task_id"], "category": score["category"],

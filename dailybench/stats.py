@@ -210,11 +210,11 @@ def paired_ratio_difference(
     unit per stratum redraws the same units, the interval collapses to zero
     width and ``low > 0`` would be trivially true.
     """
-    data: list[PairedUnit] = [
+    data: list[PairedUnit] = sorted(
         (str(stratum), float(left_earned), float(left_possible), float(right_earned), float(right_possible))
         for stratum, left_earned, left_possible, right_earned, right_possible in units
         if left_possible > 0 and right_possible > 0
-    ]
+    )
     strata: dict[str, list[PairedUnit]] = {}
     for unit in data:
         strata.setdefault(unit[0], []).append(unit)
@@ -236,7 +236,8 @@ def paired_ratio_difference(
     for _ in range(resamples):
         left: list[tuple[float, float]] = []
         right: list[tuple[float, float]] = []
-        for group in strata.values():
+        for stratum in sorted(strata):
+            group = strata[stratum]
             for _ in range(len(group)):
                 unit = group[rng.randrange(len(group))]
                 left.append((unit[1], unit[2]))

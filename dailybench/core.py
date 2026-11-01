@@ -40,15 +40,15 @@ PROFILES: tuple[str, ...] = (DEFAULT_PROFILE, "pilot", "stretch-v1", "research-v
 ``baseline`` is the published 47-scenario suite; ``pilot`` carries only the
 scenarios that are not admitted to the ranking yet; ``stretch`` adds tasks to
 the baseline and redistributes the same category totals inside it, so the
-A–J denominator stays 100 while ``pilot`` is read per task instead of as a
-/new total. ``research-v1`` is deliberately narrow: ten admitted research
+A–J denominator stays 100 while ``pilot`` keeps the point weights declared by
+its task modules instead of being rescaled to 100. ``research-v1`` is deliberately narrow: ten admitted research
 scenarios across seven categories plus six VQA showcases outside the
 denominator, so its scored total is 71 and it is not comparable with the
 baseline per category.
 """
 
-BASELINE_INCOMPARABLE_PROFILES = frozenset({"research-v1"})
-"""Profiles whose category set is a subset: their numbers are read on their own."""
+BASELINE_INCOMPARABLE_PROFILES = frozenset({"research-v1", "pilot"})
+"""Profiles whose category set or denominator differs: their numbers are read on their own."""
 
 
 def comparable_with_baseline(profile: str = DEFAULT_PROFILE) -> bool:
@@ -156,8 +156,14 @@ ASSET_SIZE: tuple[int, int] = (768, 512)
 ASSET_MEDIA_TYPES: tuple[str, ...] = ("image/png",)
 """Media types a fixture may present. PNG only: preprocessing is fixed."""
 
+PILOT_CATEGORY_POINTS: dict[str, float] = {
+    "A": 2.0, "B": 1.0, "C": 8.0, "D": 2.0, "E": 2.0,
+    "F": 8.0, "G": 2.0, "H": 4.0, "I": 2.0, "J": 2.0,
+}
+"""Frozen module weights of the pilot wave; unlike other profiles they are not redistributed."""
+
+
 PROFILE_POINTS: dict[str, dict[str, float]] = {
-    "pilot": dict(CATEGORY_POINTS),
     "stretch-v1": dict(CATEGORY_POINTS),
     # Only the seven categories the research wave reaches exist in this profile;
     # B, G and H have no scenario at all, so their totals are absent rather than
@@ -166,20 +172,20 @@ PROFILE_POINTS: dict[str, dict[str, float]] = {
 }
 """Category totals per profile where they differ from the baseline.
 
-``pilot`` carries a single admitted scenario per category, so the full category
-total rides on that one task; ``stretch`` keeps the A–J total at 100 and only
-enlarges the visual showcase (see ``SHOWCASE_POINTS``); ``research-v1`` names
-only the categories it carries and so drops the rest from its denominator. The
-totals are distributed evenly over the tasks of the profile by
-``suite.build_suite``, so the denominator stays independent of how many new
-scenarios a category received.
+``pilot`` deliberately stays out: its module weights live in
+``PILOT_CATEGORY_POINTS`` and ``suite.build_suite`` leaves them untouched.
+``stretch`` keeps the A–J total at 100 and only enlarges the visual showcase
+(see ``SHOWCASE_POINTS``); ``research-v1`` names only the categories it carries
+and so drops the rest from its denominator. These totals are distributed
+evenly over the tasks of the profile by ``suite.build_suite``, so the
+denominator stays independent of how many new scenarios a category received.
 """
 
 
 #: Bumped whenever the evaluator contract changes: the meaning of a check, the
 #: shape of ``Score.checks``, or how points map to checks. The suite digest
 #: folds it in, so a resume can never mix scores produced under two contracts.
-EVALUATOR_CONTRACT = 3
+EVALUATOR_CONTRACT = 4
 
 #: Complete outcome dictionary of the measurement protocol. ``success`` and
 #: ``model_failure`` are quiet outcomes: they carry no ``Score.failure`` and are
@@ -305,6 +311,10 @@ def points_for(key: str, profile: str = DEFAULT_PROFILE) -> float | None:
     showcase) or drop categories from its set entirely (``research-v1``); the
     baseline constants stay untouched.
     """
+    if profile == "pilot":
+        if key in PILOT_CATEGORY_POINTS:
+            return PILOT_CATEGORY_POINTS[key]
+        return showcase_points(profile).get(key)
     override = PROFILE_POINTS.get(profile)
     if override is not None:
         if key in override:
@@ -314,7 +324,7 @@ def points_for(key: str, profile: str = DEFAULT_PROFILE) -> float | None:
         return showcase_points(profile).get(key)
     if key in CATEGORY_POINTS:
         return CATEGORY_POINTS[key]
-    return SHOWCASE_POINTS[DEFAULT_PROFILE].get(key)
+    return showcase_points(profile).get(key)
 
 
 def scored_total(profile: str = DEFAULT_PROFILE) -> float:
