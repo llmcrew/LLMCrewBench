@@ -108,7 +108,10 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    user: "1000:1000"
+      - seccomp=${SECCOMP_PROFILE:-./seccomp.json}
+    cpus: "0.5"
+    mem_limit: 128m
+    memswap_limit: 128m
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=16m,mode=1777
     volumes:

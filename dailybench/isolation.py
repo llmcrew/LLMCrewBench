@@ -52,12 +52,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
 from . import generation
 
-#: Host docker alias the endpoint is reached by from inside the container.
-ENDPOINT_HOST = "host.docker.internal"
 
 #: The only host variables copied into the container. ``DAILYBENCH_API_KEY`` is
 #: deliberately absent: the key already reaches the agent through its config

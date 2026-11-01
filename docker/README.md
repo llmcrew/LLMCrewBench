@@ -11,7 +11,7 @@ contract in [`docs/FRAMEWORK_SPEC.md`](../docs/FRAMEWORK_SPEC.md) §6:
 | syscalls | `seccomp.json`, `defaultAction: SCMP_ACT_ERRNO` + `defaultErrnoRet: 38` (ENOSYS) with an allow-list |
 | processes | `pids.max = 256`, `--init` reaper |
 | CPU / memory / IO | cgroups v2 `cpu.max`, `memory.max`, `memory.swap.max=0`, `io.max` |
-| network | `none` for the runner and capture; an agent run uses a per-run `--internal` network plus `egress_forward.py`, which dials only the configured endpoint. The agent joins that network alone (`http://dailybench-egress:8080`, or the original hostname pinned to the forwarder for HTTPS/SNI). The host gateway is not given to the agent |
+| network | `none` for the runner and capture; an agent run uses a per-run `--internal` network plus `egress_forward.py`, which dials only the configured endpoint. The agent joins that network alone (`http://dailybench-egress:8080`, or the original hostname pinned to the forwarder for HTTPS/SNI). A loopback HTTPS endpoint is reached with SNI `host.docker.internal`, so its certificate must carry that name. The host gateway is not given to the agent |
 | time | absolute deadline, the whole process tree gets `SIGKILL` (`taskkill /T /F` on Windows) |
 
 `timeout` and `OOM` exhaust a declared ceiling and map to `resource_exhausted`
