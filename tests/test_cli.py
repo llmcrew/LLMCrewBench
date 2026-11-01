@@ -236,6 +236,7 @@ def test_resume_replays_a_task_whose_agent_died(endpoint, tmp_path: Path, suite_
     saved = _read(out / "cut" / "tasks.json")
     assert len(saved) == 2
     saved[1]["transcript"]["error"] = "агент завершился с кодом 143"
+    saved[1]["transcript"].setdefault("extra", {})["agent"] = {"exit_ok": False}
     (out / "cut" / "tasks.json").write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
 
     from dailybench.cli import _resume_tasks
@@ -270,6 +271,108 @@ def test_resume_replays_a_task_killed_mid_generation(endpoint, tmp_path: Path, s
     missing, kept = _resume_tasks(cfg, _resume_suite(cfg, suite_for))
     assert [task.id for task in missing] == ["IF-2"], "убитая посреди генерации задача обязана уйти в повтор"
     assert [run.task.id for run in kept] == ["IF-1"]
+
+
+def test_drift_keeps_rows_whose_task_digest_is_unchanged(
+    endpoint, tmp_path: Path, monkeypatch, suite_for
+):
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(
+        base_url, out, "--only", "IF-1,IF-2,IF-3", "--name", "drift", "--no-html"
+    ) == 0
+    run_dir = out / "drift"
+    saved_config = _read(run_dir / "config.json")
+    saved_suite = _read(run_dir / "suite.json")
+
+    from dailybench import suite as suite_module
+    from dailybench.cli import _resume_tasks
+
+    real_build = suite_module.build_suite
+
+    def changed_prompt(cfg):
+        tasks = real_build(cfg)
+        for task in tasks:
+            if task.id == "IF-2":
+                task.prompt += "\nизменено"
+        return tasks
+
+    monkeypatch.setattr(suite_module, "build_suite", changed_prompt)
+    cfg = RunConfig.from_dict(saved_config)
+    cfg.allow_suite_drift = True
+    missing, kept = _resume_tasks(cfg, _resume_suite(cfg, suite_for))
+
+    assert [task.id for task in missing] == ["IF-2"]
+    assert [run.task.id for run in kept] == ["IF-1", "IF-3"]
+    lines = (run_dir / "resume_log.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["rerun"] == ["IF-2"]
+    assert record["old_suite_sha256"] == saved_suite["sha256"]
+    assert record["new_suite_sha256"] != saved_suite["sha256"]
+    assert record["old_identity"] == saved_config["identity"]
+    assert record["new_identity"] != saved_config["identity"]
+    manifest = _read(run_dir / "manifest.json")
+    assert "resume_log.jsonl" in manifest["files"]
+
+
+def test_drift_without_the_flag_still_refuses(endpoint, tmp_path: Path, monkeypatch, suite_for):
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1", "--name", "drift-refused", "--no-html") == 0
+    run_dir = out / "drift-refused"
+
+    from dailybench import suite as suite_module
+    from dailybench.cli import _resume_tasks
+
+    real_build = suite_module.build_suite
+
+    def changed_prompt(cfg):
+        tasks = real_build(cfg)
+        for task in tasks:
+            if task.id == "IF-1":
+                task.prompt += "\nизменено"
+        return tasks
+
+    monkeypatch.setattr(suite_module, "build_suite", changed_prompt)
+    cfg = RunConfig.from_dict(_read(run_dir / "config.json"))
+    with pytest.raises(SystemExit, match="разошёлся"):
+        _resume_tasks(cfg, _resume_suite(cfg, suite_for))
+    assert not (run_dir / "resume_log.jsonl").exists()
+
+
+def test_completed_error_rows_are_kept_without_retry_errors(
+    endpoint, tmp_path: Path, capsys, suite_for
+):
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1,IF-2", "--name", "retry", "--no-html") == 0
+    run_dir = out / "retry"
+    saved = _read(run_dir / "tasks.json")
+    for entry, failure in zip(saved, ("infra_failure", "resource_exhausted")):
+        entry["transcript"]["error"] = "предупреждение после завершённого ответа"
+        entry["transcript"].setdefault("extra", {})["agent"] = {"exit_ok": True}
+        entry["transcript"]["turns"][-1]["reply"]["finish_reason"] = "stop"
+        entry["score"]["error"] = "завершённый ответ с ошибкой"
+        entry["score"]["failure"] = failure
+    (run_dir / "tasks.json").write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+
+    from dailybench.cli import _resume_tasks
+
+    cfg = RunConfig.from_dict(_read(run_dir / "config.json"))
+    missing, kept = _resume_tasks(cfg, _resume_suite(cfg, suite_for))
+    assert missing == []
+    assert [run.task.id for run in kept] == ["IF-1", "IF-2"]
+
+    cfg.retry_errors = True
+    missing, kept = _resume_tasks(cfg, _resume_suite(cfg, suite_for))
+    assert [task.id for task in missing] == ["IF-1"]
+    assert [run.task.id for run in kept] == ["IF-2"]
+    messages = [
+        line for line in capsys.readouterr().out.splitlines()
+        if line.startswith("повтор из-за обрыва:")
+    ]
+    assert messages == ["повтор из-за обрыва: IF-1"]
 
 
 def test_resume_rebuilds_from_transcripts_when_tasks_json_is_corrupt(endpoint, tmp_path: Path, suite_for):
