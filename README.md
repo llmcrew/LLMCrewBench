@@ -438,6 +438,10 @@ cannot verify instead of guessing — and extends the agent's `PATH` with the
 toolchain it did find, so the agent is not measured on worse information than the
 evaluator.
 
+The BigCodeBench adapter's `--evaluate-cmd` is split POSIX-style (`shlex.split`).
+On Windows, quote paths that contain spaces.
+
+
 ## What stays local (endpoints, keys, machine paths)
 
 The repository is public; the measurement machine is not. Nothing machine-specific
