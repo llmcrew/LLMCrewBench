@@ -405,7 +405,19 @@ def _contract_key(run: dict[str, Any]) -> str:
 
 
 def _contract_label(contract: str) -> str:
-    return f"<code>{_cell(contract[:16])}</code>" if contract else "без контракта"
+    """Show the suite prefix apart from the generation mode.
+
+    The key is ``sha:mode`` and is never empty, so a 16-character slice used to
+    hide the mode and leave the «без контракта» branch dead.
+    """
+    sha, separator, mode = contract.rpartition(":")
+    if not separator:
+        sha, mode = contract, ""
+    if not sha:
+        return "без контракта"
+    if not mode:
+        return f"<code>{_cell(sha[:16])}</code> · режим не записан"
+    return f"<code>{_cell(sha[:16])}</code> · {_cell(mode)}"
 
 
 def _rank_key(pair: tuple[dict[str, Any], dict[str, Any]]) -> tuple[bool, float]:
@@ -494,7 +506,7 @@ def _coverage_block(runs: list[dict[str, Any]]) -> str:
         for run in runs
     )
     note = (
-        f"<p class='hint warn'>{len(contract)} разных контракта сьюта: таблицы ниже раздельные, "
+        f"<p class='hint warn'>{len(contract)} разных контракта (сьют или режим генерации): таблицы ниже раздельные, "
         "общий ранг между ними не выставляется.</p>"
         if len(contract) > 1
         else ""
@@ -616,7 +628,7 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_
             f"{ci_line}"
             f"{f'<div class=\'sub verdict\'>{_cell(_caveat(summary))}</div>' if _caveat(summary) else ''}"
             f"{_failure_badges(summary)}"
-            f"<div class='sub'>{showcase_text} · L — оценка человеком · "
+            f"<div class='sub'>{showcase_text + ' · ' if showcase_text else ''}L — оценка человеком · "
             f"заданий с потерей: <b>{failed}</b> (нулевых {zero})</div>"
             f"<div class='sub'>категории с потерей: {_cell(', '.join(failed_cats) or 'нет')}</div>"
             f"<div class='sub spend'>токенов: <b>{_kv(spend['total'])}</b>{_spend_note(spend)}"
@@ -650,7 +662,10 @@ def _comparison_block(runs: list[dict[str, Any]]) -> str:
     sensitivities = []
     for run, summary in summaries[1:]:
         comparison = compare_summaries(
-            base, summary, same_contract=_contract_key(run) == base_contract
+            base, summary,
+            same_contract=_contract_key(run) == base_contract,
+            left_key=base_contract,
+            right_key=_contract_key(run),
         )
         overall = comparison["overall"]
         band = overall["delta_ci95"]

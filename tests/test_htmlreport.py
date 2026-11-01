@@ -863,6 +863,37 @@ def test_different_suite_contracts_get_separate_tables(tmp_path: Path):
     assert "2 разных контракта" in page
 
 
+def _without_generation_mode(directory: Path) -> None:
+    config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+    config.pop("generation_mode", None)
+    (directory / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+
+def test_fixed_and_native_tables_have_distinct_headings(tmp_path: Path):
+    sha = "a" * 64
+    fixed = _tier_run(tmp_path, "run-fixed", "фиксированная", 4, 4, sha=sha)
+    native = _tier_run(tmp_path, "run-native", "родная", 4, 4, sha=sha)
+    native_config = json.loads((native / "config.json").read_text(encoding="utf-8"))
+    native_config["generation_mode"] = "native"
+    (native / "config.json").write_text(json.dumps(native_config), encoding="utf-8")
+
+    page = render_html([fixed, native])
+    headings = re.findall(r"<h2>Сравнение по контракту.*?</h2>", page)
+    assert any("fixed" in heading for heading in headings)
+    assert any("native" in heading for heading in headings)
+    assert "другой режим генерации: fixed / native" in page
+
+
+def test_a_run_without_generation_mode_gets_no_place(tmp_path: Path):
+    directory = _tier_run(tmp_path, "run-legacy", "старая", 1, 1, sha="sha-legacy")
+    _without_generation_mode(directory)
+    page = render_html([directory])
+    assert "режим генерации не записан" in page
+    assert "class='rank'>—</div>" in page or "class='rank'>—</div>" in page.replace("'", '"')
+    assert "class='sub'> · L" not in page
+
+
+
 def _outcome_run(tmp_path: Path, name: str, model: str, failure: str, sha: str = "sha-outcome") -> Path:
     """A one-task run whose only task carries a stored outcome kind."""
     directory = tmp_path / name

@@ -160,7 +160,11 @@ PILOT_CATEGORY_POINTS: dict[str, float] = {
     "A": 2.0, "B": 1.0, "C": 8.0, "D": 2.0, "E": 2.0,
     "F": 8.0, "G": 2.0, "H": 4.0, "I": 2.0, "J": 2.0,
 }
-"""Frozen module weights of the pilot wave; unlike other profiles they are not redistributed."""
+"""Frozen module weights of the pilot wave; unlike other profiles they are not redistributed.
+
+This is a protocol table, not a live sum. ``test_pilot_keeps_module_weights``
+guards it against the weights the task modules declare.
+"""
 
 
 PROFILE_POINTS: dict[str, dict[str, float]] = {

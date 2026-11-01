@@ -6,7 +6,13 @@ import pytest
 
 from dailybench import stats
 from dailybench import report
-from dailybench.report import compare_summaries, summarise
+from dailybench.report import compare_summaries
+from dailybench.report import summarise as _summarise
+
+
+def summarise(scores, suite_tasks=None, generation_mode="fixed"):
+    """Synthetic rows record a mode; an omitted production call does not."""
+    return _summarise(scores, suite_tasks, generation_mode)
 
 
 def _scores(category: str, earned: list[float], possible: float = 10.0) -> list[dict[str, object]]:
