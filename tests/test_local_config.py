@@ -57,7 +57,7 @@ def test_absolute_paths_live_only_in_the_reference_table():
             continue
         if any(part.endswith(".egg-info") for part in path.parts):
             continue
-        relative = str(path.relative_to(ROOT))
+        relative = path.relative_to(ROOT).as_posix()
         if relative in ALLOWED_PATH_HOLDERS:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
