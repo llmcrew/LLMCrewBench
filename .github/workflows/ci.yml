@@ -65,7 +65,9 @@ jobs:
       - name: uv
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
       - name: Install
-        run: uv sync --locked --extra dev
+        # visual/vision: research-v1 строит VQA-фикстуры (Pillow) и K-блок
+        # рендерится в headless Chromium — dev-only падает на collection.
+        run: uv sync --locked --extra dev --extra visual --extra vision
       - name: Run the suite
         if: runner.os != 'Windows'
         run: uv run --no-sync python -m pytest tests
