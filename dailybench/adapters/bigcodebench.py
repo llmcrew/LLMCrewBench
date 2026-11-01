@@ -523,7 +523,7 @@ def score(
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         bundle["reason"] = f"scorer не запустился: {exc}"
