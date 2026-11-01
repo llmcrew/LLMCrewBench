@@ -318,7 +318,7 @@ def _fit_speed_prompt(
         actual = count_prompt_tokens(provider, prompt)
     if actual is None:
         return synthetic_prompt(tokens, nonce=nonce), "estimate", None
-    return prompt, "tokenizer", actual
+    return prompt, "estimate", actual
 
 
 def _prefill_tok_s(tokens: float, ttft: float | None, overhead: float | None) -> float | None:

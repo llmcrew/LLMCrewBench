@@ -1102,12 +1102,15 @@ def render_markdown(run: dict[str, Any]) -> str:
     if speed:
         lines.append("## Скорость и память (без баллов качества)")
         lines.append("")
-        lines.append("| Профиль | TTFT, с | Prompt tok/s | Generation tok/s | Пик VRAM, MiB | Повторов |")
-        lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
+        lines.append(
+            "| Профиль | TTFT, с | Prompt tok/s | Generation tok/s | Пик VRAM, MiB | Повторов | sized | measured_on |"
+        )
+        lines.append("| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |")
         for row in speed:
             lines.append(
                 f"| {row.get('label')} | {_fmt(row.get('ttft_s'))} | {_fmt(row.get('prompt_tok_s'), 1)} | "
-                f"{_fmt(row.get('generation_tok_s'), 1)} | {row.get('vram_peak_mib', 'n/a')} | {row.get('runs')} |"
+                f"{_fmt(row.get('generation_tok_s'), 1)} | {row.get('vram_peak_mib', 'n/a')} | {row.get('runs')} | "
+                f"{row.get('sized') or 'n/a'} | {row.get('measured_on') or 'n/a'} |"
             )
         lines.append("")
     return "\n".join(lines)
