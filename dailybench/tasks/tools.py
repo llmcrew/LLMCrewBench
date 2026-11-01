@@ -1713,8 +1713,9 @@ def _t11(rng: random.Random) -> core.TaskInstance:
         },
         {"name": "booking_state", "arguments": {"slot": slot}},
     ]
+    reservation_id = f"r-{reservation_base + 1}"
     final_answer = (
-        f"Зарезервировано {request} места на {slot}: одна резервация, остаток {seats_free - request}. "
+        f"Зарезервировано {request} места на {slot}: одна резервация {reservation_id}, остаток {seats_free - request}. "
         f"Повтор с ключом {key} прошёл без списания, версия слота {version + 1}; "
         f"отмена {cancelled_id} на {other_slot} остаток не меняет."
     )
@@ -1814,7 +1815,7 @@ def _t12(rng: random.Random) -> core.TaskInstance:
     ]
     final_answer = (
         f"Hotfix поднял ревизию канала {channel} до {revision + 1}, кэш отставал на {revision} — "
-        f"перечитал состояние с refresh. Публикация {build} ответила timeout, но эффект записан: "
+        f"перечитал состояние с refresh. Публикация {build} ответила timeout, но записан один эффект: "
         f"итоговая ревизия {revision + 2}, в журнале одна строка, повтор не потребовался."
     )
     assert len(golden) <= 8
@@ -1949,6 +1950,31 @@ def _only_change(changes: dict[str, list[tuple[str, str]]], path: str, before_li
     if removed != [before_line] or added != [after_line]:
         return False, f"diff строк: удалено {removed}, добавлено {added}"
     return True, "ok"
+
+
+def _own_token(text: str, token: str) -> bool:
+    # Граница не только по \b: «b-1» не должен засчитываться как токен «1».
+    return re.search(rf"(?<![\w-]){re.escape(token)}(?![\w-])", text or "") is not None
+
+
+def _reports_one_effect(text: str, build: str) -> bool:
+    """The count has to sit with «эффект», not merely appear in the sentence."""
+    masked = (text or "").replace(build, " ")
+    tied = (
+        r"эффект\w*[\s:.\-–—]+(?:1|один|одна|одно)(?![\w-])"
+        r"|(?<![\w-])(?:1|один|одна|одно)[\s:.\-–—]+эффект"
+    )
+    return re.search(tied, masked, re.IGNORECASE) is not None
+
+
+def _near_word(text: str, word: str, token: str, window: int = 24) -> bool:
+    """True when ``token`` sits within ``window`` non-digits of ``word``, either order."""
+    if not text or not token:
+        return False
+    escaped, stem = re.escape(token), re.escape(word)
+    forward = rf"{stem}\w*\D{{0,{window}}}(?<![\w-]){escaped}(?![\w-])"
+    reverse = rf"(?<![\w-]){escaped}(?![\w-])\D{{0,{window}}}{stem}"
+    return re.search(f"{forward}|{reverse}", text) is not None
 
 
 def _text_has_all(value: str, needles: list[str]) -> bool:
@@ -2704,16 +2730,18 @@ def _eval_t11(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
 
     stray = [line for line in new_lines if not line.startswith(f"create {slot} ")]
     expected_version = oracle["slot_version"] + 1
+    reservation_id = f"r-{int(oracle['reservation_base']) + 1}"
     version_ok = (
         seen_version == expected_version
-        and _text_has_all(tr.final_text, ["остаток", "верси"])
-        and re.search(rf"верс\w*[^\d]{{0,12}}{expected_version}\b", tr.final_text, re.IGNORECASE) is not None
+        and _near_word(tr.final_text, "верс", str(expected_version))
+        and _own_token(tr.final_text, reservation_id)
     )
     score.add(
         "fresh_version_no_stray",
         version_ok and not stray,
         0.5,
         f"последнее чтение состояния дало версию {seen_version} (нужна {expected_version}), "
+        f"в ответе нужны версия {expected_version} отдельным токеном и id {reservation_id}; "
         f"лишние записи: {stray or 'нет'}; 0.5 — ответ по актуальной версии без лишнего эффекта",
     )
     return score
@@ -2811,8 +2839,9 @@ def _eval_t12(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
         and final_build == build
         and len(commits) == 1
         and resolved
-        and _text_has_all(answer, [str(revision + 2)])
-        and _text_has_any(answer, ["без повтор", "не потребовался", "не повторял", "повтор не"])
+        and _own_token(answer, str(revision + 2))
+        and _own_token(answer, build)
+        and _reports_one_effect(answer, build)
     )
     score.add(
         "single_effect_consistent_state",
@@ -2821,7 +2850,7 @@ def _eval_t12(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
         f"timeout@{timeout_index}, чтение после него: {'да' if resolved else 'нет'}; "
         f"новых строк с {build}: {effects} (нужна 1), commit-вызовов {len(commits)} (нужен 1), "
         f"ревизия {final_revision} (нужна {revision + 2}), deployed {final_build} (нужна {build}); "
-        "1.0 — эффект один и состояние сошлось с журналом",
+        "1.0 — эффект один, ответ называет ревизию, сборку и один эффект",
     )
 
     cap = int(oracle.get("call_budget", 8))

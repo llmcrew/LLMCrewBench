@@ -11,12 +11,12 @@ contract in [`docs/FRAMEWORK_SPEC.md`](../docs/FRAMEWORK_SPEC.md) §6:
 | syscalls | `seccomp.json`, `defaultAction: SCMP_ACT_ERRNO` + `defaultErrnoRet: 38` (ENOSYS) with an allow-list |
 | processes | `pids.max = 256`, `--init` reaper |
 | CPU / memory / IO | cgroups v2 `cpu.max`, `memory.max`, `memory.swap.max=0`, `io.max` |
-| network | `none` for the runner and capture; an agent run keeps the default bridge and is handed `host.docker.internal` as the only host name — it still reaches every host port and the daemon's DNS resolver, so "only its endpoint" is a convention, not an enforced boundary |
-| time | absolute deadline, the whole process tree gets `SIGKILL` |
+| network | `none` for the runner and capture; an agent run uses a per-run `--internal` network plus `egress_forward.py`, which dials only the configured endpoint. The agent joins that network alone (`http://dailybench-egress:8080`, or the original hostname pinned to the forwarder for HTTPS/SNI). A loopback HTTPS endpoint is reached with SNI `host.docker.internal`, so its certificate must carry that name. The host gateway is not given to the agent |
+| time | absolute deadline, the whole process tree gets `SIGKILL` (`taskkill /T /F` on Windows) |
 
-`OOM`, `timeout` and `infra_error` (daemon/CLI failure, unreadable container
-state) are infrastructure statuses (`evaluator_unavailable`), never a zero
-score for the model.
+`timeout` and `OOM` exhaust a declared ceiling and map to `resource_exhausted`
+(same as the agent), not a zero that looks like the model. `infra_error`
+(daemon/CLI failure, unreadable container state) is `evaluator_failure`.
 
 ## Images
 
@@ -24,10 +24,10 @@ Both bases are pinned by digest (`latest` is rejected at run time):
 
 | Image | Base |
 |---|---|
-| `docker/Dockerfile.agent` (default) | `python:3.12-slim@sha256:2259debd…` + pinned `pi` from `node:22-bookworm-slim` |
-| `docker/Dockerfile.python` | `python:3.12-slim@sha256:2259debd…` |
-| `docker/Dockerfile.capture` | `debian:bookworm-slim@sha256:7ff6ba31…` |
-| `docker/Dockerfile.judge` | `python:3.12-slim@sha256:2259debd…` (stdlib only; `/app` and `/store` are mounts) |
+| `docker/Dockerfile.agent` (default) | `python:3.12-slim@sha256:2259debd…` + pinned `pi` from `node:22-bookworm-slim@sha256:4b150b48…`; apt from `snapshot.debian.org/archive/debian/20261101T082805Z` (trixie) with pinned versions |
+| `docker/Dockerfile.python` | `python:3.12-slim@sha256:2259debd…`; apt sources frozen to the same snapshot |
+| `docker/Dockerfile.capture` | `debian:bookworm-slim@sha256:7ff6ba31…`; apt from the same snapshot timestamp (bookworm), versions pinned |
+| `docker/Dockerfile.judge` | `python:3.12-slim@sha256:2259debd…`; `ca-certificates` pinned from the trixie snapshot |
 
 ```bash
 # local build, pinned default base
@@ -102,12 +102,13 @@ Useful flags:
 | Flag | Default | Meaning |
 |---|---|---|
 | `--runtime runsc\|runc` | `runc` | `runsc` refuses to start with a clear message when gVisor is not registered |
-| `--network none\|bridge\|<name>` | `none` | runner stays on `none` |
+| `--network none\|bridge\|endpoint\|<name>` | `none` | `endpoint` is a per-run internal network plus the forwarder; pass `--endpoint URL` |
+| `--endpoint URL` | – | the only host:port the forwarder dials when `--network endpoint` |
 | `--deadline SECONDS` | `600` | absolute wall-clock deadline |
 | `--cpus`, `--memory`, `--pids-limit` | `2`, `2g`, `256` | cgroup v2 limits |
 | `--workspace-rw` | off | let the command write the task directory |
 | `--env NAME=VALUE` | – | one allowlisted container variable; Docker inherits nothing, so this list *is* the container environment |
-| `--host-gateway` | off | add `host.docker.internal` → host gateway (an endpoint on the host's loopback) |
+| `--host-gateway` | off | add `host.docker.internal` → host gateway on an explicit bridge. Not used for `endpoint` |
 | `--report PATH` | – | also write the JSON report to `PATH` |
 | `--allow-latest` | off | permit a tag without a digest |
 
@@ -208,11 +209,12 @@ manifests of an earlier run.  On hosts without that device, drop the
 reference shape of the controls; the supervisor script is what enforces
 per-task deadlines and `SIGKILL`.
 
-The judge is the only networked service.  It can reach any port on the host
-and the daemon's DNS resolver; keep the model endpoint on the host as
-`host.docker.internal` (published by `extra_hosts`).  If the endpoint needs to
-be reachable and nothing else, attach an egress-restricted network or a proxy
-yourself — Docker's default bridge does not restrict it.
+The judge is on `dailybench-internal` and reaches the endpoint only through
+the `egress` service (`http://dailybench-egress:8080`). That forwarder also
+joins the non-internal `egress-out` network so it can dial
+`${ENDPOINT_HOST}:${ENDPOINT_PORT}` and nothing else. The supervisor does the
+same split with `docker network connect bridge` for a per-run network. Do not
+put the judge or the agent on the default bridge.
 
 ## Tests
 

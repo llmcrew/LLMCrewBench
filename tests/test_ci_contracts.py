@@ -76,6 +76,30 @@ def test_matrix_covers_linux_and_macos():
     assert any(os.startswith("macos") for os in systems), systems
 
 
+def test_ci_actions_are_pinned_by_sha():
+    lines = [line.strip() for line in _text().splitlines() if "uses:" in line]
+    assert lines
+    for line in lines:
+        assert re.search(r"uses:\s*[\w./-]+@[0-9a-f]{40}\s+#\s*v\d", line), line
+
+
+def test_ci_tests_windows_and_python_310():
+    job = _load()["jobs"]["test"]
+    matrix = job["strategy"]["matrix"]
+    assert set(matrix["os"]) == {"ubuntu-latest", "macos-latest", "windows-latest"}
+    assert set(matrix["python"]) == {"3.10", "3.12"}
+    windows = [step for step in job["steps"]
+               if "Remove-Item Env:PYTHONUTF8" in step.get("run", "")]
+    assert windows, "Windows pytest наследует PYTHONUTF8"
+    assert all("Remove-Item Env:PYTHONIOENCODING" in step["run"] for step in windows)
+
+
+def test_ci_installs_locked_dev_dependencies():
+    installs = [step for step in _steps() if step.get("name") == "Install"]
+    assert installs
+    assert all(step.get("run") == "uv sync --locked --extra dev" for step in installs)
+
+
 def test_every_job_is_time_boxed_and_the_matrix_is_fail_fast():
     for name, job in _load()["jobs"].items():
         assert job.get("timeout-minutes") == 30, f"{name}: нужен timeout-minutes: 30"

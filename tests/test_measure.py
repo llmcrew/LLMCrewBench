@@ -9,6 +9,8 @@ every memory and speed claim in the report.
 from __future__ import annotations
 
 import hashlib
+import os
+import sys
 import time
 from pathlib import Path
 
@@ -156,6 +158,11 @@ def _reply_provider(ttfts: list[float]):
     iterator = iter(values)
 
     def fn(messages, tools):
+        # Пустой промпт — замер накладных (очередь/RTT), не точка профиля.
+        if messages and messages[0].get("content") == "":
+            return core.ModelReply(
+                text="ok", prompt_tokens=1, completion_tokens=1, ttft_s=0.0, total_s=0.01
+            )
         ttft = next(iterator)
         return core.ModelReply(
             text="ok", prompt_tokens=100, completion_tokens=50, ttft_s=ttft, total_s=ttft + 1.0
@@ -189,7 +196,9 @@ def test_speed_profile_counts_warmups_separately(monkeypatch):
     monkeypatch.setattr(measure, "used_mib", lambda: 512)
     provider = _reply_provider([1.0])
     measure.speed_profile(provider, RunConfig(), short_tokens=8, long_tokens=8, repeats=1, warmup=2)
-    assert len(provider.calls) == 2 * (2 + 1), "на профиль: warmup + repeats"
+    contents = [call[0]["content"] for call in provider.calls]
+    assert len(contents) == 2 * (2 + 1 + 1)
+    assert contents[2] == "" and contents[6] == "", "накладные TTFT — после прогрева, до зачётного прогона"
 
 
 def test_speed_profile_estimates_sizes_when_the_runtime_reports_none(monkeypatch):
@@ -201,9 +210,125 @@ def test_speed_profile_estimates_sizes_when_the_runtime_reports_none(monkeypatch
 
     row = results[0]
     assert row.ttft_s is None, "без TTFT медиана не определена (None, не NaN)"
-    assert row.prompt_tokens >= 1 and row.completion_tokens >= 1, "размеры берутся из оценки"
-    assert row.generation_tok_s >= 1
+    assert row.prompt_tokens >= 1, "размер входа без токенизатора берётся из оценки"
+    assert row.as_dict().get("sized") == "estimate"
+    assert row.completion_tokens is None
+    assert row.generation_tok_s is None, "без usage скорость генерации не выдумывается по длине текста"
 
+
+def test_long_prompt_is_fitted_with_the_tokenizer(monkeypatch):
+    """long_<N> is the tokenizer's N (±1%), not the 3.2 character guess."""
+    monkeypatch.setattr(measure, "used_mib", lambda: 8)
+    target = 2000
+
+    def tokenize(text: str) -> int:
+        return max(1, len(text) // 4)
+
+    sent: list[str] = []
+
+    def fn(messages, tools):
+        text = messages[0]["content"]
+        sent.append(text)
+        if text == "":
+            return core.ModelReply(
+                text="ok", prompt_tokens=1, completion_tokens=1, ttft_s=0.05, total_s=0.06
+            )
+        counted = tokenize(text)
+        return core.ModelReply(
+            text="ok", prompt_tokens=counted, completion_tokens=16, ttft_s=0.4, total_s=0.9
+        )
+
+    provider = CallableProvider(fn=fn)
+    provider.tokenize = tokenize  # type: ignore[method-assign]
+    results = measure.speed_profile(
+        provider,
+        RunConfig(base_url="http://127.0.0.1:9/v1"),
+        short_tokens=32,
+        long_tokens=target,
+        repeats=1,
+        warmup=0,
+    )
+
+    long_prompts = [text for text in sent if text.startswith(f"[measurement long_{target}")]
+    assert long_prompts, "длинный промпт не отправлен"
+    assert abs(tokenize(long_prompts[0]) - target) <= target * 0.01
+    long = results[1].as_dict()
+    assert long["label"] == f"long_{target}"
+    assert long.get("sized") == "tokenizer"
+    assert abs(long["prompt_tokens"] - target) <= target * 0.01
+
+
+def test_unconverged_speed_prompt_is_labelled_estimate(monkeypatch):
+    """A tokenizer that never lands in tolerance is an estimate, not a measurement."""
+
+    class Stuck:
+        def chat(self, messages, tools, **kwargs):
+            return core.ModelReply(
+                text="ok", prompt_tokens=1, completion_tokens=1, ttft_s=0.1, total_s=0.2
+            )
+
+    monkeypatch.setattr(measure, "used_mib", lambda: 4)
+    monkeypatch.setattr(measure, "fit_prompt_to_tokens", lambda *a, **k: ("prompt", 100, 3.2))
+    monkeypatch.setattr(measure, "count_prompt_tokens", lambda provider, text: 100)
+    results = measure.speed_profile(
+        Stuck(), RunConfig(), short_tokens=32, long_tokens=2048, repeats=1, warmup=0,
+    )
+    assert results[1].sized == "estimate"
+
+
+
+
+def test_prefill_rate_subtracts_the_empty_prompt_ttft(monkeypatch):
+    monkeypatch.setattr(measure, "used_mib", lambda: 4)
+
+    def fn(messages, tools):
+        if messages[0]["content"] == "":
+            return core.ModelReply(
+                text="ok", prompt_tokens=1, completion_tokens=1, ttft_s=0.2, total_s=0.21
+            )
+        return core.ModelReply(
+            text="ok", prompt_tokens=100, completion_tokens=40, ttft_s=1.2, total_s=2.2
+        )
+
+    results = measure.speed_profile(
+        CallableProvider(fn=fn),
+        RunConfig(base_url="http://127.0.0.1:9/v1"),
+        short_tokens=16,
+        long_tokens=16,
+        repeats=1,
+        warmup=0,
+    )
+    short, long = results[0].as_dict(), results[1].as_dict()
+    assert short.get("overhead_s") == pytest.approx(0.2)
+    assert long.get("overhead_s") == pytest.approx(0.2)
+    # 100 / (1.2 − 0.2) = 100; без вычитания было бы ≈ 83.3
+    assert short["prompt_tok_s"] == pytest.approx(100.0)
+    assert long["prompt_tok_s"] == pytest.approx(100.0)
+
+
+def test_vram_row_names_the_harness_host_unless_the_endpoint_is_loopback(monkeypatch):
+    monkeypatch.setattr(measure, "used_mib", lambda: 4)
+    provider = CallableProvider(
+        fn=lambda messages, tools: core.ModelReply(
+            text="ok", prompt_tokens=8, completion_tokens=2, ttft_s=0.3, total_s=0.5
+        )
+    )
+
+    def where(base_url: str) -> str | None:
+        rows = measure.speed_profile(
+            provider,
+            RunConfig(base_url=base_url),
+            short_tokens=16,
+            long_tokens=16,
+            repeats=1,
+            warmup=0,
+        )
+        return rows[0].as_dict().get("measured_on")
+
+    assert where("https://gpu.example:8000/v1") == "harness_host"
+    assert where("http://127.0.0.1:9/v1") == "endpoint"
+    assert where("http://localhost:9/v1") == "endpoint"
+    assert where("http://[::1]:9/v1") == "endpoint"
 
 def test_speed_result_round_trips_to_a_dict():
     row = measure.SpeedResult(
@@ -242,12 +367,35 @@ def test_weights_sha256_matches_hashlib(tmp_path: Path):
 
 
 def _make_smi(tmp_path: Path, *, inventory: str, used: str) -> Path:
+    """A nvidia-smi stand-in.
+
+    Windows cannot CreateProcess a shell script (WinError 193). A ``.cmd``
+    also splits ``--query-gpu=memory.used`` on ``=``, so the launcher hands
+    ``%*`` to Python, which writes CRLF the way nvidia-smi does.
+    """
+    if os.name == "nt":
+        body = tmp_path / "nvidia-smi-body.py"
+        body.write_text(
+            "import sys\n"
+            f"used = {used!r}\n"
+            f"inventory = {inventory!r}\n"
+            "arg = sys.argv[1] if len(sys.argv) > 1 else ''\n"
+            "data = used if arg == '--query-gpu=memory.used' else inventory\n"
+            "sys.stdout.buffer.write((data + '\\r\\n').encode('utf-8'))\n",
+            encoding="utf-8",
+        )
+        script = tmp_path / "nvidia-smi.cmd"
+        script.write_text(
+            f'@"{sys.executable}" "{body}" %*\r\n',
+            encoding="utf-8",
+        )
+        return script
     script = tmp_path / "nvidia-smi"
     script.write_text(
         "#!/bin/sh\n"
-        f'case "$1" in\n'
-        f'  --query-gpu=memory.used) echo "{used}" ;;\n'
-        f'  *) echo "{inventory}" ;;\n'
+        'case "$1" in\n'
+        f'  --query-gpu=memory.used) printf "%s\\r\\n" "{used}" ;;\n'
+        f'  *) printf "%s\\r\\n" "{inventory}" ;;\n'
         "esac\n",
         encoding="utf-8",
     )

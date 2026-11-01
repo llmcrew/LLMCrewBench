@@ -50,6 +50,8 @@ cp runs/bcb-hard/predictions.example.jsonl runs/bcb-hard/model_predictions.jsonl
 `prepare` создаёт `bundle.json`, `tasks.json` (промпт, entry point, каноническое решение, хеши) и `predictions.example.jsonl`. `score` пишет `samples.jsonl`, лог `evaluate.log`, upstream `<samples>_eval_results.json` и обновляет bundle.
 
 Для тестов и обёрток `--evaluate-cmd` заменяет argv-префикс `bigcodebench.evaluate`; при явном префиксе readiness-проверка не выполняется.
+На Windows пути с пробелами в `--evaluate-cmd` нужно заключать в кавычки: строка режется POSIX-стилем (`shlex.split`), а не правилами `cmd.exe`.
+
 
 Коды выхода: `0` — `verified` или успешный `prepare`, `1` — `unverified`/ошибка входов. Невалидный или неполный прогон не выглядит завершённым.
 

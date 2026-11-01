@@ -17,7 +17,7 @@ import json
 from dataclasses import replace
 import shutil
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import core, generation, holdout, reference, schema
@@ -97,6 +97,9 @@ def _config_from(args: argparse.Namespace) -> RunConfig:
         retry_errors=bool(getattr(args, "retry_errors", False)),
         generation_keep=getattr(args, "generation_keep", None) or 3,
     )
+    wall_clock = getattr(args, "request_wall_clock", None)
+    if wall_clock is not None:
+        cfg.request_wall_clock = float(wall_clock)
     if args.only:
         cfg.only = tuple(part.strip() for part in args.only.split(",") if part.strip())
     if getattr(args, "max_new_tokens", None):
@@ -562,9 +565,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         # bytes of the tasks: reuse the saved numbers, or a fresh (slightly
         # different) ratio would regenerate a different suite and the merge
         # guard below would reject it.
-        restored = RunConfig.from_dict(json.loads(saved_config.read_text(encoding="utf-8")))
+        saved = json.loads(saved_config.read_text(encoding="utf-8"))
+        restored = RunConfig.from_dict(saved)
         cfg.chars_per_token = restored.chars_per_token
         cfg.task_ratios = dict(restored.task_ratios)
+        # The ceiling is part of the measurement. Omitting the flag must not
+        # apply today's default over a run saved at another value; an explicit
+        # flag still overrides, and identity then refuses the mismatch.
+        if getattr(args, "request_wall_clock", None) is None and "request_wall_clock" in saved:
+            cfg.request_wall_clock = float(saved["request_wall_clock"])
         print(
             f"калибровка взята из сохранённого config.json: {cfg.chars_per_token:.4f} символов/токен",
             flush=True,
@@ -636,9 +645,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("Профиль скорости (1K и длинный prompt)...", flush=True)
         for row in speed_profile(provider, cfg, long_tokens=args.speed_long, repeats=args.speed_repeats):
             speed_rows.append(row.as_dict())
+            ttft = "n/a" if row.ttft_s is None else f"{row.ttft_s:.2f}"
+            prefill = "n/a" if row.prompt_tok_s is None else f"{row.prompt_tok_s:.0f}"
+            generation = "n/a" if row.generation_tok_s is None else f"{row.generation_tok_s:.1f}"
+            where = ", VRAM harness_host" if row.measured_on == "harness_host" else ""
             print(
-                f"  {row.label}: TTFT {row.ttft_s:.2f}s, prompt {row.prompt_tok_s:.0f} tok/s, "
-                f"generation {row.generation_tok_s:.1f} tok/s, peak VRAM {row.vram_peak_mib} MiB",
+                f"  {row.label}: TTFT {ttft}s, prompt {prefill} tok/s, "
+                f"generation {generation} tok/s, peak VRAM {row.vram_peak_mib} MiB{where}",
                 flush=True,
             )
 
@@ -661,7 +674,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         except Exception as exc:  # pragma: no cover - a broken frame must not lose the run
             print(f"HTML-отчёт не собрался: {type(exc).__name__}: {exc}", file=sys.stderr)
 
-    summary = summarise([score.as_dict() for score in result.scores], result.suite_digest)
+    summary = summarise(
+        [score.as_dict() for score in result.scores],
+        result.suite_digest,
+        cfg.generation_mode,
+    )
     print(f"\nИтог: {summary['verdict']}")
     print(f"Прошло: {(datetime.now() - started)}")
     print(f"Отчёт: {report_path}")
@@ -795,6 +812,7 @@ def _bench_run_argv(args: argparse.Namespace) -> list[str]:
         ("--unsupported", args.unsupported),
         ("--config", args.config),
         ("--configs-path", args.configs_path),
+        ("--request-wall-clock", getattr(args, "request_wall_clock", None)),
     ):
         if value:
             argv += [flag, str(value)]
@@ -935,8 +953,12 @@ def cmd_report(args: argparse.Namespace) -> int:
     for path in paths:
         print(path)
     for directory in args.directories:
-        data = load_run(directory)["scores"]
-        summary = summarise(data)
+        run = load_run(directory)
+        summary = summarise(
+            run["scores"],
+            run.get("suite"),
+            (run.get("config") or {}).get("generation_mode"),
+        )
         print(f"{directory}: {summary['verdict']}, заданий с ошибкой: {summary['errors']}")
     return 0
 
@@ -1065,6 +1087,11 @@ def build_suite_digest(cfg: RunConfig) -> dict:
     return suite_digest(full, cfg.profile)
 
 
+#: ``--retry-errors`` repeats a finished row only when the measurement itself
+#: failed. An integrity refusal is a candidate action and must stay put.
+_RETRY_FAILURES = frozenset({"infra_failure", "evaluator_failure"})
+
+
 def _resume_tasks(
     cfg: RunConfig, tasks: list, environment: dict | None = None
 ) -> tuple[list, list]:
@@ -1155,36 +1182,59 @@ def _resume_tasks(
             "прогон сделан до checkpoint-контракта, продолжать его нельзя"
         )
     identity = run_identity(cfg, str(current.get("sha256") or ""))
-    if saved_identity != identity:
-        changed = sorted(
-            key
-            for key in set(old) | set(cfg.__dataclass_fields__)
-            if key not in {"identity", "run_id", "api_key_set", "out_dir", "only", "generation_keep"}
-            and str(old.get(key)) != str(getattr(cfg, key, None))
+    saved_suite_identity = run_identity(cfg, str(saved_digest.get("sha256") or ""))
+    changed = sorted(
+        key
+        for key in set(old) | set(cfg.__dataclass_fields__)
+        if key not in {
+            "identity", "run_id", "api_key_set", "out_dir", "only", "generation_keep",
+            "retry_errors", "allow_suite_drift",
+        }
+        and str(old.get(key)) != str(getattr(cfg, key, None))
+    )
+    detail = f": {', '.join(changed)}" if changed else ""
+    if drift and saved_suite_identity != saved_identity:
+        raise SystemExit(
+            f"{directory}: resume смешал бы два прогона{detail} "
+            "(--allow-suite-drift продолжает только тот же прогон с другим сьютом)"
         )
-        detail = f": {', '.join(changed)}" if changed else ""
+    if saved_identity != identity:
+        suite_only = (
+            getattr(cfg, "allow_suite_drift", False) and saved_suite_identity == saved_identity
+        )
         message = (
             f"{directory}: resume смешал бы два прогона — identity {str(identity)[:12]} ≠ "
             f"{str(saved_identity)[:12]}{detail}"
         )
-        if not getattr(cfg, "allow_suite_drift", False):
-            raise SystemExit(f"{message} (продолжать нельзя; "
-                             "или --allow-suite-drift с записью решения)")
+        if not suite_only:
+            raise SystemExit(f"{message} (продолжать нельзя)")
         print(f"{message}; продолжаю (--allow-suite-drift)", flush=True)
 
+
     by_id = {task.id: task for task in full}
-    saved = _saved_entries(directory, identity)
+    saved_digests = {row.get("id"): row for row in saved_digest.get("per_task") or []}
+    current_digests = {row.get("id"): row for row in current.get("per_task") or []}
+    saved = _saved_entries(directory, saved_identity if drift else identity)
     kept: list = []
-    damaged: set[str] = set()
+    truncated: set[str] = set()
+    retried: set[str] = set()
     for entry in saved:
         task_id = str((entry.get("task") or {}).get("id"))
         task = by_id.get(task_id)
         if task is None:
             continue
+        if drift and saved_digests.get(task_id) != current_digests.get(task_id):
+            continue
         transcript = transcript_from_dict(entry.get("transcript") or {}, task)
         score = core.Score.from_dict(entry["score"])
-        if _truncated(transcript) or (getattr(cfg, "retry_errors", False) and score.status == "error"):
-            damaged.add(task_id)
+        if _truncated(transcript):
+            truncated.add(task_id)
+            continue
+        if (
+            getattr(cfg, "retry_errors", False)
+            and core.canonical_failure(score.failure) in _RETRY_FAILURES
+        ):
+            retried.add(task_id)
             continue
         kept.append(TaskRun(task=task, transcript=transcript, score=score))
 
@@ -1193,8 +1243,45 @@ def _resume_tasks(
     order = {task.id: index for index, task in enumerate(full)}
     missing.sort(key=lambda task: order.get(task.id, 1 << 30))
     kept.sort(key=lambda run: order.get(run.task.id, 1 << 30))
-    if damaged:
-        print(f"повтор из-за обрыва: {', '.join(sorted(damaged, key=lambda i: order.get(i, 0)))}", flush=True)
+    if drift:
+        try:
+            previous_log = generation.read_text(directory, "resume_log.jsonl")
+        except FileNotFoundError:
+            previous_log = ""
+        if previous_log and not previous_log.endswith("\n"):
+            previous_log += "\n"
+        record = {
+            "accepted_at": datetime.now(timezone.utc).isoformat(),
+            "old_suite_sha256": str(saved_digest.get("sha256") or ""),
+            "new_suite_sha256": str(current.get("sha256") or ""),
+            "old_identity": str(saved_identity),
+            "new_identity": str(identity),
+            "rerun": [
+                task.id
+                for task in missing
+                if saved_digests.get(task.id) != current_digests.get(task.id)
+            ],
+        }
+        generation.commit(
+            directory,
+            {"resume_log.jsonl": previous_log + json.dumps(record, ensure_ascii=False) + "\n"},
+            run_id=str(old.get("run_id") or saved_identity),
+            identity=str(saved_identity),
+            environment=None,
+            keep=cfg.generation_keep,
+        )
+    if truncated:
+        print(
+            "повтор из-за обрыва: "
+            + ", ".join(sorted(truncated, key=lambda i: order.get(i, 0))),
+            flush=True,
+        )
+    if retried:
+        print(
+            "повтор инфраструктурных ошибок: "
+            + ", ".join(sorted(retried, key=lambda i: order.get(i, 0))),
+            flush=True,
+        )
     return missing, kept
 
 
@@ -1239,14 +1326,12 @@ def _truncated(transcript: core.Transcript) -> bool:
     """Was the agent killed rather than finished?
 
     The exit code is the marker: a clean ``pi`` run says ``exit_ok``, while a
-    timeout, a SIGTERM or an aborted turn leaves it false or records the error.
-    A dead-last-turn (``finish_reason`` is empty — generation never completed,
-    e.g. a transport drop or a kill between the exit marker and the record)
-    also counts: resume must replay it instead of shipping half an artefact
-    and near-zero latency.
+    timeout, a SIGTERM or an aborted turn leaves it false or records an error
+    finish reason. A dead-last-turn (``finish_reason`` is empty — generation
+    never completed, e.g. a transport drop or a kill between the exit marker
+    and the record) also counts: resume must replay it instead of shipping half
+    an artefact and near-zero latency.
     """
-    if transcript.error:
-        return True
     agent = (transcript.extra or {}).get("agent") or {}
     if agent and agent.get("exit_ok") is False:
         return True
@@ -1311,7 +1396,18 @@ def build_parser() -> argparse.ArgumentParser:
             target.add_argument("--base-url", default="")
             target.add_argument("--model", default="")
             target.add_argument("--api-key", default="")
-            target.add_argument("--timeout", type=float, default=1800.0)
+            target.add_argument(
+                "--timeout",
+                type=float,
+                default=1800.0,
+                help="таймаут сокета в секундах (не объявленный предел запроса)",
+            )
+            target.add_argument(
+                "--request-wall-clock",
+                type=float,
+                default=None,
+                help="объявленный предел одного запроса в секундах; исчерпание — resource_exhausted",
+            )
             target.add_argument("--quant", default="", help="метка кванта для отчёта, напр. IQ4_XS")
             target.add_argument("--runtime", default="", help="runtime и версия, напр. llama.cpp b4321")
             target.add_argument("--kv-type", default="", help="формат KV-cache, напр. q8_0")

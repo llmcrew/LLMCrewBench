@@ -509,7 +509,7 @@ def test_the_isolation_module_mounts_the_fixture_and_the_config_only(
     bundle.write_text("# test bundle\n", encoding="utf-8")
     monkeypatch.setattr(isolation, "default_ca_bundle", lambda: bundle)
     box = isolation.Sandbox(work_dir=task_dir, agent_dir=agent_dir, image=image)
-    report = box.run_command(["python", "-c", "print('ok')"], host_env={})
+    report = box.run_command(["python", "-c", "print('ok')"], host_env={}, network="none")
 
     assert report["status"] == "ok", report.get("output")
     assert [(m["dst"], m["readonly"]) for m in report["mounts"]] == [
@@ -578,7 +578,7 @@ def test_a_host_ca_is_mounted_read_only_and_named_by_a_container_path(
         assert env[name] == isolation.CONTAINER_CA
     assert str(bundle.resolve()) not in env.values()
 
-    report = box.run_command(["true"], host_env=host_env)
+    report = box.run_command(["true"], host_env=host_env, network="none")
     assert report["status"] == "ok", report.get("output")
     assert [
         (m["src"], m["dst"], m["readonly"])
@@ -607,7 +607,7 @@ def test_a_missing_ca_is_recorded_not_fatal(
 
     env = box.env({})
     assert not set(isolation.CA_ENV) & set(env)
-    report = box.run_command(["true"], host_env={})
+    report = box.run_command(["true"], host_env={}, network="none")
     assert report["status"] == "ok", report.get("output")
     assert isolation.CONTAINER_CA not in [m["dst"] for m in report["mounts"]]
     assert not set(isolation.CA_ENV) & set(report["env"])
@@ -669,13 +669,13 @@ def test_https_endpoint_is_verified_through_the_mounted_ca(
     thread.start()
     port = server.server_port
     try:
-        box = isolation.Sandbox(
-            work_dir=task_dir, image=image, base_url=f"https://127.0.0.1:{port}/"
-        )
+        base = f"https://127.0.0.1:{port}/"
+        url, rewritten = isolation.endpoint_url(base)
+        assert rewritten
+        box = isolation.Sandbox(work_dir=task_dir, image=image, base_url=base)
         script = (
             "import urllib.request;"
-            f"print(urllib.request.urlopen("
-            f"'https://host.docker.internal:{port}/', timeout=30).read().decode())"
+            f"print(urllib.request.urlopen({url!r}, timeout=30).read().decode())"
         )
         report = box.run_command(
             ["python", "-c", script], host_env={"SSL_CERT_FILE": str(cert)}
@@ -685,3 +685,57 @@ def test_https_endpoint_is_verified_through_the_mounted_ca(
         server.server_close()
     assert report["status"] == "ok", report.get("output") or report.get("error")
     assert "ca-ok" in str(report["output"])
+
+
+@pytest.mark.docker
+def test_container_cannot_reach_the_internet(image: str, task_dir: Path) -> None:
+    """The agent on the internal network cannot open an arbitrary internet host."""
+    box = isolation.Sandbox(
+        work_dir=task_dir,
+        image=image,
+        base_url="http://127.0.0.1:9/v1",
+    )
+    report = box.run_command(
+        ["curl", "-fsS", "--max-time", "8", "https://example.com"],
+        host_env={},
+        deadline=40,
+    )
+    assert report["status"] != "ok", report.get("output")
+    assert "Example Domain" not in str(report.get("output") or "")
+
+
+@pytest.mark.docker
+def test_container_reaches_the_endpoint(image: str, task_dir: Path) -> None:
+    """A host stub is reachable through the forwarder; nothing else is."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - stdlib naming
+            body = b"stub-ok"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_port
+    try:
+        base = f"http://127.0.0.1:{port}/"
+        url, _rewritten = isolation.endpoint_url(base)
+        box = isolation.Sandbox(work_dir=task_dir, image=image, base_url=base)
+        report = box.run_command(
+            ["curl", "-fsS", "--max-time", "20", url],
+            host_env={},
+            deadline=60,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert report["status"] == "ok", report.get("output") or report.get("error")
+    assert "stub-ok" in str(report.get("output"))

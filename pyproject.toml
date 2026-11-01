@@ -8,8 +8,8 @@ license = { text = "Proprietary" }
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov>=5"]
-visual = ["playwright>=1.40"]  # category K renders pages in headless Chromium
+dev = ["pytest>=8", "pytest-cov>=5", "pyyaml>=6"]
+visual = ["playwright>=1.40", "numpy>=1.24", "Pillow>=10"]  # category K renders pages in headless Chromium
 vision = ["Pillow>=10"]  # category V renders its image fixtures with Pillow
 
 [project.scripts]
@@ -21,11 +21,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["dailybench", "dailybench.adapters", "dailybench.tasks"]
-
-# ``shot.sh`` передаётся в рабочую копию задачи: без него в wheel визуальный
-# агент не получает обёртку и снимает страницу голым chromium.
-[tool.setuptools.package-data]
-dailybench = ["shot.sh"]
 
 # Ресурсы витрины (three.js и plotly) нужны отчёту и рендеру; без них wheel
 # ставится без библиотек, и опубликованная сцена падает (R18). data-files, а не
@@ -51,4 +46,5 @@ dailybench = ["shot.sh"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["docker: needs a Docker daemon"]
 filterwarnings = ["error::DeprecationWarning"]

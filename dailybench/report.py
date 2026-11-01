@@ -109,12 +109,15 @@ def _canonical_counts(counts: dict[str, int]) -> dict[str, int]:
 def summarise(
     scores: Iterable[dict[str, Any]],
     suite_tasks: int | dict[str, Any] | None = None,
+    generation_mode: str | None = None,
 ) -> dict[str, Any]:
     """Totals per category, with the visual block kept out of the verdict.
 
     ``suite_tasks`` may be the suite digest, so the "partial run" note counts
     only the tasks that can move the score — a skipped browser must not make a
-    complete run look partial.
+    complete run look partial. Omitting ``generation_mode`` means it was not
+    recorded: such a summary is never ranked. A caller that has a run passes
+    the value from its ``config.json``.
     """
     scored = set(core.SCORED_CATEGORIES)
     showcase = set(core.VISUAL_CATEGORIES)
@@ -303,6 +306,8 @@ def summarise(
             f" (не проверялось: {', '.join(skipped_categories) or skipped_total} —"
             " результат не входит ни в числитель, ни в знаменатель)"
         )
+    if not generation_mode:
+        verdict += " (не ранжируется: режим генерации не записан)"
     if not rankable:
         verdict += (
             f" (не ранжируется с baseline: профиль {profile} — свой набор категорий,"
@@ -362,6 +367,7 @@ def summarise(
         "infra_failures": infra_failures,
         "eligible": eligible,
         "profile": profile,
+        "generation_mode": generation_mode,
         "rankable_with_baseline": rankable,
         "verdict": verdict,
     }
@@ -396,7 +402,8 @@ def _paired_units(
     right_units = (right or {}).get("units") or {}
     stratum = _stratum(key)
     units: list[stats.PairedUnit] = []
-    for task_id, (left_earned, left_possible) in left_units.items():
+    for task_id in sorted(left_units):
+        left_earned, left_possible = left_units[task_id]
         pair = right_units.get(task_id)
         if pair is None or left_possible <= 0 or pair[1] <= 0:
             continue
@@ -438,8 +445,23 @@ def _weighted_pct(
 
 def _weight_sensitivity(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     """Whether the ordering survives a different policy, not just the published one."""
+    profile = str(left.get("profile") or core.DEFAULT_PROFILE)
+    schemes_weights = WEIGHT_SCHEMES
+    if profile != core.DEFAULT_PROFILE:
+        points = (
+            core.PILOT_CATEGORY_POINTS if profile == "pilot"
+            else core.PROFILE_POINTS.get(profile, core.CATEGORY_POINTS)
+        )
+        schemes_weights = {
+            "published": dict(points),
+            "equal": {key: 1.0 for key in points},
+            "coding_heavy": {
+                key: 2.0 if key == "C" else 1.5 if key == "B" else 1.0
+                for key in points
+            },
+        }
     schemes: dict[str, Any] = {}
-    for name, weights in WEIGHT_SCHEMES.items():
+    for name, weights in schemes_weights.items():
         scheme_total = sum(weights.values())
         left_pct, left_unknown = _weighted_pct(left, weights)
         right_pct, right_unknown = _weighted_pct(right, weights)
@@ -512,12 +534,15 @@ def _pct_of(row: dict[str, Any] | None) -> float | None:
 
 
 def contract_key(run: dict[str, Any]) -> str:
-    """Immutable contract identity of a run: the suite digest sha256.
+    """Immutable contract identity: suite digest and recorded generation mode.
 
-    Runs built from different suite bytes, profiles or evaluator contracts have
-    different denominators; their percentages are not ranks of one another.
+    Runs built from different suite bytes, profiles, evaluator contracts or
+    decoding conditions are not ranks of one another. A legacy run without a
+    mode keeps an empty mode component and is excluded by :func:`rankable`.
     """
-    return str((run.get("suite") or {}).get("sha256") or "")
+    suite_sha = str((run.get("suite") or {}).get("sha256") or "")
+    generation_mode = str((run.get("config") or {}).get("generation_mode") or "")
+    return f"{suite_sha}:{generation_mode}"
 
 
 def rankable(summary: dict[str, Any]) -> bool:
@@ -528,7 +553,8 @@ def rankable(summary: dict[str, Any]) -> bool:
     showcase task (K/L) does not touch the verdict.
     """
     return (
-        bool(summary.get("eligible"))
+        bool(summary.get("generation_mode"))
+        and bool(summary.get("eligible"))
         and bool(summary.get("full_suite"))
         and not summary.get("skipped_scored")
     )
@@ -538,14 +564,30 @@ def unranked_reason(summary: dict[str, Any]) -> str:
     """Short reason why a run cannot take a place."""
     if summary.get("integrity_failures"):
         return "удостоверение отозвано"
+    if not summary.get("generation_mode"):
+        return "режим генерации не записан"
     if not summary.get("eligible"):
         return "инфраструктура"
     return "неполный прогон"
 
 
-def _comparison_gate(left: dict[str, Any], right: dict[str, Any], *, same_contract: bool) -> str:
+def _comparison_gate(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    *,
+    same_contract: bool,
+    left_key: str = "",
+    right_key: str = "",
+) -> str:
     """Why this pair is not a rank comparison; empty when it is one."""
     if not same_contract:
+        left_sha, left_sep, left_mode = left_key.rpartition(":")
+        right_sha, right_sep, right_mode = right_key.rpartition(":")
+        if left_sep and right_sep and left_sha and left_sha == right_sha:
+            return (
+                "другой режим генерации: "
+                f"{left_mode or 'не записан'} / {right_mode or 'не записан'}"
+            )
         return "другой контракт сьюта"
     if not rankable(left):
         return f"база — {unranked_reason(left)}"
@@ -560,7 +602,8 @@ def _headline_keys(summary: dict[str, Any]) -> tuple[str, ...]:
 
 
 def compare_summaries(
-    left: dict[str, Any], right: dict[str, Any], *, same_contract: bool = True
+    left: dict[str, Any], right: dict[str, Any], *, same_contract: bool = True,
+    left_key: str = "", right_key: str = "",
 ) -> dict[str, Any]:
     """Compare two summaries on shared tasks; ``significant`` is a paired test.
 
@@ -581,7 +624,9 @@ def compare_summaries(
     test = stats.paired_ratio_difference(units)
     delta_ci = test["ci95"]
     delta = test["delta"]
-    gate = _comparison_gate(left, right, same_contract=same_contract)
+    gate = _comparison_gate(
+        left, right, same_contract=same_contract, left_key=left_key, right_key=right_key
+    )
     overall = {
         "left_ci95": left.get("headline_ci95"),
         "right_ci95": right.get("headline_ci95"),
@@ -856,7 +901,9 @@ def render_markdown(run: dict[str, Any]) -> str:
     # The digest, not its ``tasks`` count: the count includes the visual block,
     # which never enters the verdict, so an int would make a full run look
     # partial (47 scored tasks "against" 96).
-    summary = summarise(run["scores"], suite)
+    summary = summarise(
+        run["scores"], suite, (run.get("config") or {}).get("generation_mode")
+    )
 
     lines: list[str] = []
     model = config.get("model", "unknown")
@@ -913,6 +960,8 @@ def render_markdown(run: dict[str, Any]) -> str:
             f"не ранжируется с baseline (профиль `{summary.get('profile')}` — свой набор "
             "категорий, знаменатель не совпадает)"
             if not summary.get("rankable_with_baseline", True)
+            else "не ранжируется: режим генерации не записан"
+            if not summary.get("generation_mode")
             else "допущен (полное измерение, инфраструктура чиста)"
             if not summary.get("incomplete") and summary.get("eligible")
             else "не ранжируется: " + (
@@ -993,9 +1042,16 @@ def render_markdown(run: dict[str, Any]) -> str:
     if any(row["tasks"] for row in showcase.values()):
         lines.append("## Витрина: картинки вне общего счёта")
         lines.append("")
+        showcase_totals = [
+            f"{'VQA V' if key == 'V' else 'Симуляции K'} — "
+            f"{showcase[key]['earned']:.0f} / {showcase[key]['possible']:.0f}"
+            for key in core.SHOWCASE_CATEGORIES
+            if key in showcase and showcase[key]["tasks"]
+        ]
         lines.append(
-            f"Симуляции K — {summary['showcase_earned']:.0f} / {summary['showcase_possible']:.0f} "
-            "баллов вне итоговой суммы. V — чтение изображений (график, пространственные "
+            "; ".join(showcase_totals)
+            + (" — баллы вне итоговой суммы. " if showcase_totals else "")
+            + "V — чтение изображений (график, пространственные "
             "отношения, трассировка схемы): проверяется ответ по картинке. L — свободные "
             "арт-работы: сохраняются страница и кадр, цвет, тональность и художественное "
             "качество оценивает человек."
@@ -1046,12 +1102,15 @@ def render_markdown(run: dict[str, Any]) -> str:
     if speed:
         lines.append("## Скорость и память (без баллов качества)")
         lines.append("")
-        lines.append("| Профиль | TTFT, с | Prompt tok/s | Generation tok/s | Пик VRAM, MiB | Повторов |")
-        lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
+        lines.append(
+            "| Профиль | TTFT, с | Prompt tok/s | Generation tok/s | Пик VRAM, MiB | Повторов | sized | measured_on |"
+        )
+        lines.append("| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |")
         for row in speed:
             lines.append(
                 f"| {row.get('label')} | {_fmt(row.get('ttft_s'))} | {_fmt(row.get('prompt_tok_s'), 1)} | "
-                f"{_fmt(row.get('generation_tok_s'), 1)} | {row.get('vram_peak_mib', 'n/a')} | {row.get('runs')} |"
+                f"{_fmt(row.get('generation_tok_s'), 1)} | {row.get('vram_peak_mib', 'n/a')} | {row.get('runs')} | "
+                f"{row.get('sized') or 'n/a'} | {row.get('measured_on') or 'n/a'} |"
             )
         lines.append("")
     return "\n".join(lines)
@@ -1081,7 +1140,9 @@ def compare_markdown(runs: list[dict[str, Any]]) -> str:
     compared: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for run in runs:
         config = run.get("config", {})
-        summary = summarise(run["scores"], run.get("suite") or {})
+        summary = summarise(
+            run["scores"], run.get("suite") or {}, config.get("generation_mode")
+        )
         row = [config.get("model", "?"), config.get("profile") or core.DEFAULT_PROFILE,
                config.get("quant") or "n/a", summary["verdict"]]
         for key in sorted(core.CATEGORY_POINTS):
@@ -1151,7 +1212,12 @@ def _paired_markdown(compared: list[tuple[dict[str, Any], dict[str, Any]]]) -> l
     """
     baseline_run, baseline = compared[0]
     results = [
-        compare_summaries(baseline, summary, same_contract=contract_key(run) == contract_key(baseline_run))
+        compare_summaries(
+            baseline, summary,
+            same_contract=contract_key(run) == contract_key(baseline_run),
+            left_key=contract_key(baseline_run),
+            right_key=contract_key(run),
+        )
         for run, summary in compared[1:]
     ]
     lines = [

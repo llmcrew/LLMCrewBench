@@ -45,6 +45,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from . import telemetry
 
@@ -102,6 +103,206 @@ SETUP_TIMEOUT_S = 60.0
 #: сьюта рисует кадры в соседнем процессе) сцена 1920x1080 не укладывалась в
 #: дефолтные 30 с Playwright и весь рендер падал «TimeoutError: Page.screenshot».
 SCREENSHOT_TIMEOUT_MS = 90_000
+
+#: Deterministic frame clock shared with ``video/tools/record_clip.py``. Scoring
+#: renders install it before page scripts so two loads of a stable page stay
+#: byte-identical; live art mode leaves the wall clock alone.
+FRAME_CLOCK_TEMPLATE = r"""
+(() => {
+  if (window.__recordClock) return;
+  const FPS = __FPS__;
+  const STEP_MS = 1000 / FPS;
+  const EPOCH = 946684800000;
+  let frame = -1;
+  let now = 0;
+  let nextId = 1;
+  let renderCount = 0;
+  let lastRender = null;
+  const rafs = new Map();
+  const timers = new Map();
+  const animationOrigins = new WeakMap();
+  const unsupported = new Set();
+
+  const schedule = (callback, delay, interval, args) => {
+    const id = nextId++;
+    const wait = Math.max(interval ? 1 : 0, Number(delay) || 0);
+    timers.set(id, {callback, args, due: now + wait, interval: interval ? wait : 0});
+    return id;
+  };
+  const invokeTimer = (timer) => {
+    if (typeof timer.callback === 'function') {
+      timer.callback.apply(window, timer.args);
+    } else {
+      (0, eval)(String(timer.callback));
+    }
+  };
+  const runTimers = (through) => {
+    let count = 0;
+    while (true) {
+      let dueId = 0;
+      let dueAt = Infinity;
+      for (const [id, timer] of timers) {
+        if (timer.due < dueAt) { dueId = id; dueAt = timer.due; }
+      }
+      if (!dueId || dueAt > through) break;
+      if (++count > 10000) throw new Error('recording clock timer runaway');
+      const timer = timers.get(dueId);
+      now = dueAt;
+      if (timer.interval) timer.due += timer.interval;
+      else timers.delete(dueId);
+      invokeTimer(timer);
+    }
+    now = through;
+  };
+  const syncAnimations = () => {
+    if (typeof document.getAnimations !== 'function') return;
+    for (const animation of document.getAnimations()) {
+      try {
+        if (!animationOrigins.has(animation)) {
+          animationOrigins.set(animation, now);
+          animation.pause();
+          animation.currentTime = 0;
+        } else {
+          animation.pause();
+          animation.currentTime = now - animationOrigins.get(animation);
+        }
+      } catch (_) {
+        unsupported.add('a Web Animations animation could not be driven by the recording clock');
+      }
+    }
+  };
+  const advanceFrame = () => {
+    frame += 1;
+    now = frame * STEP_MS;
+    runTimers(now);
+    syncAnimations();
+    const callbacks = Array.from(rafs.values());
+    rafs.clear();
+    for (const callback of callbacks) callback(now);
+    runTimers(now);
+    syncAnimations();
+    if (document.querySelector('video') &&
+        typeof HTMLVideoElement !== 'undefined' &&
+        HTMLVideoElement.prototype.requestVideoFrameCallback) {
+      unsupported.add('video-frame callbacks follow the browser media clock');
+    }
+    return rafs.size > 0;
+  };
+  const wrapRenderer = (three) => {
+    const Original = three && three.WebGLRenderer;
+    if (typeof Original !== 'function' || Original.__recordClipWrapped) return;
+    const Wrapped = function (...args) {
+      const instance = Reflect.construct(
+        Original, args, new.target === Wrapped ? Original : new.target
+      );
+      const render = instance.render;
+      if (typeof render === 'function') {
+        instance.render = function (...renderArgs) {
+          lastRender = {instance: this, args: renderArgs};
+          renderCount += 1;
+          return Reflect.apply(render, this, renderArgs);
+        };
+      }
+      return instance;
+    };
+    Wrapped.prototype = Original.prototype;
+    Object.setPrototypeOf(Wrapped, Original);
+    Wrapped.__recordClipWrapped = true;
+    try { three.WebGLRenderer = Wrapped; }
+    catch (_) { unsupported.add('a renderer constructor could not be hooked for redraw'); }
+  };
+  try {
+    let three = window.THREE;
+    Object.defineProperty(window, 'THREE', {
+      configurable: true,
+      enumerable: true,
+      get: () => three,
+      set: (value) => { three = value; wrapRenderer(value); }
+    });
+    wrapRenderer(three);
+  } catch (_) {
+    unsupported.add('the global THREE renderer could not be hooked for redraw');
+  }
+
+  const RealDate = Date;
+  function RecordingDate(...args) {
+    if (!new.target) return new RealDate(EPOCH + now).toString();
+    return Reflect.construct(RealDate, args.length ? args : [EPOCH + now], new.target);
+  }
+  RecordingDate.prototype = RealDate.prototype;
+  Object.setPrototypeOf(RecordingDate, RealDate);
+  RecordingDate.now = () => EPOCH + now;
+  RecordingDate.parse = RealDate.parse;
+  RecordingDate.UTC = RealDate.UTC;
+  try { window.Date = RecordingDate; }
+  catch (_) { unsupported.add('the page Date constructor could not be controlled'); }
+  try {
+    Object.defineProperty(performance, 'now', {configurable: true, value: () => now});
+  } catch (_) {
+    try {
+      Object.defineProperty(Object.getPrototypeOf(performance), 'now', {
+        configurable: true, value: () => now
+      });
+    } catch (_) {
+      unsupported.add('performance.now could not be controlled');
+    }
+  }
+  try { Object.defineProperty(performance, 'timeOrigin', {configurable: true, value: EPOCH}); }
+  catch (_) {}
+
+  window.requestAnimationFrame = (callback) => {
+    if (typeof callback !== 'function') throw new TypeError('requestAnimationFrame callback must be callable');
+    const id = nextId++;
+    rafs.set(id, callback);
+    return id;
+  };
+  window.cancelAnimationFrame = (id) => { rafs.delete(id); };
+  window.setTimeout = (callback, delay, ...args) => schedule(callback, delay, 0, args);
+  window.setInterval = (callback, delay, ...args) => schedule(callback, delay, 1, args);
+  window.clearTimeout = (id) => { timers.delete(id); };
+  window.clearInterval = window.clearTimeout;
+  window.requestIdleCallback = (callback, options = {}) =>
+    schedule(() => callback({didTimeout: false, timeRemaining: () => 0}), options.timeout || 0, 0, []);
+  window.cancelIdleCallback = window.clearTimeout;
+
+  window.__recordClock = {
+    get time() { return now; },
+    get frame() { return frame; },
+    warmup: (count) => { for (let i = 0; i < count; i++) advanceFrame(); },
+    capture: (dt) => {
+      const beforeRender = renderCount;
+      const selfRaf = advanceFrame();
+      if (!selfRaf && typeof window.__step === 'function') window.__step(dt);
+      if (typeof window.__probe === 'function') window.__probe();
+      syncAnimations();
+      if (renderCount === beforeRender && lastRender) {
+        const {instance, args} = lastRender;
+        instance.render(...args);
+      }
+      return {selfRaf, frame, time: now, mode: selfRaf ? 'native-raf' : typeof window.__step === 'function' ? 'explicit-step' : 'static-or-css'};
+    },
+    warnings: () => Array.from(unsupported)
+  };
+})();
+"""
+
+
+def frame_clock(fps: int = 60) -> str:
+    """Injected clock at the requested rate: one frame per step, no wall clock."""
+    return FRAME_CLOCK_TEMPLATE.replace("__FPS__", str(int(fps)))
+
+
+#: Two animation frames plus font readiness, awaited before every screenshot.
+SCREENSHOT_SETTLE_JS = """async () => {
+  if (document.fonts && document.fonts.ready) await document.fonts.ready;
+  if (window.__recordClock) {
+    await window.__recordClock.warmup(2);
+  } else {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+}"""
+
 
 #: ``live`` samples a normally loaded page after a short settle, then once more
 #: after a fixed interval. This is observational, not an animation score.
@@ -267,12 +468,41 @@ def availability() -> tuple[bool, str]:
 class _Handler(http.server.SimpleHTTPRequestHandler):
     """Serves the candidate page plus the pinned library, and stays quiet."""
 
+    vendor_root: Path | None = None
+
     def log_message(self, *args: Any) -> None:  # pragma: no cover - noise
         return
 
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
+
+    def translate_path(self, path: str) -> str:
+        raw = unquote(urlparse(path).path)
+        parts = [part for part in raw.split("/") if part and part not in (".",)]
+        if ".." in parts:
+            return super().translate_path("/__missing__")
+        root = type(self).vendor_root
+        if parts and parts[0] == "vendor" and root is not None:
+            return str(root.joinpath(*parts[1:]))
+        return super().translate_path(path)
+
+
+_VENDOR_COPY: Path | None = None
+
+
+def _prepare_vendor_tree() -> Path:
+    """One prepared three.js tree per process, reused by every render."""
+    global _VENDOR_COPY
+    if _VENDOR_COPY is not None and _VENDOR_COPY.is_dir():
+        return _VENDOR_COPY
+    prepared = Path(tempfile.mkdtemp(prefix="dailybench-vendor-")) / "vendor"
+    try:
+        prepared.symlink_to(VENDOR, target_is_directory=True)
+    except OSError:
+        shutil.copytree(VENDOR, prepared)
+    _VENDOR_COPY = prepared
+    return prepared
 
 
 @contextlib.contextmanager
@@ -281,12 +511,16 @@ def _served(html: str):
     root = Path(tempfile.mkdtemp(prefix="dailybench-visual-"))
     try:
         (root / APP_NAME).write_text(html, encoding="utf-8")
+        prepared = _prepare_vendor_tree()
         vendor = root / "vendor"
         try:
-            vendor.symlink_to(VENDOR, target_is_directory=True)
-        except OSError:  # pragma: no cover - filesystem without symlinks
-            shutil.copytree(VENDOR, vendor)
-        handler = functools.partial(_Handler, directory=str(root))
+            vendor.symlink_to(prepared, target_is_directory=True)
+        except OSError:
+            # The handler serves the prepared tree directly, so a machine
+            # without symlinks does not recopy three.js into every render root.
+            pass
+        handler_cls = type("_BoundHandler", (_Handler,), {"vendor_root": prepared})
+        handler = functools.partial(handler_cls, directory=str(root))
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -841,6 +1075,46 @@ def _budget_ms(deadline: float, timeout_ms: int) -> int:
     return max(1, min(int(left * 0.9), timeout_ms))
 
 
+def _request_allowed(url: str, allowed: str) -> bool:
+    """Loopback and non-image data URLs stay; inline images and blobs do not."""
+    if url.startswith(allowed):
+        return True
+    if url.startswith(("blob:", "data:image/")):
+        return False
+    return url.startswith("data:")
+
+
+def _await_ready(page: Any, deadline: float, timeout_ms: int) -> None:
+    """Wait for ``window.__ready``, stepping the recording clock one frame per poll.
+
+    The frame clock only moves inside ``warmup`` and page hooks, so a
+    ``setTimeout`` longer than the two-frame settle never fires while
+    ``wait_for_function`` polls a frozen clock. Each poll steps one frame,
+    then re-checks the flag, and stops at the same hook/ready budget.
+    """
+    budget_ms = _budget_ms(deadline, timeout_ms)
+    try:
+        has_clock = bool(page.evaluate("() => !!window.__recordClock"))
+    except Exception:
+        has_clock = False
+    if not has_clock:
+        page.wait_for_function("() => window.__ready === true", timeout=budget_ms)
+        return
+    end = time.monotonic() + budget_ms / 1000
+    script = (
+        "() => {"
+        " if (window.__ready === true) return true;"
+        " window.__recordClock.warmup(1);"
+        " return window.__ready === true;"
+        "}"
+    )
+    while True:
+        if page.evaluate(script):
+            return
+        if time.monotonic() >= end:
+            raise TimeoutError("window.__ready")
+
+
 def _page_pass(
     url: str,
     port: int,
@@ -851,6 +1125,7 @@ def _page_pass(
     mode: str = "fixed",
     stage: Any = None,
     progress: Any = None,
+    probe: bool = True,
 ) -> dict[str, Any]:
     """Load a page and capture its observable output.
 
@@ -896,7 +1171,7 @@ def _page_pass(
             "**/*",
             lambda route: (
                 route.continue_()
-                if route.request.url.startswith(allowed) or route.request.url.startswith("data:")
+                if _request_allowed(route.request.url, allowed)
                 else (_refuse(BLOCKED_HTTP, route.request.url), route.abort())
             ),
         )
@@ -904,6 +1179,8 @@ def _page_pass(
         # used to bypass ``route`` entirely. A routed socket is never connected,
         # so no traffic leaves and the attempt is recorded in ``external``.
         context.route_web_socket("**/*", lambda ws: _refuse(BLOCKED_WS, ws.url))
+        if mode != "live":
+            context.add_init_script(frame_clock(60))
         page = context.new_page()
         page.on("console", lambda msg: errors.append(f"console: {msg.text}") if msg.type == "error" else None)
         page.on("pageerror", lambda exc: errors.append(f"pageerror: {exc}"))
@@ -927,6 +1204,10 @@ def _page_pass(
                 except Exception as exc:
                     errors.append(f"settle: {exc.__class__.__name__}: {str(exc)[:200]}")
                 try:
+                    page.evaluate(SCREENSHOT_SETTLE_JS)
+                except Exception as exc:
+                    errors.append(f"fonts: {exc.__class__.__name__}: {str(exc)[:200]}")
+                try:
                     _mark(STAGE_SHOT)
                     shot = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
                 except Exception as exc:
@@ -935,6 +1216,10 @@ def _page_pass(
                     page.wait_for_timeout(_budget_ms(deadline, LIVE_SAMPLE_INTERVAL_MS))
                 except Exception as exc:
                     errors.append(f"sample wait: {exc.__class__.__name__}: {str(exc)[:200]}")
+                try:
+                    page.evaluate(SCREENSHOT_SETTLE_JS)
+                except Exception as exc:
+                    errors.append(f"fonts: {exc.__class__.__name__}: {str(exc)[:200]}")
                 try:
                     _mark(STAGE_SHOT)
                     shot_later = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
@@ -957,10 +1242,15 @@ def _page_pass(
 
         _mark(STAGE_NAV)
         page.goto(url, wait_until="domcontentloaded", timeout=_budget_ms(deadline, timeout_ms))
+        try:
+            page.evaluate(SCREENSHOT_SETTLE_JS)
+        except Exception:
+            pass
+        run_probe = probe
         ready_failed = False
         try:
             _mark(STAGE_HOOK)
-            page.wait_for_function("() => window.__ready === true", timeout=_budget_ms(deadline, timeout_ms))
+            _await_ready(page, deadline, timeout_ms)
         except Exception:
             # Протокол мог не дойти: страница падает до `__ready` (L-20,
             # pageerror в конструкторе) или вовсе его не выставляет. Исключение
@@ -997,10 +1287,24 @@ def _page_pass(
                 stepped = outcome.get("payload")
             else:
                 step_failed = True
-        _mark(STAGE_HOOK)
-        pixels = page.evaluate(PIXEL_PROBE)
+        harness_error = ""
+        pixels = None
+        try:
+            page.evaluate(SCREENSHOT_SETTLE_JS)
+        except Exception as exc:
+            errors.append(f"settle: {exc.__class__.__name__}: {str(exc)[:200]}")
         _mark(STAGE_SHOT)
-        shot = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
+        try:
+            shot = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
+        except Exception as exc:
+            shot = b""
+            errors.append(f"screenshot: {exc.__class__.__name__}: {str(exc)[:200]}")
+        if run_probe:
+            try:
+                _mark(STAGE_HOOK)
+                pixels = page.evaluate(PIXEL_PROBE)
+            except Exception as exc:
+                harness_error = f"{exc.__class__.__name__}: {str(exc)[:200]}"
         result: dict[str, Any] = {
             "errors": errors,
             "external": external,
@@ -1010,6 +1314,7 @@ def _page_pass(
             "shot": shot,
             "ready_failed": ready_failed,
             "step_failed": step_failed,
+            "harness_error": harness_error,
         }
         if mode == "time":
             # A declared animation must move; the second sample tells them apart
@@ -1027,6 +1332,10 @@ def _page_pass(
                 " return JSON.stringify(before) !== JSON.stringify(after); }",
                 [dt, max(1, steps)],
             )
+            try:
+                page.evaluate(SCREENSHOT_SETTLE_JS)
+            except Exception:
+                pass
             result["animated"] = bool(moved)
             _mark(STAGE_SHOT)
             result["shot_later"] = page.screenshot(type="png", timeout=SCREENSHOT_TIMEOUT_MS)
@@ -1161,10 +1470,6 @@ def _call_worker(job: dict[str, Any], deadline: float) -> RenderResult | None:
     expired_at: float | None = None
     while True:
         now = time.monotonic()
-        if now >= deadline + HARD_GRACE_S:
-            # No stage may extend a render past the absolute cap: a Chromium
-            # that stopped answering is infrastructure, not a slow page.
-            return None
         key = (stage.value, progress.value)
         if key != seen:
             seen = key
@@ -1191,6 +1496,11 @@ def _call_worker(job: dict[str, Any], deadline: float) -> RenderResult | None:
                 stage_deadline = now + HOOK_CONTINUATION_S
             else:
                 stage_deadline = deadline
+        if stage.value == STAGE_SHOT:
+            if now >= stage_deadline:
+                return None
+        elif now >= deadline + HARD_GRACE_S:
+            return None
         limit = max(stage_deadline, last_progress + STALL_S)
         remaining = limit - now
         if remaining <= 0:
@@ -1219,6 +1529,7 @@ def _render_inline(
     timeout_ms: int,
     again: bool,
     mode: str,
+    probe: bool = True,
     stage: Any = None,
     progress: Any = None,
 ) -> RenderResult:
@@ -1227,11 +1538,27 @@ def _render_inline(
     try:
         with _served(html) as (url, port):
             first = _page_pass(
-                url, port, steps, dt, viewport, timeout_ms, mode, stage, progress
+                url, port, steps, dt, viewport, timeout_ms, mode, stage, progress, probe,
             )
+            if first.get("harness_error"):
+                shot = first.get("shot") or b""
+                return RenderResult(
+                    ok=False,
+                    shot=shot,
+                    shot_sha=hashlib.sha256(shot).hexdigest() if shot else "",
+                    failure="evaluator_failure",
+                    reason=str(first["harness_error"])[:200],
+                    errors=list(first.get("errors") or []),
+                    external=list(first.get("external") or []),
+                    probe=first.get("probe"),
+                    stepped=first.get("stepped"),
+                    pixels=first.get("pixels"),
+                    ready_ok=not first.get("ready_failed"),
+                    step_ok=not first.get("step_failed"),
+                )
             second = (
                 _page_pass(
-                    url, port, steps, dt, viewport, timeout_ms, mode, stage, progress
+                    url, port, steps, dt, viewport, timeout_ms, mode, stage, progress, probe,
                 )
                 if again and mode != "live"
                 else None
@@ -1309,6 +1636,7 @@ def render(
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
     again: bool = True,
     mode: str = "fixed",
+    probe: bool = True,
 ) -> RenderResult:
     """Render one candidate page in a fixed, time-driven, or ordinary live mode.
 
@@ -1348,6 +1676,7 @@ def render(
         "timeout_ms": timeout_ms,
         "again": again,
         "mode": mode,
+        "probe": probe,
     }
     try:
         result = _call_worker(job, deadline)
@@ -1358,6 +1687,8 @@ def render(
             reason=f"{type(exc).__name__}: {str(exc)[:200]}",
             failure="evaluator_failure",
         )
+    if result is not None and result.failure == "evaluator_failure":
+        _kill_worker()
     if result is None:
         _kill_worker()
         # The navigation timeout is only a part of the budget, so the reason

@@ -61,13 +61,14 @@ POLICY: dict[str, Any] = {
     "reasoning_budget_note": "server-side thinking cap (llama.cpp); vLLM stands keep their own default",
     "reasoning_effort_note": "not forced: the stand decides, the spend is documented instead",
     "request_wall_clock": 1800,
-    "request_wall_clock_note": "ceiling per request; a task that hits it is reported as unverified, never as a wrong answer",
+    "request_wall_clock_note": "ceiling per request; hitting it is resource_exhausted (0 points, kept in the denominator), never a skip",
     "task_wall_clock": 3600,
     "task_wall_clock_note": ("ceiling per task across all turns and the stream_options retry; "
                              "each request gets no more than the remaining time"),
     "max_total_tokens": 16384,
     "max_tool_calls": 12,
     "context_window": DEFAULT_CONTEXT_WINDOW,
+    "quantization_verified_window": 32768,
     "prompt_cache": "each measured prompt carries a fresh nonce, so no run is served from another run's prompt cache",
     "offload": "none — weights and KV cache fully on the GPU; partial offload is a different configuration",
     "rope_scaling": "none — no YaRN/linear scaling, the model must be run inside its trained window",
@@ -75,8 +76,8 @@ POLICY: dict[str, Any] = {
     "speculative_decoding": "disabled",
     "grammar_or_json_schema": "not used",
     "parallel_slots": 1,
-    "quantization": "the largest quant that still fits the full 32K window on the GPU without offload",
-    "kv_cache": "declared per entry; measured here: q8_0 doubles generation speed at a 32K window, so it is the reference value, not a default",
+    "quantization": "the largest quant that still fits the GPU without offload; measured at 32768; not verified at 262144",
+    "kv_cache": "declared per entry; q8_0 doubles generation speed and is the reference value, not a default; measured at 32768; not verified at 262144",
     "thinking": "enabled where the model has it, with the same token budget as everything else",
     "agent": ("categories C, K and L are solved by the pi coding agent in a working copy: the agent reads files, "
               "edits them and runs their tests, and the artefact is graded from disk. The harness is pinned "
@@ -93,7 +94,7 @@ RUNTIMES: dict[str, dict[str, str]] = {
             "  -c <window> -ngl all -fa on -ctk <kv> -ctv <kv> \\\n"
             "  -np 1 --no-context-shift --jinja \\\n"
             "  --reasoning auto --reasoning-format deepseek --reasoning-budget <reasoning-budget> \\\n"
-            "  --temp 0 --top-p 1 --seed -1 -n <answer-budget> \\\n"
+            "  --temp 0 --top-p 1 -n <answer-budget> \\\n"
             "  --metrics --props --alias <model-name>"
         ),
         "verify": [
@@ -640,6 +641,15 @@ def preflight(
     model = str(entry.get("model") or "")
     provider = provider or OpenAICompatibleProvider(base_url=base_url, model=model, timeout=1800.0)
     report = PreflightReport(reference_id=reference.id, label=reference.label, launch=reference.launch_line())
+    verified = reference.policy.get("quantization_verified_window")
+    if verified is not None and reference.context_window > int(verified):
+        report.probes.append(
+            Probe(
+                "quantization_window",
+                "warn",
+                f"квант и KV измерены при окне {int(verified)}; при {reference.context_window} не проверены",
+            )
+        )
 
     gpus = gpu_inventory()
     if gpus:

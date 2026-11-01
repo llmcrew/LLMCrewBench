@@ -40,15 +40,15 @@ PROFILES: tuple[str, ...] = (DEFAULT_PROFILE, "pilot", "stretch-v1", "research-v
 ``baseline`` is the published 47-scenario suite; ``pilot`` carries only the
 scenarios that are not admitted to the ranking yet; ``stretch`` adds tasks to
 the baseline and redistributes the same category totals inside it, so the
-A–J denominator stays 100 while ``pilot`` is read per task instead of as a
-/new total. ``research-v1`` is deliberately narrow: ten admitted research
+A–J denominator stays 100 while ``pilot`` keeps the point weights declared by
+its task modules instead of being rescaled to 100. ``research-v1`` is deliberately narrow: ten admitted research
 scenarios across seven categories plus six VQA showcases outside the
 denominator, so its scored total is 71 and it is not comparable with the
 baseline per category.
 """
 
-BASELINE_INCOMPARABLE_PROFILES = frozenset({"research-v1"})
-"""Profiles whose category set is a subset: their numbers are read on their own."""
+BASELINE_INCOMPARABLE_PROFILES = frozenset({"research-v1", "pilot"})
+"""Profiles whose category set or denominator differs: their numbers are read on their own."""
 
 
 def comparable_with_baseline(profile: str = DEFAULT_PROFILE) -> bool:
@@ -156,8 +156,18 @@ ASSET_SIZE: tuple[int, int] = (768, 512)
 ASSET_MEDIA_TYPES: tuple[str, ...] = ("image/png",)
 """Media types a fixture may present. PNG only: preprocessing is fixed."""
 
+PILOT_CATEGORY_POINTS: dict[str, float] = {
+    "A": 2.0, "B": 1.0, "C": 8.0, "D": 2.0, "E": 2.0,
+    "F": 8.0, "G": 2.0, "H": 4.0, "I": 2.0, "J": 2.0,
+}
+"""Frozen module weights of the pilot wave; unlike other profiles they are not redistributed.
+
+This is a protocol table, not a live sum. ``test_pilot_keeps_module_weights``
+guards it against the weights the task modules declare.
+"""
+
+
 PROFILE_POINTS: dict[str, dict[str, float]] = {
-    "pilot": dict(CATEGORY_POINTS),
     "stretch-v1": dict(CATEGORY_POINTS),
     # Only the seven categories the research wave reaches exist in this profile;
     # B, G and H have no scenario at all, so their totals are absent rather than
@@ -166,20 +176,20 @@ PROFILE_POINTS: dict[str, dict[str, float]] = {
 }
 """Category totals per profile where they differ from the baseline.
 
-``pilot`` carries a single admitted scenario per category, so the full category
-total rides on that one task; ``stretch`` keeps the A–J total at 100 and only
-enlarges the visual showcase (see ``SHOWCASE_POINTS``); ``research-v1`` names
-only the categories it carries and so drops the rest from its denominator. The
-totals are distributed evenly over the tasks of the profile by
-``suite.build_suite``, so the denominator stays independent of how many new
-scenarios a category received.
+``pilot`` deliberately stays out: its module weights live in
+``PILOT_CATEGORY_POINTS`` and ``suite.build_suite`` leaves them untouched.
+``stretch`` keeps the A–J total at 100 and only enlarges the visual showcase
+(see ``SHOWCASE_POINTS``); ``research-v1`` names only the categories it carries
+and so drops the rest from its denominator. These totals are distributed
+evenly over the tasks of the profile by ``suite.build_suite``, so the
+denominator stays independent of how many new scenarios a category received.
 """
 
 
 #: Bumped whenever the evaluator contract changes: the meaning of a check, the
 #: shape of ``Score.checks``, or how points map to checks. The suite digest
 #: folds it in, so a resume can never mix scores produced under two contracts.
-EVALUATOR_CONTRACT = 3
+EVALUATOR_CONTRACT = 4
 
 #: Complete outcome dictionary of the measurement protocol. ``success`` and
 #: ``model_failure`` are quiet outcomes: they carry no ``Score.failure`` and are
@@ -268,9 +278,11 @@ def outcome_of(score: Any) -> str:
     """One protocol outcome of a score row or :class:`Score`.
 
     A skipped task is ``unsupported``; a stored failure is its canonical kind.
-    An error without a kind is an infrastructure outcome: the run broke before a
-    verdict. Otherwise the row is a capability verdict — wrong while any check
-    failed, ``success`` only when all of them passed.
+    An error without a kind is an infrastructure outcome, checks or not: a
+    legacy row stored that way was an outage. Only a row the runner marked
+    ``usage_unconfirmed_only`` keeps the evaluator verdict. Otherwise the row
+    is a capability verdict: wrong while any check failed, ``success`` only
+    when all of them passed.
     """
     data = score if isinstance(score, Mapping) else score.as_dict()
     if data.get("skipped"):
@@ -278,10 +290,11 @@ def outcome_of(score: Any) -> str:
     kind = canonical_failure(data.get("failure"))
     if kind:
         return kind
-    if data.get("error"):
+    if data.get("error") and not data.get("usage_unconfirmed_only"):
         return "infra_failure"
     failed = any(not check.get("passed") for check in data.get("checks") or [])
     return "model_failure" if failed else "success"
+
 
 
 def showcase_points(profile: str = DEFAULT_PROFILE) -> dict[str, float]:
@@ -305,6 +318,10 @@ def points_for(key: str, profile: str = DEFAULT_PROFILE) -> float | None:
     showcase) or drop categories from its set entirely (``research-v1``); the
     baseline constants stay untouched.
     """
+    if profile == "pilot":
+        if key in PILOT_CATEGORY_POINTS:
+            return PILOT_CATEGORY_POINTS[key]
+        return showcase_points(profile).get(key)
     override = PROFILE_POINTS.get(profile)
     if override is not None:
         if key in override:
@@ -314,7 +331,7 @@ def points_for(key: str, profile: str = DEFAULT_PROFILE) -> float | None:
         return showcase_points(profile).get(key)
     if key in CATEGORY_POINTS:
         return CATEGORY_POINTS[key]
-    return SHOWCASE_POINTS[DEFAULT_PROFILE].get(key)
+    return showcase_points(profile).get(key)
 
 
 def scored_total(profile: str = DEFAULT_PROFILE) -> float:
@@ -759,6 +776,14 @@ class Score:
     enlarge ``possible`` beyond the declared maximum.
     """
 
+    usage_unconfirmed_only: bool = False
+    """True when the only fault is a missing ``usage`` report.
+
+    Stored so :func:`outcome_of` can tell that row from a legacy error that
+    also has checks and no failure kind. Absent on rows written before the
+    marker existed; those stay infrastructure.
+    """
+
     @property
     def status(self) -> str:
         """Machine-readable state of the row: ``ok``, ``skipped`` or ``error``."""
@@ -818,7 +843,7 @@ class Score:
             check.points = points
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "task_id": self.task_id,
             "category": self.category,
             "earned": self.earned,
@@ -832,6 +857,9 @@ class Score:
             "notes": self.notes,
             "checks": [c.as_dict() for c in self.checks],
         }
+        if self.usage_unconfirmed_only:
+            data["usage_unconfirmed_only"] = True
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Score":
@@ -846,6 +874,7 @@ class Score:
             error=data.get("error"),
             failure=data.get("failure"),
             max_points=data.get("max_points"),
+            usage_unconfirmed_only=bool(data.get("usage_unconfirmed_only")),
         )
 
 

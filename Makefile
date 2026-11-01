@@ -1,4 +1,8 @@
+ifeq ($(OS),Windows_NT)
+PY ?= .venv/Scripts/python.exe
+else
 PY ?= .venv/bin/python
+endif
 UV ?= uv
 
 .PHONY: help setup browser agent sandbox agent-image serve test ci docker-smoke cov selfcheck list generate run bench report publish doctor preflight preflight-sandbox visual shots clean
@@ -29,7 +33,7 @@ help:
 	@echo "shots      показать кадры последнего прогона: make shots DIR=runs/<name>"
 
 setup:
-	@test -x $(PY) || $(UV) venv --python 3.12 .venv
+	@$(PY) -c "" || $(UV) venv --python 3.12 .venv
 	$(UV) pip install --python $(PY) -e ".[dev]"
 
 browser:
@@ -103,4 +107,4 @@ shots:
 	@echo "открой $(DIR)/visual.html"
 
 clean:
-	rm -rf .pytest_cache .coverage
+	$(PY) -c "import shutil; from pathlib import Path; shutil.rmtree('.pytest_cache', ignore_errors=True); Path('.coverage').unlink(missing_ok=True)"

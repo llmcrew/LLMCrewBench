@@ -68,6 +68,8 @@ def run_harness(project: Path, model: str, instruction: str, tools: str, log: Pa
     ]
     log.parent.mkdir(parents=True, exist_ok=True)
     started = time.time()
+    agent = _agent()
+    counter = _RepeatCounter()
     # The harness streams one JSON event per token while it generates: unfiltered
     # that is ~60 MB per minute (557 MB in eight minutes was measured). Dropping
     # the token-delta events keeps every fact the driver uses and the file small.
@@ -75,7 +77,14 @@ def run_harness(project: Path, model: str, instruction: str, tools: str, log: Pa
         child = subprocess.Popen(
             command, cwd=str(project), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             env=env, text=True, encoding="utf-8", errors="replace", bufsize=1,
+            # Own group/session so _kill_tree cannot signal the driver's group.
+            **agent._spawn_kwargs(),
         )
+        try:
+            # Job, when the host has one, covers descendants spawned after this.
+            agent._guard_process(child, project)
+        except Exception:
+            pass
 
         def pump() -> None:
             assert child.stdout is not None
@@ -83,43 +92,85 @@ def run_harness(project: Path, model: str, instruction: str, tools: str, log: Pa
                 if '"message_update"' in line or '"message_start"' in line:
                     continue
                 handle.write(line)
+                handle.flush()
+                counter.feed(line)
 
         reader = threading.Thread(target=pump, daemon=True)
         reader.start()
-        while child.poll() is None:
-            time.sleep(2.0)
-            if time.time() - started > round_timeout:
-                child.terminate()
-                break
-            repeats = _repeat_counts(log)
-            if repeats and max(repeats.values()) > repeat_limit:
-                child.terminate()
-                break
         try:
-            child.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            child.kill()
+            while child.poll() is None:
+                time.sleep(2.0)
+                if time.time() - started > round_timeout or counter.exceeded(repeat_limit):
+                    # terminate() kills only this pid; the harness's children must go too.
+                    _stop_tree(agent, child, project)
+                    break
+            try:
+                child.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                _stop_tree(agent, child, project)
+        finally:
+            _release_job(agent, child, project)
         reader.join(timeout=10)
     return child.returncode if child.returncode is not None else -1
 
 
-def _repeat_counts(log: Path) -> dict[str, int]:
-    """How many times each identical tool call appears in the round so far."""
-    counts: dict[str, int] = {}
-    try:
-        text = log.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return counts
-    for line in text.splitlines():
+def _agent():
+    """Process-tree helpers live on the agent; this script must not grow a second one."""
+    root = Path(__file__).resolve().parent.parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from dailybench import agent
+
+    return agent
+
+
+def _stop_tree(agent, proc: subprocess.Popen, project: Path) -> None:
+    """Kill the live tree, then the job for anything that already left it.
+
+    ``_kill_tree`` terminates a stored job before ``taskkill`` and skips
+    ``taskkill`` once that has reaped the root. A descendant created before the
+    job assign is not in the job, so it would survive. Take the job out first.
+    """
+    job = agent._PROC_JOBS.pop(proc.pid, None)
+    agent._kill_tree(proc)
+    if job is not None:
+        job.terminate()
+        job.close()
+    agent._OPEN_JOBS.pop(str(project), None)
+
+
+def _release_job(agent, proc: subprocess.Popen, project: Path) -> None:
+    """Drop a job the round did not already terminate."""
+    agent._OPEN_JOBS.pop(str(project), None)
+    job = agent._PROC_JOBS.pop(proc.pid, None)
+    if job is not None:
+        job.close()
+
+
+class _RepeatCounter:
+    """Identical tool-call counts, incremented by the pump. The log is never reread."""
+
+    def __init__(self) -> None:
+        self.counts: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def feed(self, line: str) -> None:
         if '"tool_execution_start"' not in line:
-            continue
+            return
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
-            continue
-        key = f"{event.get('toolName')}:{json.dumps(event.get('args'), sort_keys=True, ensure_ascii=False)}"
-        counts[key] = counts.get(key, 0) + 1
-    return counts
+            return
+        key = (
+            f"{event.get('toolName')}:"
+            f"{json.dumps(event.get('args'), sort_keys=True, ensure_ascii=False)}"
+        )
+        with self._lock:
+            self.counts[key] = self.counts.get(key, 0) + 1
+
+    def exceeded(self, limit: int) -> bool:
+        with self._lock:
+            return bool(self.counts) and max(self.counts.values()) > limit
 
 
 def summarise_round(log: Path) -> dict:

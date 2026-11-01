@@ -12,6 +12,7 @@ import json
 import hashlib
 import os
 import random
+import shlex
 import stat
 import subprocess
 import sys
@@ -27,36 +28,123 @@ from dailybench.runner import Runner
 from dailybench.tasks import coding_python, load_all
 
 
-def _fake_pi(tmp_path: Path, script: str, version: str = agent.PI_VERSION) -> Path:
-    """A stand-in that answers ``--version`` like the pinned release.
+_FAKE_VERSION_ENV = "DAILYBENCH_TEST_AGENT_VERSION"
 
-    The harness probes every binary before it runs anything, so a fake that
-    stayed silent would be refused before its script was reached.
-    """
-    path = tmp_path / "fake-pi"
-    path.write_text(
-        "#!/bin/sh\n"
-        f'if [ "$1" = "--version" ]; then echo "{version}"; exit 0; fi\n' + script,
+
+def _fake_agent(tmp_path: Path, body: str) -> Path:
+    """Build a Python fake behind a native executable launcher."""
+    version = os.environ.get(_FAKE_VERSION_ENV, agent.PI_VERSION)
+    script = tmp_path / "fake-agent.py"
+    script.write_text(
+        "import sys\n"
+        'if sys.argv[1:] == ["--version"]:\n'
+        f"    print({version!r})\n"
+        "    raise SystemExit(0)\n" + body,
         encoding="utf-8",
     )
-    path.chmod(path.stat().st_mode | stat.S_IXUSR)
-    return path
+    if os.name == "nt":
+        launcher = tmp_path / "fake-agent.cmd"
+        launcher.write_text(
+            f"@chcp 65001>nul\r\n@rem {version}\r\n@\"{sys.executable}\" \"{script}\" %*\r\n",
+            encoding="utf-8",
+        )
+    else:
+        launcher = tmp_path / "fake-agent"
+        launcher.write_text(
+            f"#!/bin/sh\n# {version}\nexec {shlex.quote(sys.executable)} "
+            f"{shlex.quote(str(script))} \"$@\"\n",
+            encoding="utf-8",
+        )
+        launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
+    return launcher
+
+
+@pytest.mark.skipif(os.name != "nt", reason="проверяется чтение .cmd через cmd.exe")
+def test_fake_agent_launcher_supports_non_ascii_paths(tmp_path):
+    folder = tmp_path / "агент"
+    folder.mkdir()
+    launcher = _fake_agent(folder, "raise SystemExit(0)\n")
+    result = subprocess.run(
+        [str(launcher), "--version"], capture_output=True, text=True, encoding="utf-8"
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == agent.PI_VERSION
+
+
+_TASKKILL_BODY = """\
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+log = os.environ.get("TASKKILL_LOG")
+if log:
+    with Path(log).open("a", encoding="utf-8") as handle:
+        handle.write(" ".join(args) + "\\n")
+pid = int(args[args.index("/PID") + 1])
+if os.name == "nt":
+    real = Path(os.environ["SystemRoot"]) / "System32" / "taskkill.exe"
+    subprocess.run([str(real), *args], check=False)
+else:
+    children = subprocess.run(
+        ["ps", "-Ao", "pid=,ppid="], capture_output=True, text=True, check=True
+    ).stdout
+    for line in children.splitlines():
+        child, parent = map(int, line.split())
+        if parent == pid:
+            os.kill(child, signal.SIGKILL)
+    os.kill(pid, signal.SIGKILL)
+"""
 
 
 def _pid_alive(pid: int) -> bool:
     """Does the pid exist and is it not a zombie?"""
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_bool, ctypes.c_uint32]
+        kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel32.OpenProcess(0x1000 | 0x00100000, False, pid)
+        if not handle:
+            # ERROR_INVALID_PARAMETER means the pid is gone; access denial does not.
+            return ctypes.get_last_error() != 87
+        try:
+            exit_code = ctypes.c_uint32()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
+    except OSError:
+        return False
     try:
         state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
                                capture_output=True, text=True).stdout.strip()
     except OSError:
         return True
     return bool(state) and not state.startswith("Z")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="проверяется Win32 OpenProcess/GetExitCodeProcess")
+def test_windows_pid_alive_distinguishes_live_and_dead_processes():
+    proc = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"])
+    try:
+        assert _pid_alive(proc.pid)
+    finally:
+        proc.kill()
+        proc.wait()
+    assert not _pid_alive(proc.pid)
 
 
 def _real_pi() -> str | None:
@@ -69,24 +157,6 @@ def _real_pi() -> str | None:
     except agent.AgentVersionError:
         return None
     return found
-
-
-def _fake_taskkill(folder: Path) -> Path:
-    """A stand-in for the Windows command; it kills the given tree on POSIX."""
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / "taskkill"
-    path.write_text(
-        "#!/bin/sh\n"
-        'printf \'%s\\n\' "$*" >> "${TASKKILL_LOG:-/dev/null}"\n'
-        "pid=$2\n"
-        'for child in $(/bin/ps -Ao pid=,ppid= | /usr/bin/awk -v p="$pid" \'$2==p {print $1}\'); do\n'
-        '  /bin/kill -9 "$child"\n'
-        "done\n"
-        '/bin/kill -9 "$pid"\n',
-        encoding="utf-8",
-    )
-    path.chmod(path.stat().st_mode | stat.S_IXUSR)
-    return path
 
 
 def _events(*records: dict) -> str:
@@ -111,17 +181,23 @@ def _assistant(text: str = "готово", **extra) -> dict:
 
 
 def test_binary_prefers_the_environment(monkeypatch, tmp_path):
-    fake = _fake_pi(tmp_path, "exit 0\n")
+    fake = _fake_agent(tmp_path, "raise SystemExit(0)\n")
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(fake))
     assert agent.binary() == str(fake)
 
 
 def test_missing_binary_is_installed(monkeypatch, tmp_path):
     """A machine without pi gets it installed, not a skipped category."""
-    fake = _fake_pi(tmp_path, "exit 0\n")
+    fake = _fake_agent(tmp_path, "raise SystemExit(0)\n")
     monkeypatch.delenv(agent.AGENT_BIN_ENV, raising=False)
     monkeypatch.setattr(agent.shutil, "which", lambda name: None)
-    monkeypatch.setenv(agent.AGENT_INSTALL_ENV, f"cp {fake} {tmp_path}/installed && echo {tmp_path}/installed")
+    monkeypatch.setenv("FAKE_INSTALL_SOURCE", str(fake))
+    monkeypatch.setenv("FAKE_INSTALL_DEST", str(tmp_path / "installed"))
+    monkeypatch.setenv(
+        agent.AGENT_INSTALL_ENV,
+        f'"{sys.executable}" -c "import os,shutil; '
+        "shutil.copyfile(os.environ['FAKE_INSTALL_SOURCE'], os.environ['FAKE_INSTALL_DEST'])\"",
+    )
 
     monkeypatch.setattr(
         agent,
@@ -217,14 +293,27 @@ def test_config_dir_is_unique_per_task_under_a_shared_parent(tmp_path):
 
 def test_parallel_runs_do_not_overwrite_each_others_models_json(monkeypatch, tmp_path):
     """Two tasks used to share ``<temp>/pi-agent`` and the last writer won."""
-    script = (
-        "sleep 0.3\n"
-        'model=$(sed -n \'s/.*"id": "\\([^"]*\\)".*/\\1/p\' "$PI_CODING_AGENT_DIR/models.json")\n'
-        'printf \'%s\\n\' "{\\"type\\":\\"message_end\\",\\"message\\":{\\"role\\":\\"assistant\\",'
-        '\\"content\\":[{\\"type\\":\\"text\\",\\"text\\":\\"$model\\"}],'
-        '\\"usage\\":{\\"input\\":10,\\"output\\":2},\\"stopReason\\":\\"stop\\"}}"\n'
-    )
-    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_pi(tmp_path, script)))
+    script = """\
+import json
+import os
+import time
+from pathlib import Path
+
+time.sleep(0.3)
+config = Path(os.environ["PI_CODING_AGENT_DIR"]) / "models.json"
+model = json.loads(config.read_text(encoding="utf-8"))["providers"]["bench"]["models"][0]["id"]
+event = {
+    "type": "message_end",
+    "message": {
+        "role": "assistant",
+        "content": [{"type": "text", "text": model}],
+        "usage": {"input": 10, "output": 2},
+        "stopReason": "stop",
+    },
+}
+print(json.dumps(event), flush=True)
+"""
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_agent(tmp_path, script)))
     work_a, work_b = tmp_path / "task-a", tmp_path / "task-b"
     work_a.mkdir()
     work_b.mkdir()
@@ -263,14 +352,29 @@ def test_the_settings_pin_names_the_document_on_disk(tmp_path):
 
 def test_compaction_spend_is_part_of_the_usage(monkeypatch, tmp_path):
     """A summary is a model request; its tokens must not look free."""
-    script = _fake_pi(
-        tmp_path,
-        'printf \'%s\\n\' \'{"type":"compaction_start","reason":"threshold"}\'\n'
-        'printf \'%s\\n\' \'{"type":"compaction_end","reason":"threshold","result":'
-        '{"tokensBefore":9000,"estimatedTokensAfter":1200,"usage":{"input":9000,"output":30}}}\'\n'
-        'printf \'%s\\n\' \'{"type":"message_end","message":{"role":"assistant",'
-        '"content":[{"type":"text","text":"ok"}],"usage":{"input":100,"output":20},"stopReason":"stop"}}\'\n',
-    )
+    records = [
+        {"type": "compaction_start", "reason": "threshold"},
+        {
+            "type": "compaction_end",
+            "reason": "threshold",
+            "result": {
+                "tokensBefore": 9000,
+                "estimatedTokensAfter": 1200,
+                "usage": {"input": 9000, "output": 30},
+            },
+        },
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input": 100, "output": 20},
+                "stopReason": "stop",
+            },
+        },
+    ]
+    body = "".join(f"print({json.dumps(record)!r}, flush=True)\n" for record in records)
+    script = _fake_agent(tmp_path, body)
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
     cfg = RunConfig(base_url="http://127.0.0.1:9999/v1", model="m")
     work = tmp_path / "work"
@@ -301,9 +405,10 @@ def test_parse_version_reads_the_reported_release():
     assert agent.parse_version("no-number") is None
 
 
-def test_a_foreign_release_is_refused_with_the_install_hint(tmp_path):
+def test_a_foreign_release_is_refused_with_the_install_hint(monkeypatch, tmp_path):
     """0.80.10 rejected ``--`` before the first request; it must be named."""
-    wrong = _fake_pi(tmp_path, "exit 0\n", version="0.80.10")
+    monkeypatch.setenv(_FAKE_VERSION_ENV, "0.80.10")
+    wrong = _fake_agent(tmp_path, "raise SystemExit(0)\n")
     with pytest.raises(agent.AgentVersionError) as caught:
         agent.verify(str(wrong))
     message = str(caught.value)
@@ -312,31 +417,41 @@ def test_a_foreign_release_is_refused_with_the_install_hint(tmp_path):
     assert caught.value.probed is not None and caught.value.probed.version == "0.80.10"
 
 
-def test_a_newer_release_is_refused_too(tmp_path):
+def test_a_newer_release_is_refused_too(monkeypatch, tmp_path):
+    monkeypatch.setenv(_FAKE_VERSION_ENV, "1.0.1")
     with pytest.raises(agent.AgentVersionError):
-        agent.verify(str(_fake_pi(tmp_path, "exit 0\n", version="1.0.1")))
+        agent.verify(str(_fake_agent(tmp_path, "raise SystemExit(0)\n")))
 
 
 def test_ensure_refuses_a_present_but_wrong_release(monkeypatch, tmp_path):
     """``make agent`` must fail on the version, not just install blindly."""
-    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_pi(tmp_path, "exit 0\n", version="0.80.10")))
+    monkeypatch.setenv(_FAKE_VERSION_ENV, "0.80.10")
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_agent(tmp_path, "raise SystemExit(0)\n")))
     with pytest.raises(agent.AgentVersionError):
         agent.ensure()
 
 
-def test_an_unreadable_version_is_an_error_not_an_assumption(tmp_path):
-    silent = _fake_pi(tmp_path, "exit 0\n", version="не число")
+def test_an_unreadable_version_is_an_error_not_an_assumption(monkeypatch, tmp_path):
+    monkeypatch.setenv(_FAKE_VERSION_ENV, "не число")
+    silent = _fake_agent(tmp_path, "raise SystemExit(0)\n")
     with pytest.raises(agent.AgentVersionError):
         agent.verify(str(silent))
 
 
 def test_the_written_models_json_does_not_replace_the_version_check(monkeypatch, tmp_path):
     """A file on disk proves nothing about the CLI; the binary is still probed."""
-    script = (
-        'printf \'%s\\n\' \'{"type":"message_end","message":{"role":"assistant",'
-        '"content":[{"type":"text","text":"ok"}],"usage":{"input":10,"output":2},"stopReason":"stop"}}\'\n'
-    )
-    wrong = _fake_pi(tmp_path, script, version="0.80.10")
+    event = {
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input": 10, "output": 2},
+            "stopReason": "stop",
+        },
+    }
+    script = f"print({json.dumps(event)!r}, flush=True)\n"
+    monkeypatch.setenv(_FAKE_VERSION_ENV, "0.80.10")
+    wrong = _fake_agent(tmp_path, script)
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(wrong))
     cfg = RunConfig(base_url="http://x/v1", model="m")
     agent_dir = agent.config_dir(tmp_path, cfg)
@@ -353,7 +468,7 @@ def test_the_written_models_json_does_not_replace_the_version_check(monkeypatch,
 
 
 def test_the_agent_identity_names_the_binary_and_digest(monkeypatch, tmp_path):
-    fake = _fake_pi(tmp_path, "exit 0\n")
+    fake = _fake_agent(tmp_path, "raise SystemExit(0)\n")
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(fake))
     identity = agent.identity()
     assert identity["required"] == agent.PI_VERSION and identity["found"] == agent.PI_VERSION
@@ -379,10 +494,11 @@ def test_the_agent_binary_is_part_of_the_run_identity(monkeypatch, tmp_path):
 
     folder = tmp_path / "bin"
     folder.mkdir()
-    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_pi(folder, "exit 0\n")))
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_agent(folder, "raise SystemExit(0)\n")))
     cfg = RunConfig(agent=True)
     before = run_identity(cfg, "suite")
-    _fake_pi(folder, "exit 0\n", version="0.80.10")
+    monkeypatch.setenv(_FAKE_VERSION_ENV, "0.80.10")
+    _fake_agent(folder, "raise SystemExit(0)\n")
     assert run_identity(cfg, "suite") != before
     assert run_identity(RunConfig(agent=False), "suite") == run_identity(RunConfig(agent=False), "suite")
 
@@ -395,12 +511,14 @@ def test_the_agent_binary_is_part_of_the_run_identity(monkeypatch, tmp_path):
 def test_run_passes_the_isolation_flags(monkeypatch, tmp_path):
     """The harness must be pinned: a stray .pi/ or AGENTS.md must not reach it."""
     seen: dict[str, object] = {}
-    script = _fake_pi(
-        tmp_path,
-        'printf \'%s\\n\' "$@" > "$ARGS_OUT"\n'
-        'printf \'%s\\n\' \'{"type":"message_end","message":{"role":"assistant",'
-        '"content":[{"type":"text","text":"ok"}],"usage":{"input":10,"output":2},"stopReason":"stop"}}\'\n',
+    event = _assistant("ok")
+    event["message"]["usage"]["output"] = 2
+    body = (
+        "import os\nfrom pathlib import Path\n"
+        'Path(os.environ["ARGS_OUT"]).write_text("\\n".join(sys.argv[1:]) + "\\n", encoding="utf-8")\n'
+        f"print({json.dumps(event)!r}, flush=True)\n"
     )
+    script = _fake_agent(tmp_path, body)
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
     monkeypatch.setenv("ARGS_OUT", str(tmp_path / "args.txt"))
     cfg = RunConfig(base_url="http://x/v1", model="m")
@@ -425,14 +543,27 @@ def test_run_passes_the_isolation_flags(monkeypatch, tmp_path):
 
 
 def test_events_become_tool_calls_and_usage(monkeypatch, tmp_path):
-    script = _fake_pi(
-        tmp_path,
-        'printf \'%s\\n\' \'{"type":"tool_execution_start","toolCallId":"1","toolName":"write","args":{"path":"a.py"}}\'\n'
-        'printf \'%s\\n\' \'{"type":"tool_execution_end","toolCallId":"1","toolName":"write",'
-        '"result":{"content":[{"type":"text","text":"written"}]},"isError":false}\'\n'
-        'printf \'%s\\n\' \'{"type":"message_end","message":{"role":"assistant",'
-        '"content":[{"type":"text","text":"сделано"}],"usage":{"input":50,"output":7,"reasoning":3},"stopReason":"stop"}}\'\n',
-    )
+    records = [
+        {"type": "tool_execution_start", "toolCallId": "1", "toolName": "write", "args": {"path": "a.py"}},
+        {
+            "type": "tool_execution_end",
+            "toolCallId": "1",
+            "toolName": "write",
+            "result": {"content": [{"type": "text", "text": "written"}]},
+            "isError": False,
+        },
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "сделано"}],
+                "usage": {"input": 50, "output": 7, "reasoning": 3},
+                "stopReason": "stop",
+            },
+        },
+    ]
+    body = "".join(f"print({json.dumps(record)!r}, flush=True)\n" for record in records)
+    script = _fake_agent(tmp_path, body)
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
     cfg = RunConfig(base_url="http://x/v1", model="m")
     work = tmp_path / "w"
@@ -470,16 +601,12 @@ def test_the_endpoint_key_is_scrubbed_from_the_event_stream(monkeypatch, tmp_pat
         },
         "isError": False,
     }
-    script = _fake_pi(
-        tmp_path,
-        "printf '%s\\n' "
-        + f"'{json.dumps(leaked)}'"
-        + "\n"
-        + "printf '%s\\n' "
-        + f"'{json.dumps(_assistant())}'"
-        + "\n"
-        + f"echo 'DAILYBENCH_API_KEY={secret}' >&2\n",
+    body = (
+        f"print({json.dumps(leaked)!r}, flush=True)\n"
+        f"print({json.dumps(_assistant())!r}, flush=True)\n"
+        f"print('DAILYBENCH_API_KEY={secret}', file=sys.stderr)\n"
     )
+    script = _fake_agent(tmp_path, body)
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
     work = tmp_path / "w"
     work.mkdir()
@@ -496,11 +623,12 @@ def test_the_endpoint_key_is_scrubbed_from_the_event_stream(monkeypatch, tmp_pat
 
 
 def test_a_nonzero_exit_keeps_the_events_and_the_reason(monkeypatch, tmp_path):
-    script = _fake_pi(
-        tmp_path,
-        'printf \'%s\\n\' \'{"type":"message_end","message":{"role":"assistant","content":[]}}\'\n'
-        'echo "boom: provider 500" >&2\nexit 3\n',
+    event = {"type": "message_end", "message": {"role": "assistant", "content": []}}
+    body = (
+        f"print({json.dumps(event)!r}, flush=True)\n"
+        "print('boom: provider 500', file=sys.stderr)\nraise SystemExit(3)\n"
     )
+    script = _fake_agent(tmp_path, body)
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
     work = tmp_path / "w"
     work.mkdir()
@@ -509,17 +637,20 @@ def test_a_nonzero_exit_keeps_the_events_and_the_reason(monkeypatch, tmp_path):
     assert "кодом 3" in (result.error or "") and "boom" in result.stderr_tail
 
 
+@pytest.mark.skipif(os.name == "nt", reason="отрицательный код завершения проверяет семантику сигналов POSIX")
 def test_a_killed_agent_is_a_resource_outcome_not_a_model_failure(monkeypatch, tmp_path):
     """``exit -9`` is the kernel or a watchdog, not the model's verdict.
 
     Classified as ``model_failure`` it looked like a wrong answer; the declared
     resource was exhausted (or someone intervened) and the run must say so.
     """
-    script = _fake_pi(
-        tmp_path,
-        'printf \'%s\\n\' \'{"type":"message_end","message":{"role":"assistant","content":[]}}\'\n'
-        "kill -9 $$\n",
+    event = {"type": "message_end", "message": {"role": "assistant", "content": []}}
+    body = (
+        "import os\nimport signal\n"
+        f"print({json.dumps(event)!r}, flush=True)\n"
+        "os.kill(os.getpid(), signal.SIGKILL)\n"
     )
+    script = _fake_agent(tmp_path, body)
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
     work = tmp_path / "w"
     work.mkdir()
@@ -531,7 +662,7 @@ def test_a_killed_agent_is_a_resource_outcome_not_a_model_failure(monkeypatch, t
 
 
 def test_a_silent_agent_is_reported_not_scored(monkeypatch, tmp_path):
-    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_pi(tmp_path, "exit 0\n")))
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_agent(tmp_path, "raise SystemExit(0)\n")))
     work = tmp_path / "w"
     work.mkdir()
     result = agent.run("p", work, RunConfig(base_url="http://x/v1", model="m"), agent_dir=tmp_path)
@@ -555,8 +686,8 @@ def test_a_stop_reason_error_on_exit_zero_is_an_error(monkeypatch, tmp_path):
             "errorMessage": "HTTP 400 from /v1/chat/completions: bad reasoning_content",
         },
     }
-    script = "printf '%s\\n' '" + json.dumps(event) + "'\n"
-    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_pi(tmp_path, script)))
+    script = f"print({json.dumps(event)!r}, flush=True)\n"
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_agent(tmp_path, script)))
     work = tmp_path / "w"
     work.mkdir()
     result = agent.run("p", work, RunConfig(base_url="http://x/v1", model="m"), agent_dir=tmp_path)
@@ -576,8 +707,8 @@ def test_an_endpoint_error_stop_is_infrastructure(monkeypatch, tmp_path):
             "errorMessage": "HTTP 503 from /v1/chat/completions: unavailable",
         },
     }
-    script = "printf '%s\\n' '" + json.dumps(event) + "'\n"
-    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_pi(tmp_path, script)))
+    script = f"print({json.dumps(event)!r}, flush=True)\n"
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_agent(tmp_path, script)))
     work = tmp_path / "w"
     work.mkdir()
     result = agent.run("p", work, RunConfig(base_url="http://x/v1", model="m"), agent_dir=tmp_path)
@@ -591,13 +722,17 @@ def test_the_agent_does_not_wait_for_stdin(monkeypatch, tmp_path):
     shell pipeline therefore produced no events at all until the timeout. The
     prompt travels in argv, so stdin must be empty.
     """
-    script = _fake_pi(
-        tmp_path,
-        # Blocks unless stdin is at EOF.
-        'read line\n'
-        'printf \'%s\\n\' \'{"type":"message_end","message":{"role":"assistant",'
-        '"content":[{"type":"text","text":"ok"}],"usage":{"input":1,"output":1},"stopReason":"stop"}}\'\n',
-    )
+    event = {
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input": 1, "output": 1},
+            "stopReason": "stop",
+        },
+    }
+    body = f"sys.stdin.read()\nprint({json.dumps(event)!r}, flush=True)\n"
+    script = _fake_agent(tmp_path, body)
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
     work = tmp_path / "w"
     work.mkdir()
@@ -619,15 +754,33 @@ def test_a_timeout_kills_the_whole_process_tree(monkeypatch, tmp_path):
     started detached, so a plain ``killpg`` on the agent's group misses a
     Chrome a self-check script launched, and only a parent-chain walk reaches it.
     """
-    script = _fake_pi(
-        tmp_path,
-        # Own session, so killpg cannot see it; both levels outlive the timeout.
-        f'{sys.executable} -c "import subprocess;subprocess.Popen([\'sleep\',\'601.7\'],'
-        f'start_new_session=True);import time;time.sleep(600)" &\n'
-        "sleep 602.9 &\n"
-        "wait\n",
-    )
+    body = """\
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+child_code = (
+    "import subprocess,sys,time;"
+    "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(601.7)']);"
+    "print(p.pid,flush=True);time.sleep(600)"
+)
+detached = {"start_new_session": True} if os.name != "nt" else {}
+child = subprocess.Popen(
+    [sys.executable, "-c", child_code], stdout=subprocess.PIPE, text=True, **detached
+)
+grandchild = int(child.stdout.readline())
+other = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(602.9)"])
+Path(os.environ["AGENT_TEST_PIDS"]).write_text(
+    f"{child.pid} {grandchild} {other.pid}", encoding="utf-8"
+)
+time.sleep(600)
+"""
+    script = _fake_agent(tmp_path, body)
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
+    pids = tmp_path / "pids"
+    monkeypatch.setenv("AGENT_TEST_PIDS", str(pids))
     work = tmp_path / "w"
     work.mkdir()
     cfg = RunConfig(base_url="http://x/v1", model="m", request_wall_clock=60.0, task_wall_clock=3.0)
@@ -636,19 +789,87 @@ def test_a_timeout_kills_the_whole_process_tree(monkeypatch, tmp_path):
     elapsed = time.perf_counter() - started
     assert not result.ok and "не уложился" in (result.error or "")
     assert elapsed < 12, f"дочерний процесс держал пайп: {elapsed:.1f} с"
+    recorded = [int(pid) for pid in pids.read_text(encoding="utf-8").split()]
+    assert len(recorded) == 3
     time.sleep(0.5)
-    for name in ("sleep 601.7", "sleep 602.9"):
-        survivors = subprocess.run(["pgrep", "-f", name], capture_output=True, text=True).stdout.strip()
-        assert not survivors, f"{name} пережил таймаут (pid {survivors})"
+    alive = [pid for pid in recorded if _pid_alive(pid)]
+    assert not alive, f"дети пережили таймаут: {alive}"
+
+
+def test_keyboard_interrupt_kills_the_agent_tree(monkeypatch, tmp_path):
+    """Ctrl-C must not leave the fake agent's grandchild running."""
+    body = """\
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+child = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(611.1)"])
+Path(os.environ["AGENT_TEST_PIDS"]).write_text(
+    f"{os.getpid()} {child.pid}", encoding="utf-8"
+)
+time.sleep(600)
+"""
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_agent(tmp_path, body)))
+    pids = tmp_path / "interrupt-pids"
+    monkeypatch.setenv("AGENT_TEST_PIDS", str(pids))
+    work = tmp_path / "w"
+    work.mkdir()
+    launched = []
+    real_popen = agent.subprocess.Popen
+
+    def interrupt(_proc, *_args, **_kwargs):
+        deadline = time.monotonic() + 5
+        while not pids.is_file() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert pids.is_file(), "фейковый агент не записал pid дерева"
+        raise KeyboardInterrupt
+
+    def tracked_popen(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        if "--print" not in proc.args:
+            return proc
+        launched.append(proc)
+
+        def communicate(*communicate_args, **communicate_kwargs):
+            return interrupt(proc, *communicate_args, **communicate_kwargs)
+
+        monkeypatch.setattr(proc, "communicate", communicate)
+        return proc
+
+    monkeypatch.setattr(agent.subprocess, "Popen", tracked_popen)
+    # Isolate communicate's cleanup contract from the independent cwd sweep.
+    monkeypatch.setattr(agent, "_kill_strays", lambda _work_dir: None)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            agent.run("p", work, RunConfig(base_url="http://x/v1", model="m"), agent_dir=tmp_path)
+        recorded = [int(pid) for pid in pids.read_text(encoding="utf-8").split()]
+        assert len(recorded) == 2
+        alive = [pid for pid in recorded if _pid_alive(pid)]
+        assert not alive, f"Ctrl-C оставил процессы агента: {alive}"
+    finally:
+        if launched and launched[0].poll() is None:
+            agent._kill_tree(launched[0])
 
 
 def test_kill_tree_uses_taskkill_on_a_windows_host(monkeypatch, tmp_path):
     """Windows has neither ``os.getpgid`` nor ``os.killpg``; taskkill covers it."""
     tools = tmp_path / "bin"
     log = tmp_path / "taskkill.log"
-    _fake_taskkill(tools)
+    tools.mkdir()
+    taskkill = _fake_agent(tools, _TASKKILL_BODY)
+    taskkill = taskkill.rename(tools / ("taskkill.cmd" if os.name == "nt" else "taskkill"))
     monkeypatch.setenv("TASKKILL_LOG", str(log))
-    monkeypatch.setenv("PATH", str(tools))
+    monkeypatch.setenv("PATH", os.pathsep.join([str(tools), os.environ.get("PATH", "")]))
+    real_run = agent.subprocess.run
+
+    def run_taskkill(command, *args, **kwargs):
+        if command and command[0] == "taskkill":
+            command = [str(taskkill), *command[1:]]
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(agent.subprocess, "run", run_taskkill)
     monkeypatch.setattr(agent.sys, "platform", "win32")
     # On a real Windows host these attributes do not exist at all.
     monkeypatch.delattr(agent.os, "getpgid", raising=False)
@@ -664,18 +885,154 @@ def test_kill_tree_uses_taskkill_on_a_windows_host(monkeypatch, tmp_path):
             proc.wait()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="AssignProcessToJobObject существует только на Windows")
+def test_job_attach_failure_still_kills_by_taskkill(monkeypatch, tmp_path):
+    calls = []
+
+    class _Kernel32:
+        def CreateJobObjectW(self, *_args):
+            return 7
+
+        def AssignProcessToJobObject(self, handle, process):
+            import ctypes
+
+            ctypes.set_last_error(6)
+            calls.append(("assign", handle, process))
+            return False
+
+        def CloseHandle(self, handle):
+            calls.append(("close", handle))
+            return True
+
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    taskkill = _fake_agent(tools, _TASKKILL_BODY)
+    taskkill = taskkill.rename(tools / "taskkill.cmd")
+    log = tmp_path / "taskkill.log"
+    monkeypatch.setenv("TASKKILL_LOG", str(log))
+    monkeypatch.setenv("PATH", os.pathsep.join([str(tools), os.environ.get("PATH", "")]))
+    real_run = agent.subprocess.run
+
+    def run_taskkill(command, *args, **kwargs):
+        if command and command[0] == "taskkill":
+            command = [str(taskkill), *command[1:]]
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(agent.subprocess, "run", run_taskkill)
+    monkeypatch.setattr(agent, "_win32", lambda: _Kernel32())
+    proc = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(607.15)"])
+    work = tmp_path / "w"
+    work.mkdir()
+    try:
+        agent._guard_process(proc, work)
+        assert calls and calls[0][0] == "assign"
+        assert str(work) not in agent._OPEN_JOBS
+        agent._kill_tree(proc)
+        assert proc.poll() is not None
+        assert f"/PID {proc.pid} /T /F" in log.read_text(encoding="utf-8")
+        assert agent._JOB_ATTACH_ERRORS[proc.pid] == "не прикреплён: WinError 6"
+    finally:
+        getattr(agent, "_JOB_ATTACH_ERRORS", {}).pop(proc.pid, None)
+        agent._OPEN_JOBS.pop(str(work), None)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="проверяется аварийный Windows Job Object и taskkill")
+def test_keyboard_interrupt_with_failed_job_uses_taskkill_and_sweeps(monkeypatch, tmp_path):
+    body = """\
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+child = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(611.2)"])
+Path(os.environ["AGENT_TEST_PIDS"]).write_text(
+    f"{os.getpid()} {child.pid}", encoding="utf-8"
+)
+time.sleep(600)
+"""
+
+    class _Kernel32:
+        def CreateJobObjectW(self, *_args):
+            return 7
+
+        def AssignProcessToJobObject(self, _handle, _process):
+            import ctypes
+
+            ctypes.set_last_error(6)
+            return False
+
+        def CloseHandle(self, _handle):
+            return True
+
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    taskkill = _fake_agent(tools, _TASKKILL_BODY)
+    taskkill = taskkill.rename(tools / "taskkill.cmd")
+    log = tmp_path / "taskkill.log"
+    monkeypatch.setenv("TASKKILL_LOG", str(log))
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_agent(tmp_path, body)))
+    pids = tmp_path / "interrupt-pids"
+    monkeypatch.setenv("AGENT_TEST_PIDS", str(pids))
+    real_run = agent.subprocess.run
+
+    def run_taskkill(command, *args, **kwargs):
+        if command and command[0] == "taskkill":
+            command = [str(taskkill), *command[1:]]
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(agent.subprocess, "run", run_taskkill)
+    monkeypatch.setattr(agent, "_win32", lambda: _Kernel32())
+    launched = []
+    real_popen = agent.subprocess.Popen
+
+    def tracked_popen(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        if "--print" not in proc.args:
+            return proc
+        launched.append(proc)
+
+        def communicate(*_args, **_kwargs):
+            deadline = time.monotonic() + 5
+            while not pids.is_file() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert pids.is_file(), "фейковый агент не записал pid дерева"
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(proc, "communicate", communicate)
+        return proc
+
+    monkeypatch.setattr(agent.subprocess, "Popen", tracked_popen)
+    work = tmp_path / "w"
+    work.mkdir()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            agent.run("p", work, RunConfig(base_url="http://x/v1", model="m"), agent_dir=tmp_path)
+        assert f"/PID {launched[0].pid} /T /F" in log.read_text(encoding="utf-8")
+        recorded = [int(pid) for pid in pids.read_text(encoding="utf-8").split()]
+        assert len(recorded) == 2
+        alive = [pid for pid in recorded if _pid_alive(pid)]
+        assert not alive, f"Ctrl-C оставил процессы агента: {alive}"
+    finally:
+        if launched:
+            getattr(agent, "_JOB_ATTACH_ERRORS", {}).pop(launched[0].pid, None)
+            if launched[0].poll() is None:
+                agent._kill_tree(launched[0])
+
+
 def test_a_run_timeout_survives_a_windows_platform_stub(monkeypatch, tmp_path):
     """The R12 reproduction: no ``os.getpgid``/``killpg``, yet the timeout works."""
     tools = tmp_path / "bin"
-    _fake_taskkill(tools)
-    script = _fake_pi(
-        tmp_path,
-        "printf '%s\\n' "
-        + f"'{json.dumps(_assistant('до'))}'"
-        + "\nsleep 610.1\n",
-    )
+    tools.mkdir()
+    taskkill = _fake_agent(tools, _TASKKILL_BODY)
+    taskkill = taskkill.rename(tools / ("taskkill.cmd" if os.name == "nt" else "taskkill"))
+    body = f"print({json.dumps(_assistant('до'))!r}, flush=True)\nimport time\ntime.sleep(610.1)\n"
+    script = _fake_agent(tmp_path, body)
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
-    monkeypatch.setenv("PATH", os.pathsep.join([str(tools), "/bin", "/usr/bin"]))
+    monkeypatch.setenv("PATH", os.pathsep.join([str(tools), os.environ.get("PATH", "")]))
     monkeypatch.setattr(agent.sys, "platform", "win32")
     monkeypatch.delattr(agent.os, "getpgid", raising=False)
     monkeypatch.delattr(agent.os, "killpg", raising=False)
@@ -741,7 +1098,8 @@ def test_a_windows_job_covers_the_tree_even_without_taskkill(monkeypatch, tmp_pa
     monkeypatch.setattr(agent.sys, "platform", "win32")
     monkeypatch.setattr(agent, "_win32", lambda: _Kernel32())
     proc = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(607.3)"])
-    proc._handle = 99  # POSIX Popen has no handle; the job code must still work
+    if os.name != "nt":
+        proc._handle = 99  # POSIX Popen has no handle; the job code must still work
     work = tmp_path / "w"
     work.mkdir()
     try:
@@ -768,14 +1126,27 @@ def test_descendants_fall_back_when_ps_is_missing(monkeypatch):
 def test_a_term_ignoring_descendant_that_changed_cwd_is_killed(monkeypatch, tmp_path):
     """The field shape: the child survives its root, ignores TERM and leaves the cwd."""
     pids = tmp_path / "pids"
-    script = _fake_pi(
-        tmp_path,
-        f'{sys.executable} -c "import os,signal,time;'
-        "signal.signal(signal.SIGTERM,signal.SIG_IGN);os.chdir('/');"
-        'time.sleep(608.1)" & echo $! >> ' + str(pids) + "\n"
-        "sleep 608.2 & echo $! >> " + str(pids) + "\n"
-        "wait\n",
-    )
+    body = """\
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+first = subprocess.Popen([
+    sys.executable,
+    "-c",
+    "import os,signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+    "os.chdir('/');time.sleep(608.1)",
+])
+second = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(608.2)"])
+Path(os.environ["AGENT_TEST_PIDS"]).write_text(
+    f"{first.pid} {second.pid}", encoding="utf-8"
+)
+time.sleep(600)
+"""
+    script = _fake_agent(tmp_path, body)
+    monkeypatch.setenv("AGENT_TEST_PIDS", str(pids))
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
     work = tmp_path / "w"
     work.mkdir()
@@ -821,12 +1192,9 @@ def test_a_timeout_keeps_the_measured_events_and_spend(monkeypatch, tmp_path):
             },
         },
     ]
-    script = _fake_pi(
-        tmp_path,
-        "printf '%s\\n' "
-        + " ".join(f"'{json.dumps(record)}'" for record in records)
-        + "\nsleep 609.1\n",
-    )
+    body = "".join(f"print({json.dumps(record)!r}, flush=True)\n" for record in records)
+    body += "import time\ntime.sleep(609.1)\n"
+    script = _fake_agent(tmp_path, body)
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
     work = tmp_path / "w"
     work.mkdir()
@@ -855,6 +1223,7 @@ def test_a_timeout_keeps_the_measured_events_and_spend(monkeypatch, tmp_path):
     assert assistant["message"]["usage"]["output"] == 7
 
 
+@pytest.mark.skipif(os.name == "nt", reason="поиск сирот по cwd через /proc и lsof доступен только на POSIX")
 def test_the_exit_hook_sweeps_when_the_stack_never_unwinds(tmp_path):
     """A debugger's ``Py_Exit`` skips ``finally``; the atexit hook must not.
 
@@ -892,26 +1261,44 @@ def test_a_clean_exit_still_sweeps_a_detached_survivor(monkeypatch, tmp_path):
     reparenting the parent chain is gone, so the sweep keys on the one marker
     that survives: the cwd, a per-task working copy.
     """
-    script = _fake_pi(
-        tmp_path,
-        # Own session and orphaned before the agent exits - the shape of a
-        # model's `python -m http.server 8770 &` self-check. Its stdio must be
-        # detached too, or it holds the benchmark's stdout pipe open and
-        # ``communicate`` waits out the whole sleep instead of the agent exit.
-        f'{sys.executable} -c "import subprocess;subprocess.Popen([\'sleep\',\'603.1\'],'
-        f'start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)" &\n'
-        'printf \'%s\\n\' \'{"type":"message_end","message":{"role":"assistant",'
-        '"content":[{"type":"text","text":"ok"}],"usage":{"input":1,"output":1},"stopReason":"stop"}}\'\n'
-        "exit 0\n",
-    )
+    body = """\
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+detached = {"start_new_session": True} if os.name != "nt" else {}
+survivor = subprocess.Popen(
+    [sys.executable, "-c", "import time;time.sleep(603.1)"],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    **detached,
+)
+Path(os.environ["AGENT_TEST_PIDS"]).write_text(str(survivor.pid), encoding="utf-8")
+"""
+    event = {
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input": 1, "output": 1},
+            "stopReason": "stop",
+        },
+    }
+    body += f"print({json.dumps(event)!r}, flush=True)\n"
+    script = _fake_agent(tmp_path, body)
     monkeypatch.setenv(agent.AGENT_BIN_ENV, str(script))
+    pids = tmp_path / "survivor-pid"
+    monkeypatch.setenv("AGENT_TEST_PIDS", str(pids))
     work = tmp_path / "w"
     work.mkdir()
-    result = agent.run("p", work, RunConfig(base_url="http://x/v1", model="m"), agent_dir=tmp_path)
+    cfg = RunConfig(base_url="http://x/v1", model="m")
+    result = agent.run("p", work, cfg, agent_dir=tmp_path)
     assert result.ok, result.error
+    survivor = int(pids.read_text(encoding="utf-8"))
     time.sleep(0.3)
-    survivors = subprocess.run(["pgrep", "-f", "sleep 603.1"], capture_output=True, text=True).stdout.strip()
-    assert not survivors, f"сирота пережил чистый выход агента (pid {survivors})"
+    assert not _pid_alive(survivor), f"сирота пережил чистый выход агента (pid {survivor})"
 
 
 # --------------------------------------------------------------------------- #
@@ -999,7 +1386,7 @@ def test_the_runner_uses_the_agent_only_for_its_categories(monkeypatch, tmp_path
         calls.append(str(work_dir))
         return agent.AgentRun(ok=True, text="агент", duration_s=0.1, turns=1, answer_tokens=1)
 
-    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_pi(tmp_path, "exit 0\n")))
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_agent(tmp_path, "raise SystemExit(0)\n")))
     monkeypatch.setattr(agent, "run", fake_run)
 
     cfg = RunConfig(agent=True, agent_categories=("C",))
@@ -1017,8 +1404,9 @@ def test_the_runner_uses_the_agent_only_for_its_categories(monkeypatch, tmp_path
 def test_the_settings_pin_reaches_the_provenance(monkeypatch, tmp_path):
     """R04: the transcript names the pinned settings and they match the disk."""
     load_all()
-    payload = json.dumps(_assistant("готово"), ensure_ascii=False).replace("'", "'\\''")
-    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_pi(tmp_path, f"printf '%s\\n' '{payload}'\n")))
+    payload = json.dumps(_assistant("готово"))
+    body = f"print({payload!r}, flush=True)\n"
+    monkeypatch.setenv(agent.AGENT_BIN_ENV, str(_fake_agent(tmp_path, body)))
     cfg = RunConfig(agent=True, agent_categories=("C",), model="m", context_window=32768)
     task = coding_python.generate(random.Random(6), cfg)
     run = Runner(cfg, _UnusedProvider()).run_task(task)

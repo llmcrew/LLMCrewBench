@@ -185,6 +185,39 @@ def test_launch_line_substitutes_every_runtime_template():
     assert vllm.startswith("vllm serve m") and "--max-model-len 4096" in vllm
 
 
+QUANT_WINDOW_PHRASE = "measured at 32768; not verified at 262144"
+
+
+def test_launch_line_has_no_random_seed():
+    """llama.cpp ``--seed -1`` is a fresh random seed, not the master seed."""
+    for name, spec in reference.RUNTIMES.items():
+        assert "--seed -1" not in spec["launch"], name
+    shipped = json.loads(
+        (Path(__file__).resolve().parents[1] / "configs" / "reference.json").read_text(encoding="utf-8")
+    )
+    for name, spec in shipped["runtimes"].items():
+        assert "--seed -1" not in spec.get("launch", ""), name
+    llama = reference.ReferenceConfig(
+        entry={"runtime_id": "llama.cpp", "model": "m", "quant": "Q", "weights": "/w.gguf",
+               "context_window": 8192, "kv_type": "q4_0"}
+    ).launch_line()
+    assert "--seed -1" not in llama
+    assert "--seed" not in llama
+
+
+def test_shipped_policy_marks_the_verified_quant_window_and_the_ceiling():
+    shipped = json.loads(
+        (Path(__file__).resolve().parents[1] / "configs" / "reference.json").read_text(encoding="utf-8")
+    )
+    for policy in (shipped["policy"], reference.POLICY):
+        assert policy["quantization_verified_window"] == 32768
+        assert QUANT_WINDOW_PHRASE in policy["quantization"]
+        assert QUANT_WINDOW_PHRASE in policy["kv_cache"]
+        note = policy["request_wall_clock_note"]
+        assert "resource_exhausted" in note
+        assert "unverified" not in note
+
+
 def test_runtime_id_is_derived_from_the_label_when_not_explicit():
     labelled = reference.ReferenceConfig(entry={"runtime": "llama.cpp форк PrismML (prism-b10709)"})
     assert labelled.runtime_id == "llama.cpp"
@@ -227,8 +260,8 @@ def _probes(report: reference.PreflightReport) -> dict[str, reference.Probe]:
     return {probe.name: probe for probe in report.probes}
 
 
-def test_preflight_rejects_an_unreachable_endpoint():
-    entry = reference.ReferenceConfig(entry=_model(base_url="http://127.0.0.1:9/v1"))
+def test_preflight_rejects_an_unreachable_endpoint(refusing_endpoint):
+    entry = reference.ReferenceConfig(entry=_model(base_url=refusing_endpoint))
     report = reference.preflight(entry)
     assert report.verdict == "rejected" and not report.ok
     assert _probes(report)["endpoint"].status == "fail"
@@ -255,6 +288,25 @@ def test_preflight_reports_missing_props_as_an_unverified_window(endpoint):
     assert names["reasoning"].status == "ok", "стаб отделяет reasoning от ответа"
     assert names["weights"].status == "warn"
     assert names["full_window"].status == "n/a"
+    assert report.verdict == "admitted with unverified items"
+    assert report.ok
+
+
+def test_preflight_warns_when_window_exceeds_the_verified_quant_window():
+    props = {"default_generation_settings": {"n_ctx": 262144}, "chat_template": "t"}
+    with stub(props=props) as (base_url, _):
+        entry = reference.ReferenceConfig(
+            entry=_model(base_url=base_url, context_window=262144),
+            policy={
+                **reference.POLICY,
+                "context_window": 262144,
+                "quantization_verified_window": 32768,
+            },
+        )
+        report = reference.preflight(entry)
+    probe = _probes(report).get("quantization_window")
+    assert probe is not None and probe.status == "warn"
+    assert "32768" in probe.detail and "262144" in probe.detail
     assert report.verdict == "admitted with unverified items"
     assert report.ok
 

@@ -5,7 +5,7 @@ run under a 16 GiB VRAM budget (internally: *DailyBench-16*).
 
 Ten scored categories: the frozen baseline has 47 A–J tasks and 100 points,
 plus two **visual blocks** — 20 simulation scenarios and 29 free-form art works
-(30 and 39 in the `stretch-v1` profile) — measured in a headless browser and
+(36 and 39 in the `stretch-v1` profile) — measured in a headless browser and
 shown outside the score. Every point comes from an observable result — a parsed answer, a file on
 disk, a hidden test run, a tool-call log, a rendered frame — and never from a
 judge model. The whole suite is regenerated from a single seed, so two runs of
@@ -50,12 +50,8 @@ zero.
 Every category is scored 0–100 % inside the run report, and the total is the sum
 of the earned points (100 possible in the baseline).
 
-The counts above are the baseline. `stretch-v1` adds a sixth instruction task
-(IF-6), the ru/kk/en ledger twins IF-7/IF-7-KK/IF-7-EN, the RTL/NFC edge case IF-8, the
-composite selection pair IF-9/IF-10, the
-ru/kk schedule twins R-17/R-17-KK, the bounded optimiser R-18,
-C-5/C-6, T-8/T-9, LC-6/LC-7/LC-8, F-2,
-G-5, H-4/H-5, I-3/I-4 and J-3/J-4/J-5 without changing the 100 A–J points: the
+The counts above are the baseline. `stretch-v1` adds the ids listed in
+*Profiles*, in `build_suite` order, without changing the 100 A–J points: the
 category total is divided evenly over the category's tasks
 (`suite.apply_profile_weights`, see *Profiles*).
 
@@ -68,14 +64,16 @@ and `suite.json`, and `resume`/`rescore` refuse to mix them.
 |---|---|
 | `baseline-20261020` (default) | Frozen ranked suite: 47 A–J tasks, 100 points, K-1…K-20, L-1…L-29 |
 | `pilot` | Only the scenarios not admitted to the ranking: IF-6, R-16, C-4, T-8, LC-6, F-2, G-5, H-4, I-3, J-3, visual hosts K-21, K-23, K-25 and L-1…L-29 — 42 tasks |
-| `stretch-v1` | Baseline plus the pilot tasks and the rest of the new ones: IF-7, IF-7-KK, IF-7-EN, IF-8, IF-9, IF-10, R-17, R-17-KK, R-18, C-5, C-6, C-7, N-2, N-9, T-8, T-9, T-10, T-11, LC-7, LC-8, H-5, I-4, I-5, J-4, J-5, K-21…K-36, L-30…L-39 — 82 A–J, 36 K and 39 L tasks; at least a fifth of every A–J category is private |
-| `research-v1` | Ten text research scenarios (IF-9, IF-10, N-2, T-10, T-11, T-12, LC-8, F-3, I-5, J-5) plus the VQA track V-1…V-6 (showcase-only). Seven scored categories (A, C, D, E, F, I, J), 71 points; B, G, H, K and L are absent, so the profile is never ranked against a baseline run |
+| `stretch-v1` | Baseline plus every id `build_suite` adds, in suite order: IF-6, IF-7, IF-7-KK, IF-7-EN, IF-8, IF-9, IF-10, R-16, R-17, R-17-KK, R-18, C-4, C-5, C-6, N-2, C-7, N-9, T-8, T-9, T-10, T-11, LC-6, LC-7, LC-8, F-2, F-3, G-5, H-4, H-5, I-3, I-4, I-5, J-3, J-4, J-5, K-21…K-36, L-30…L-39 — 82 A–J, 36 K and 39 L tasks; at least a fifth of every A–J category is private |
+| `research-v1` | Ten text research scenarios (IF-9, IF-10, N-2, T-10, T-11, T-12, LC-8, F-3, I-5, J-5) plus the VQA track V-1…V-6 (6 informational points, labelled separately from K, outside the 71). Seven scored categories (A, C, D, E, F, I, J), 71 points; B, G, H, K and L are absent, so the profile is not ranked against a baseline run |
 
 `pilot` is not collapsed into a new `/100`: A–J tasks keep the per-task weights
-their modules declare, and each task is read on its own. `stretch-v1` keeps the
+their modules declare, and each task is read on its own. It is not ranked against a baseline run.
+`stretch-v1` keeps the
 A–J total at 100 and only enlarges the visual showcase (K 144 points, L 39,
 informational). `research-v1` declares only the categories it carries, so its
-denominator is 71 and the report marks it as not rankable with the baseline.
+denominator is 71 and V's 6 informational points stay outside the 71. The report
+marks `pilot` and `research-v1` as not rankable with the baseline.
 `apply_profile_weights` spreads the declared category total over
 that category's tasks, and the last task takes the rounding tail, so the sum is
 exactly the declared one. Weights are assigned before the `--only` filter, so a slice keeps
@@ -98,6 +96,23 @@ Admission is a separate axis: `unverified` means the runtime never reported the
 input size — the full numerator and denominator are kept and the verdict says so
 instead of counting a guessed zero. Only `skipped` leaves both numerator and
 denominator; admission `failed` reports the run out of the short total.
+
+A declared ceiling — `--request-wall-clock` (default 1800 seconds) or the task
+wall clock, including a socket timeout that reaches that ceiling — is
+`resource_exhausted`: 0 points, the task stays in the denominator, and the run
+stays rankable. `resume` inherits the saved `request_wall_clock` unless the flag
+is passed again. An outage that is not that ceiling (connection refused, server
+reset) stays `infra_failure` and is not ranked. `--retry-errors` re-runs only
+`infra_failure` and `evaluator_failure`. `--allow-suite-drift` keeps every row
+whose task bytes did not change and appends the decision to `resume_log.jsonl`.
+
+Windows, Linux and macOS are supported (CI includes `windows-latest`; the
+Makefile selects `.venv/Scripts/python.exe` on Windows). Agent categories run
+in a sandbox when Docker is available: a per-run internal network, egress only
+through a forwarder to the configured endpoint, images pinned by id. The host
+gateway is not given to the agent. A comparison ranks a run only when its
+contract key matches (`suite_sha256:generation_mode`); a run with no recorded
+mode is unranked («режим генерации не записан»).
 
 ## Evidence layers
 
@@ -422,6 +437,10 @@ Docker are optional: the harness detects what the machine has and reports what i
 cannot verify instead of guessing — and extends the agent's `PATH` with the
 toolchain it did find, so the agent is not measured on worse information than the
 evaluator.
+
+The BigCodeBench adapter's `--evaluate-cmd` is split POSIX-style (`shlex.split`).
+On Windows, quote paths that contain spaces.
+
 
 ## What stays local (endpoints, keys, machine paths)
 

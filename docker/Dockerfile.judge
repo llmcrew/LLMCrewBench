@@ -7,18 +7,29 @@
 # over HTTP(S).  Pinned by digest like the other images; rootless UID 1000, no
 # capabilities, read-only rootfs.
 #
-# Network: the service runs on the default bridge, so it can reach any host
-# port plus the daemon's DNS resolver — "egress only to the endpoint" is not
-# enforced by Docker unless an internal network is added.  `extra_hosts`
-# (compose.yaml) publishes a host-local endpoint as `host.docker.internal`.
+# Network: the service sits on an internal network. The only egress is the
+# forwarder (compose service ``egress``), which dials the configured endpoint
+# and nothing else. ``extra_hosts`` on the judge would reopen the host.
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:2259debdc6af85626058a15a7bf44ad6a68b8c98c9ae82a02cf5cdb92f096d47
 FROM ${PYTHON_IMAGE}
 
+ARG DEBIAN_SNAPSHOT=20261101T082805Z
 # ca-certificates is already a dependency of the python base; keep it explicit
-# so an HTTPS endpoint cannot fail with an unverifiable chain.
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates \
-    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+# and pinned so an HTTPS endpoint cannot fail with an unverifiable chain, and
+# a later snapshot cannot change the package.
+RUN set -eux; \
+    rm -f /etc/apt/sources.list; \
+    rm -rf /etc/apt/sources.list.d; \
+    mkdir -p /etc/apt/sources.list.d; \
+    printf '%s\n' \
+      "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} trixie main" \
+      "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} trixie-updates main" \
+      "deb http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} trixie-security main" \
+      > /etc/apt/sources.list; \
+    printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99no-check-valid-until; \
+    apt-get update; \
+    apt-get install --no-install-recommends -y ca-certificates=20250419; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 ARG SOURCE_DATE_EPOCH=1700000000
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \

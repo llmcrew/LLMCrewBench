@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import fcntl
 import hashlib
 import json
 import os
@@ -244,8 +243,8 @@ def test_the_tokenizer_cache_is_keyed_on_the_whole_text(tokenizer_endpoint):
     assert server.tokenize_calls == 2, "повтор текста берётся из кэша, а не по сети"
 
 
-def test_unreachable_endpoint_raises():
-    provider = OpenAICompatibleProvider(base_url="http://127.0.0.1:9/v1", model="x", timeout=2)
+def test_unreachable_endpoint_raises(refusing_endpoint):
+    provider = OpenAICompatibleProvider(base_url=refusing_endpoint, model="x", timeout=2)
     with pytest.raises(ProviderError):
         provider.list_models()
 
@@ -657,8 +656,7 @@ def test_a_hung_page_hook_is_killed_at_the_render_deadline():
     """
     from dailybench import browser
 
-    usable, reason = browser.availability()
-    assert usable, reason
+    _require_browser(browser)
     warm = browser.render(FAST_PAGE, timeout_ms=10_000, again=False)
     assert warm.ok, warm.reason
 
@@ -685,8 +683,7 @@ def test_a_hung_page_hook_is_killed_at_the_render_deadline():
 def test_the_next_render_works_after_a_deadline_kill():
     from dailybench import browser
 
-    usable, reason = browser.availability()
-    assert usable, reason
+    _require_browser(browser)
     browser.render(FAST_PAGE, timeout_ms=10_000, again=False)
     assert not browser.render(HUNG_HOOK_PAGE, timeout_ms=100, again=False).ok
 
@@ -709,12 +706,17 @@ console.error("fixture console error");
 NO_PROTOCOL_PAGE = """<!doctype html><canvas width="400" height="300"></canvas>"""
 
 
+def _require_browser(browser) -> None:
+    usable, reason = browser.availability()
+    if not usable:
+        pytest.skip(reason)
+
+
 def test_a_console_error_is_a_runtime_failure_not_a_dead_render():
     """M09: one ``console.error`` used to set ``ok=False`` and zero every check."""
     from dailybench import browser
 
-    usable, reason = browser.availability()
-    assert usable, reason
+    _require_browser(browser)
     result = browser.render(CONSOLE_ERROR_PAGE, again=False)
 
     assert result.ok, result.reason
@@ -731,8 +733,7 @@ def test_a_missing_protocol_is_flagged_without_killing_the_frame():
     """
     from dailybench import browser
 
-    usable, reason = browser.availability()
-    assert usable, reason
+    _require_browser(browser)
     result = browser.render(NO_PROTOCOL_PAGE, steps=3, again=False)
 
     assert result.ok, result.reason
@@ -742,18 +743,18 @@ def test_a_missing_protocol_is_flagged_without_killing_the_frame():
     assert not result.step_ok
 
 
-def test_http_and_websocket_escapes_use_one_classifier():
+def test_http_and_websocket_escapes_use_one_classifier(refusing_endpoint):
     """M09: both escapes are the same fault and must be recorded the same way."""
     from dailybench import browser
 
-    usable, reason = browser.availability()
-    assert usable, reason
+    _require_browser(browser)
 
     http_result = browser.render(
         '<!doctype html><img src="https://example.invalid/x.png">', mode="live"
     )
+    websocket = refusing_endpoint.replace("http", "ws", 1)
     ws_result = browser.render(
-        "<!doctype html><script>new WebSocket('ws://127.0.0.1:9/ch')</script>", again=False
+        f"<!doctype html><script>new WebSocket('{websocket}/ch')</script>", again=False
     )
 
     assert browser.external_kinds(http_result.external)[browser.BLOCKED_HTTP] == 1
@@ -1473,7 +1474,7 @@ def test_n4_a_repeat_with_a_new_key_spends_the_seats_twice():
                 _call(3, "booking_state", {"slot": oracle["slot"]}),
                 _call(4, "create_booking", {"slot": oracle["slot"], "seats": 4, "idempotency_key": "bk-другой", "version": 2}),
                 _call(5, "booking_state", {"slot": oracle["slot"]}),
-                core.ModelReply(text=f"остаток -1, версия слота 2, две резервации"),
+                core.ModelReply(text=f"остаток -1, версия слота 2, id r-{oracle['reservation_base'] + 1}, две резервации"),
             ]
         ),
     ).run_task(task)
@@ -2384,7 +2385,7 @@ def test_totals_handle_admission_and_partial_runs():
             _score("F", "F", 10.0, 10.0),
         ]
 
-    complete = summarise(full_suite(True))
+    complete = summarise(full_suite(True), generation_mode="fixed")
     assert complete["full_suite"] is True
     assert complete["verdict"] == "100/100"
 
@@ -2466,6 +2467,60 @@ def test_run_persists_oracles_with_exact_values(tmp_path: Path):
     tasks_payload = json.loads((out / "tasks.json").read_text(encoding="utf-8"))
     assert tasks_payload[0]["task"]["meta"]["price_in"]
     assert (out / "transcripts" / "R-4.json").is_file()
+
+
+def test_manifest_keys_are_posix(tmp_path: Path):
+    from dailybench import generation
+
+    probe = tmp_path / "link-source"
+    probe.write_text("probe", encoding="utf-8")
+    try:
+        os.link(probe, tmp_path / "link-target")
+    except OSError as exc:
+        pytest.skip(f"файловая система не поддерживает hard links: {exc}")
+
+    files = {
+        "config.json": json.dumps({"identity": "identity"}),
+        "transcripts/a.json": "{}",
+    }
+    generation.commit(tmp_path, files, run_id="run", identity="identity")
+    first = generation.current(tmp_path)
+    assert first is not None
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert "transcripts/a.json" in manifest["files"]
+
+    generation.commit(tmp_path, files, run_id="run", identity="identity")
+    second = generation.current(tmp_path)
+    assert second is not None and second != first
+    assert (first / "transcripts/a.json").stat().st_ino == (
+        second / "transcripts/a.json"
+    ).stat().st_ino
+
+def test_an_old_windows_manifest_key_stays_readable(tmp_path: Path):
+    if os.name != "nt":
+        pytest.skip("старый ключ с обратной косой существует только на Windows")
+    from dailybench import generation
+
+    payload = "{}"
+    config = json.dumps({"identity": "identity"})
+    files = {"config.json": config, "transcripts/a.json": payload}
+    generation.commit(tmp_path, files, run_id="run", identity="identity")
+    first = generation.current(tmp_path)
+    assert first is not None
+    before = (first / "transcripts/a.json").read_bytes()
+    for folder in (tmp_path, first):
+        manifest_path = folder / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"]["transcripts\\a.json"] = manifest["files"].pop("transcripts/a.json")
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    generation.commit(tmp_path, files, run_id="run", identity="identity")
+    assert (first / "transcripts/a.json").read_bytes() == before
+    assert generation.current(tmp_path) is not None
+    recorded = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))["files"]
+    assert "transcripts/a.json" in recorded
+    assert "transcripts\\a.json" not in recorded
+
 
 
 def test_an_interrupted_save_leaves_one_committed_generation(tmp_path: Path, monkeypatch):
@@ -2693,6 +2748,7 @@ def _windows_fsync(monkeypatch) -> list[int]:
 
     Directories are opened read-only on every platform and are handled apart.
     """
+    fcntl = pytest.importorskip("fcntl", reason="fcntl доступен только на POSIX")
     real = os.fsync
     calls: list[int] = []
 
@@ -2762,6 +2818,8 @@ def test_windows_skips_the_directory_fsync_and_records_it(tmp_path: Path, monkey
 def test_an_unsupported_file_fsync_degrades_with_a_marker(tmp_path: Path, monkeypatch):
     """EINVAL means the filesystem cannot flush; the commit is marked, not lost."""
     from dailybench import generation
+
+    fcntl = pytest.importorskip("fcntl", reason="fcntl доступен только на POSIX")
 
     def fsync(fd: int) -> None:
         if stat.S_ISREG(os.fstat(fd).st_mode) and not fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY:
@@ -3016,7 +3074,7 @@ def test_suite_sizing_is_measured_per_document():
         assert 0.80 * target <= measured <= 1.10 * target, (task.id, measured, target)
 
 
-def test_preflight_against_a_live_endpoint(endpoint):
+def test_preflight_against_a_live_endpoint(endpoint, refusing_endpoint):
     from dailybench import reference
 
     base_url, _ = endpoint
@@ -3053,7 +3111,7 @@ def test_preflight_against_a_live_endpoint(endpoint):
 
     # An unreachable endpoint is rejected too, with the transport error shown.
     dead = reference.ReferenceConfig(
-        entry={**entry.entry, "base_url": "http://127.0.0.1:9/v1"}
+        entry={**entry.entry, "base_url": refusing_endpoint}
     )
     assert reference.preflight(dead).verdict == "rejected"
 
@@ -3309,6 +3367,37 @@ def test_search_code_resolves_paths_under_a_realpath_root():
 
 _DIGEST_A = "sha256:" + "a" * 64
 _DIGEST_B = "sha256:" + "b" * 64
+
+
+def test_resume_flags_do_not_change_the_identity():
+    from dataclasses import replace
+
+    from dailybench.runner import run_identity
+
+    cfg = RunConfig()
+    assert (
+        run_identity(cfg, "x")
+        == run_identity(replace(cfg, retry_errors=True), "x")
+        == run_identity(replace(cfg, allow_suite_drift=True), "x")
+    )
+
+
+def test_legacy_identity_is_unchanged_by_resume_flags():
+    from dailybench.runner import run_identity
+
+    # A run saved before the ceiling default moved to 1800 hashed this field
+    # at 600. The pin proves that measurement is unchanged; resume without
+    # the flag adopts the saved value instead of rewriting it.
+    legacy = RunConfig(request_wall_clock=600.0)
+    assert run_identity(legacy, "x") == "78b6c059052e84ec30b283a355e7acd75c9f419f4fa6144332fa31bf681742a4"
+
+
+def test_the_default_request_wall_clock_has_its_own_identity():
+    from dailybench.runner import run_identity
+
+    assert RunConfig().request_wall_clock == 1800
+    assert run_identity(RunConfig(), "x") == "b792bd81f682c550ade9c8db13134d7ae1f36759fcecab5616ee9f1894751e41"
+    assert run_identity(RunConfig(), "x") != run_identity(RunConfig(request_wall_clock=600.0), "x")
 
 
 def test_the_image_digest_is_part_of_the_run_identity():
@@ -4035,6 +4124,7 @@ def test_sandbox_false_asks_for_the_host_on_purpose(monkeypatch):
     assert "sandbox выключен" in record["executor_reason"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="fake pi требует POSIX-shell")
 def test_a_broken_container_falls_back_to_the_host_and_is_marked(monkeypatch, tmp_path):
     """A container that will not start must not lose the task — but must show."""
     from dailybench import agent, isolation
@@ -4100,6 +4190,8 @@ esac
 @pytest.fixture
 def sandbox_build(monkeypatch, tmp_path):
     """Fake docker whose image appears only after a build; returns (module, log)."""
+    if os.name == "nt":
+        pytest.skip("fake docker требует POSIX-shell")
     from dailybench import isolation
 
     bin_dir = tmp_path / "bin"

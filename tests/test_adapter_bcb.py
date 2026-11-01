@@ -8,6 +8,7 @@ single live test is skipped unless the pinned scorer and docker are installed.
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -68,7 +69,7 @@ def _score(out: Path, samples: Path, log: Path, *extra: str) -> int:
             "--samples",
             str(samples),
             "--evaluate-cmd",
-            f"{sys.executable} {FAKE}",
+            shlex.join([sys.executable, str(FAKE)]),
             *extra,
         ]
     )
@@ -131,6 +132,22 @@ def test_score_passes_pinned_argv_and_stores_pass1_as_ratio(tmp_path, monkeypatc
     assert [row["status"] for row in bundle["verdicts"]] == ["pass", "fail"]
     assert [row["task_id"] for row in bundle["verdicts"]] == ["BigCodeBench/289", "BigCodeBench/500"]
     assert (out / "evaluate.log").read_text(encoding="utf-8").startswith("$ ")
+
+
+def test_bcb_score_survives_non_utf8_output(tmp_path):
+    out = _prepare(tmp_path)
+    stub = tmp_path / "non_utf8_scorer.py"
+    stub.write_text("import os\nos.write(1, b'\\xef\\xf0')\nraise SystemExit(1)\n", encoding="utf-8")
+
+    bundle = bcb.score(
+        out=out,
+        samples=_samples(tmp_path),
+        evaluate_cmd=[sys.executable, str(stub)],
+    )
+
+    assert bundle["status"] == "unverified"
+    assert "кодом 1" in bundle["reason"]
+    assert "��" in (out / "evaluate.log").read_text(encoding="utf-8")
 
 
 def test_missing_package_and_docker_are_unverified_not_zero(tmp_path, monkeypatch, capsys):

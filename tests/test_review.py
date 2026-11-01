@@ -20,7 +20,11 @@ from __future__ import annotations
 
 import ast
 import json
+import os
+import subprocess
+import sys
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -74,6 +78,55 @@ def _score(task: TaskInstance, answer: str) -> core.Score:
 
 def _check(score: core.Score, name: str) -> core.Check:
     return next(c for c in score.checks if c.name == name)
+
+
+def test_j5_fixture_builds_without_utf8_mode(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    for name in ("PYTHONUTF8", "PYTHONIOENCODING", "PYTHONLEGACYWINDOWSSTDIO"):
+        env.pop(name, None)
+    if os.name != "nt":
+        env["LC_ALL"] = "C"
+        env["PYTHONCOERCECLOCALE"] = "0"
+        env["PYTHONUTF8"] = "0"
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "dailybench",
+            "generate",
+            "--profile",
+            "research-v1",
+            "--out",
+            str(tmp_path / "generated"),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    assert done.returncode == 0, f"stdout:\n{done.stdout}\nstderr:\n{done.stderr}"
+
+
+def test_review_fixture_proof_runs_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(review, "_FIXTURE_PROOF_CACHE", set(), raising=False)
+    original = review._verify_run
+    calls: dict[tuple[str, bool], int] = {}
+
+    def counted(task, source, files, *, expect_hidden_pass):
+        if task.id == "J-5":
+            key = (json.dumps(files, sort_keys=True), expect_hidden_pass)
+            calls[key] = calls.get(key, 0) + 1
+        return original(task, source, files, expect_hidden_pass=expect_hidden_pass)
+
+    monkeypatch.setattr(review, "_verify_run", counted)
+    review.generate(task_rng(17, "J"), RunConfig(profile="stretch-v1"))
+    review.generate(task_rng(17, "J"), RunConfig(profile="stretch-v1"))
+
+    assert calls
+    assert set(calls.values()) == {1}
 
 
 def test_review_ids_points_and_registry() -> None:

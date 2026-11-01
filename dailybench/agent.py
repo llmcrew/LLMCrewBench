@@ -342,7 +342,8 @@ def install(log: Any = None) -> tuple[bool, str]:
         log(f"pi не найден; ставлю: {command}")
     try:
         proc = subprocess.run(
-            ["/bin/sh", "-c", command],
+            command,
+            shell=True,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -655,7 +656,9 @@ def config_dir(
     ``native`` mode the record is left out on purpose: the stand decides.
 
     ``base_url`` overrides the config's endpoint for one caller: inside the
-    sandbox a loopback endpoint is reached through ``host.docker.internal``, and
+    sandbox the harness rewrites it through the egress forwarder
+    (``http://dailybench-egress:8080`` for HTTP; HTTPS keeps the hostname, and
+    a loopback HTTPS endpoint uses SNI ``host.docker.internal``), and
     ``models.json`` is what the agent dials.
     """
     prefix = f"{name}." if name else ""
@@ -938,12 +941,16 @@ class _WindowsJob:
         kernel32 = _win32()
         if kernel32 is None:
             return None
+        _JOB_ATTACH_ERRORS.pop(proc.pid, None)
         try:
             handle = kernel32.CreateJobObjectW(None, None)
             if not handle:
                 return None
             job = cls(kernel32, handle, proc.pid)
             if not kernel32.AssignProcessToJobObject(handle, int(proc._handle)):
+                import ctypes
+
+                _JOB_ATTACH_ERRORS[proc.pid] = f"не прикреплён: WinError {ctypes.get_last_error()}"
                 job.close()
                 return None
             return job
@@ -974,6 +981,8 @@ _OPEN_WORK_DIRS: dict[str, Path] = {}
 # The Windows job of an open run, by working directory and by agent pid.
 _OPEN_JOBS: dict[str, _WindowsJob] = {}
 _PROC_JOBS: dict[int, _WindowsJob] = {}
+# Last ``AssignProcessToJobObject`` failure by agent pid, for diagnostics.
+_JOB_ATTACH_ERRORS: dict[int, str] = {}
 
 
 def _guard_process(proc: subprocess.Popen, work_dir: Path) -> None:
@@ -1622,6 +1631,9 @@ def run(
                         secret=cfg.api_key,
                         pin=pin,
                     )
+                except BaseException:
+                    _kill_tree(proc)
+                    raise
                 stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")
                 returncode = proc.returncode
     except OSError as exc:

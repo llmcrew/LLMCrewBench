@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from . import agent, browser, core
@@ -87,6 +88,18 @@ def _observe(transcript: core.Transcript, result: browser.RenderResult, html: st
     }
 
 
+def _inline_image(html: str) -> str:
+    """Prefix of a ready-made image embedded in the page, or empty."""
+    match = re.search(
+        r"""(?:src|href)\s*=\s*['"]?(data:image/|blob:)""", html, re.IGNORECASE,
+    )
+    if match is None:
+        match = re.search(
+            r"""url\(\s*['"]?(data:image/|blob:)""", html, re.IGNORECASE,
+        )
+    return match.group(1) if match else ""
+
+
 def evaluate(task: core.TaskInstance, transcript: core.Transcript) -> core.Score:
     """Check delivery/rendering only; do not assign a score to artistic taste."""
     score = core.Score(task_id=task.id, category=task.category)
@@ -100,6 +113,13 @@ def evaluate(task: core.TaskInstance, transcript: core.Transcript) -> core.Score
     lowered = html.lstrip().lower()
     if not lowered.startswith(("<!doctype html", "<html")):
         score.add("html", False, POINTS_PER_CHECK, "нет самостоятельного HTML-документа")
+        return score
+    inline = _inline_image(html)
+    if inline:
+        score.add(
+            "html", False, POINTS_PER_CHECK,
+            f"готовое изображение ({inline}) не является работой",
+        )
         return score
 
     result, _ = cached_art_render(html)
