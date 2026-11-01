@@ -549,14 +549,21 @@ def _executable_version(path: str) -> str:
     commands = [[path, "--version"]]
     if sys.platform == "win32":
         try:
-            if not Path(path).read_bytes().startswith(b"MZ"):
-                commands.append([sys.executable, path, "--version"])
+            with Path(path).open("rb") as handle:
+                if handle.read(2) != b"MZ":
+                    commands.append([sys.executable, path, "--version"])
         except OSError:
             pass
     for command in commands:
         try:
             done = subprocess.run(
-                command, capture_output=True, text=True, timeout=10, check=False,
+                command,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+                encoding="utf-8",
+                errors="replace",
             )
         except (OSError, subprocess.SubprocessError):
             continue
@@ -667,6 +674,7 @@ def _frame_key(
     mode: str = "fixed",
     kind: str = "fixed",
     probe_sha: str = "",
+    probe: bool = True,
 ) -> str:
     """Cache identity of one render: page, sampling and the whole environment.
 
@@ -685,6 +693,7 @@ def _frame_key(
             "dt": dt,
             "mode": mode,
             "probe": probe_sha,
+            "pixel_probe": probe,
             "html": html,
         },
         sort_keys=True,
@@ -700,11 +709,11 @@ def _probe_sha(result: browser.RenderResult) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
-def _entry_paths(html: str, steps: int, dt: float, probe_sha: str) -> tuple[Path, Path]:
+def _entry_paths(html: str, steps: int, dt: float, probe_sha: str, *, probe: bool = True) -> tuple[Path, Path]:
     """Пара файлов одной записи: blob, затем кадр."""
     folder = cache_dir()
-    base = _frame_key(html, steps, dt)
-    key = _frame_key(html, steps, dt, probe_sha=probe_sha)
+    base = _frame_key(html, steps, dt, probe=probe)
+    key = _frame_key(html, steps, dt, probe_sha=probe_sha, probe=probe)
     return folder / f"{base}__{key}.json", folder / f"{base}__{key}.png"
 
 
@@ -725,7 +734,7 @@ def _cached_render(
     render, or the checks would score a fresh run with someone else's probe.
     """
     folder = cache_dir()
-    base = _frame_key(html, steps, dt)
+    base = _frame_key(html, steps, dt, probe=probe)
     for blob in folder.glob(f"{base}__*.json"):
         shot = blob.with_suffix(".png")
         if not shot.is_file():
@@ -736,7 +745,7 @@ def _cached_render(
         except Exception:
             continue
         # Хеш сохранённого probe пересчитывается, а не берётся на веру.
-        if _frame_key(html, steps, dt, probe_sha=_probe_sha(result)) != blob.stem.split("__", 1)[1]:
+        if _frame_key(html, steps, dt, probe_sha=_probe_sha(result), probe=probe) != blob.stem.split("__", 1)[1]:
             continue
         result.shot = shot.read_bytes()
         # Хеш сохранённого кадра считается от самих байт, а не берётся из
@@ -755,7 +764,7 @@ def _cached_render(
     if unstable:
         return result, False
     folder.mkdir(parents=True, exist_ok=True)
-    blob, shot = _entry_paths(html, steps, dt, _probe_sha(result))
+    blob, shot = _entry_paths(html, steps, dt, _probe_sha(result), probe=probe)
     # Прочие запечатки этого кадра (другой probe, другая среда) уже не годятся.
     for stale in folder.glob(f"{base}__*"):
         if stale not in (blob, shot):
