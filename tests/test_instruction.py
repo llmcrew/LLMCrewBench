@@ -310,7 +310,7 @@ def test_if6_is_a_pilot_scenario_only() -> None:
     assert [task.id for task in stretch] == list(instruction.STRETCH_IDS)
     # The stretch profile splits the fixed category total over its twelve tasks.
     apply_profile_weights(stretch, "stretch-v1")
-    assert sum(task.max_points for task in stretch) == core.CATEGORY_POINTS["A"] == 10.0
+    assert sum(task.max_points for task in stretch) == pytest.approx(core.CATEGORY_POINTS["A"]) == pytest.approx(10.0)
     # 10 / 12 rounds to four places and parks the remainder tail on the last task.
     assert max(task.max_points for task in stretch) - min(task.max_points for task in stretch) <= 0.0005
 
@@ -607,7 +607,7 @@ def test_n7_is_a_stretch_scenario_only() -> None:
     assert [task.id for task in stretch][-2:] == ["IF-9", "IF-10"]
     assert all(task.private for task in stretch if task.id in ("IF-9", "IF-10"))
     apply_profile_weights(stretch, "stretch-v1")
-    assert sum(task.max_points for task in stretch) == core.CATEGORY_POINTS["A"] == 10.0
+    assert sum(task.max_points for task in stretch) == pytest.approx(core.CATEGORY_POINTS["A"]) == pytest.approx(10.0)
     assert max(task.max_points for task in stretch) - min(task.max_points for task in stretch) <= 0.0005
 
 

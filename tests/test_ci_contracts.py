@@ -97,7 +97,12 @@ def test_ci_tests_windows_and_python_310():
 def test_ci_installs_locked_dev_dependencies():
     installs = [step for step in _steps() if step.get("name") == "Install"]
     assert installs
-    assert all(step.get("run") == "uv sync --locked --extra dev" for step in installs)
+    # The pytest matrix additionally installs visual+vision (research-v1
+    # fixtures); every install must stay locked and carry dev.
+    assert all(
+        step.get("run", "").startswith("uv sync --locked --extra dev")
+        for step in installs
+    )
 
 
 def test_every_job_is_time_boxed_and_the_matrix_is_fail_fast():

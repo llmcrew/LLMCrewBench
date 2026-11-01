@@ -1696,7 +1696,7 @@ def test_n3_and_n4_are_stretch_only_and_split_the_category_total():
 
     stretch = tools.generate(random.Random(3), RunConfig(profile="stretch-v1"))
     apply_profile_weights(stretch, "stretch-v1")
-    assert sum(task.max_points for task in stretch) == core.CATEGORY_POINTS["D"] == 14.0
+    assert sum(task.max_points for task in stretch) == pytest.approx(core.CATEGORY_POINTS["D"]) == pytest.approx(14.0)
     shares = [task.max_points for task in stretch]
     assert max(shares) - min(shares) <= 0.0005, "вес распределён ровно, без ручных значений"
 

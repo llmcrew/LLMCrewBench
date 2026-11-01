@@ -72,8 +72,7 @@ def apply_profile_weights(tasks: list[core.TaskInstance], profile: str) -> None:
             continue
         share = round(total / len(group), 4)
         for index, task in enumerate(group):
-            task.max_points = share if index < len(group) - 1 else round(total - share * (len(group) - 1), 4)
-
+            task.max_points = share if index < len(group) - 1 else round(round(total, 4) - share * (len(group) - 1), 4)
 
 
 def category_of(task: core.TaskInstance) -> core.CategoryModule:

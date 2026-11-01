@@ -68,6 +68,8 @@ jobs:
         # visual/vision: research-v1 строит VQA-фикстуры (Pillow) и K-блок
         # рендерится в headless Chromium — dev-only падает на collection.
         run: uv sync --locked --extra dev --extra visual --extra vision
+      - name: Playwright browsers
+        run: uv run --no-sync python -m playwright install chromium
       - name: Run the suite
         if: runner.os != 'Windows'
         run: uv run --no-sync python -m pytest tests

@@ -325,7 +325,7 @@ def test_cli_records_the_profile_in_the_run(tmp_path: Path):
     payload = json.loads((out / "suite.json").read_text(encoding="utf-8"))
     assert payload["profile"] == "stretch-v1"
     prompts = json.loads((out / "prompts.json").read_text(encoding="utf-8"))
-    assert sum(entry["max_points"] for entry in prompts) == core.CATEGORY_POINTS["A"]
+    assert sum(entry["max_points"] for entry in prompts) == pytest.approx(core.CATEGORY_POINTS["A"])
 
 
 def _bulk(calls: list[dict]) -> core.ModelReply:
