@@ -556,7 +556,7 @@ def _incomplete_table(
             f"<tr><td class='model'>{_cell(_model_name(run))}</td>"
             f"<td class='num'>{ran}/{expected}</td>"
             f"<td>{_cell(state)}</td>"
-            f"<td>{_failure_badges(summary) or '<span class=\'sub\'>—</span>'}</td>"
+            f"<td>{_failure_badges(summary) or '<span class=\"sub\">—</span>'}</td>"
             f"<td class='sub'>{_cell(_caveat(summary))}</td></tr>"
         )
     return (
@@ -626,7 +626,7 @@ def _model_cards(summaries: list[tuple[dict[str, Any], dict[str, Any]]], *, per_
             f"<span class='unit'>баллов качества</span></div>"
             f"<div class='meter'><i style='width:{100 * summary['headline_earned'] / (summary['headline_possible'] or 1):.0f}%'></i></div>"
             f"{ci_line}"
-            f"{f'<div class=\'sub verdict\'>{_cell(_caveat(summary))}</div>' if _caveat(summary) else ''}"
+            f"{f'<div class="sub verdict">{_caveat_text}</div>' if (_caveat_text := _cell(_caveat(summary))) else ''}"
             f"{_failure_badges(summary)}"
             f"<div class='sub'>{showcase_text + ' · ' if showcase_text else ''}L — оценка человеком · "
             f"заданий с потерей: <b>{failed}</b> (нулевых {zero})</div>"
@@ -756,7 +756,7 @@ def _verdict_table(summaries: list[tuple[dict[str, Any], dict[str, Any]]]) -> st
             f"<td class='model'>{_cell(_model_name(run))}</td>",
             f"<td class='verdict {_tone(summary['headline_earned'], summary['headline_possible'])}'>"
             f"{summary['headline_earned']:.0f}/{summary['headline_possible']:.0f}"
-            f"{f'<span class=\'th-sub\'>{_cell(_caveat(summary))}</span>' if _caveat(summary) else ''}</td>",
+            f"{f'<span class="th-sub">{_cv}</span>' if (_cv := _cell(_caveat(summary))) else ''}</td>",
         ]
         for key in SCORED:
             row = summary["per_category"].get(key, {})

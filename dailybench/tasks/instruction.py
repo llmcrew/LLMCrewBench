@@ -1308,7 +1308,7 @@ def _n7(rng: random.Random, variant: str) -> core.TaskInstance:
     )
     prompt = "\n\n".join([
         "Даны записи смены (поля через табуляцию): id, key, zone, severity, score, ts, rev, muted.",
-        f"{'\t'.join(_N7_HEADER)}\n{listing}",
+        "{}\n{}".format("\t".join(_N7_HEADER), listing),
         "score, rev и id — целые числа; ts — время ЧЧ:ММ; muted — yes или no.\n"
         "Один и тот же key может быть записан в разложенной (NFD) и в составленной (NFC) "
         "форме Unicode — это один и тот же key.",
