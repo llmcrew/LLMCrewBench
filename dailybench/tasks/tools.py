@@ -1815,7 +1815,7 @@ def _t12(rng: random.Random) -> core.TaskInstance:
     ]
     final_answer = (
         f"Hotfix поднял ревизию канала {channel} до {revision + 1}, кэш отставал на {revision} — "
-        f"перечитал состояние с refresh. Публикация {build} ответила timeout, но эффект записан: "
+        f"перечитал состояние с refresh. Публикация {build} ответила timeout, но записан один эффект: "
         f"итоговая ревизия {revision + 2}, в журнале одна строка, повтор не потребовался."
     )
     assert len(golden) <= 8
@@ -1958,11 +1958,23 @@ def _own_token(text: str, token: str) -> bool:
 
 
 def _reports_one_effect(text: str, build: str) -> bool:
-    # Промпт просит число эффектов: и «1», и «одна/один/одно» означают один.
+    """The count has to sit with «эффект», not merely appear in the sentence."""
     masked = (text or "").replace(build, " ")
-    if re.search(r"(?<!\w)(?:одна|один|одно)(?!\w)", masked, re.IGNORECASE):
-        return True
-    return _own_token(masked, "1")
+    tied = (
+        r"эффект\w*[\s:.\-–—]+(?:1|один|одна|одно)(?![\w-])"
+        r"|(?<![\w-])(?:1|один|одна|одно)[\s:.\-–—]+эффект"
+    )
+    return re.search(tied, masked, re.IGNORECASE) is not None
+
+
+def _near_word(text: str, word: str, token: str, window: int = 24) -> bool:
+    """True when ``token`` sits within ``window`` non-digits of ``word``, either order."""
+    if not text or not token:
+        return False
+    escaped, stem = re.escape(token), re.escape(word)
+    forward = rf"{stem}\w*\D{{0,{window}}}(?<![\w-]){escaped}(?![\w-])"
+    reverse = rf"(?<![\w-]){escaped}(?![\w-])\D{{0,{window}}}{stem}"
+    return re.search(f"{forward}|{reverse}", text) is not None
 
 
 def _text_has_all(value: str, needles: list[str]) -> bool:
@@ -2721,7 +2733,7 @@ def _eval_t11(task: core.TaskInstance, tr: core.Transcript) -> core.Score:
     reservation_id = f"r-{int(oracle['reservation_base']) + 1}"
     version_ok = (
         seen_version == expected_version
-        and _own_token(tr.final_text, str(expected_version))
+        and _near_word(tr.final_text, "верс", str(expected_version))
         and _own_token(tr.final_text, reservation_id)
     )
     score.add(
