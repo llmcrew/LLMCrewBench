@@ -8,9 +8,9 @@
 #
 # `/store` is one generation subdirectory (${STORE_DIR}/${STORE_SUBDIR}), not
 # the whole runs/ tree: code under test cannot rewrite an earlier run.
-# The judge is the only service with a network: on the default bridge it can
-# reach every host port and the daemon's DNS resolver, so "egress only to the
-# endpoint" is a convention, not an enforced boundary.
+# The judge reaches only the model endpoint: it sits on an internal network,
+# and the egress forwarder (on that network and on egress-out) dials the
+# configured host:port and nothing else. The default bridge is not used.
 #
 # `docker compose -f docker/compose.yaml config -q` must stay clean.
 
@@ -87,10 +87,10 @@ services:
     image: ${JUDGE_IMAGE:-dailybench/judge:local}
     <<: *hardening
     user: "1000:1000"
-    # Default bridge: every host port and the daemon's DNS resolver are
-    # reachable.  Keep the endpoint on the host as host.docker.internal.
-    extra_hosts:
-      - host.docker.internal:host-gateway
+    # Internal network only. The endpoint is reached as http://dailybench-egress:8080
+    # (HTTPS: map the original hostname to the forwarder, do not publish the host gateway).
+    networks:
+      - dailybench-internal
     cpus: "1"
     mem_limit: 1g
     memswap_limit: 1g
@@ -100,3 +100,41 @@ services:
     working_dir: /app
     stop_grace_period: 5s
     command: ["python", "-m", "dailybench", "--help"]
+
+  egress:
+    image: ${PYTHON_IMAGE:-python:3.12-slim@sha256:2259debdc6af85626058a15a7bf44ad6a68b8c98c9ae82a02cf5cdb92f096d47}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "1000:1000"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=16m,mode=1777
+    volumes:
+      - ./egress_forward.py:/egress_forward.py:ro
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    command:
+      - python3
+      - /egress_forward.py
+      - --listen
+      - 0.0.0.0:8080
+      - --target
+      - ${ENDPOINT_HOST:-host.docker.internal}:${ENDPOINT_PORT:-443}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    networks:
+      dailybench-internal:
+        aliases:
+          - dailybench-egress
+      egress-out: {}
+    restart: "no"
+    init: true
+
+networks:
+  dailybench-internal:
+    internal: true
+  egress-out:
+    internal: false
