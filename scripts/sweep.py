@@ -108,7 +108,16 @@ def run_one(entry: dict, args: argparse.Namespace) -> dict:
         from dailybench.report import summarise
 
         scores = json.loads(scores_path.read_text(encoding="utf-8"))
-        summary = summarise(scores, _suite_size(cfg_id, args.profile))
+        config_path = run_dir / "config.json"
+        recorded_mode = None
+        if config_path.is_file():
+            recorded_mode = json.loads(config_path.read_text(encoding="utf-8")).get("generation_mode")
+        suite_path = run_dir / "suite.json"
+        suite = (
+            json.loads(suite_path.read_text(encoding="utf-8"))
+            if suite_path.is_file() else _suite_size(cfg_id, args.profile)
+        )
+        summary = summarise(scores, suite, recorded_mode)
         result["verdict"] = summary["verdict"]
         result["earned"] = summary["headline_earned"]
         result["possible"] = summary["headline_possible"]

@@ -661,7 +661,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         except Exception as exc:  # pragma: no cover - a broken frame must not lose the run
             print(f"HTML-отчёт не собрался: {type(exc).__name__}: {exc}", file=sys.stderr)
 
-    summary = summarise([score.as_dict() for score in result.scores], result.suite_digest)
+    summary = summarise(
+        [score.as_dict() for score in result.scores],
+        result.suite_digest,
+        cfg.generation_mode,
+    )
     print(f"\nИтог: {summary['verdict']}")
     print(f"Прошло: {(datetime.now() - started)}")
     print(f"Отчёт: {report_path}")
@@ -935,8 +939,12 @@ def cmd_report(args: argparse.Namespace) -> int:
     for path in paths:
         print(path)
     for directory in args.directories:
-        data = load_run(directory)["scores"]
-        summary = summarise(data)
+        run = load_run(directory)
+        summary = summarise(
+            run["scores"],
+            run.get("suite"),
+            (run.get("config") or {}).get("generation_mode"),
+        )
         print(f"{directory}: {summary['verdict']}, заданий с ошибкой: {summary['errors']}")
     return 0
 

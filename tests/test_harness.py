@@ -2385,7 +2385,7 @@ def test_totals_handle_admission_and_partial_runs():
             _score("F", "F", 10.0, 10.0),
         ]
 
-    complete = summarise(full_suite(True))
+    complete = summarise(full_suite(True), generation_mode="fixed")
     assert complete["full_suite"] is True
     assert complete["verdict"] == "100/100"
 
