@@ -1474,7 +1474,7 @@ def test_n4_a_repeat_with_a_new_key_spends_the_seats_twice():
                 _call(3, "booking_state", {"slot": oracle["slot"]}),
                 _call(4, "create_booking", {"slot": oracle["slot"], "seats": 4, "idempotency_key": "bk-другой", "version": 2}),
                 _call(5, "booking_state", {"slot": oracle["slot"]}),
-                core.ModelReply(text=f"остаток -1, версия слота 2, две резервации"),
+                core.ModelReply(text=f"остаток -1, версия слота 2, id r-{oracle['reservation_base'] + 1}, две резервации"),
             ]
         ),
     ).run_task(task)

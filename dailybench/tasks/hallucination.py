@@ -896,17 +896,19 @@ def _evaluate_versions(task: core.TaskInstance, tr: core.Transcript) -> core.Sco
     return score
 
 
-_F3_FENCE = {"", "```", "```json"}
 _F3_KEYS = {"id", "value", "sources"}
 
 
 def _f3_payload(reply: str) -> tuple[Any, bool]:
-    """Parse one JSON object; ``False`` when anything sits outside it."""
+    """Parse one JSON object; ``False`` when anything sits outside it.
+
+    The prompt forbids Markdown, so a ```json fence is not a closed answer.
+    """
     raw = (reply or "").strip()
     start, end = raw.find("{"), raw.rfind("}")
     if start < 0 or end <= start:
         return None, False
-    closed = raw[:start].strip() in _F3_FENCE and raw[end + 1:].strip() in _F3_FENCE
+    closed = not raw[:start].strip() and not raw[end + 1:].strip()
     try:
         return json.loads(raw[start:end + 1]), closed
     except json.JSONDecodeError:
