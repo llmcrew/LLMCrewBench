@@ -19,6 +19,7 @@ import json
 import os
 import random
 import re
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -544,7 +545,13 @@ def test_go_env_overwrites_every_host_key(tmp_path, monkeypatch):
         assert Path(env[key]).is_dir()
 
 
-def test_go_caches_are_isolated_from_the_host_and_from_each_repository(tmp_path, monkeypatch):
+def test_go_build_cache_is_shared_and_module_cache_stays_per_repository(tmp_path, monkeypatch):
+    """A host GOCACHE must not be reused, but grading shares one build cache.
+
+    Break this test by putting GOCACHE back beside each repository, or by
+    letting GOMODCACHE leak into the host or into the other repository.
+    """
+    monkeypatch.delenv("DAILYBENCH_GOCACHE", raising=False)
     monkeypatch.setenv("GOCACHE", str(tmp_path / "host-build"))
     monkeypatch.setenv("GOMODCACHE", str(tmp_path / "host-mod"))
     (tmp_path / "host-build").mkdir()
@@ -552,9 +559,67 @@ def test_go_caches_are_isolated_from_the_host_and_from_each_repository(tmp_path,
     first = coding_go._go_env(tmp_path / "one")
     second = coding_go._go_env(tmp_path / "two")
     assert first["GOCACHE"] != str(tmp_path / "host-build")
+    assert first["GOCACHE"] == second["GOCACHE"]
+    assert "dailybench" in Path(first["GOCACHE"]).as_posix()
     assert first["GOMODCACHE"] != str(tmp_path / "host-mod")
-    assert first["GOCACHE"] != second["GOCACHE"]
     assert first["GOMODCACHE"] != second["GOMODCACHE"]
+
+
+def _go_version_text() -> str:
+    go = coding_go._go_binary()
+    assert go, "go toolchain unavailable"
+    proc = subprocess.run(
+        [go, "version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=True,
+    )
+    return proc.stdout.strip()
+
+
+def _expected_user_gocache(version: str) -> Path:
+    """The contract path, derived here and not from the implementation."""
+    digest = hashlib.sha256(version.encode("utf-8")).hexdigest()[:16]
+    if os.name == "nt":
+        root = Path(os.environ["LOCALAPPDATA"])
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Caches"
+    else:
+        raw = os.environ.get("XDG_CACHE_HOME")
+        root = Path(raw) if raw else Path.home() / ".cache"
+    return root / "dailybench" / "go-build" / digest
+
+
+@requires_go
+def test_gocache_is_the_versioned_user_cache(tmp_path, monkeypatch):
+    """Break this by caching beside the repo, or by hashing anything other
+    than the stripped ``go version`` line."""
+    monkeypatch.delenv("DAILYBENCH_GOCACHE", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("GOCACHE", str(tmp_path / "host-build"))
+    expected = _expected_user_gocache(_go_version_text())
+    env = coding_go._go_env(tmp_path / "repo")
+    assert Path(env["GOCACHE"]) == expected
+    assert expected.is_dir()
+    assert env["GOPROXY"] == "off"
+    assert env["GOTOOLCHAIN"] == "local"
+    assert env["GOFLAGS"] == "-mod=mod"
+
+
+def test_dailybench_gocache_overrides_the_versioned_cache(tmp_path, monkeypatch):
+    """Break this by ignoring ``DAILYBENCH_GOCACHE`` or by appending the hash."""
+    pinned = tmp_path / "pinned-build"
+    monkeypatch.setenv("DAILYBENCH_GOCACHE", str(pinned))
+    monkeypatch.setenv("GOCACHE", str(tmp_path / "host-build"))
+    env = coding_go._go_env(tmp_path / "repo")
+    assert Path(env["GOCACHE"]) == pinned
+    assert pinned.is_dir()
+    assert env["GOPROXY"] == "off"
+    assert env["GOTOOLCHAIN"] == "local"
 
 
 def test_go_env_uses_a_shipped_vendor_tree(tmp_path):
@@ -572,6 +637,218 @@ def test_go_evaluation_is_hermetic_against_the_host_environment(builder, monkeyp
     task = builder(random.Random(1), RunConfig(profile="stretch-v1"))
     score = _score(task, task.oracle["reference"])
     assert score.earned == score.possible == 8.0
+
+
+def _c2_per_job(reference: str) -> str:
+    """One goroutine per Job, still closing the output after they finish."""
+    return _replace(
+        reference,
+        "\tvar wg sync.WaitGroup\n"
+        "\twg.Add(workers)\n"
+        "\tfor i := 0; i < workers; i++ {\n"
+        "\t\tgo func() {\n"
+        "\t\t\tdefer wg.Done()\n"
+        "\t\t\tfor {\n"
+        "\t\t\t\tif ctx.Err() != nil {\n"
+        "\t\t\t\t\treturn\n"
+        "\t\t\t\t}\n"
+        "\t\t\t\tselect {\n"
+        "\t\t\t\tcase <-ctx.Done():\n"
+        "\t\t\t\t\treturn\n"
+        "\t\t\t\tcase job, ok := <-jobs:\n"
+        "\t\t\t\t\tif !ok {\n"
+        "\t\t\t\t\t\treturn\n"
+        "\t\t\t\t\t}\n"
+        "\t\t\t\t\terr := job.Run(ctx)\n"
+        "\t\t\t\t\tselect {\n"
+        "\t\t\t\t\tcase out <- Result{ID: job.ID, Err: err}:\n"
+        "\t\t\t\t\tcase <-ctx.Done():\n"
+        "\t\t\t\t\t\treturn\n"
+        "\t\t\t\t\t}\n"
+        "\t\t\t\t}\n"
+        "\t\t\t}\n"
+        "\t\t}()\n"
+        "\t}\n"
+        "\n"
+        "\tgo func() {\n"
+        "\t\twg.Wait()\n"
+        "\t\tclose(out)\n"
+        "\t}()\n",
+        "\tvar wg sync.WaitGroup\n"
+        "\tgo func() {\n"
+        "\t\tdefer func() {\n"
+        "\t\t\twg.Wait()\n"
+        "\t\t\tclose(out)\n"
+        "\t\t}()\n"
+        "\t\tfor {\n"
+        "\t\t\tif ctx.Err() != nil {\n"
+        "\t\t\t\treturn\n"
+        "\t\t\t}\n"
+        "\t\t\tselect {\n"
+        "\t\t\tcase <-ctx.Done():\n"
+        "\t\t\t\treturn\n"
+        "\t\t\tcase job, ok := <-jobs:\n"
+        "\t\t\t\tif !ok {\n"
+        "\t\t\t\t\treturn\n"
+        "\t\t\t\t}\n"
+        "\t\t\t\twg.Add(1)\n"
+        "\t\t\t\tgo func(job Job) {\n"
+        "\t\t\t\t\tdefer wg.Done()\n"
+        "\t\t\t\t\terr := job.Run(ctx)\n"
+        "\t\t\t\t\tselect {\n"
+        "\t\t\t\t\tcase out <- Result{ID: job.ID, Err: err}:\n"
+        "\t\t\t\t\tcase <-ctx.Done():\n"
+        "\t\t\t\t\t}\n"
+        "\t\t\t\t}(job)\n"
+        "\t\t\t}\n"
+        "\t\t}\n"
+        "\t}()\n",
+    )
+
+
+def _c2_leak(reference: str) -> str:
+    """Workers finish, but the pool never closes its output."""
+    return _replace(
+        reference,
+        "\tgo func() {\n\t\twg.Wait()\n\t\tclose(out)\n\t}()\n",
+        "\tgo func() {\n\t\twg.Wait()\n\t\tselect {}\n\t}()\n",
+    )
+
+
+def _c2_early_close(reference: str) -> str:
+    """Closes the output, but leaves a goroutine stuck after that close."""
+    return _replace(
+        reference,
+        "\tgo func() {\n\t\twg.Wait()\n\t\tclose(out)\n\t}()\n",
+        "\tgo func() { select {} }()\n"
+        "\tgo func() {\n\t\twg.Wait()\n\t\tclose(out)\n\t}()\n",
+    )
+
+
+def _c5_early_close(reference: str) -> str:
+    """Closes Results after the workers, but leaves a goroutine stuck."""
+    return _replace(
+        reference,
+        "\tgo p.supervise()\n",
+        "\tgo func() { select {} }()\n\tgo p.supervise()\n",
+    )
+
+
+def _c5_per_job(reference: str) -> str:
+    return _replace(reference, "p.handle(job)", "go p.handle(job)")
+
+
+def _c5_leak(reference: str) -> str:
+    """Stop is acknowledged; Results is never closed."""
+    return _replace(
+        reference,
+        "\tclose(p.ack)\n\tp.wg.Wait()\n\tclose(p.results)\n",
+        "\tclose(p.ack)\n\tselect {}\n",
+    )
+
+
+def _stage_hidden_go(tmp_path: Path, task, source: str, hidden_name: str) -> Path:
+    repo = tmp_path / "repo"
+    for rel, content in task.workspace.items():
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    (repo / task.oracle["target_file"]).write_text(source, encoding="utf-8")
+    (repo / "pool" / hidden_name).write_text(task.oracle["hidden_tests"], encoding="utf-8")
+    return repo
+
+
+def _run_hidden_go(repo: Path, *, count: int, go_timeout: str, failfast: bool) -> subprocess.CompletedProcess[str]:
+    go = coding_go._go_binary()
+    assert go
+    env = coding_go._go_env(repo)
+    env["GOMAXPROCS"] = "1"
+    cmd = [go, "test", "-json", f"-count={count}", "-timeout", go_timeout]
+    if failfast:
+        cmd.append("-failfast")
+    cmd.append("./...")
+    return subprocess.run(
+        cmd,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        timeout=240,
+    )
+
+
+@requires_go
+@pytest.mark.parametrize(
+    ("scenario", "kind"),
+    [
+        ("c2", "oracle"),
+        ("c2", "per_job"),
+        ("c2", "leak"),
+        ("c2", "early_close"),
+        ("c5", "oracle"),
+        ("c5", "per_job"),
+        ("c5", "leak"),
+        ("c5", "early_close"),
+    ],
+)
+def test_hidden_go_checks_hold_under_gomaxprocs_1_and_count_20(tmp_path, monkeypatch, scenario, kind):
+    """The hidden suite must pass the oracle and reject a per-job pool and a
+    pool that never signals completion, even with one OS thread and 20 repeats.
+
+    Break this by bringing back a sleep/NumGoroutine bound (it flakes or lets
+    the per-job mutant through under GOMAXPROCS=1) or by treating a missing
+    completion signal as success.
+    """
+    monkeypatch.delenv("DAILYBENCH_GOCACHE", raising=False)
+    monkeypatch.setenv("GOMAXPROCS", "1")
+    if scenario == "c2":
+        task = coding_go.generate(random.Random(1), RunConfig())
+        hidden = "process_hidden_test.go"
+        order = coding_go.CHECK_ORDER
+        source = {
+            "oracle": task.oracle["reference"],
+            "per_job": _c2_per_job(task.oracle["reference"]),
+            "leak": _c2_leak(task.oracle["reference"]),
+            "early_close": _c2_early_close(task.oracle["reference"]),
+        }[kind]
+        bound = "no_goroutine_per_job"
+        leaked = "no_leak"
+    else:
+        task = coding_go.generate_c5(random.Random(1), RunConfig(profile="stretch-v1"))
+        hidden = "pool_hidden_test.go"
+        order = coding_go.CHECK_ORDER_C5
+        source = {
+            "oracle": task.oracle["reference"],
+            "per_job": _c5_per_job(task.oracle["reference"]),
+            "leak": _c5_leak(task.oracle["reference"]),
+            "early_close": _c5_early_close(task.oracle["reference"]),
+        }[kind]
+        bound = "concurrency_limit"
+        leaked = "no_goroutine_leak"
+    repo = _stage_hidden_go(tmp_path, task, source, hidden)
+    # Mutants are expected to fail; -failfast keeps a hang from repeating.
+    proc = _run_hidden_go(
+        repo,
+        count=20,
+        go_timeout="120s" if kind == "oracle" else "20s",
+        failfast=kind != "oracle",
+    )
+    output = (proc.stdout or "") + (proc.stderr or "")
+    assert "syntax error" not in output, output[-500:]
+    results = coding_go._verdicts(output, order, proc.returncode)
+    if kind == "oracle":
+        failed = {name: detail for name, (ok, detail) in results.items() if not ok}
+        assert proc.returncode == 0, output[-800:]
+        assert not failed, failed
+    elif kind == "per_job":
+        assert results[bound][0] is False, results[bound]
+    elif kind == "early_close":
+        assert results[leaked][0] is False, results[leaked]
+        assert "goroutine leak" in results[leaked][1], results[leaked]
+    else:
+        assert results[leaked][0] is False, results[leaked]
 
 
 def test_a_go_pass_event_needs_a_preceding_run_event():

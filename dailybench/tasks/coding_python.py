@@ -1302,8 +1302,12 @@ class CacheTests(unittest.IsolatedAsyncioTestCase):
         await cache.invalidate("k")
         release.set()
         await asyncio.wait_for(task, timeout=2.0)
-        await asyncio.sleep(0.05)
         leftover = [t for t in asyncio.all_tasks() if t not in before and not t.done()]
+        for _ in range(100):
+            if not leftover:
+                break
+            await asyncio.sleep(0)
+            leftover = [t for t in asyncio.all_tasks() if t not in before and not t.done()]
         self.assertEqual(leftover, [], f"background tasks still running: {leftover}")
 
 
