@@ -1199,13 +1199,15 @@ def _resume_tasks(
             "(--allow-suite-drift продолжает только тот же прогон с другим сьютом)"
         )
     if saved_identity != identity:
+        suite_only = (
+            getattr(cfg, "allow_suite_drift", False) and saved_suite_identity == saved_identity
+        )
         message = (
             f"{directory}: resume смешал бы два прогона — identity {str(identity)[:12]} ≠ "
             f"{str(saved_identity)[:12]}{detail}"
         )
-        if not getattr(cfg, "allow_suite_drift", False):
-            raise SystemExit(f"{message} (продолжать нельзя; "
-                             "или --allow-suite-drift с записью решения)")
+        if not suite_only:
+            raise SystemExit(f"{message} (продолжать нельзя)")
         print(f"{message}; продолжаю (--allow-suite-drift)", flush=True)
 
 

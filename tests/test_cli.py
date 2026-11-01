@@ -475,6 +475,28 @@ def test_drift_refuses_another_model_even_with_the_flag(
     assert not (run_dir / "resume_log.jsonl").exists()
 
 
+
+def test_allow_suite_drift_does_not_waive_a_model_change(
+    endpoint, tmp_path: Path, suite_for
+):
+    """The flag waives suite drift only; a changed model still stops the resume."""
+    base_url, _server = endpoint
+    out = tmp_path / "runs"
+    assert _run(base_url, out, "--only", "IF-1", "--name", "same-suite-model", "--no-html") == 0
+    run_dir = out / "same-suite-model"
+    before = (run_dir / "tasks.json").read_text(encoding="utf-8")
+
+    from dailybench.cli import _resume_tasks
+
+    cfg = RunConfig.from_dict(_read(run_dir / "config.json"))
+    cfg.allow_suite_drift = True
+    cfg.model = "other-model"
+    with pytest.raises(SystemExit, match="model"):
+        _resume_tasks(cfg, _resume_suite(cfg, suite_for))
+    assert (run_dir / "tasks.json").read_text(encoding="utf-8") == before
+    assert not (run_dir / "resume_log.jsonl").exists()
+
+
 def test_drift_log_keeps_the_checkpoint_environment(
     endpoint, tmp_path: Path, monkeypatch, suite_for
 ):
