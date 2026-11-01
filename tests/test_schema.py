@@ -135,7 +135,7 @@ def test_export_round_trip_validates(tmp_path: Path):
 
 
 def test_yaml_export_round_trip(tmp_path: Path):
-    import yaml
+    yaml = pytest.importorskip("yaml", reason="PyYAML недоступен")
 
     target = tmp_path / "suite.yaml"
     assert cli.main(["export", "--format", "yaml", "--out", str(target), "--only", "R-1"]) == 0
@@ -194,6 +194,7 @@ def test_non_mapping_document_is_an_error_and_not_a_crash(payload):
 
 
 def test_validate_reports_empty_and_scalar_yaml_without_a_traceback(tmp_path: Path, capsys):
+    pytest.importorskip("yaml", reason="PyYAML недоступен")
     for name, text in (("empty.yaml", ""), ("scalar.yaml", "просто строка\n"), ("list.yaml", "- A-1\n")):
         path = tmp_path / name
         path.write_text(text, encoding="utf-8")
@@ -202,6 +203,7 @@ def test_validate_reports_empty_and_scalar_yaml_without_a_traceback(tmp_path: Pa
 
 
 def test_validate_reports_broken_yaml_as_an_error(tmp_path: Path, capsys):
+    pytest.importorskip("yaml", reason="PyYAML недоступен")
     path = tmp_path / "broken.yaml"
     path.write_text("id: [A-1\n", encoding="utf-8")
     assert cli.main(["validate", "--task", str(path)]) == 1
@@ -209,6 +211,7 @@ def test_validate_reports_broken_yaml_as_an_error(tmp_path: Path, capsys):
 
 
 def test_document_size_cap_is_enforced(tmp_path: Path, capsys, monkeypatch):
+    pytest.importorskip("yaml", reason="PyYAML недоступен")
     path = tmp_path / "task.yaml"
     path.write_text("id: A-1\n", encoding="utf-8")
     monkeypatch.setattr(cli, "MAX_DOCUMENT_BYTES", 4)

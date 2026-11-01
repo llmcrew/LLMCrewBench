@@ -51,8 +51,8 @@ def test_doctor_reports_a_reachable_endpoint(endpoint, capsys):
     assert "python" in info and "gpus" in info
 
 
-def test_doctor_unreachable_endpoint_exits_one(capsys):
-    code = cli.main(["doctor", "--base-url", "http://127.0.0.1:9/v1", "--model", "test-model"])
+def test_doctor_unreachable_endpoint_exits_one(capsys, refusing_endpoint):
+    code = cli.main(["doctor", "--base-url", refusing_endpoint, "--model", "test-model"])
     assert code == 1
     info = json.loads(capsys.readouterr().out)
     assert info["endpoint"]["reachable"] is False
@@ -170,7 +170,7 @@ def test_run_checkpoints_after_every_task(endpoint, tmp_path: Path, monkeypatch)
     assert (out / "crash" / "tasks.json").is_file()
 
 
-def test_resume_finishes_an_interrupted_run_without_replaying_it(endpoint, tmp_path: Path, monkeypatch):
+def test_resume_finishes_an_interrupted_run_without_replaying_it(endpoint, tmp_path: Path, monkeypatch, suite_for):
     """A crashed run must be completable in place, and the kept tasks must not be re-asked.
 
     The reboot left 67 of 96 tasks on disk; re-running the whole suite spends GPU
@@ -197,15 +197,19 @@ def test_resume_finishes_an_interrupted_run_without_replaying_it(endpoint, tmp_p
     assert _run(base_url, out, "--only", "IF-1,IF-2,IF-3", "--name", "half", "--resume", "--no-html") == 0
     payloads = httpstub.chat_payloads(server)
     assert len(payloads) == 3, "догрузка обязана спросить ровно недостающее задание"
-    assert [p["messages"][-1]["content"] for p in payloads[2:]] == [_expected_prompt("IF-3")]
+    assert [p["messages"][-1]["content"] for p in payloads[2:]] == [_expected_prompt("IF-3", suite_for)]
     scores = _read(out / "half" / "scores.json")
     assert [row["task_id"] for row in scores] == ["IF-1", "IF-2", "IF-3"], "порядок сьюта обязан сохраниться"
     assert all(not row.get("error") for row in scores)
 
 
-def _expected_prompt(task_id: str) -> str:
-    cfg = RunConfig(seed=SEED, only=(task_id,))
-    return next(task.prompt for task in build_suite(cfg) if task.id == task_id)
+def _expected_prompt(task_id: str, suite_for) -> str:
+    return next(task.prompt for task in suite_for(RunConfig().profile) if task.id == task_id)
+
+
+def _resume_suite(cfg: RunConfig, suite_for):
+    selected = set(cfg.only)
+    return [task for task in suite_for(cfg.profile) if not selected or task.id in selected]
 
 
 def test_resume_with_a_narrower_only_slice_compares_the_full_suite(endpoint, tmp_path: Path):
@@ -224,7 +228,7 @@ def test_resume_with_a_narrower_only_slice_compares_the_full_suite(endpoint, tmp
     assert [entry["task"]["id"] for entry in saved] == ["IF-1", "IF-2"]
 
 
-def test_resume_replays_a_task_whose_agent_died(endpoint, tmp_path: Path):
+def test_resume_replays_a_task_whose_agent_died(endpoint, tmp_path: Path, suite_for):
     """A truncated agent record is re-run, not shipped half-empty."""
     base_url, _server = endpoint
     out = tmp_path / "runs"
@@ -238,12 +242,12 @@ def test_resume_replays_a_task_whose_agent_died(endpoint, tmp_path: Path):
 
     cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "cut",
                     model="test-model", base_url=base_url, answer_cap=4096)
-    missing, kept = _resume_tasks(cfg, build_suite(cfg))
+    missing, kept = _resume_tasks(cfg, _resume_suite(cfg, suite_for))
     assert [task.id for task in missing] == ["IF-2"], "оборванное задание обязано уйти в повтор"
     assert [run.task.id for run in kept] == ["IF-1"]
 
 
-def test_resume_replays_a_task_killed_mid_generation(endpoint, tmp_path: Path):
+def test_resume_replays_a_task_killed_mid_generation(endpoint, tmp_path: Path, suite_for):
     """A last turn with no finish_reason is a kill, not an answer (T4).
 
     A transport drop can kill the turn after the agent's exit marker was
@@ -263,12 +267,12 @@ def test_resume_replays_a_task_killed_mid_generation(endpoint, tmp_path: Path):
 
     cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "torn",
                     model="test-model", base_url=base_url, answer_cap=4096)
-    missing, kept = _resume_tasks(cfg, build_suite(cfg))
+    missing, kept = _resume_tasks(cfg, _resume_suite(cfg, suite_for))
     assert [task.id for task in missing] == ["IF-2"], "убитая посреди генерации задача обязана уйти в повтор"
     assert [run.task.id for run in kept] == ["IF-1"]
 
 
-def test_resume_rebuilds_from_transcripts_when_tasks_json_is_corrupt(endpoint, tmp_path: Path):
+def test_resume_rebuilds_from_transcripts_when_tasks_json_is_corrupt(endpoint, tmp_path: Path, suite_for):
     """A reboot while tasks.json was being written must not cost the run.
 
     tasks.json is rewritten whole at every checkpoint; the per-task mirror under
@@ -283,12 +287,12 @@ def test_resume_rebuilds_from_transcripts_when_tasks_json_is_corrupt(endpoint, t
     from dailybench.cli import _resume_tasks
     cfg = RunConfig(seed=SEED, only=("IF-1", "IF-2"), out_dir=out / "torn",
                     model="test-model", base_url=base_url, answer_cap=4096)
-    missing, kept = _resume_tasks(cfg, build_suite(cfg))
+    missing, kept = _resume_tasks(cfg, _resume_suite(cfg, suite_for))
     assert [run.task.id for run in kept] == ["IF-1", "IF-2"], "записи обязаны подняться из transcripts/"
     assert missing == []
 
 
-def test_resume_refuses_to_mix_two_models(endpoint, tmp_path: Path):
+def test_resume_refuses_to_mix_two_models(endpoint, tmp_path: Path, suite_for):
     """A saved run of model-a must not be continued by model-b.
 
     The merged directory would carry answers of two different models under one
@@ -303,15 +307,15 @@ def test_resume_refuses_to_mix_two_models(endpoint, tmp_path: Path):
 
     cfg = RunConfig(seed=SEED, only=("IF-1",), out_dir=out / "mix", model="model-b")
     with pytest.raises(SystemExit, match="resume смешал бы"):
-        _resume_tasks(cfg, build_suite(cfg))
+        _resume_tasks(cfg, _resume_suite(cfg, suite_for))
 
     same = RunConfig(seed=SEED, only=("IF-1",), out_dir=out / "mix",
                      model="test-model", base_url=base_url, answer_cap=4096)
-    missing, kept = _resume_tasks(same, build_suite(same))
+    missing, kept = _resume_tasks(same, _resume_suite(same, suite_for))
     assert missing == [] and [run.task.id for run in kept] == ["IF-1"]
 
 
-def test_resume_ignores_a_mirror_the_master_no_longer_lists(endpoint, tmp_path: Path):
+def test_resume_ignores_a_mirror_the_master_no_longer_lists(endpoint, tmp_path: Path, suite_for):
     """R09: mirrors recover a corrupt master, they do not extend a valid one.
 
     After C-1/C-2 a checkpoint containing only C-1 was written; the C-2 mirror
@@ -327,7 +331,7 @@ def test_resume_ignores_a_mirror_the_master_no_longer_lists(endpoint, tmp_path: 
 
     saved = _read(run_dir / "tasks.json")
     cfg = RunConfig.from_dict(_read(run_dir / "config.json"))
-    task = next(t for t in build_suite(cfg) if t.id == "IF-1")
+    task = next(t for t in _resume_suite(cfg, suite_for) if t.id == "IF-1")
     first = TaskRun(
         task=task,
         transcript=transcript_from_dict(saved[0]["transcript"], task),
@@ -338,12 +342,12 @@ def test_resume_ignores_a_mirror_the_master_no_longer_lists(endpoint, tmp_path: 
 
     from dailybench.cli import _resume_tasks
 
-    missing, kept = _resume_tasks(cfg, build_suite(cfg))
+    missing, kept = _resume_tasks(cfg, _resume_suite(cfg, suite_for))
     assert [run.task.id for run in kept] == ["IF-1"], "старое зеркало не должно воскреснуть"
     assert [item.id for item in missing] == ["IF-2"]
 
 
-def test_resume_ignores_mirrors_without_a_master(endpoint, tmp_path: Path):
+def test_resume_ignores_mirrors_without_a_master(endpoint, tmp_path: Path, suite_for):
     """R09: without tasks.json there is no checkpoint to trust the mirrors for."""
     base_url, _server = endpoint
     out = tmp_path / "runs"
@@ -355,12 +359,12 @@ def test_resume_ignores_mirrors_without_a_master(endpoint, tmp_path: Path):
     from dailybench.cli import _resume_tasks
 
     cfg = RunConfig.from_dict(_read(run_dir / "config.json"))
-    missing, kept = _resume_tasks(cfg, build_suite(cfg))
+    missing, kept = _resume_tasks(cfg, _resume_suite(cfg, suite_for))
     assert kept == []
     assert [item.id for item in missing] == ["IF-1", "IF-2"]
 
 
-def test_resume_rejects_an_agent_switch(endpoint, tmp_path: Path):
+def test_resume_rejects_an_agent_switch(endpoint, tmp_path: Path, suite_for):
     """R09: agent=True and agent=False are different harness contracts."""
     base_url, _server = endpoint
     out = tmp_path / "runs"
@@ -371,7 +375,7 @@ def test_resume_rejects_an_agent_switch(endpoint, tmp_path: Path):
     cfg = RunConfig.from_dict(_read(out / "agent-switch" / "config.json"))
     cfg.agent = False
     with pytest.raises(SystemExit, match="resume смешал бы"):
-        _resume_tasks(cfg, build_suite(cfg))
+        _resume_tasks(cfg, _resume_suite(cfg, suite_for))
 
 
 def test_run_exits_two_when_every_chat_request_fails_infrastructure(endpoint, tmp_path: Path, monkeypatch):
@@ -437,7 +441,7 @@ def test_resume_rejects_a_changed_weight(endpoint, tmp_path: Path, monkeypatch):
         _resume_tasks(cfg, build_suite(cfg))
 
 
-def test_resume_rejects_a_saved_denominator(tmp_path: Path):
+def test_resume_rejects_a_saved_denominator(tmp_path: Path, suite_for):
     """A suite.json recording another possible_total cannot be resumed into."""
     from dailybench.cli import _resume_tasks, build_suite_digest
 
@@ -449,10 +453,10 @@ def test_resume_rejects_a_saved_denominator(tmp_path: Path):
     (cfg.out_dir / "tasks.json").write_text("[]", encoding="utf-8")
 
     with pytest.raises(SystemExit, match="знаменател"):
-        _resume_tasks(cfg, build_suite(cfg))
+        _resume_tasks(cfg, _resume_suite(cfg, suite_for))
 
 
-def test_resume_rejects_a_suite_off_the_profile_total(tmp_path: Path, monkeypatch):
+def test_resume_rejects_a_suite_off_the_profile_total(tmp_path: Path, monkeypatch, suite_for):
     """A generated suite must weigh exactly what its profile declares."""
     from dailybench import core
     from dailybench.cli import _resume_tasks, build_suite_digest
@@ -466,7 +470,7 @@ def test_resume_rejects_a_suite_off_the_profile_total(tmp_path: Path, monkeypatc
     monkeypatch.setattr(core, "profile_total", lambda profile=core.DEFAULT_PROFILE: 999.0)
 
     with pytest.raises(SystemExit, match="знаменател"):
-        _resume_tasks(cfg, build_suite(cfg))
+        _resume_tasks(cfg, _resume_suite(cfg, suite_for))
 
 
 def test_resume_without_speed_keeps_the_saved_profile(endpoint, tmp_path: Path):
