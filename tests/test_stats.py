@@ -6,7 +6,13 @@ import pytest
 
 from dailybench import stats
 from dailybench import report
-from dailybench.report import compare_summaries, summarise
+from dailybench.report import compare_summaries
+from dailybench.report import summarise as _summarise
+
+
+def summarise(scores, suite_tasks=None, generation_mode="fixed"):
+    """Synthetic rows record a mode; an omitted production call does not."""
+    return _summarise(scores, suite_tasks, generation_mode)
 
 
 def _scores(category: str, earned: list[float], possible: float = 10.0) -> list[dict[str, object]]:
@@ -86,6 +92,18 @@ def test_skipped_and_unobserved_tasks_add_no_samples():
     assert summary["per_category"]["A"]["n"] == 1
     assert summary["per_category"]["B"]["ci95"] is None
     assert summary["per_category"]["B"]["provisional"] is False
+
+
+def test_paired_ci_is_independent_of_score_order():
+    units = [
+        ("семья", 10.0, 10.0, 8.0, 10.0),
+        ("семья", 4.0, 10.0, 5.0, 10.0),
+        ("семья", 7.0, 10.0, 6.0, 10.0),
+        ("семья", 9.0, 10.0, 8.5, 10.0),
+    ]
+    first = stats.paired_ratio_difference(units, seed=7, resamples=50)
+    second = stats.paired_ratio_difference(list(reversed(units)), seed=7, resamples=50)
+    assert first["ci95"] == second["ci95"]
 
 
 def test_the_paired_difference_keeps_a_constant_edge():
