@@ -11,6 +11,24 @@ from dailybench.config import RunConfig
 from dailybench.suite import build_suite
 
 
+def pytest_configure(config):
+    """CI memory cap: shrink the default long-context window everywhere.
+
+    A suite built at the published 262144-token window peaks at ~37 GiB of
+    resident memory while the LC records are joined — the hosted CI runners
+    have ~7 GiB free and the step dies as a SIGTERM cancel mid-suite. The
+    tests assert structure and determinism, not the absolute scale, so the
+    ``DAILYBENCH_LONGCTX_WINDOW`` env caps the *default* only (explicit
+    windows in a test still win).
+    """
+    import os
+
+    window = int(os.environ.get("DAILYBENCH_LONGCTX_WINDOW") or 0)
+    if window and window < RunConfig.context_window:
+        # A dataclass default read through the class stays a plain int;
+        # mutating it is visible to every RunConfig() without the field set.
+        RunConfig.__dataclass_fields__["context_window"].default = window
+
 @pytest.fixture()
 def refusing_endpoint() -> str:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -22,18 +40,10 @@ def refusing_endpoint() -> str:
 @pytest.fixture(scope="session")
 def suite_for() -> Callable[[str], list[core.TaskInstance]]:
     suites: dict[str, list[core.TaskInstance]] = {}
-    # Same OOM cap as tests/test_longctx.py: the CI runners cannot hold the
-    # full-window stretch suite in memory while it is being built.
-    import os
-
-    window = int(os.environ.get("DAILYBENCH_LONGCTX_WINDOW") or 0)
 
     def cached(profile: str) -> list[core.TaskInstance]:
         if profile not in suites:
-            cfg = RunConfig(profile=profile)
-            if window and window < cfg.context_window:
-                cfg.context_window = window
-            suites[profile] = build_suite(cfg)
+            suites[profile] = build_suite(RunConfig(profile=profile))
         return copy.deepcopy(suites[profile])
 
     return cached

@@ -4171,7 +4171,7 @@ case "$1" in
   info) printf '{"runc": {"path": "runc"}}\\n' ;;
   image)
     if [ -f "$FAKE_DOCKER_IMAGE" ]; then
-      printf '|sha256:%064d\\n' 1
+      printf '[]||sha256:%064d\n' 1
     else
       echo "no such image" >&2
       exit 1
