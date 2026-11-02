@@ -46,5 +46,8 @@ packages = ["dailybench", "dailybench.adapters", "dailybench.tasks"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-markers = ["docker: needs a Docker daemon"]
+markers = [
+    "docker: needs a Docker daemon",
+    "browser: renders pages in headless Chromium (memory-hungry)",
+]
 filterwarnings = ["error::DeprecationWarning"]

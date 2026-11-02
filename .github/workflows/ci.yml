@@ -76,7 +76,10 @@ jobs:
           # The full 262144-token LC documents peak ~37 GiB RSS; CI runners
           # have ~7 GiB free and die as an OOM cancel mid-suite.
           DAILYBENCH_LONGCTX_WINDOW: "32768"
+        # 2-vCPU ubuntu runners are killed by systemd-oomd inside the
+        # Chromium renders; macOS/Windows cover the browser marker.
         run: uv run --no-sync python -m pytest tests
+          ${{ runner.os == 'Linux' && '-m "not browser"' || '' }}
       - name: Run the suite on Windows
         if: runner.os == 'Windows'
         shell: pwsh

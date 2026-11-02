@@ -29,6 +29,21 @@ def pytest_configure(config):
         # mutating it is visible to every RunConfig() without the field set.
         RunConfig.__dataclass_fields__["context_window"].default = window
 
+
+def pytest_collection_modifyitems(config, items):
+    """Tag browser-rendering tests so a starved runner can deselect them.
+
+    The hosted 2-vCPU ubuntu runners cannot finish the full visual suite
+    inside their memory budget (systemd-oomd SIGTERMs the step mid-suite);
+    macOS/Windows pass the same tests. Selection is by module name: the
+    render path lives in exactly these files.
+    """
+    browser_files = ("test_visual", "test_viz", "test_art")
+    for item in items:
+        module = item.module.__name__.rsplit(".", 1)[-1]
+        if module.startswith(browser_files):
+            item.add_marker(pytest.mark.browser)
+
 @pytest.fixture()
 def refusing_endpoint() -> str:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
