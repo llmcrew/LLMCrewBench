@@ -665,10 +665,22 @@ def config_dir(
     folder = Path(tempfile.mkdtemp(prefix=f"{prefix}pi-agent-", dir=root))
     limit = int(budget or cfg.max_new_tokens)
     contract = wire_contract(cfg, limit, seed)
+    kwargs = dict(cfg.extra_body or {})
+    template_kwargs = kwargs.get("chat_template_kwargs") or {}
+    thinking_off = (
+        template_kwargs.get("thinking") is False
+        or template_kwargs.get("enable_thinking") is False
+    )
+    server_reasoning = kwargs.get("reasoning_effort") in ("low", "minimal") or thinking_off
     model: dict[str, Any] = {
         "id": cfg.model,
         "name": cfg.model,
-        "reasoning": True,
+        # A reasoning-flagged model makes ``pi`` interleave reasoning turns in
+        # its own message protocol, and a Qwen chat template rejects that
+        # history with 400 ``Unexpected message role``. The server-side
+        # thinking switch rides in ``samplingParams`` instead, so the
+        # protocol flag is off whenever the benchmark pins thinking.
+        "reasoning": not server_reasoning,
         "contextWindow": int(cfg.context_window or DEFAULT_CONTEXT_WINDOW),
         "maxTokens": limit,
         # ``reasoning_effort`` is not forced: with it, pi sends its own
@@ -678,6 +690,17 @@ def config_dir(
         "compat": {"supportsReasoningEffort": False},
     }
     fields = contract.payload_fields(include_limit=False)
+    # ``pi`` merges ``samplingParams`` into every request payload, so the
+    # benchmark's server-side flags must ride along: without this a thinking
+    # switch in ``--extra-body`` never reached agent tasks and the stand kept
+    # its template default (Qwen thinks by default, DeepSeek does not).
+    server_flags: dict[str, Any] = {}
+    if template_kwargs:
+        server_flags["chat_template_kwargs"] = dict(template_kwargs)
+    if kwargs.get("reasoning_effort"):
+        server_flags["reasoning_effort"] = kwargs["reasoning_effort"]
+    if server_flags:
+        fields = {**fields, **server_flags}
     if fields:
         model["samplingParams"] = fields
     payload = {
@@ -1390,7 +1413,7 @@ def _finish(
     )
 
 
-def _command(pin: PiBinary, model: str, prompt: str) -> list[str]:
+def _command(pin: PiBinary, model: str, prompt: str, thinking_level: str = "medium") -> list[str]:
     """The exact argv for the pinned CLI.
 
     The end-of-options separator is version-gated rather than unconditional:
@@ -1406,6 +1429,8 @@ def _command(pin: PiBinary, model: str, prompt: str) -> list[str]:
         "json",
         "--model",
         f"bench/{model}",
+        "--thinking",
+        thinking_level,
         "--tools",
         ",".join(AGENT_TOOLS),
         "--no-session",
@@ -1530,7 +1555,18 @@ def run(
     # The run must not depend on the machine's git/npm state.
     env.pop("PI_CODING_AGENT_SESSION_DIR", None)
 
-    command = _command(pin, cfg.model, prompt)
+    # The benchmark's thinking mode must reach the agent's own dial: pi's
+    # ``--thinking`` is the one knob that changes what the model is asked
+    # to emit, so an off/low benchmark cannot silently run at medium.
+    kwargs = dict(cfg.extra_body or {})
+    template_kwargs = kwargs.get("chat_template_kwargs") or {}
+    if template_kwargs.get("thinking") is False or template_kwargs.get("enable_thinking") is False:
+        thinking_level = "off"
+    elif kwargs.get("reasoning_effort") in ("low", "minimal"):
+        thinking_level = kwargs["reasoning_effort"]
+    else:
+        thinking_level = "medium"
+    command = _command(pin, cfg.model, prompt, thinking_level)
     # One file per task: the parent is the task's own root directory, so a
     # fixed name would let two tasks overwrite each other's stderr.
     stderr_path = work_dir.parent / f"{work_dir.name}.stderr.log"
