@@ -45,7 +45,7 @@
 - **S4** `cli.py:1248` `_truncated`: любая `transcript.error` → перезапуск при каждом resume; endpoint без usage не сходится никогда.
 - **S5** `agent.py:898,1594-1642,984` Ctrl-C на Windows не убивает дерево pi.
 - **S6** `sandbox_run.py:542` `os.killpg` на Windows → `AttributeError`.
-- **S7** `visual.py:733` кэш хранит `same_frame=False` навсегда; виртуальных часов нет (в `video/tools/record_clip.py:816` есть).
+- **S7** `visual.py:733` кэш хранит `same_frame=False` навсегда; виртуальных часов нет (в `LLMCrewBenchRecoder (tools/record_clip.py):816` есть).
 - **S8** `browser.py:1001,1239` исключение `PIXEL_PROBE` → `model_failure` 0/4, упавший Chromium переиспользуется.
 - **S9** `generation.py:742-746` ключи manifest с `\` на Windows: hardlink не находится, POSIX-чтение → `IntegrityError`.
 - **S10** `browser.py` нет двойного rAF и `document.fonts.ready` перед снимком.

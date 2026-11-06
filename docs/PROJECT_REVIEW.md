@@ -24,7 +24,7 @@
 | --- | --- |
 | `python -m pytest tests --tb=short` | 362 passed, 11 failed, 253.25 s |
 | `python -m dailybench selfcheck --only A,B,C,D,E,F,G,H,I,J` | Все 47 заданий: эталон получает полный балл, мусор — ноль |
-| `npm run typecheck` в `video/` | Exit code 0 |
+| `npm run typecheck` в `video/` (репозиторий LLMCrewBenchRecoder) | Exit code 0 |
 | Генерация при `PYTHONHASHSEED=1` и `2` | Хеши сьюта совпали |
 | Опубликованный HTML-отчёт | Основная страница открывается; графики и живая K-1 не работают без `_vendor` |
 | Remotion `scene-showcase`, кадр 300 | Ошибка загрузки отсутствующего MP4 |
@@ -227,7 +227,7 @@ Metadata попадают в heading без escaping, в script через об�
 
 ### R19. P1 — Studio открывается, но необходимые медиа отсутствуют
 
-**Код:** [Showcase.tsx:112–167](../video/src/scenes/Showcase.tsx#L112), [showcase L-1:434–437](../video/src/data/showcase.json#L434), [clips L-1:208–210](../video/public/clips.json#L208).
+**Код:** [Showcase.tsx:112–167](../../LLMCrewBenchRecoder/src/scenes/Showcase.tsx#L112), [showcase L-1:434–437](../../LLMCrewBenchRecoder/src/data/showcase.json#L434), [clips L-1:208–210](../../LLMCrewBenchRecoder/public/clips.json#L208).
 
 **Воспроизведено:** отсутствуют все 70 MP4, объявленных доступными; на кадре 300 `scene-showcase` получены `MediaPlaybackError`, `MEDIA_ELEMENT_ERROR: Format error`, `readyState=0`. На кадре 0 видео ещё не смонтировано, поэтому открытие Studio ничего не доказывает о клипах.
 
@@ -239,7 +239,7 @@ Metadata попадают в heading без escaping, в script через об�
 
 ### R20. P1 — ролик неверно интерпретирует покрытие и L
 
-**Код:** [Showcase.tsx:125–127](../video/src/scenes/Showcase.tsx#L125), [Final.tsx:103](../video/src/scenes/Final.tsx#L103), [Theory.tsx:158–179](../video/src/scenes/Theory.tsx#L158).
+**Код:** [Showcase.tsx:125–127](../../LLMCrewBenchRecoder/src/scenes/Showcase.tsx#L125), [Final.tsx:103](../../LLMCrewBenchRecoder/src/scenes/Final.tsx#L103), [Theory.tsx:158–179](../../LLMCrewBenchRecoder/src/scenes/Theory.tsx#L158).
 
 У прогона 1017 нет L-2…L-29, но показана плашка «модель не справилась». Новый L `1/1` — доставка HTML, а не художественный процент, однако он сравнивается с legacy `134/145`. Полные прогоны имеют разные размеры/fingerprints при заявленной побайтовой идентичности заданий.
 
@@ -249,7 +249,7 @@ Metadata попадают в heading без escaping, в script через об�
 
 ### R21. P2 — видео повторно учитывает reasoning в токенах ответа
 
-**Код:** [build_runs_data.py:43–49](../video/tools/build_runs_data.py#L43), [канонический spend](../dailybench/core.py#L285).
+**Код:** [build_runs_data.py:43–49](../../LLMCrewBenchRecoder/tools/build_runs_data.py#L43), [канонический spend](../dailybench/core.py#L285).
 
 **Воспроизведено:** completion 100, reasoning 60 → основной код показывает answer 40/reasoning 60, генератор видео — answer 100/reasoning 60.
 
@@ -257,7 +257,7 @@ Metadata попадают в heading без escaping, в script через об�
 
 ### R22. P2 — recording расходится с платформой и контрактом L
 
-**Код:** [record_clip.py:44–54](../video/tools/record_clip.py#L44), [350–364](../video/tools/record_clip.py#L350), [probe_pages.py:50–58](../video/tools/probe_pages.py#L50), [79–84](../video/tools/probe_pages.py#L79), [record_all.py:112–116](../video/tools/record_all.py#L112).
+**Код:** [record_clip.py:44–54](../../LLMCrewBenchRecoder/tools/record_clip.py#L44), [350–364](../../LLMCrewBenchRecoder/tools/record_clip.py#L350), [probe_pages.py:50–58](../../LLMCrewBenchRecoder/tools/probe_pages.py#L50), [79–84](../../LLMCrewBenchRecoder/tools/probe_pages.py#L79), [record_all.py:112–116](../../LLMCrewBenchRecoder/tools/record_all.py#L112).
 
 **Статически подтверждено:** macOS-пути Chrome/ffmpeg без PATH fallback, `rm` и `/tmp`; probe требует `__ready`, не обязательный для L; batch возвращает success при FAIL; missing clip не отличён от failed model; аргументы прямого recorder CLI входят в destructive paths без containment.
 
@@ -448,5 +448,5 @@ L не получает обязательных `__step`, `__probe`, seed ил�
 - **Выбор chat-артефакта расходится.** [final_text](../dailybench/core.py#L240) берёт последний непустой ответ, [live gallery](../dailybench/gallery.py#L318) — последний turn, [raw recovery](../dailybench/gallery.py#L411) — конкатенацию turns. **Воспроизведено:** transcript с HTML в первом ходе и пустым последним ходом даёт непустой evaluator source и recovery source, но пустой live gallery HTML. Нужен один canonical selector/source reference для grading, preview и восстановления.
 - **Rescore не обновляет весь граф производных данных.** [rescore.py](../dailybench/rescore.py#L75) меняет master/scores/marker; вызванный [write_reports](../dailybench/report.py#L503) пишет Markdown и `visual.html`, не `report.html`. Per-task mirrors, опубликованные comparison и video JSON этим путём не обновляются. **[INFERENCE]:** после пересчёта они могут описывать разные поколения результата. Проверять зависимость артефактов от commit manifest; rebuild проводить явно и только при полноте источника, с защитой R24.
 - **Есть дополнительные cache layers без dependency identity.** [Глобальный Three bundle](../dailybench/gallery.py#L526) переиспользуется по факту существования файла, а [freeze драйвера](../dailybench/gallery.py#L102) — по pathname, без HTML/driver hash. Наличие файла/старого sessionStorage не доказывает совместимость с новой страницей или vendor. Эти слои включить в invalidation/provenance вместе с R26.
-- **Recording не сохраняет PNG побитно.** Production path снимает [JPEG quality 90](../video/tools/record_clip.py#L448), затем кодирует [H.264 CRF 21/yuv420p](../video/tools/record_clip.py#L332). До этого [STYLE_JS](../video/tools/record_clip.py#L61) скрывает часть DOM, выбирает canvas и меняет framing. Отдельного прямого изменения camera в wrapper не установлено; **[INFERENCE]** resize-логика самой страницы всё равно может изменить проекцию. Original scored PNG, производный display и lossy clip сохранять с разными hash и назначением.
+- **Recording не сохраняет PNG побитно.** Production path снимает [JPEG quality 90](../../LLMCrewBenchRecoder/tools/record_clip.py#L448), затем кодирует [H.264 CRF 21/yuv420p](../../LLMCrewBenchRecoder/tools/record_clip.py#L332). До этого [STYLE_JS](../../LLMCrewBenchRecoder/tools/record_clip.py#L61) скрывает часть DOM, выбирает canvas и меняет framing. Отдельного прямого изменения camera в wrapper не установлено; **[INFERENCE]** resize-логика самой страницы всё равно может изменить проекцию. Original scored PNG, производный display и lossy clip сохранять с разными hash и назначением.
 - **Recording host не идентифицирует удалённый LLM-стенд.** [_hardware](../dailybench/cli.py#L756) опрашивает локальный GPU. В опубликованном 1017 веса SHA пуст, GPU unknown; launch/config фиксируют заявленные настройки, но не доказывают конкретные weights, удалённый GPU или 16 GiB budget. В provenance нужны отдельные LLM endpoint/runtime measurements и recording/render host profile; неизвестное оставлять неизвестным.

@@ -32,7 +32,6 @@ REQUIRED_STEPS = {
     "установка wheel": ".whl",
     "smoke из установки": "bin/dailybench",
     "замкнутость ссылок отчёта": "broken_local_links",
-    "preflight медиа": "tools/preflight.py --no-clips",
 }
 
 

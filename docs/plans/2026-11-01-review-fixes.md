@@ -262,7 +262,7 @@ Findings: L10, L11, L12, L13, S7, S8, S10, P2, P3; visual-test part of S16.
 
 **Interfaces:**
 - Produces: `RenderResult.failure == "evaluator_failure"` and a relaunched worker when a harness-side page evaluation throws; the PNG is captured before `PIXEL_PROBE`.
-- Produces: scoring renders install a deterministic frame clock before any page script (same mechanism as `video/tools/record_clip.py:816`, extracted to a shared constant in `browser.py` and imported by `record_clip.py`).
+- Produces: scoring renders install a deterministic frame clock before any page script (same mechanism as `LLMCrewBenchRecoder (tools/record_clip.py):816`, extracted to a shared constant in `browser.py` and imported by `record_clip.py`).
 
 - [ ] **Step 1: Failing tests** (pure-Python where possible; Chromium tests skip without playwright):
   - `test_shot_stage_gets_its_own_budget`: drive the parent loop with a fake worker reporting `STAGE_SHOT` for 60 s of fake monotonic time → not killed before `SCREENSHOT_TIMEOUT_MS`.

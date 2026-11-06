@@ -128,7 +128,8 @@ Three artefacts are never mixed:
   scored frame;
 * **capture** — video clips: JPEG q90 frames encoded as H.264 CRF 21 /
   yuv420p. Lossy by construction, so a clip never stands for the scored frame;
-  it sits next to its status marker and its reason.
+  it sits next to its status marker and its reason. Clips are produced and
+  stored by the separate `llmcrew/LLMCrewBenchRecoder` repository.
 
 Only the scored frame carries a content hash (`shot_sha`, SHA-256 over the file
 bytes); display pages and clips are derived and identified by path. A display
@@ -381,13 +382,14 @@ Each run directory stays self-describing: `config.json`, `suite.json`,
 `transcripts/<task>.json`, so a published number can be reproduced or
 re-scored without touching a GPU.
 
-## Published artefacts and the recording framework
+## Published artefacts
 
 `docs/ARTIFACTS.md` lists what is intentionally tracked (one published run and
-its comparison) and what stays local — recordings and the video archive
-included — with the commands to verify a restored archive. `docs/recording/` is a standalone kit for
-capturing live web scenes: a step-driven recorder, a batch driver, the page
-driver, the practices and the pitfalls that cost real time here.
+its comparison) and what stays local, with the commands to verify a restored
+archive. The video about this benchmark — the Remotion project, the clip
+recorder and the recording practices — lives in the separate private
+`llmcrew/LLMCrewBenchRecoder` repository; nothing video-related is part of this
+repository.
 
 ## Adding a category
 

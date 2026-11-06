@@ -49,7 +49,7 @@ test:
 	$(PY) -m pytest tests
 
 ci:
-	$(PY) -m compileall -q dailybench scripts tests video/tools
+	$(PY) -m compileall -q dailybench scripts tests
 	$(PY) -m pytest tests
 
 agent-image:

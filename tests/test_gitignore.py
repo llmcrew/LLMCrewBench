@@ -61,11 +61,7 @@ def _ignored(relative: str) -> bool:
         "reports/comparison-deepseek-1017/_vendor/plotly.min.js",
         "reports/comparison-deepseek-1017/_vendor/three.global.js",
         "reports/comparison-deepseek-1017/_showcase/deepseek-v4.1-flash-unc-1017/pages/K-1.html",
-        "video/archive/RESTORE.md",
-        "video/archive/SHA256",
         "docs/ARTIFACTS.md",
-        "docs/recording/README.md",
-        "docs/recording/record_scene.py",
     ],
 )
 
@@ -89,13 +85,7 @@ def test_published_artefacts_are_tracked(relative: str):
         ".env",
         "secrets.env",
         ".DS_Store",
-        # Объёмные локальные артефакты ролика и отчёта: не пушатся, см. .gitignore.
-        "video/public/clips/deepseek-v4.1-flash-unc__K-1.mp4",
-        "video/bin/ffmpeg",
-        "video/archive/dailybench-video.zip.part-aa",
-        "video/dailybench-video.zip",
-        "video/dailybench-video.tar.zst",
-        "video/dist/dailybench-video.zip",
+        # Локальные артефакты отчёта: не пушатся, см. .gitignore.
         "reports/comparison/_showcase/glm-5.3/pages/K-1.html",
         # Не публикуются: сырые транскрипты, машинные параметры, служебные каталоги.
         "runs/deepseek-v4.1-flash-unc-1017/tasks.json",

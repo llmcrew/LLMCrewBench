@@ -1145,15 +1145,12 @@ window.__ready = true;
 
 
 def test_scoring_renders_share_the_recording_clock():
-    """Scoring installs the same deterministic frame clock the recorder uses."""
+    """Scoring installs the deterministic frame clock pages are recorded with."""
     template = getattr(browser, "FRAME_CLOCK_TEMPLATE", "")
     assert "performance" in template and "__FPS__" in template
     settle = getattr(browser, "SCREENSHOT_SETTLE_JS", "")
     assert "document.fonts.ready" in settle
     assert "requestAnimationFrame" in settle
-    source = Path("video/tools/record_clip.py").read_text(encoding="utf-8")
-    assert "FRAME_CLOCK_TEMPLATE" in source
-    assert "dailybench.browser" in source
 
 
 _DELAYED_READY_PAGE = """<!doctype html><html><body><script>

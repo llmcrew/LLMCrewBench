@@ -104,7 +104,8 @@ SETUP_TIMEOUT_S = 60.0
 #: дефолтные 30 с Playwright и весь рендер падал «TimeoutError: Page.screenshot».
 SCREENSHOT_TIMEOUT_MS = 90_000
 
-#: Deterministic frame clock shared with ``video/tools/record_clip.py``. Scoring
+#: Deterministic frame clock shared with the clip recorder in
+#: llmcrew/LLMCrewBenchRecoder (``tools/record_clip.py``). Scoring
 #: renders install it before page scripts so two loads of a stable page stay
 #: byte-identical; live art mode leaves the wall clock alone.
 FRAME_CLOCK_TEMPLATE = r"""
